@@ -35,6 +35,8 @@ pub async fn serve(state: AppState) {
         .with_state(state);
 
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), HTTP_PORT);
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .expect("failed to bind HTTP listener");
+    axum::serve(listener, app).await.expect("HTTP server error");
 }

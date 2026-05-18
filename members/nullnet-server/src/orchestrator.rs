@@ -125,10 +125,10 @@ impl Orchestrator {
     }
 
     pub(crate) async fn connected_node_ips(&self) -> Vec<IpAddr> {
-        self.clients.read().await.keys().cloned().collect()
+        self.clients.read().await.keys().copied().collect()
     }
 
-    pub(crate) async fn pool_stats(&self) -> (u32, u32, u32) {
+    pub(crate) async fn pool_stats(&self) -> (u32, u32) {
         self.net_id_pool.lock().await.stats()
     }
 

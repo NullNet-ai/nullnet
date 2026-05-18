@@ -60,11 +60,11 @@ impl NetIdPool {
         }
     }
 
-    /// Returns (total_capacity, in_use, free).
-    pub(crate) fn stats(&self) -> (u32, u32, u32) {
+    /// Returns (total_capacity, in_use).
+    pub(crate) fn stats(&self) -> (u32, u32) {
         let capacity = *MAX_NET_ID - MIN_NET_ID + 1;
         let in_use = (self.next_fresh - MIN_NET_ID) - self.freed.len() as u32;
-        (capacity, in_use, capacity - in_use)
+        (capacity, in_use)
     }
 }
 
@@ -134,7 +134,8 @@ mod tests {
     #[test]
     fn test_stats_fresh_pool() {
         let pool = NetIdPool::new();
-        let (total, in_use, free) = pool.stats();
+        let (total, in_use) = pool.stats();
+        let free = total - in_use;
         assert!(total > 0);
         assert_eq!(in_use, 0);
         assert_eq!(free, total);
@@ -146,7 +147,8 @@ mod tests {
         pool.allocate();
         pool.allocate();
         pool.allocate();
-        let (total, in_use, free) = pool.stats();
+        let (total, in_use) = pool.stats();
+        let free = total - in_use;
         assert_eq!(in_use, 3);
         assert_eq!(free, total - 3);
     }
@@ -158,7 +160,8 @@ mod tests {
         pool.allocate();
         pool.allocate();
         pool.free(id);
-        let (total, in_use, free) = pool.stats();
+        let (total, in_use) = pool.stats();
+        let free = total - in_use;
         assert_eq!(in_use, 2);
         assert_eq!(free, total - 2);
     }
@@ -167,7 +170,8 @@ mod tests {
     fn test_stats_exhausted_pool() {
         let mut pool = NetIdPool::new();
         pool.next_fresh = *MAX_NET_ID + 1;
-        let (total, in_use, free) = pool.stats();
+        let (total, in_use) = pool.stats();
+        let free = total - in_use;
         assert_eq!(in_use, total);
         assert_eq!(free, 0);
     }
@@ -179,7 +183,8 @@ mod tests {
         let id = pool.allocate().unwrap();
         pool.allocate();
         pool.free(id);
-        let (total, in_use, free) = pool.stats();
+        let (total, in_use) = pool.stats();
+        let free = total - in_use;
         assert_eq!(total, in_use + free);
     }
 }
