@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 #[derive(Clone, Default, Debug)]
 pub(super) struct Clients {
@@ -92,6 +92,7 @@ pub(crate) struct ClientInfo {
     time_ms: u128,
     active_chains: usize,
     latest: Instant,
+    created_at: SystemTime,
     docker_container: Option<String>,
 }
 
@@ -112,6 +113,7 @@ impl ClientInfo {
             time_ms,
             active_chains: 0,
             latest: Instant::now(),
+            created_at: SystemTime::now(),
             docker_container,
         }
     }
@@ -125,6 +127,7 @@ impl ClientInfo {
             time_ms: 0,
             active_chains: 0,
             latest: Instant::now(),
+            created_at: SystemTime::now(),
             docker_container: None,
         }
     }
@@ -166,11 +169,15 @@ impl ClientInfo {
         self.active_chains = self.active_chains.saturating_sub(num_chains);
     }
 
-    pub(super) fn active_chains(&self) -> usize {
+    pub(crate) fn active_chains(&self) -> usize {
         self.active_chains
     }
 
     pub(super) fn latest(&self) -> Instant {
         self.latest
+    }
+
+    pub(crate) fn created_at(&self) -> SystemTime {
+        self.created_at
     }
 }

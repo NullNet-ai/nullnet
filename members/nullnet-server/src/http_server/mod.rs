@@ -2,6 +2,8 @@ use crate::orchestrator::Orchestrator;
 use crate::services::input::StackMap;
 use axum::Router;
 use axum::routing::get;
+use axum::routing::{delete, get};
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -12,6 +14,7 @@ mod health;
 mod nodes;
 mod pool;
 mod services;
+mod sessions;
 mod static_files;
 
 const HTTP_PORT: u16 = 8080;
@@ -30,6 +33,8 @@ pub async fn serve(state: AppState) {
         .route("/api/pool", get(pool::pool_handler))
         .route("/api/config/{stack}", get(config::config_handler))
         .route("/api/graph/{stack}", get(graph::graph_handler))
+        .route("/api/sessions", get(sessions::list_handler))
+        .route("/api/sessions/:id", delete(sessions::teardown_handler))
         .fallback(get(static_files::static_handler))
         .with_state(state);
 
