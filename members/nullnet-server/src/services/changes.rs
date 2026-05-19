@@ -26,6 +26,8 @@ pub(crate) enum ServiceChange {
     ProxyDisconnected { ip: IpAddr },
     /// A proxy client's timeout expired; tear down its chains.
     ProxyClientTimedOut { name: String, client: Client },
+    /// An operator explicitly requested teardown of a proxy session.
+    ForceSessionTeardown { name: String, client: Client },
 }
 
 enum ProxyFilter<'a> {
@@ -671,6 +673,19 @@ pub(crate) async fn apply_changes(
             ServiceChange::ProxyClientTimedOut { name, client } => {
                 println!(
                     "Proxy client '{}' timed out on service '{name}'",
+                    client.display_name()
+                );
+                teardown_chain(
+                    &name,
+                    services,
+                    orchestrator,
+                    ProxyFilter::ByClient(&client),
+                )
+                .await;
+            }
+            ServiceChange::ForceSessionTeardown { name, client } => {
+                println!(
+                    "Force teardown of proxy client '{}' on service '{name}'",
                     client.display_name()
                 );
                 teardown_chain(
