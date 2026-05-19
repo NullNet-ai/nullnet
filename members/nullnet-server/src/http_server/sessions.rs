@@ -27,7 +27,8 @@ struct ErrorJson {
 pub(super) async fn list_handler(State(state): State<AppState>) -> impl IntoResponse {
     let services = state.services.read().await;
     let mut sessions: Vec<SessionJson> = services
-        .iter()
+        .values()
+        .flat_map(|stack_map| stack_map.iter())
         .flat_map(|(name, info)| {
             if let ServiceInfo::Registered(reg) = info {
                 reg.all_clients_owned()
@@ -65,18 +66,22 @@ pub(super) async fn teardown_handler(
 ) -> impl IntoResponse {
     let mut services = state.services.write().await;
 
-    let found = services.iter().find_map(|(name, info)| {
-        if let ServiceInfo::Registered(reg) = info {
-            reg.all_clients_owned()
-                .into_iter()
-                .find(|(c, ci, _, _)| c.is_proxy().is_some() && ci.net_id() == id)
-                .map(|(client, _, _, _)| (name.clone(), client))
-        } else {
-            None
-        }
+    // Sessions span every stack; locate the (stack, service, client) triple
+    // that owns this NET id.
+    let found = services.iter().find_map(|(stack, stack_map)| {
+        stack_map.iter().find_map(|(name, info)| {
+            if let ServiceInfo::Registered(reg) = info {
+                reg.all_clients_owned()
+                    .into_iter()
+                    .find(|(c, ci, _, _)| c.is_proxy().is_some() && ci.net_id() == id)
+                    .map(|(client, _, _, _)| (stack.clone(), name.clone(), client))
+            } else {
+                None
+            }
+        })
     });
 
-    let Some((name, client)) = found else {
+    let Some((stack, name, client)) = found else {
         return (
             StatusCode::NOT_FOUND,
             axum::Json(ErrorJson {
@@ -86,8 +91,11 @@ pub(super) async fn teardown_handler(
             .into_response();
     };
 
+    let Some(stack_map) = services.get_mut(&stack) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     let changes = vec![ServiceChange::ForceSessionTeardown { name, client }];
-    apply_changes(changes, &mut services, None, &state.orchestrator).await;
+    apply_changes(changes, stack_map, None, &state.orchestrator).await;
 
     StatusCode::NO_CONTENT.into_response()
 }

@@ -1,11 +1,13 @@
 use crate::env::NET_TYPE;
 use crate::services::clients::ClientInfo;
+use crate::services::input::StackMap;
 use crate::services::service_info::ServiceInfo;
 use nullnet_liberror::{ErrorHandler, Location, location};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::net::IpAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -79,15 +81,31 @@ pub(crate) fn render_graphviz(services: &HashMap<String, ServiceInfo>) -> String
     graphviz
 }
 
-pub(crate) async fn generate_graphviz(services: Arc<RwLock<HashMap<String, ServiceInfo>>>) {
+const GRAPHS_DIR: &str = "./graphs";
+
+pub(crate) async fn generate_graphviz(services: Arc<RwLock<StackMap>>) {
+    let mut previously_written: HashSet<PathBuf> = HashSet::new();
     loop {
-        let services = services.read().await.clone();
-        let graphviz = render_graphviz(&services);
-        let _ = tokio::fs::write("graph.dot", graphviz)
+        let _ = tokio::fs::create_dir_all(GRAPHS_DIR)
             .await
             .handle_err(location!());
+        let snapshot = services.read().await.clone();
+        let mut current: HashSet<PathBuf> = HashSet::new();
+        for (stack, stack_map) in &snapshot {
+            let graphviz = render_graphviz(stack_map);
+            let path = Path::new(GRAPHS_DIR).join(format!("{stack}.dot"));
+            let _ = tokio::fs::write(&path, graphviz)
+                .await
+                .handle_err(location!());
+            current.insert(path);
+        }
+        // Remove .dot files written for stacks that no longer exist.
+        for stale in previously_written.difference(&current) {
+            let _ = tokio::fs::remove_file(stale).await;
+        }
+        previously_written = current;
 
-        println!("Regenerated graphviz");
+        println!("Regenerated graphviz for {} stack(s)", snapshot.len());
 
         tokio::time::sleep(Duration::from_secs(10)).await;
     }

@@ -4,8 +4,10 @@ services = []
 #name = "color.com"
 #port = 3001
 #docker_container = "my-stack_actix-sample"
+#stack = "my-stack"
 
 #[[services]]
 #name = "fs.color.com"
 #port = 8080
 #docker_container = "my-stack_fileserver"
+#stack = "my-stack"

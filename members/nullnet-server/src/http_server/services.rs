@@ -1,7 +1,8 @@
 use super::AppState;
 use crate::services::service_info::ServiceInfo;
-use axum::extract::State;
-use axum::response::IntoResponse;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -27,9 +28,15 @@ struct ServiceJson {
     max_networks: Option<u32>,
 }
 
-pub(super) async fn services_handler(State(state): State<AppState>) -> impl IntoResponse {
+pub(super) async fn services_handler(
+    Path(stack): Path<String>,
+    State(state): State<AppState>,
+) -> Response {
     let services = state.services.read().await;
-    let mut response: Vec<ServiceJson> = services
+    let Some(stack_map) = services.get(&stack) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let mut response: Vec<ServiceJson> = stack_map
         .iter()
         .map(|(name, info)| {
             let registered = matches!(info, ServiceInfo::Registered(_));
@@ -63,5 +70,5 @@ pub(super) async fn services_handler(State(state): State<AppState>) -> impl Into
         })
         .collect();
     response.sort_by(|a, b| a.name.cmp(&b.name));
-    axum::Json(response)
+    axum::Json(response).into_response()
 }

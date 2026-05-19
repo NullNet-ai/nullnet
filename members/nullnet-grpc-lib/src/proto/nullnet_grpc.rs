@@ -106,6 +106,8 @@ pub struct Service {
     pub port: u32,
     #[prost(string, optional, tag = "3")]
     pub docker_container: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, tag = "4")]
+    pub stack: ::prost::alloc::string::String,
 }
 /// Response to ServicesList: per-declared-service, the set of trigger ports
 /// the client should observe via eBPF. When traffic is observed on one of
