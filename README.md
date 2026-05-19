@@ -40,8 +40,9 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   TIMEOUT=0
   ```
 
-- service configuration must be stored at `members/nullnet-server/services/services.toml` and
-  declare services as follows:
+- service configuration is split per **stack** — one TOML file per stack under
+  `members/nullnet-server/services/`. The filename (minus `.toml`) is the stack name.
+  For example, to define a stack called `my-app`, create `services/my-app.toml`:
   ```
   [[services]]
   name = "color.com"
@@ -62,13 +63,16 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
 - each `[[services.triggers]]` block pairs a port observed on the initiator's host with a linear
   chain walked when the service is reached via a `BackendTrigger` RPC from nullnet-client (one
   chain per port)
+- service names are unique within a stack; dependency chains stay intra-stack. Service names may
+  be reused across different stacks
 
 - run the project as a daemon (from the repo root)
   ```
   ./setup-server.sh
   ```
 
-- the server will regularly update a view of the network and store it in `members/nullnet-server/graph.dot`
+- the server regularly renders one Graphviz file per stack under
+  `members/nullnet-server/graphs/<stack>.dot`
 
 ***
 
@@ -100,7 +104,9 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   ETH_NAME=ens18
   ```
 
-- service configuration must be stored at `members/nullnet-client/services.toml`:
+- service configuration must be stored at `members/nullnet-client/services.toml`. Each entry
+  must declare its `stack` (which must match a `services/<stack>.toml` on the server, otherwise
+  the declaration is dropped):
   ```
   # services = [] # use this if you don't want to declare any service
 
@@ -108,6 +114,7 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   name = "color.com"
   port = 3001
   docker_container = "stack-name_container-name" # should correspond to the label "com.docker.swarm.service.name"
+  stack = "my-app"
 
   [[services]]
   ...
