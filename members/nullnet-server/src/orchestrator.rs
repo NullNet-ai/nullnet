@@ -2,7 +2,7 @@ use crate::env::NET_TYPE;
 use crate::net::NetExt;
 use crate::net_id_pool::NetIdPool;
 use crate::services::changes::{apply_changes, detect_node_disconnect_changes};
-use crate::services::service_info::ServiceInfo;
+use crate::services::input::StackMap;
 use nullnet_grpc_lib::nullnet_grpc::{MsgId, NetMessage};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
@@ -35,7 +35,7 @@ impl Orchestrator {
         &self,
         request: Request<Streaming<MsgId>>,
         outbound: OutboundStream,
-        services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
+        services: Arc<RwLock<StackMap>>,
     ) -> Result<(), Error> {
         let client_ip = request
             .remote_addr()
@@ -70,13 +70,21 @@ impl Orchestrator {
     pub(crate) async fn handle_node_disconnect(
         &self,
         client_ip: IpAddr,
-        services: &Arc<RwLock<HashMap<String, ServiceInfo>>>,
+        services: &Arc<RwLock<StackMap>>,
     ) {
         self.remove_client(&client_ip).await;
 
+        // A disconnected node may host replicas in multiple stacks; apply
+        // the per-stack disconnect logic to each.
         let mut services_guard = services.write().await;
-        let changes = detect_node_disconnect_changes(&services_guard, client_ip);
-        apply_changes(changes, &mut services_guard, None, self).await;
+        let stack_names: Vec<String> = services_guard.keys().cloned().collect();
+        for stack in stack_names {
+            let Some(stack_map) = services_guard.get_mut(&stack) else {
+                continue;
+            };
+            let changes = detect_node_disconnect_changes(stack_map, client_ip);
+            apply_changes(changes, stack_map, None, self).await;
+        }
     }
 
     pub(crate) async fn send_net_setup(

@@ -2,11 +2,27 @@
 
 use crate::graphviz::render_graphviz;
 use crate::nullnet_grpc_impl::NullnetGrpcImpl;
-use crate::services::input::{ServicesToml, apply_config_update};
+use crate::services::input::{ServicesToml, StackMap, apply_config_update};
 use crate::services::service_info::ServiceInfo;
 use crate::timeout::apply_timeouts;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
+
+/// The single stack name used by all fixture-based tests. Fixtures pre-date
+/// the per-stack split, so they're loaded into one virtual stack.
+const TEST_STACK: &str = "default";
+
+fn into_stack_map(inner: HashMap<String, ServiceInfo>) -> StackMap {
+    HashMap::from([(TEST_STACK.to_string(), inner)])
+}
+
+fn stack_view(guard: &StackMap) -> &HashMap<String, ServiceInfo> {
+    guard.get(TEST_STACK).expect("default stack missing")
+}
+
+fn stack_view_mut(guard: &mut StackMap) -> &mut HashMap<String, ServiceInfo> {
+    guard.get_mut(TEST_STACK).expect("default stack missing")
+}
 
 fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
     IpAddr::V4(Ipv4Addr::new(a, b, c, d))
@@ -49,20 +65,24 @@ fn fixture_path(fixture: &str, file: &str) -> String {
     )
 }
 
-async fn load_fixture(fixture: &str) -> HashMap<String, ServiceInfo> {
+async fn load_fixture(fixture: &str) -> StackMap {
     load_config(fixture, "services.toml").await
 }
 
-async fn load_config(fixture: &str, file: &str) -> HashMap<String, ServiceInfo> {
-    ServicesToml::load_from(&fixture_path(fixture, file))
+async fn load_config(fixture: &str, file: &str) -> StackMap {
+    let inner = ServicesToml::load_file(&fixture_path(fixture, file))
         .await
-        .expect("failed to load test config")
+        .expect("failed to load test config");
+    into_stack_map(inner)
 }
 
 async fn register_services(server: &NullnetGrpcImpl, ip_map: &HashMap<&str, IpAddr>, port: u16) {
     let mut services = server.services().write().await;
+    let stack = services
+        .get_mut(TEST_STACK)
+        .expect("default stack missing in test setup");
     for (&name, &svc_ip) in ip_map {
-        if let Some(si) = services.get_mut(name) {
+        if let Some(si) = stack.get_mut(name) {
             si.add_replica(svc_ip, port, None);
         }
     }
@@ -74,8 +94,9 @@ async fn register_services(server: &NullnetGrpcImpl, ip_map: &HashMap<&str, IpAd
     }
 }
 
-fn assert_graphviz(services: &HashMap<String, ServiceInfo>, fixture: &str, expected_file: &str) {
-    let actual = render_graphviz(services);
+fn assert_graphviz(services: &StackMap, fixture: &str, expected_file: &str) {
+    let inner = services.get(TEST_STACK).expect("default stack missing");
+    let actual = render_graphviz(inner);
     let expected_path = fixture_path(fixture, expected_file);
 
     println!("--- {expected_file} ---\n{actual}");
@@ -129,7 +150,13 @@ async fn setup_backend_chain_for_replica(
     port: u16,
 ) {
     server
-        .setup_backend_chain(initiator_name, initiator_ip, initiator_docker, port)
+        .setup_backend_chain(
+            TEST_STACK,
+            initiator_name,
+            initiator_ip,
+            initiator_docker,
+            port,
+        )
         .await
         .expect("setup_backend_chain failed");
 }
@@ -186,10 +213,10 @@ async fn service_removed_remove_A() {
     assert_net_ids_in_use(&server, 2).await;
 
     let guard = server.services().read().await;
-    assert!(!guard.contains_key("A"));
-    assert!(!guard.contains_key("C"));
-    assert!(guard.contains_key("B"));
-    assert!(guard.contains_key("D"));
+    assert!(!stack_view(&guard).contains_key("A"));
+    assert!(!stack_view(&guard).contains_key("C"));
+    assert!(stack_view(&guard).contains_key("B"));
+    assert!(stack_view(&guard).contains_key("D"));
 }
 
 /// Remove B from config. D stays (dep of A). A chains survive.
@@ -207,10 +234,10 @@ async fn service_removed_remove_B() {
     assert_net_ids_in_use(&server, 4).await;
 
     let guard = server.services().read().await;
-    assert!(!guard.contains_key("B"));
-    assert!(guard.contains_key("A"));
-    assert!(guard.contains_key("C"));
-    assert!(guard.contains_key("D"));
+    assert!(!stack_view(&guard).contains_key("B"));
+    assert!(stack_view(&guard).contains_key("A"));
+    assert!(stack_view(&guard).contains_key("C"));
+    assert!(stack_view(&guard).contains_key("D"));
 }
 
 // ===========================================================================
@@ -258,11 +285,14 @@ async fn dep_changed_add_E_to_A() {
     assert_graphviz(&guard, DEP_CHANGED, "after_add_E_to_A.dot");
 
     assert_eq!(
-        guard["A"].proxy_deps(),
+        stack_view(&guard)["A"].proxy_deps(),
         vec!["B".to_string(), "C".to_string(), "E".to_string()]
     );
-    assert!(guard.contains_key("E"));
-    assert!(matches!(guard["E"], ServiceInfo::Unregistered(_)));
+    assert!(stack_view(&guard).contains_key("E"));
+    assert!(matches!(
+        stack_view(&guard)["E"],
+        ServiceInfo::Unregistered(_)
+    ));
 }
 
 /// Drop C from A's deps: [B,C] → [B]. A's chain cleaned up but A stays registered.
@@ -276,9 +306,9 @@ async fn dep_changed_drop_C_from_A() {
     apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, DEP_CHANGED, "after_drop_C_from_A.dot");
 
-    assert!(guard.contains_key("A"));
-    assert_eq!(guard["A"].proxy_deps(), vec!["B".to_string()]);
-    assert!(guard.contains_key("C"));
+    assert!(stack_view(&guard).contains_key("A"));
+    assert_eq!(stack_view(&guard)["A"].proxy_deps(), vec!["B".to_string()]);
+    assert!(stack_view(&guard).contains_key("C"));
 }
 
 /// Drop all deps from D: [C] → []. D's chain cleaned up but D stays registered.
@@ -292,8 +322,8 @@ async fn dep_changed_drop_all_from_D() {
     apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, DEP_CHANGED, "after_drop_all_from_D.dot");
 
-    assert!(guard["D"].proxy_deps().is_empty());
-    assert!(guard.contains_key("C"));
+    assert!(stack_view(&guard)["D"].proxy_deps().is_empty());
+    assert!(stack_view(&guard).contains_key("C"));
 }
 
 /// Swap C for E in A's deps: [B,C] → [B,E]. A's chain cleaned up.
@@ -308,11 +338,14 @@ async fn dep_changed_swap_C_for_E() {
     assert_graphviz(&guard, DEP_CHANGED, "after_swap_C_for_E.dot");
 
     assert_eq!(
-        guard["A"].proxy_deps(),
+        stack_view(&guard)["A"].proxy_deps(),
         vec!["B".to_string(), "E".to_string()]
     );
-    assert!(guard.contains_key("E"));
-    assert!(matches!(guard["E"], ServiceInfo::Unregistered(_)));
+    assert!(stack_view(&guard).contains_key("E"));
+    assert!(matches!(
+        stack_view(&guard)["E"],
+        ServiceInfo::Unregistered(_)
+    ));
 }
 
 // ===========================================================================
@@ -362,8 +395,8 @@ async fn reachability_changed_unreachable_B() {
     apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, REACHABILITY_CHANGED, "after_unreachable_B.dot");
 
-    assert!(guard.contains_key("B"));
-    assert!(guard["B"].timeout().is_none());
+    assert!(stack_view(&guard).contains_key("B"));
+    assert!(stack_view(&guard)["B"].timeout().is_none());
 }
 
 /// D removed from [[services]] and no other service depends on it, so D and E
@@ -378,8 +411,8 @@ async fn reachability_changed_unreachable_D() {
     apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, REACHABILITY_CHANGED, "after_unreachable_D.dot");
 
-    assert!(!guard.contains_key("D"));
-    assert!(!guard.contains_key("E"));
+    assert!(!stack_view(&guard).contains_key("D"));
+    assert!(!stack_view(&guard).contains_key("E"));
 }
 
 // ===========================================================================
@@ -433,8 +466,14 @@ async fn service_unregistered_drop_A() {
     let guard = server.services().read().await;
     assert_graphviz(&guard, SERVICE_UNREGISTERED, "after_drop_A.dot");
 
-    assert!(matches!(guard["A"], ServiceInfo::Unregistered(_)));
-    assert!(matches!(guard["B"], ServiceInfo::Registered(_)));
+    assert!(matches!(
+        stack_view(&guard)["A"],
+        ServiceInfo::Unregistered(_)
+    ));
+    assert!(matches!(
+        stack_view(&guard)["B"],
+        ServiceInfo::Registered(_)
+    ));
 }
 
 /// Node 1.1.1.1 re-registers with only A (drops B selectively).
@@ -451,8 +490,14 @@ async fn service_unregistered_drop_B() {
     let guard = server.services().read().await;
     assert_graphviz(&guard, SERVICE_UNREGISTERED, "after_drop_B.dot");
 
-    assert!(matches!(guard["A"], ServiceInfo::Registered(_)));
-    assert!(matches!(guard["B"], ServiceInfo::Unregistered(_)));
+    assert!(matches!(
+        stack_view(&guard)["A"],
+        ServiceInfo::Registered(_)
+    ));
+    assert!(matches!(
+        stack_view(&guard)["B"],
+        ServiceInfo::Unregistered(_)
+    ));
 }
 
 /// Leaf dep host 2.2.2.2 re-registers with empty list (C unregistered).
@@ -469,8 +514,14 @@ async fn service_unregistered_drop_C() {
     let guard = server.services().read().await;
     assert_graphviz(&guard, SERVICE_UNREGISTERED, "after_drop_C.dot");
 
-    assert!(matches!(guard["C"], ServiceInfo::Unregistered(_)));
-    assert!(matches!(guard["B"], ServiceInfo::Registered(_)));
+    assert!(matches!(
+        stack_view(&guard)["C"],
+        ServiceInfo::Unregistered(_)
+    ));
+    assert!(matches!(
+        stack_view(&guard)["B"],
+        ServiceInfo::Registered(_)
+    ));
 }
 
 /// Shared dep host 3.3.3.3 re-registers with empty list (D unregistered).
@@ -493,7 +544,10 @@ async fn service_unregistered_drop_D() {
     assert_net_ids_in_use(&server, 0).await;
 
     let guard = server.services().read().await;
-    assert!(matches!(guard["D"], ServiceInfo::Unregistered(_)));
+    assert!(matches!(
+        stack_view(&guard)["D"],
+        ServiceInfo::Unregistered(_)
+    ));
 }
 
 // ===========================================================================
@@ -552,8 +606,14 @@ async fn node_disconnected_A_B() {
     assert_net_ids_in_use(&server, 0).await;
 
     let guard = server.services().read().await;
-    assert!(matches!(guard["A"], ServiceInfo::Unregistered(_)));
-    assert!(matches!(guard["B"], ServiceInfo::Unregistered(_)));
+    assert!(matches!(
+        stack_view(&guard)["A"],
+        ServiceInfo::Unregistered(_)
+    ));
+    assert!(matches!(
+        stack_view(&guard)["B"],
+        ServiceInfo::Unregistered(_)
+    ));
 }
 
 /// C host (2.2.2.2) disconnects. C cleaned up, cascades to A (depends on C).
@@ -570,8 +630,14 @@ async fn node_disconnected_C() {
     let guard = server.services().read().await;
     assert_graphviz(&guard, NODE_DISCONNECTED, "after_disconnect_C.dot");
 
-    assert!(matches!(guard["C"], ServiceInfo::Unregistered(_)));
-    assert!(matches!(guard["B"], ServiceInfo::Registered(_)));
+    assert!(matches!(
+        stack_view(&guard)["C"],
+        ServiceInfo::Unregistered(_)
+    ));
+    assert!(matches!(
+        stack_view(&guard)["B"],
+        ServiceInfo::Registered(_)
+    ));
 }
 
 /// D host (3.3.3.3) disconnects. D cleaned up, cascades to A and B (both depend on D).
@@ -587,7 +653,10 @@ async fn node_disconnected_D() {
     let guard = server.services().read().await;
     assert_graphviz(&guard, NODE_DISCONNECTED, "after_disconnect_D.dot");
 
-    assert!(matches!(guard["D"], ServiceInfo::Unregistered(_)));
+    assert!(matches!(
+        stack_view(&guard)["D"],
+        ServiceInfo::Unregistered(_)
+    ));
 }
 
 /// Proxy1 (5.5.5.5) disconnects. proxy1→A and proxy1→B chains torn down.
@@ -609,10 +678,22 @@ async fn node_disconnected_proxy1() {
     assert_net_ids_in_use(&server, 3).await;
 
     let guard = server.services().read().await;
-    assert!(matches!(guard["A"], ServiceInfo::Registered(_)));
-    assert!(matches!(guard["B"], ServiceInfo::Registered(_)));
-    assert!(matches!(guard["C"], ServiceInfo::Registered(_)));
-    assert!(matches!(guard["D"], ServiceInfo::Registered(_)));
+    assert!(matches!(
+        stack_view(&guard)["A"],
+        ServiceInfo::Registered(_)
+    ));
+    assert!(matches!(
+        stack_view(&guard)["B"],
+        ServiceInfo::Registered(_)
+    ));
+    assert!(matches!(
+        stack_view(&guard)["C"],
+        ServiceInfo::Registered(_)
+    ));
+    assert!(matches!(
+        stack_view(&guard)["D"],
+        ServiceInfo::Registered(_)
+    ));
 }
 
 // ===========================================================================
@@ -661,17 +742,23 @@ async fn proxy_timeout_A() {
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 
     let mut guard = server.services().write().await;
-    apply_timeouts(&mut guard, server.orchestrator()).await;
+    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator()).await;
     assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_A.dot");
 
     // A is still registered but has no proxy clients
-    assert!(matches!(guard["A"], ServiceInfo::Registered(_)));
+    assert!(matches!(
+        stack_view(&guard)["A"],
+        ServiceInfo::Registered(_)
+    ));
     // B's proxy client is still alive
-    assert!(matches!(guard["B"], ServiceInfo::Registered(_)));
-    if let ServiceInfo::Registered(reg) = &guard["B"] {
+    assert!(matches!(
+        stack_view(&guard)["B"],
+        ServiceInfo::Registered(_)
+    ));
+    if let ServiceInfo::Registered(reg) = &stack_view(&guard)["B"] {
         assert_eq!(reg.client_count(), 1);
     }
-    if let ServiceInfo::Registered(reg) = &guard["A"] {
+    if let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] {
         assert!(!reg.has_clients());
     }
 }
@@ -685,18 +772,18 @@ async fn proxy_timeout_A_then_B() {
     // A expires after 1s
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let mut guard = server.services().write().await;
-    apply_timeouts(&mut guard, server.orchestrator()).await;
+    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator()).await;
     assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_A.dot");
     drop(guard);
 
     // B expires after 2s total
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let mut guard = server.services().write().await;
-    apply_timeouts(&mut guard, server.orchestrator()).await;
+    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator()).await;
     assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_A_then_B.dot");
 
     // all services still registered, but no proxy clients left
-    for (_, si) in guard.iter() {
+    for (_, si) in stack_view(&guard).iter() {
         if let ServiceInfo::Registered(reg) = si {
             assert!(
                 !reg.has_clients(),
@@ -719,10 +806,10 @@ async fn proxy_timeout_all_at_once() {
     tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
 
     let mut guard = server.services().write().await;
-    apply_timeouts(&mut guard, server.orchestrator()).await;
+    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator()).await;
     assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_all.dot");
 
-    for (_, si) in guard.iter() {
+    for (_, si) in stack_view(&guard).iter() {
         if let ServiceInfo::Registered(reg) = si {
             assert!(
                 !reg.has_clients(),
@@ -751,11 +838,11 @@ async fn proxy_timeout_config_tighten_B() {
     assert_graphviz(&guard, PROXY_TIMEOUT, "after_config_tighten_B.dot");
 
     // B's proxy client expired due to config tightening
-    if let ServiceInfo::Registered(reg) = &guard["B"] {
+    if let ServiceInfo::Registered(reg) = &stack_view(&guard)["B"] {
         assert!(!reg.has_clients());
     }
     // A's clients are still present (config path only handles config changes)
-    if let ServiceInfo::Registered(reg) = &guard["A"] {
+    if let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] {
         assert_eq!(reg.client_count(), 2);
     }
 }
@@ -775,12 +862,12 @@ async fn proxy_timeout_config_remove_timeout_A() {
     assert_graphviz(&guard, PROXY_TIMEOUT, "after_config_remove_timeout_A.dot");
 
     // A's timeout was removed — no expiry, clients still present
-    assert_eq!(guard["A"].timeout(), Some(0));
-    if let ServiceInfo::Registered(reg) = &guard["A"] {
+    assert_eq!(stack_view(&guard)["A"].timeout(), Some(0));
+    if let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] {
         assert_eq!(reg.client_count(), 2);
     }
     // B unchanged
-    if let ServiceInfo::Registered(reg) = &guard["B"] {
+    if let ServiceInfo::Registered(reg) = &stack_view(&guard)["B"] {
         assert_eq!(reg.client_count(), 1);
     }
 }
@@ -807,11 +894,11 @@ async fn multi_replica_setup() -> NullnetGrpcImpl {
     // A: 2 replicas on same IP (Docker Swarm containers "a1", "a2")
     {
         let mut services = server.services().write().await;
-        services
+        stack_view_mut(&mut services)
             .get_mut("A")
             .unwrap()
             .add_replica(ip(1, 1, 1, 1), 8080, Some("a1".into()));
-        services
+        stack_view_mut(&mut services)
             .get_mut("A")
             .unwrap()
             .add_replica(ip(1, 1, 1, 1), 8080, Some("a2".into()));
@@ -824,15 +911,15 @@ async fn multi_replica_setup() -> NullnetGrpcImpl {
     // B: 3 replicas — insertion order matters for least-clients tie-breaking
     {
         let mut services = server.services().write().await;
-        services
+        stack_view_mut(&mut services)
             .get_mut("B")
             .unwrap()
             .add_replica(ip(2, 2, 2, 2), 8080, Some("b1".into()));
-        services
+        stack_view_mut(&mut services)
             .get_mut("B")
             .unwrap()
             .add_replica(ip(4, 4, 4, 4), 8080, None);
-        services
+        stack_view_mut(&mut services)
             .get_mut("B")
             .unwrap()
             .add_replica(ip(2, 2, 2, 2), 8080, Some("b2".into()));
@@ -849,7 +936,7 @@ async fn multi_replica_setup() -> NullnetGrpcImpl {
     // C: 1 replica on 3.3.3.3
     {
         let mut services = server.services().write().await;
-        services
+        stack_view_mut(&mut services)
             .get_mut("C")
             .unwrap()
             .add_replica(ip(3, 3, 3, 3), 8080, None);
@@ -862,7 +949,7 @@ async fn multi_replica_setup() -> NullnetGrpcImpl {
     // D: 1 replica on 6.6.6.6
     {
         let mut services = server.services().write().await;
-        services
+        stack_view_mut(&mut services)
             .get_mut("D")
             .unwrap()
             .add_replica(ip(6, 6, 6, 6), 8080, None);
@@ -881,7 +968,7 @@ async fn multi_replica_register() {
     let server = multi_replica_setup().await;
     let guard = server.services().read().await;
 
-    let ServiceInfo::Registered(reg) = &guard["B"] else {
+    let ServiceInfo::Registered(reg) = &stack_view(&guard)["B"] else {
         panic!("B should be registered");
     };
     assert_eq!(reg.replicas().len(), 3);
@@ -918,7 +1005,7 @@ async fn multi_replica_least_clients() {
 
     {
         let guard = server.services().read().await;
-        let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+        let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
             panic!("B should be registered");
         };
         assert_eq!(
@@ -934,7 +1021,7 @@ async fn multi_replica_least_clients() {
 
     let guard = server.services().read().await;
 
-    let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+    let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
         panic!("B should be registered");
     };
 
@@ -964,7 +1051,7 @@ async fn multi_replica_sticky_session() {
     // Record which upstream the client got
     let first_upstream = {
         let guard = server.services().read().await;
-        let ServiceInfo::Registered(reg) = &guard["A"] else {
+        let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] else {
             panic!("A should be registered");
         };
         let client = crate::services::clients::Client::new("10.0.0.1".to_string(), Some(proxy1));
@@ -975,7 +1062,7 @@ async fn multi_replica_sticky_session() {
     // Second lookup from same client — should be sticky (same upstream)
     let second_upstream = {
         let guard = server.services().read().await;
-        let ServiceInfo::Registered(reg) = &guard["A"] else {
+        let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] else {
             panic!("A should be registered");
         };
         let client = crate::services::clients::Client::new("10.0.0.1".to_string(), Some(proxy1));
@@ -1019,10 +1106,10 @@ async fn multi_replica_partial_disconnect() {
 
     // B should still be registered (has replica at 4.4.4.4)
     assert!(
-        matches!(guard["B"], ServiceInfo::Registered(_)),
+        matches!(stack_view(&guard)["B"], ServiceInfo::Registered(_)),
         "B should still be registered with remaining replica"
     );
-    if let ServiceInfo::Registered(reg) = &guard["B"] {
+    if let ServiceInfo::Registered(reg) = &stack_view(&guard)["B"] {
         assert_eq!(reg.replicas().len(), 1, "B should have 1 replica left");
         assert!(reg.has_replica_on_ip(ip(4, 4, 4, 4)));
         assert!(!reg.has_replica_on_ip(ip(2, 2, 2, 2)));
@@ -1031,12 +1118,12 @@ async fn multi_replica_partial_disconnect() {
     }
 
     // A's chain was torn down (A→B was on removed replica)
-    if let ServiceInfo::Registered(reg) = &guard["A"] {
+    if let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] {
         assert!(!reg.has_clients(), "A should have no proxy clients");
     }
 
     // C's chain survived (C→B was on 4.4.4.4)
-    if let ServiceInfo::Registered(reg) = &guard["C"] {
+    if let ServiceInfo::Registered(reg) = &stack_view(&guard)["C"] {
         assert_eq!(
             reg.client_count(),
             1,
@@ -1071,8 +1158,11 @@ async fn multi_replica_full_disconnect() {
         let guard = server.services().read().await;
         assert_graphviz(&guard, MULTI_REPLICA, "after_partial_disconnect.dot");
         // B should still be registered (has replica at 4.4.4.4)
-        assert!(matches!(guard["B"], ServiceInfo::Registered(_)));
-        if let ServiceInfo::Registered(reg) = &guard["B"] {
+        assert!(matches!(
+            stack_view(&guard)["B"],
+            ServiceInfo::Registered(_)
+        ));
+        if let ServiceInfo::Registered(reg) = &stack_view(&guard)["B"] {
             assert_eq!(reg.replicas().len(), 1);
         }
     }
@@ -1088,7 +1178,7 @@ async fn multi_replica_full_disconnect() {
 
     // B should be unregistered (no replicas)
     assert!(
-        matches!(guard["B"], ServiceInfo::Unregistered(_)),
+        matches!(stack_view(&guard)["B"], ServiceInfo::Unregistered(_)),
         "B should be unregistered with no replicas"
     );
 
@@ -1133,7 +1223,7 @@ async fn multi_replica_via_services_list() {
 
     {
         let guard = server.services().read().await;
-        let ServiceInfo::Registered(reg) = &guard["B"] else {
+        let ServiceInfo::Registered(reg) = &stack_view(&guard)["B"] else {
             panic!("B should be registered");
         };
         assert_eq!(reg.replicas().len(), 3);
@@ -1153,7 +1243,7 @@ async fn multi_replica_via_services_list() {
         .expect("apply_services_list failed");
 
     let guard = server.services().read().await;
-    let ServiceInfo::Registered(reg) = &guard["B"] else {
+    let ServiceInfo::Registered(reg) = &stack_view(&guard)["B"] else {
         panic!("B should still be registered");
     };
     assert_eq!(
@@ -1201,7 +1291,7 @@ async fn multi_replica_single_container_removed() {
 
     {
         let guard = server.services().read().await;
-        let ServiceInfo::Registered(reg) = &guard["B"] else {
+        let ServiceInfo::Registered(reg) = &stack_view(&guard)["B"] else {
             panic!("B should be registered");
         };
         assert_eq!(reg.replicas().len(), 3);
@@ -1214,7 +1304,7 @@ async fn multi_replica_single_container_removed() {
         .expect("apply_services_list failed");
 
     let guard = server.services().read().await;
-    let ServiceInfo::Registered(reg) = &guard["B"] else {
+    let ServiceInfo::Registered(reg) = &stack_view(&guard)["B"] else {
         panic!("B should still be registered");
     };
 
@@ -1281,7 +1371,7 @@ async fn multi_replica_comprehensive_register() {
     assert_graphviz(&guard, MULTI_REPLICA, "start.dot");
 
     // A: 2 replicas, 2 proxy clients (one per replica)
-    let ServiceInfo::Registered(reg_a) = &guard["A"] else {
+    let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] else {
         panic!("A should be registered");
     };
     assert_eq!(reg_a.replicas().len(), 2);
@@ -1290,7 +1380,7 @@ async fn multi_replica_comprehensive_register() {
     // B: 3 replicas, 4 client entries.
     // A(a1) and A(a2) are distinct Clients (different source replicas),
     // each with their own VXLAN to b1.
-    let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+    let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
         panic!("B should be registered");
     };
     assert_eq!(reg_b.replicas().len(), 3);
@@ -1324,7 +1414,7 @@ async fn multi_replica_comprehensive_register() {
     assert_eq!(b2.clients().len(), 1, "b2 should have 1 client: A(a2)");
 
     // C: 1 replica, 2 proxy clients (overloaded)
-    let ServiceInfo::Registered(reg_c) = &guard["C"] else {
+    let ServiceInfo::Registered(reg_c) = &stack_view(&guard)["C"] else {
         panic!("C should be registered");
     };
     assert_eq!(reg_c.replicas().len(), 1);
@@ -1335,7 +1425,7 @@ async fn multi_replica_comprehensive_register() {
     );
 
     // D: 1 replica, 1 proxy client (minimal)
-    let ServiceInfo::Registered(reg_d) = &guard["D"] else {
+    let ServiceInfo::Registered(reg_d) = &stack_view(&guard)["D"] else {
         panic!("D should be registered");
     };
     assert_eq!(reg_d.replicas().len(), 1);
@@ -1375,7 +1465,7 @@ async fn multi_replica_b_same_ip_container_disconnect() {
 
     // B: 2 replicas left (b2 + 4.4.4.4).
     // A(a1)→B and D→B on b1 torn down. A(a2)→B on b2 and C→B on 4.4.4.4 survive.
-    let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+    let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
         panic!("B should still be registered");
     };
     assert_eq!(reg_b.replicas().len(), 2, "B should have 2 replicas left");
@@ -1398,7 +1488,7 @@ async fn multi_replica_b_same_ip_container_disconnect() {
     );
 
     // A: only proxy1→A(a1) torn down; proxy2→A(a2) survives (its chain goes through b2)
-    if let ServiceInfo::Registered(reg_a) = &guard["A"] {
+    if let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] {
         assert_eq!(
             reg_a.client_count(),
             1,
@@ -1407,7 +1497,7 @@ async fn multi_replica_b_same_ip_container_disconnect() {
     }
 
     // C: both proxies survive (C→B on 4.4.4.4 unaffected by b1 removal)
-    if let ServiceInfo::Registered(reg_c) = &guard["C"] {
+    if let ServiceInfo::Registered(reg_c) = &stack_view(&guard)["C"] {
         assert_eq!(
             reg_c.client_count(),
             2,
@@ -1416,7 +1506,7 @@ async fn multi_replica_b_same_ip_container_disconnect() {
     }
 
     // D: proxy torn down (D→B was on b1)
-    if let ServiceInfo::Registered(reg_d) = &guard["D"] {
+    if let ServiceInfo::Registered(reg_d) = &stack_view(&guard)["D"] {
         assert!(
             !reg_d.has_clients(),
             "D should have no clients after b1 removal"
@@ -1456,7 +1546,7 @@ async fn multi_replica_b_different_ip_disconnect() {
     // B: 2 replicas left (b1 + b2 on 2.2.2.2).
     // C fully torn down (was on 4.4.4.4).
     // A(a1)+D on b1 and A(a2) on b2 survive.
-    let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+    let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
         panic!("B should still be registered");
     };
     assert_eq!(reg_b.replicas().len(), 2, "B should have 2 replicas left");
@@ -1469,7 +1559,7 @@ async fn multi_replica_b_different_ip_disconnect() {
     );
 
     // A: both proxies survive (A→B edges on b1 and b2 unaffected)
-    if let ServiceInfo::Registered(reg_a) = &guard["A"] {
+    if let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] {
         assert_eq!(
             reg_a.client_count(),
             2,
@@ -1478,7 +1568,7 @@ async fn multi_replica_b_different_ip_disconnect() {
     }
 
     // C: all proxy chains torn down (C→B was on 4.4.4.4)
-    if let ServiceInfo::Registered(reg_c) = &guard["C"] {
+    if let ServiceInfo::Registered(reg_c) = &stack_view(&guard)["C"] {
         assert!(
             !reg_c.has_clients(),
             "C should have no clients after 4.4.4.4 removal"
@@ -1486,7 +1576,7 @@ async fn multi_replica_b_different_ip_disconnect() {
     }
 
     // D: proxy survives (D→B on b1 at 2.2.2.2)
-    if let ServiceInfo::Registered(reg_d) = &guard["D"] {
+    if let ServiceInfo::Registered(reg_d) = &stack_view(&guard)["D"] {
         assert_eq!(
             reg_d.client_count(),
             1,
@@ -1526,7 +1616,7 @@ async fn multi_replica_first_step_container_disconnect() {
     assert_graphviz(&guard, MULTI_REPLICA, "after_first_step_disconnect.dot");
 
     // A: 1 replica left (a2), 1 proxy client survives (the one on a2)
-    let ServiceInfo::Registered(reg_a) = &guard["A"] else {
+    let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] else {
         panic!("A should still be registered");
     };
     assert_eq!(
@@ -1540,7 +1630,7 @@ async fn multi_replica_first_step_container_disconnect() {
 
     // B: A(a1)→B(b1) also torn down (orphaned VXLAN). A(a2)→B(b1) survives.
     // 3 client entries remain: A(a2) on b1, C on 4.4.4.4, D on b2.
-    let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+    let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
         panic!("B should still be registered");
     };
     assert_eq!(reg_b.replicas().len(), 3);
@@ -1551,7 +1641,7 @@ async fn multi_replica_first_step_container_disconnect() {
     );
 
     // C: unaffected
-    if let ServiceInfo::Registered(reg_c) = &guard["C"] {
+    if let ServiceInfo::Registered(reg_c) = &stack_view(&guard)["C"] {
         assert_eq!(
             reg_c.client_count(),
             2,
@@ -1560,7 +1650,7 @@ async fn multi_replica_first_step_container_disconnect() {
     }
 
     // D: unaffected
-    if let ServiceInfo::Registered(reg_d) = &guard["D"] {
+    if let ServiceInfo::Registered(reg_d) = &stack_view(&guard)["D"] {
         assert_eq!(
             reg_d.client_count(),
             1,
@@ -1602,11 +1692,11 @@ async fn max_networks_reuse_lifecycle() {
     {
         let guard = server.services().read().await;
         assert_graphviz(&guard, MAX_NETWORKS, "after_first_client.dot");
-        let ServiceInfo::Registered(reg_a) = &guard["A"] else {
+        let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] else {
             panic!("A should be registered");
         };
         assert_eq!(reg_a.client_count(), 1, "A should have 1 proxy client");
-        let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+        let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
             panic!("B should be registered");
         };
         assert_eq!(reg_b.client_count(), 1, "B should have 1 dep client (A→B)");
@@ -1622,7 +1712,7 @@ async fn max_networks_reuse_lifecycle() {
     {
         let guard = server.services().read().await;
         assert_graphviz(&guard, MAX_NETWORKS, "after_reuse.dot");
-        let ServiceInfo::Registered(reg_a) = &guard["A"] else {
+        let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] else {
             panic!("A should be registered");
         };
         assert_eq!(reg_a.client_count(), 2, "A should have 2 proxy clients");
@@ -1638,7 +1728,7 @@ async fn max_networks_reuse_lifecycle() {
             "both clients should share the same net_id"
         );
 
-        let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+        let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
             panic!("B should be registered");
         };
         assert_eq!(
@@ -1655,10 +1745,10 @@ async fn max_networks_reuse_lifecycle() {
 
     {
         let mut guard = server.services().write().await;
-        apply_timeouts(&mut guard, server.orchestrator()).await;
+        apply_timeouts(stack_view_mut(&mut guard), server.orchestrator()).await;
         assert_graphviz(&guard, MAX_NETWORKS, "after_first_timeout.dot");
 
-        let ServiceInfo::Registered(reg_a) = &guard["A"] else {
+        let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] else {
             panic!("A should be registered");
         };
         assert_eq!(
@@ -1666,7 +1756,7 @@ async fn max_networks_reuse_lifecycle() {
             1,
             "A should have 1 proxy client after first timeout"
         );
-        let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+        let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
             panic!("B should be registered");
         };
         assert_eq!(
@@ -1684,17 +1774,17 @@ async fn max_networks_reuse_lifecycle() {
 
     {
         let mut guard = server.services().write().await;
-        apply_timeouts(&mut guard, server.orchestrator()).await;
+        apply_timeouts(stack_view_mut(&mut guard), server.orchestrator()).await;
         assert_graphviz(&guard, MAX_NETWORKS, "after_second_timeout.dot");
 
-        let ServiceInfo::Registered(reg_a) = &guard["A"] else {
+        let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] else {
             panic!("A should be registered");
         };
         assert!(
             !reg_a.has_clients(),
             "A should have no clients after both timeouts"
         );
-        let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+        let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
             panic!("B should be registered");
         };
         assert!(
@@ -1725,7 +1815,7 @@ async fn max_networks_proxy_disconnect() {
     {
         let guard = server.services().read().await;
         assert_graphviz(&guard, MAX_NETWORKS, "before_proxy_disconnect.dot");
-        let ServiceInfo::Registered(reg_a) = &guard["A"] else {
+        let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] else {
             panic!("A should be registered");
         };
         assert_eq!(reg_a.client_count(), 2);
@@ -1740,14 +1830,14 @@ async fn max_networks_proxy_disconnect() {
     {
         let guard = server.services().read().await;
         assert_graphviz(&guard, MAX_NETWORKS, "after_proxy_disconnect.dot");
-        let ServiceInfo::Registered(reg_a) = &guard["A"] else {
+        let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] else {
             panic!("A should be registered");
         };
         assert!(
             !reg_a.has_clients(),
             "A should have no clients after proxy disconnect"
         );
-        let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+        let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
             panic!("B should be registered");
         };
         assert!(
@@ -1789,7 +1879,7 @@ async fn max_networks_different_proxy_bypasses() {
     {
         let guard = server.services().read().await;
         assert_graphviz(&guard, MAX_NETWORKS, "after_proxy2_bypasses.dot");
-        let ServiceInfo::Registered(reg_a) = &guard["A"] else {
+        let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] else {
             panic!("A should be registered");
         };
         assert_eq!(
@@ -1857,7 +1947,7 @@ async fn triggers_changed_remove_A_trigger() {
     let mut guard = server.services().write().await;
     apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, TRIGGERS_CHANGED, "after_remove_A_trigger.dot");
-    assert!(guard["A"].triggers().is_empty());
+    assert!(stack_view(&guard)["A"].triggers().is_empty());
     drop(guard);
 
     // A→C freed; proxy1→A, A→B, D→C survive = 3 IDs
@@ -1875,7 +1965,7 @@ async fn triggers_changed_swap_A_trigger() {
     apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, TRIGGERS_CHANGED, "after_swap_A_trigger.dot");
     assert_eq!(
-        guard["A"].triggers().get(&5555),
+        stack_view(&guard)["A"].triggers().get(&5555),
         Some(&vec!["D".to_string()])
     );
     drop(guard);
@@ -1894,7 +1984,7 @@ async fn triggers_changed_add_A_trigger() {
     let mut guard = server.services().write().await;
     apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, TRIGGERS_CHANGED, "after_add_A_trigger.dot");
-    assert_eq!(guard["A"].triggers().len(), 2);
+    assert_eq!(stack_view(&guard)["A"].triggers().len(), 2);
     drop(guard);
 
     assert_net_ids_in_use(&server, 3).await;
@@ -1910,7 +2000,7 @@ async fn triggers_changed_drop_D_trigger() {
     let mut guard = server.services().write().await;
     apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, TRIGGERS_CHANGED, "after_drop_D_trigger.dot");
-    assert!(guard["D"].triggers().is_empty());
+    assert!(stack_view(&guard)["D"].triggers().is_empty());
     drop(guard);
 
     assert_net_ids_in_use(&server, 3).await;
@@ -1964,9 +2054,9 @@ async fn backend_reachability_changed_lose_entry_point_A() {
         "after_lose_entry_point_A.dot",
     );
 
-    assert!(guard.contains_key("A"));
-    assert_eq!(guard["A"].timeout(), None);
-    assert!(guard["A"].triggers().is_empty());
+    assert!(stack_view(&guard).contains_key("A"));
+    assert_eq!(stack_view(&guard)["A"].timeout(), None);
+    assert!(stack_view(&guard)["A"].triggers().is_empty());
     drop(guard);
 
     assert_net_ids_in_use(&server, 0).await;
@@ -1992,7 +2082,9 @@ async fn backend_service_unregistered_setup() -> NullnetGrpcImpl {
     // A: co-located replicas a1 and a2 at 1.1.1.1 (Docker Swarm)
     {
         let mut services = server.services().write().await;
-        let a = services.get_mut("A").expect("A in fixture");
+        let a = stack_view_mut(&mut services)
+            .get_mut("A")
+            .expect("A in fixture");
         a.add_replica(ip(1, 1, 1, 1), 8080, Some("a1".into()));
         a.add_replica(ip(1, 1, 1, 1), 8080, Some("a2".into()));
     }
@@ -2035,14 +2127,14 @@ async fn backend_service_unregistered_drop_a2() {
     let guard = server.services().read().await;
     assert_graphviz(&guard, BACKEND_SERVICE_UNREGISTERED, "after_drop_a2.dot");
 
-    let ServiceInfo::Registered(reg_a) = &guard["A"] else {
+    let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] else {
         panic!("A should still be registered");
     };
     assert_eq!(reg_a.replicas().len(), 1, "only a1 should remain on A");
     assert_eq!(reg_a.replicas()[0].docker_container(), Some("a1"));
 
     // C should retain the A(a1)-keyed backend client; A(a2)'s entry is gone
-    let ServiceInfo::Registered(reg_c) = &guard["C"] else {
+    let ServiceInfo::Registered(reg_c) = &stack_view(&guard)["C"] else {
         panic!("C should be registered");
     };
     assert_eq!(reg_c.client_count(), 1, "only A(a1)→C should remain");
@@ -2068,15 +2160,18 @@ async fn backend_service_unregistered_drop_B() {
     let guard = server.services().read().await;
     assert_graphviz(&guard, BACKEND_SERVICE_UNREGISTERED, "after_drop_B.dot");
 
-    assert!(matches!(guard["B"], ServiceInfo::Unregistered(_)));
+    assert!(matches!(
+        stack_view(&guard)["B"],
+        ServiceInfo::Unregistered(_)
+    ));
 
     // A's proxy chain torn down — no proxy clients left on A's replicas
-    if let ServiceInfo::Registered(reg_a) = &guard["A"] {
+    if let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] {
         assert!(!reg_a.has_clients(), "A should have no proxy clients");
     }
 
     // Backend chains survive: C still has both A(a1) and A(a2) entries
-    let ServiceInfo::Registered(reg_c) = &guard["C"] else {
+    let ServiceInfo::Registered(reg_c) = &stack_view(&guard)["C"] else {
         panic!("C should be registered");
     };
     assert_eq!(reg_c.client_count(), 2, "both A→C backend chains survive");
@@ -2102,8 +2197,11 @@ async fn backend_service_unregistered_drop_C() {
     let guard = server.services().read().await;
     assert_graphviz(&guard, BACKEND_SERVICE_UNREGISTERED, "after_drop_C.dot");
 
-    assert!(matches!(guard["C"], ServiceInfo::Unregistered(_)));
-    if let ServiceInfo::Registered(reg_a) = &guard["A"] {
+    assert!(matches!(
+        stack_view(&guard)["C"],
+        ServiceInfo::Unregistered(_)
+    ));
+    if let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] {
         assert!(!reg_a.has_clients(), "A should have no clients");
     }
     drop(guard);
@@ -2128,7 +2226,9 @@ async fn backend_node_disconnected_setup() -> NullnetGrpcImpl {
 
     {
         let mut services = server.services().write().await;
-        let a = services.get_mut("A").expect("A in fixture");
+        let a = stack_view_mut(&mut services)
+            .get_mut("A")
+            .expect("A in fixture");
         a.add_replica(ip(1, 1, 1, 1), 8080, Some("a1".into()));
         a.add_replica(ip(1, 1, 1, 1), 8080, Some("a2".into()));
     }
@@ -2172,8 +2272,11 @@ async fn backend_node_disconnected_initiator_host() {
         "after_disconnect_initiator.dot",
     );
 
-    assert!(matches!(guard["A"], ServiceInfo::Unregistered(_)));
-    if let ServiceInfo::Registered(reg_c) = &guard["C"] {
+    assert!(matches!(
+        stack_view(&guard)["A"],
+        ServiceInfo::Unregistered(_)
+    ));
+    if let ServiceInfo::Registered(reg_c) = &stack_view(&guard)["C"] {
         assert!(
             !reg_c.has_clients(),
             "C should have no backend clients left"
@@ -2203,8 +2306,11 @@ async fn backend_node_disconnected_backend_dep_host() {
         "after_disconnect_backend_dep.dot",
     );
 
-    assert!(matches!(guard["C"], ServiceInfo::Unregistered(_)));
-    if let ServiceInfo::Registered(reg_a) = &guard["A"] {
+    assert!(matches!(
+        stack_view(&guard)["C"],
+        ServiceInfo::Unregistered(_)
+    ));
+    if let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] {
         assert!(!reg_a.has_clients());
     }
     drop(guard);
@@ -2232,11 +2338,11 @@ async fn backend_node_disconnected_proxy_host() {
     );
 
     // A still registered with no proxy clients
-    if let ServiceInfo::Registered(reg_a) = &guard["A"] {
+    if let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] {
         assert!(!reg_a.has_clients(), "A should have no proxy clients");
     }
     // C still has both backend client entries
-    let ServiceInfo::Registered(reg_c) = &guard["C"] else {
+    let ServiceInfo::Registered(reg_c) = &stack_view(&guard)["C"] else {
         panic!("C should be registered");
     };
     assert_eq!(
@@ -2276,7 +2382,9 @@ async fn backend_multi_replica_setup() -> NullnetGrpcImpl {
     // order matters for least-clients tie-breaking (`min_by_key` returns first).
     {
         let mut services = server.services().write().await;
-        let b = services.get_mut("B").expect("B in fixture");
+        let b = stack_view_mut(&mut services)
+            .get_mut("B")
+            .expect("B in fixture");
         b.add_replica(ip(2, 2, 2, 2), 8080, Some("b1".into()));
         b.add_replica(ip(4, 4, 4, 4), 8080, None);
         b.add_replica(ip(2, 2, 2, 2), 8080, Some("b2".into()));
@@ -2302,7 +2410,7 @@ async fn backend_multi_replica_setup() -> NullnetGrpcImpl {
     assert_graphviz(&guard, BACKEND_MULTI_REPLICA, "start.dot");
 
     // Sanity: each B replica should have exactly 1 backend client
-    let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+    let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
         panic!("B should be registered");
     };
     assert_eq!(reg_b.client_count(), 3);
@@ -2338,7 +2446,7 @@ async fn backend_multi_replica_disconnect_standalone_dep() {
         "after_disconnect_standalone_dep.dot",
     );
 
-    let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+    let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
         panic!("B should still be registered");
     };
     assert_eq!(reg_b.replicas().len(), 2, "b1 and b2 should remain");
@@ -2374,7 +2482,7 @@ async fn backend_multi_replica_disconnect_swarm_host() {
         "after_disconnect_swarm_host.dot",
     );
 
-    let ServiceInfo::Registered(reg_b) = &guard["B"] else {
+    let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
         panic!("B should still be registered");
     };
     assert_eq!(reg_b.replicas().len(), 1, "only 4.4.4.4 should remain");

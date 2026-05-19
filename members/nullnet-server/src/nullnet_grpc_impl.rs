@@ -6,7 +6,7 @@ use crate::services::changes::{
 };
 use crate::services::clients::{Client, ClientInfo};
 use crate::services::edge::{Edge, RegisteredEdge};
-use crate::services::input::ServicesToml;
+use crate::services::input::{ServicesToml, StackMap};
 use crate::services::service_info::ServiceInfo;
 use crate::timeout::check_timeouts;
 use nullnet_grpc_lib::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
@@ -24,10 +24,20 @@ use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
 pub(crate) struct NullnetGrpcImpl {
-    /// The available services
-    services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
+    /// The available services, partitioned by stack name.
+    services: Arc<RwLock<StackMap>>,
     /// Orchestrator to manage TAP-based clients and NET setups
     orchestrator: Orchestrator,
+}
+
+/// Return the stack name that holds `service_name`, if any. Service names
+/// are unique within a stack but may collide across stacks; this returns
+/// the first match in iteration order.
+fn find_service_stack<'a>(services: &'a StackMap, service_name: &str) -> Option<&'a str> {
+    services
+        .iter()
+        .find(|(_, m)| m.contains_key(service_name))
+        .map(|(stack, _)| stack.as_str())
 }
 
 impl NullnetGrpcImpl {
@@ -110,14 +120,15 @@ impl NullnetGrpcImpl {
     ) -> Result<Upstream, Error> {
         println!("Received proxy request for '{service_name}'");
 
-        let service_info = self
-            .services
-            .read()
-            .await
-            .get(service_name)
-            .cloned()
-            .ok_or("Service not found")
-            .handle_err(location!())?;
+        let (stack, service_info) = {
+            let guard = self.services.read().await;
+            let stack = find_service_stack(&guard, service_name)
+                .ok_or("Service not found in any stack")
+                .handle_err(location!())?
+                .to_string();
+            let si = guard[&stack][service_name].clone();
+            (stack, si)
+        };
 
         if service_info.timeout().is_none() {
             Err("Service is not a configured entry point").handle_err(location!())?;
@@ -135,7 +146,9 @@ impl NullnetGrpcImpl {
 
             // update the latest timestamp for this client since it's being used again
             let mut services_mut = self.services.write().await;
-            if let Some(ServiceInfo::Registered(reg)) = services_mut.get_mut(service_name) {
+            if let Some(stack_map) = services_mut.get_mut(&stack)
+                && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(service_name)
+            {
                 reg.set_latest_now(&proxy_client);
             }
 
@@ -154,34 +167,36 @@ impl NullnetGrpcImpl {
                  reusing network on proxy {proxy_ip}"
             );
             let mut services_mut = self.services.write().await;
-            if let Some(ServiceInfo::Registered(reg)) = services_mut.get_mut(service_name) {
-                // Create a new Client entry sharing the existing network
-                let new_ci = ClientInfo::new(proxy_ip, client_net, server_net, net_id, 0, None);
-                reg.add_client_to_replica(
+            if let Some(stack_map) = services_mut.get_mut(&stack) {
+                if let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(service_name) {
+                    // Create a new Client entry sharing the existing network
+                    let new_ci = ClientInfo::new(proxy_ip, client_net, server_net, net_id, 0, None);
+                    reg.add_client_to_replica(
+                        replica_ip,
+                        replica_docker.as_deref(),
+                        proxy_client.clone(),
+                        new_ci,
+                    );
+                    reg.add_chain(&proxy_client);
+                }
+                // Increment chains on each dependency edge (intra-stack)
+                let dep_edges = collect_dep_chain_edges(
+                    service_name,
                     replica_ip,
                     replica_docker.as_deref(),
-                    proxy_client.clone(),
-                    new_ci,
+                    stack_map,
                 );
-                reg.add_chain(&proxy_client);
-            }
-            // Increment chains on each dependency edge
-            let dep_edges = collect_dep_chain_edges(
-                service_name,
-                replica_ip,
-                replica_docker.as_deref(),
-                &services_mut,
-            );
-            for (dep_client, dep_name) in dep_edges {
-                if let Some(ServiceInfo::Registered(dep_reg)) = services_mut.get_mut(&dep_name) {
-                    dep_reg.add_chain(&dep_client);
+                for (dep_client, dep_name) in dep_edges {
+                    if let Some(ServiceInfo::Registered(dep_reg)) = stack_map.get_mut(&dep_name) {
+                        dep_reg.add_chain(&dep_client);
+                    }
                 }
             }
             return Ok(upstream);
         }
 
         let response = self
-            .new_proxy_chain(service_name, proxy_ip, client_ip)
+            .new_proxy_chain(&stack, service_name, proxy_ip, client_ip)
             .await?;
         Ok(response.into_inner())
     }
@@ -203,53 +218,70 @@ impl NullnetGrpcImpl {
             sender_ip, req.services
         );
 
-        let service_list: Vec<(String, u16, Option<String>)> = req
-            .services
-            .into_iter()
-            .map(|s| {
-                Ok((
-                    s.name,
-                    u16::try_from(s.port).handle_err(location!())?,
-                    s.docker_container,
-                ))
-            })
-            .collect::<Result<_, Error>>()?;
+        // Reject entries with empty stack; partition the rest by stack.
+        let mut service_list_by_stack: HashMap<String, Vec<(String, u16, Option<String>)>> =
+            HashMap::new();
+        for s in req.services {
+            if s.stack.is_empty() {
+                Err("Service declaration missing required 'stack' field")
+                    .handle_err(location!())?;
+            }
+            let port = u16::try_from(s.port).handle_err(location!())?;
+            service_list_by_stack.entry(s.stack).or_default().push((
+                s.name,
+                port,
+                s.docker_container,
+            ));
+        }
 
-        self.apply_services_list(sender_ip, &service_list).await?;
+        self.apply_services_list_by_stack(sender_ip, &service_list_by_stack)
+            .await?;
 
         // Build the trigger config to send back: only the triggers attached
-        // to the services this caller declared as hosting.
+        // to the services this caller declared as hosting. Look up triggers
+        // in the same stack the entry was declared under.
         let guard = self.services.read().await;
-        let service_triggers: Vec<ServiceTrigger> = service_list
-            .iter()
-            .map(|(name, _, _)| name)
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .filter_map(|name| {
-                let triggers = guard.get(name)?.triggers();
+        let mut seen: HashSet<(String, String)> = HashSet::new();
+        let mut service_triggers: Vec<ServiceTrigger> = Vec::new();
+        for (stack, list) in &service_list_by_stack {
+            let Some(stack_map) = guard.get(stack) else {
+                continue;
+            };
+            for (name, _, _) in list {
+                if !seen.insert((stack.clone(), name.clone())) {
+                    continue;
+                }
+                let Some(triggers) = stack_map.get(name).map(ServiceInfo::triggers) else {
+                    continue;
+                };
                 if triggers.is_empty() {
-                    return None;
+                    continue;
                 }
                 let mut ports: Vec<u32> = triggers.keys().map(|p| u32::from(*p)).collect();
                 ports.sort_unstable();
-                Some(ServiceTrigger {
+                service_triggers.push(ServiceTrigger {
                     service_name: name.clone(),
                     ports,
-                })
-            })
-            .collect();
+                });
+            }
+        }
 
         Ok(Response::new(ServicesListResponse { service_triggers }))
     }
 
     pub(crate) async fn new_proxy_chain(
         &self,
+        stack: &str,
         service_name: &str,
         proxy_ip: IpAddr,
         client_ip: &str,
     ) -> Result<Response<Upstream>, Error> {
         let guard = self.services.read().await;
-        let reg = match guard.get(service_name) {
+        let stack_map = guard
+            .get(stack)
+            .ok_or("Stack not found")
+            .handle_err(location!())?;
+        let reg = match stack_map.get(service_name) {
             Some(ServiceInfo::Registered(reg)) => reg,
             _ => Err("Service is not registered").handle_err(location!())?,
         };
@@ -264,6 +296,7 @@ impl NullnetGrpcImpl {
 
         let upstream_ip = self
             .setup_proxy_chain(
+                stack,
                 service_name,
                 proxy_ip,
                 client_ip,
@@ -280,12 +313,17 @@ impl NullnetGrpcImpl {
 
     async fn build_proxy_dep_chain(
         &self,
+        stack: &str,
         service_name: &str,
         service_ip: IpAddr,
         service_docker: Option<&str>,
     ) -> Result<Vec<RegisteredEdge>, Error> {
         let guard = self.services.read().await;
-        let service_info = guard
+        let stack_map = guard
+            .get(stack)
+            .ok_or("Stack not found")
+            .handle_err(location!())?;
+        let service_info = stack_map
             .get(service_name)
             .ok_or("Service not found")
             .handle_err(location!())?;
@@ -296,7 +334,7 @@ impl NullnetGrpcImpl {
             service_name.to_string(),
             service_ip,
             service_docker,
-            &guard,
+            stack_map,
         );
         drop(guard);
 
@@ -314,13 +352,18 @@ impl NullnetGrpcImpl {
     /// if the trigger does not exist or any dep along the chain is unregistered.
     async fn build_backend_dep_chain(
         &self,
+        stack: &str,
         service_name: &str,
         service_ip: IpAddr,
         service_docker: Option<&str>,
         port: u16,
     ) -> Result<Option<Vec<RegisteredEdge>>, Error> {
         let guard = self.services.read().await;
-        let service_info = guard
+        let stack_map = guard
+            .get(stack)
+            .ok_or("Stack not found")
+            .handle_err(location!())?;
+        let service_info = stack_map
             .get(service_name)
             .ok_or("Service not found")
             .handle_err(location!())?;
@@ -332,7 +375,7 @@ impl NullnetGrpcImpl {
             service_ip,
             service_docker,
             port,
-            &guard,
+            stack_map,
         ) else {
             return Ok(None);
         };
@@ -345,6 +388,7 @@ impl NullnetGrpcImpl {
 
     pub(crate) async fn setup_proxy_chain(
         &self,
+        stack: &str,
         service_name: &str,
         proxy_ip: IpAddr,
         client_ip: &str,
@@ -352,7 +396,7 @@ impl NullnetGrpcImpl {
         service_docker: Option<&str>,
     ) -> Result<Ipv4Addr, Error> {
         let mut dep_chain = self
-            .build_proxy_dep_chain(service_name, service_ip, service_docker)
+            .build_proxy_dep_chain(stack, service_name, service_ip, service_docker)
             .await?;
 
         dep_chain.push(RegisteredEdge::new(
@@ -364,7 +408,7 @@ impl NullnetGrpcImpl {
             service_docker.map(String::from),
         ));
 
-        self.net_chain_setup(dep_chain)
+        self.net_chain_setup(stack, dep_chain)
             .await?
             .ok_or("No valid upstream IP found after NET chain setup")
             .handle_err(location!())
@@ -398,12 +442,14 @@ impl NullnetGrpcImpl {
         // One write guard resolves the initiator replica, refreshes heartbeat
         // on the first-dep edge if already set up, and decides whether the
         // chain for this trigger port needs rebuilding.
-        let (initiator_ip, initiator_docker, needs_rebuild) = {
+        let (stack, initiator_ip, initiator_docker, needs_rebuild) = {
             let guard = self.services.write().await;
-            let si = guard
-                .get(initiator_name)
-                .ok_or("Initiator service not found")
-                .handle_err(location!())?;
+            let stack = find_service_stack(&guard, initiator_name)
+                .ok_or("Initiator service not found in any stack")
+                .handle_err(location!())?
+                .to_string();
+            let stack_map = &guard[&stack];
+            let si = &stack_map[initiator_name];
             if si.timeout().is_none() {
                 Err("Initiator service is not a configured entry point").handle_err(location!())?;
             }
@@ -437,13 +483,13 @@ impl NullnetGrpcImpl {
             let needs_rebuild = match first_dep {
                 None => false,
                 Some(name) => !matches!(
-                    guard.get(&name),
+                    stack_map.get(&name),
                     Some(ServiceInfo::Registered(dep_reg))
                         if dep_reg.is_client_setup(&initiator_client).is_some()
                 ),
             };
 
-            (initiator_ip, initiator_docker, needs_rebuild)
+            (stack, initiator_ip, initiator_docker, needs_rebuild)
         };
 
         println!("[trigger] needs_rebuild={needs_rebuild} for '{initiator_name}' port {port}");
@@ -453,6 +499,7 @@ impl NullnetGrpcImpl {
         }
 
         self.setup_backend_chain(
+            &stack,
             initiator_name,
             initiator_ip,
             initiator_docker.as_deref(),
@@ -463,13 +510,14 @@ impl NullnetGrpcImpl {
 
     pub(crate) async fn setup_backend_chain(
         &self,
+        stack: &str,
         initiator_name: &str,
         initiator_ip: IpAddr,
         initiator_docker: Option<&str>,
         port: u16,
     ) -> Result<(), Error> {
         let Some(mut chain) = self
-            .build_backend_dep_chain(initiator_name, initiator_ip, initiator_docker, port)
+            .build_backend_dep_chain(stack, initiator_name, initiator_ip, initiator_docker, port)
             .await?
         else {
             println!(
@@ -490,12 +538,12 @@ impl NullnetGrpcImpl {
         }
 
         println!("[trigger] dispatching net_chain_setup for '{initiator_name}' port {port}");
-        self.net_chain_setup(chain).await?;
+        self.net_chain_setup(stack, chain).await?;
         println!("[trigger] net_chain_setup completed for '{initiator_name}' port {port}");
         Ok(())
     }
 
-    pub(crate) fn services(&self) -> &Arc<RwLock<HashMap<String, ServiceInfo>>> {
+    pub(crate) fn services(&self) -> &Arc<RwLock<StackMap>> {
         &self.services
     }
 
@@ -503,21 +551,38 @@ impl NullnetGrpcImpl {
         &self.orchestrator
     }
 
-    pub(crate) async fn apply_services_list(
+    #[allow(clippy::type_complexity)]
+    pub(crate) async fn apply_services_list_by_stack(
         &self,
         sender_ip: IpAddr,
-        service_list: &[(String, u16, Option<String>)],
+        service_list_by_stack: &HashMap<String, Vec<(String, u16, Option<String>)>>,
     ) -> Result<(), Error> {
         let mut services_mut = self.services.write().await;
 
-        let changes = detect_services_list_changes(&services_mut, sender_ip, service_list);
-        apply_changes(changes, &mut services_mut, None, &self.orchestrator).await;
+        // For every known stack, detect what this sender no longer hosts.
+        // Stacks the sender dropped entirely show up with an empty list and
+        // get their replicas torn down.
+        let empty: Vec<(String, u16, Option<String>)> = Vec::new();
+        let stack_names: Vec<String> = services_mut.keys().cloned().collect();
+        for stack in &stack_names {
+            let stack_list = service_list_by_stack.get(stack).unwrap_or(&empty);
+            let Some(stack_map) = services_mut.get_mut(stack) else {
+                continue;
+            };
+            let changes = detect_services_list_changes(stack_map, sender_ip, stack_list);
+            apply_changes(changes, stack_map, None, &self.orchestrator).await;
+        }
 
-        // add/update replicas for services that are present
-        for (name, port, docker_container) in service_list {
-            services_mut.entry(name.clone()).and_modify(|si| {
-                si.add_replica(sender_ip, *port, docker_container.clone());
-            });
+        // Add/update replicas for services in the matching stacks.
+        for (stack, list) in service_list_by_stack {
+            let Some(stack_map) = services_mut.get_mut(stack) else {
+                continue;
+            };
+            for (name, port, docker_container) in list {
+                stack_map.entry(name.clone()).and_modify(|si| {
+                    si.add_replica(sender_ip, *port, docker_container.clone());
+                });
+            }
         }
 
         Ok(())
@@ -526,6 +591,7 @@ impl NullnetGrpcImpl {
     #[allow(clippy::too_many_lines)]
     pub(crate) async fn net_chain_setup(
         &self,
+        stack: &str,
         dep_chain: Vec<RegisteredEdge>,
     ) -> Result<Option<Ipv4Addr>, Error> {
         let mut join_set_outer = JoinSet::new();
@@ -538,12 +604,15 @@ impl NullnetGrpcImpl {
 
             let services = self.services.clone();
             let orchestrator = self.orchestrator.clone();
+            let stack = stack.to_string();
             join_set_outer.spawn(async move {
                 let init_time = std::time::Instant::now();
 
                 let mut services_guard = services.write().await;
-                let Some(ServiceInfo::Registered(reg)) = services_guard.get_mut(server.name())
-                else {
+                let Some(stack_map) = services_guard.get_mut(&stack) else {
+                    return EdgeOutcome::Failed;
+                };
+                let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(server.name()) else {
                     return EdgeOutcome::Failed;
                 };
                 // Proxy edges: reuse if this client is already connected anywhere (stickiness).
@@ -575,8 +644,8 @@ impl NullnetGrpcImpl {
                 let Some(net_id) = orchestrator.allocate_net_id().await else {
                     eprintln!("NET ID pool exhausted");
                     // remove placeholder
-                    if let Some(ServiceInfo::Registered(reg)) =
-                        services.write().await.get_mut(server.name())
+                    if let Some(stack_map) = services.write().await.get_mut(&stack)
+                        && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(server.name())
                     {
                         reg.remove_client(&client);
                     }
@@ -620,8 +689,8 @@ impl NullnetGrpcImpl {
                         )
                         .await;
                     // remove placeholder
-                    if let Some(ServiceInfo::Registered(reg)) =
-                        services.write().await.get_mut(server.name())
+                    if let Some(stack_map) = services.write().await.get_mut(&stack)
+                        && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(server.name())
                     {
                         reg.remove_client(&client);
                     }
@@ -637,7 +706,15 @@ impl NullnetGrpcImpl {
 
                 // register the link between the two services
                 let mut guard = services.write().await;
-                if let Some(ServiceInfo::Registered(reg)) = guard.get_mut(server.name()) {
+                let stack_map_opt = guard.get_mut(&stack);
+                let registered_match = stack_map_opt
+                    .as_ref()
+                    .and_then(|m| m.get(server.name()))
+                    .is_some_and(|si| matches!(si, ServiceInfo::Registered(_)));
+                if registered_match
+                    && let Some(stack_map) = stack_map_opt
+                    && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(server.name())
+                {
                     let time_ms = init_time.elapsed().as_millis();
                     let ci = ClientInfo::new(
                         client_ethernet,
@@ -706,10 +783,12 @@ impl NullnetGrpcImpl {
 
         if any_failure {
             let mut services_mut = self.services.write().await;
-            for edge in &successful {
-                if let Some(ServiceInfo::Registered(reg)) = services_mut.get_mut(&edge.server_name)
-                {
-                    reg.decrement_chain(&edge.client, &self.orchestrator).await;
+            if let Some(stack_map) = services_mut.get_mut(stack) {
+                for edge in &successful {
+                    if let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&edge.server_name)
+                    {
+                        reg.decrement_chain(&edge.client, &self.orchestrator).await;
+                    }
                 }
             }
             Err("NET chain setup failed").handle_err(location!())?;
@@ -737,11 +816,22 @@ struct SuccessfulEdge {
 
 #[cfg(test)]
 impl NullnetGrpcImpl {
-    pub(crate) fn new_for_test(services: HashMap<String, ServiceInfo>) -> Self {
+    pub(crate) fn new_for_test(services: StackMap) -> Self {
         NullnetGrpcImpl {
             services: Arc::new(RwLock::new(services)),
             orchestrator: Orchestrator::new(),
         }
+    }
+
+    /// Test helper: dispatch as if every entry lived in the `"default"` stack.
+    pub(crate) async fn apply_services_list(
+        &self,
+        sender_ip: IpAddr,
+        service_list: &[(String, u16, Option<String>)],
+    ) -> Result<(), Error> {
+        let by_stack = HashMap::from([("default".to_string(), service_list.to_vec())]);
+        self.apply_services_list_by_stack(sender_ip, &by_stack)
+            .await
     }
 }
 

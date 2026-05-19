@@ -1,6 +1,7 @@
 use crate::env::TIMEOUT;
 use crate::orchestrator::Orchestrator;
 use crate::services::changes::{ServiceChange, apply_changes};
+use crate::services::input::StackMap;
 use crate::services::service_info::ServiceInfo;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -8,12 +9,19 @@ use std::time::Duration;
 use tokio::sync::{Notify, RwLock};
 
 pub(crate) async fn check_timeouts(
-    services: Arc<RwLock<HashMap<String, ServiceInfo>>>,
+    services: Arc<RwLock<StackMap>>,
     orchestrator: Orchestrator,
     config_changed: Arc<Notify>,
 ) {
     loop {
-        let sleep_duration = nearest_timeout(&*services.read().await);
+        let sleep_duration = {
+            let guard = services.read().await;
+            guard
+                .values()
+                .map(nearest_timeout)
+                .min()
+                .unwrap_or(Duration::from_secs(*TIMEOUT))
+        };
 
         tokio::select! {
             () = tokio::time::sleep(sleep_duration) => {}
@@ -21,7 +29,12 @@ pub(crate) async fn check_timeouts(
         }
 
         let mut services_mut = services.write().await;
-        apply_timeouts(&mut services_mut, &orchestrator).await;
+        let stack_names: Vec<String> = services_mut.keys().cloned().collect();
+        for stack in stack_names {
+            if let Some(stack_map) = services_mut.get_mut(&stack) {
+                apply_timeouts(stack_map, &orchestrator).await;
+            }
+        }
     }
 }
 

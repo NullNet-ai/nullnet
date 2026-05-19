@@ -5,16 +5,19 @@ use crate::services::service_info::ServiceInfo;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ops::Sub;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::{Notify, RwLock};
 use tokio::time::Instant;
 
-const SERVICES_PATH: &str = "./services/services.toml";
+const SERVICES_DIR: &str = "./services";
+
+/// Top-level state: stack name → per-stack service map.
+pub(crate) type StackMap = HashMap<String, HashMap<String, ServiceInfo>>;
 
 #[derive(Deserialize)]
 pub(crate) struct ServicesToml {
@@ -22,28 +25,45 @@ pub(crate) struct ServicesToml {
 }
 
 impl ServicesToml {
-    pub(crate) async fn load() -> Result<HashMap<String, ServiceInfo>, Error> {
-        Self::load_from(SERVICES_PATH).await
+    pub(crate) async fn load() -> Result<StackMap, Error> {
+        Self::load_from_dir(SERVICES_DIR).await
     }
 
-    pub(crate) async fn load_from(path: &str) -> Result<HashMap<String, ServiceInfo>, Error> {
-        let services_toml_str = tokio::fs::read_to_string(path)
-            .await
-            .handle_err(location!())?;
-        let services_toml: ServicesToml =
-            toml::from_str(&services_toml_str).handle_err(location!())?;
-        let services = services_toml.services_map();
-        println!("Loaded services: {services:?}");
-        Ok(services)
+    /// Load every `*.toml` file under `dir`; the file stem is the stack name.
+    pub(crate) async fn load_from_dir(dir: &str) -> Result<StackMap, Error> {
+        let mut entries = tokio::fs::read_dir(dir).await.handle_err(location!())?;
+        let mut stacks: StackMap = HashMap::new();
+        while let Some(entry) = entries.next_entry().await.handle_err(location!())? {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("toml") {
+                continue;
+            }
+            let Some(stack) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let services = parse_file(&path).await?;
+            println!("Loaded stack '{stack}': {services:?}");
+            stacks.insert(stack, services);
+        }
+        Ok(stacks)
+    }
+
+    /// Load a single file as one stack's service map. Used by tests.
+    #[cfg(test)]
+    pub(crate) async fn load_file(path: &str) -> Result<HashMap<String, ServiceInfo>, Error> {
+        parse_file(Path::new(path)).await
     }
 
     pub(crate) async fn watch(
-        services: &Arc<RwLock<HashMap<String, ServiceInfo>>>,
+        services: &Arc<RwLock<StackMap>>,
         orchestrator: Orchestrator,
         config_changed: Arc<Notify>,
     ) -> Result<(), Error> {
-        let mut services_directory = PathBuf::from(SERVICES_PATH);
-        services_directory.pop();
+        let services_directory = PathBuf::from(SERVICES_DIR);
 
         let (tx, mut rx) = tokio_mpsc::unbounded_channel();
         let mut watcher = RecommendedWatcher::new(
@@ -65,10 +85,11 @@ impl ServicesToml {
                 println!("File watcher channel closed, stopping watch");
                 break;
             }
-            if let Some(Ok(Event {
-                kind: EventKind::Modify(_),
-                ..
-            })) = event
+            if let Some(Ok(Event { kind, .. })) = event
+                && matches!(
+                    kind,
+                    EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+                )
             {
                 // debounce duplicated events
                 if last_update_time.elapsed().as_millis() > 100 {
@@ -93,7 +114,8 @@ impl ServicesToml {
         let mut proxy_accum: HashMap<String, Vec<String>> = HashMap::new();
         // Trigger-chain deps: discoverable as (non-entry-point) services so
         // hosts can register replicas of them.
-        let mut trigger_dep_names: HashSet<String> = HashSet::new();
+        let mut trigger_dep_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         for s in &self.services {
             for d in &s.proxy_dependencies {
@@ -137,6 +159,14 @@ impl ServicesToml {
     }
 }
 
+async fn parse_file(path: &Path) -> Result<HashMap<String, ServiceInfo>, Error> {
+    let str_repr = tokio::fs::read_to_string(path)
+        .await
+        .handle_err(location!())?;
+    let parsed: ServicesToml = toml::from_str(&str_repr).handle_err(location!())?;
+    Ok(parsed.services_map())
+}
+
 /// Return the elements of `slice` that come after the first occurrence of `elem`.
 fn tail_after(slice: &[String], elem: &str) -> Vec<String> {
     slice
@@ -147,12 +177,37 @@ fn tail_after(slice: &[String], elem: &str) -> Vec<String> {
 }
 
 pub(crate) async fn apply_config_update(
-    services: &mut HashMap<String, ServiceInfo>,
-    loaded_services: HashMap<String, ServiceInfo>,
+    services: &mut StackMap,
+    loaded_services: StackMap,
     orchestrator: &Orchestrator,
 ) {
-    let changes = detect_config_changes(services, &loaded_services);
-    apply_changes(changes, services, Some(&loaded_services), orchestrator).await;
+    // Stacks that disappeared from config: tear down everything in them.
+    let removed_stacks: Vec<String> = services
+        .keys()
+        .filter(|s| !loaded_services.contains_key(*s))
+        .cloned()
+        .collect();
+    for stack in removed_stacks {
+        if let Some(stack_map) = services.get_mut(&stack) {
+            // Mark every service as removed so apply_changes tears down all
+            // chains and replicas before we drop the stack entirely.
+            let names: Vec<String> = stack_map.keys().cloned().collect();
+            let changes = names
+                .into_iter()
+                .map(|name| crate::services::changes::ServiceChange::Removed { name })
+                .collect();
+            apply_changes(changes, stack_map, None, orchestrator).await;
+        }
+        services.remove(&stack);
+    }
+
+    // Stacks that exist in both: per-service diff. Then stacks new in config:
+    // insert as empty maps and let the merge tail in apply_changes populate.
+    for (stack, loaded_stack) in loaded_services {
+        let stack_map = services.entry(stack).or_default();
+        let changes = detect_config_changes(stack_map, &loaded_stack);
+        apply_changes(changes, stack_map, Some(&loaded_stack), orchestrator).await;
+    }
 }
 
 #[derive(Deserialize)]
@@ -218,5 +273,45 @@ timeout = 30
         assert_eq!(map["pre.fs.color.com"].timeout(), None);
         assert_eq!(map["ts.color.com"].timeout(), None);
         assert_eq!(map["deeper.dep"].timeout(), None);
+    }
+
+    #[tokio::test]
+    async fn loads_each_toml_as_its_own_stack() {
+        let dir = std::env::temp_dir().join(format!("nullnet-stack-test-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let stack_a = r#"
+[[services]]
+name = "a.svc"
+timeout = 0
+proxy_dependencies = ["a.dep"]
+"#;
+        let stack_b = r#"
+[[services]]
+name = "b.svc"
+timeout = 30
+"#;
+        tokio::fs::write(dir.join("alpha.toml"), stack_a)
+            .await
+            .unwrap();
+        tokio::fs::write(dir.join("bravo.toml"), stack_b)
+            .await
+            .unwrap();
+        // unrelated file is ignored
+        tokio::fs::write(dir.join("notes.txt"), "ignored")
+            .await
+            .unwrap();
+
+        let stacks = ServicesToml::load_from_dir(dir.to_str().unwrap())
+            .await
+            .expect("load");
+
+        assert_eq!(stacks.len(), 2);
+        assert!(stacks["alpha"].contains_key("a.svc"));
+        assert!(stacks["alpha"].contains_key("a.dep"));
+        assert!(stacks["bravo"].contains_key("b.svc"));
+        // stacks are isolated: alpha's deps aren't bleeding into bravo
+        assert!(!stacks["bravo"].contains_key("a.dep"));
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 }

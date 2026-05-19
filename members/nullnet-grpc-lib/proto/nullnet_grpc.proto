@@ -98,6 +98,7 @@ message Service {
   string name = 1;
   uint32 port = 2;
   optional string docker_container = 3;
+  string stack = 4;
 }
 
 // Response to ServicesList: per-declared-service, the set of trigger ports
