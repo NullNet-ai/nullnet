@@ -32,7 +32,7 @@ pub async fn serve(state: AppState) {
         .route("/api/config/{stack}", get(config::config_handler))
         .route("/api/graph/{stack}", get(graph::graph_handler))
         .route("/api/sessions", get(sessions::list_handler))
-        .route("/api/sessions/:id", delete(sessions::teardown_handler))
+        .route("/api/sessions/{id}", delete(sessions::teardown_handler))
         .fallback(get(static_files::static_handler))
         .with_state(state);
 
