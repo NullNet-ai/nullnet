@@ -102,7 +102,6 @@ export default function Events() {
   const [liveCount, setLiveCount] = useState(0);
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
-  const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     // Initial load from REST endpoint
@@ -133,16 +132,9 @@ export default function Events() {
     return () => es.close();
   }, []);
 
-  // Auto-scroll to bottom when new events arrive (unless paused)
-  useEffect(() => {
-    if (!paused) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [events, paused]);
-
-  const filtered = filter
-    ? events.filter(e => e.type === filter)
-    : events;
+  const filtered = (filter ? events.filter(e => e.type === filter) : events)
+    .slice()
+    .reverse();
 
   return (
     <Layout
@@ -256,7 +248,6 @@ export default function Events() {
                 ))}
               </tbody>
             </table>
-            <div ref={bottomRef} />
           </div>
         </div>
       </div>
