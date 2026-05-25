@@ -1,4 +1,5 @@
 use crate::env::NET_TYPE;
+use crate::events::Event;
 use crate::graphviz::generate_graphviz;
 use crate::orchestrator::Orchestrator;
 use crate::services::changes::{
@@ -570,7 +571,7 @@ impl NullnetGrpcImpl {
                 continue;
             };
             let changes = detect_services_list_changes(stack_map, sender_ip, stack_list);
-            apply_changes(changes, stack_map, None, &self.orchestrator).await;
+            apply_changes(changes, stack_map, None, &self.orchestrator, stack).await;
         }
 
         // Add/update replicas for services in the matching stacks.
@@ -582,6 +583,10 @@ impl NullnetGrpcImpl {
                 stack_map.entry(name.clone()).and_modify(|si| {
                     si.add_replica(sender_ip, *port, docker_container.clone());
                 });
+                self.orchestrator
+                    .events
+                    .emit(Event::service_registered(name.clone(), stack.clone()))
+                    .await;
             }
         }
 
@@ -652,6 +657,17 @@ impl NullnetGrpcImpl {
                     return EdgeOutcome::Failed;
                 };
 
+                if client.is_proxy().is_some() {
+                    orchestrator
+                        .events
+                        .emit(Event::setup_started(
+                            net_id,
+                            server.name().to_string(),
+                            client_ethernet.to_string(),
+                        ))
+                        .await;
+                }
+
                 let orch = orchestrator.clone();
                 let cd = client_docker.clone();
                 let sd = server_docker.clone();
@@ -678,6 +694,12 @@ impl NullnetGrpcImpl {
                 let (server_ok, client_ok) = tokio::join!(server_res, client_res);
 
                 if server_ok.is_none() || client_ok.is_none() {
+                    if client.is_proxy().is_some() {
+                        orchestrator
+                            .events
+                            .emit(Event::setup_timeout(net_id, server.name().to_string()))
+                            .await;
+                    }
                     // rollback
                     orchestrator
                         .send_net_teardown(
@@ -703,6 +725,17 @@ impl NullnetGrpcImpl {
 
                 println!("{server_ethernet} acknowledged");
                 println!("{client_ethernet} acknowledged");
+
+                if client.is_proxy().is_some() {
+                    orchestrator
+                        .events
+                        .emit(Event::setup_ack(
+                            net_id,
+                            server.name().to_string(),
+                            init_time.elapsed().as_millis() as u64,
+                        ))
+                        .await;
+                }
 
                 // register the link between the two services
                 let mut guard = services.write().await;
@@ -747,6 +780,14 @@ impl NullnetGrpcImpl {
                 }
 
                 let proxy_upstream = if client.is_proxy().is_some() {
+                    orchestrator
+                        .events
+                        .emit(Event::session_created(
+                            net_id,
+                            server.name().to_string(),
+                            client_ethernet.to_string(),
+                        ))
+                        .await;
                     Some(net_ip_server)
                 } else {
                     None

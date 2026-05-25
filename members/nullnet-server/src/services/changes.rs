@@ -1,3 +1,4 @@
+use crate::events::Event;
 use crate::orchestrator::Orchestrator;
 use crate::services::clients::Client;
 use crate::services::service_info::ServiceInfo;
@@ -300,6 +301,14 @@ async fn teardown_chain(
                     *net_id,
                 )
                 .await;
+            orchestrator
+                .events
+                .emit(Event::session_torn_down(
+                    *net_id,
+                    name.to_string(),
+                    client_ip.to_string(),
+                ))
+                .await;
         }
     }
 }
@@ -559,10 +568,15 @@ pub(crate) async fn apply_changes(
     services: &mut HashMap<String, ServiceInfo>,
     loaded_services: Option<&HashMap<String, ServiceInfo>>,
     orchestrator: &Orchestrator,
+    stack: &str,
 ) {
     for change in changes {
         match change {
             ServiceChange::Removed { name } => {
+                orchestrator
+                    .events
+                    .emit(Event::service_unregistered(name.clone(), stack.to_string()))
+                    .await;
                 teardown_invalidated_service(&name, true, services, orchestrator).await;
                 services.remove(&name);
             }

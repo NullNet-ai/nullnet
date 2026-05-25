@@ -1,4 +1,5 @@
 use crate::env::TIMEOUT;
+use crate::events::Event as ServerEvent;
 use crate::orchestrator::Orchestrator;
 use crate::services::changes::{apply_changes, detect_config_changes};
 use crate::services::service_info::ServiceInfo;
@@ -196,7 +197,7 @@ pub(crate) async fn apply_config_update(
                 .into_iter()
                 .map(|name| crate::services::changes::ServiceChange::Removed { name })
                 .collect();
-            apply_changes(changes, stack_map, None, orchestrator).await;
+            apply_changes(changes, stack_map, None, orchestrator, &stack).await;
         }
         services.remove(&stack);
     }
@@ -204,9 +205,20 @@ pub(crate) async fn apply_config_update(
     // Stacks that exist in both: per-service diff. Then stacks new in config:
     // insert as empty maps and let the merge tail in apply_changes populate.
     for (stack, loaded_stack) in loaded_services {
-        let stack_map = services.entry(stack).or_default();
+        let stack_map = services.entry(stack.clone()).or_default();
         let changes = detect_config_changes(stack_map, &loaded_stack);
-        apply_changes(changes, stack_map, Some(&loaded_stack), orchestrator).await;
+        apply_changes(
+            changes,
+            stack_map,
+            Some(&loaded_stack),
+            orchestrator,
+            &stack,
+        )
+        .await;
+        orchestrator
+            .events
+            .emit(ServerEvent::config_reloaded(stack))
+            .await;
     }
 }
 

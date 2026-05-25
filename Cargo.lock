@@ -2039,6 +2039,7 @@ dependencies = [
  "axum",
  "chrono",
  "ctrlc",
+ "futures",
  "gag",
  "ipnetwork",
  "mime_guess",
@@ -2050,6 +2051,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-stream",
  "toml",
  "tonic",
  "tonic-prost",
@@ -3474,6 +3476,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
