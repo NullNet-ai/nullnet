@@ -189,6 +189,10 @@ pub(crate) async fn apply_config_update(
         .cloned()
         .collect();
     for stack in removed_stacks {
+        orchestrator
+            .events
+            .emit(ServerEvent::config_stack_removed(stack.clone()))
+            .await;
         if let Some(stack_map) = services.get_mut(&stack) {
             // Mark every service as removed so apply_changes tears down all
             // chains and replicas before we drop the stack entirely.

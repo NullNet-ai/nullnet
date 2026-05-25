@@ -14,7 +14,7 @@ pub(crate) enum ServiceChange {
     /// Service's `triggers` changed in config.
     TriggersChanged { name: String },
     /// Service entry-point timeout toggled in config (Some ↔ None).
-    ReachabilityChanged { name: String },
+    ReachabilityChanged { name: String, now_reachable: bool },
     /// All replicas on a specific IP were removed (node disconnected).
     ReplicasRemoved { name: String, ip: IpAddr },
     /// A single replica was removed (host re-registered without this container).
@@ -83,7 +83,10 @@ pub(crate) fn detect_config_changes(
             }
             if loaded_info.timeout().is_some() != old_info.timeout().is_some() {
                 // reachability toggled (Some <-> None)
-                changes.push(ServiceChange::ReachabilityChanged { name: name.clone() });
+                changes.push(ServiceChange::ReachabilityChanged {
+                    name: name.clone(),
+                    now_reachable: loaded_info.timeout().is_some(),
+                });
             } else if let (Some(new_timeout), Some(old_timeout)) =
                 (loaded_info.timeout(), old_info.timeout())
                 && new_timeout != old_timeout
@@ -586,7 +589,18 @@ pub(crate) async fn apply_changes(
             ServiceChange::TriggersChanged { name } => {
                 teardown_all_backend_chains_for(&name, None, services, orchestrator).await;
             }
-            ServiceChange::ReachabilityChanged { name } => {
+            ServiceChange::ReachabilityChanged {
+                name,
+                now_reachable,
+            } => {
+                orchestrator
+                    .events
+                    .emit(Event::service_reachability_toggled(
+                        name.clone(),
+                        stack.to_string(),
+                        now_reachable,
+                    ))
+                    .await;
                 teardown_chain(&name, services, orchestrator, ProxyFilter::All).await;
                 teardown_all_backend_chains_for(&name, None, services, orchestrator).await;
             }
@@ -598,6 +612,14 @@ pub(crate) async fn apply_changes(
                 };
 
                 if is_last {
+                    orchestrator
+                        .events
+                        .emit(Event::all_replicas_removed(
+                            name.clone(),
+                            stack.to_string(),
+                            ip.to_string(),
+                        ))
+                        .await;
                     // Last replica gone — config-based cascade to transitive dependents
                     teardown_invalidated_service(&name, true, services, orchestrator).await;
                 } else {
@@ -689,6 +711,13 @@ pub(crate) async fn apply_changes(
                     "Proxy client '{}' timed out on service '{name}'",
                     client.display_name()
                 );
+                orchestrator
+                    .events
+                    .emit(Event::proxy_client_timed_out(
+                        name.clone(),
+                        client.display_name().to_string(),
+                    ))
+                    .await;
                 teardown_chain(
                     &name,
                     services,

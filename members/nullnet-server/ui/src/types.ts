@@ -56,4 +56,13 @@ export type EventJson =
   | { type: 'setup_timeout'; net_id: number; service: string; timestamp: number }
   | { type: 'session_created'; net_id: number; service: string; client_ip: string; timestamp: number }
   | { type: 'session_torn_down'; net_id: number; service: string; client_ip: string; timestamp: number }
-  | { type: 'config_reloaded'; stack: string; timestamp: number };
+  | { type: 'config_reloaded'; stack: string; timestamp: number }
+  | { type: 'config_stack_removed'; stack: string; timestamp: number }
+  | { type: 'all_replicas_removed'; service: string; stack: string; ip: string; timestamp: number }
+  | { type: 'service_reachability_toggled'; service: string; stack: string; reachable: boolean; timestamp: number }
+  | { type: 'proxy_client_timed_out'; service: string; client_ip: string; timestamp: number }
+  | { type: 'sticky_session_reused'; service: string; client_ip: string; proxy_ip: string; timestamp: number }
+  | { type: 'max_networks_limit_enforced'; service: string; proxy_ip: string; net_id: number; limit: number; timestamp: number }
+  | { type: 'net_id_pool_exhausted'; service: string; client_ip: string; timestamp: number }
+  | { type: 'proxy_chain_setup_failed'; service: string; client_ip: string; timestamp: number }
+  | { type: 'backend_trigger_setup_bailed'; service: string; port: number; timestamp: number };

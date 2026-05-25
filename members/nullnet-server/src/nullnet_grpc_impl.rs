@@ -145,6 +145,15 @@ impl NullnetGrpcImpl {
         if let Some(upstream) = registered.is_client_setup(&proxy_client) {
             println!("'{client_ip}' ---> '{service_name}' is already set up");
 
+            self.orchestrator
+                .events
+                .emit(Event::sticky_session_reused(
+                    service_name.to_string(),
+                    client_ip.to_string(),
+                    proxy_ip.to_string(),
+                ))
+                .await;
+
             // update the latest timestamp for this client since it's being used again
             let mut services_mut = self.services.write().await;
             if let Some(stack_map) = services_mut.get_mut(&stack)
@@ -167,6 +176,15 @@ impl NullnetGrpcImpl {
                 "Max networks ({max}) reached for '{service_name}', \
                  reusing network on proxy {proxy_ip}"
             );
+            self.orchestrator
+                .events
+                .emit(Event::max_networks_limit_enforced(
+                    service_name.to_string(),
+                    proxy_ip.to_string(),
+                    net_id,
+                    max,
+                ))
+                .await;
             let mut services_mut = self.services.write().await;
             if let Some(stack_map) = services_mut.get_mut(&stack) {
                 if let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(service_name) {
@@ -196,10 +214,22 @@ impl NullnetGrpcImpl {
             return Ok(upstream);
         }
 
-        let response = self
+        match self
             .new_proxy_chain(&stack, service_name, proxy_ip, client_ip)
-            .await?;
-        Ok(response.into_inner())
+            .await
+        {
+            Ok(response) => Ok(response.into_inner()),
+            Err(e) => {
+                self.orchestrator
+                    .events
+                    .emit(Event::proxy_chain_setup_failed(
+                        service_name.to_string(),
+                        client_ip.to_string(),
+                    ))
+                    .await;
+                Err(e)
+            }
+        }
     }
 
     async fn services_list_impl(
@@ -524,6 +554,13 @@ impl NullnetGrpcImpl {
             println!(
                 "[trigger] build_backend_dep_chain returned None for '{initiator_name}' port {port}"
             );
+            self.orchestrator
+                .events
+                .emit(Event::backend_trigger_setup_bailed(
+                    initiator_name.to_string(),
+                    port,
+                ))
+                .await;
             return Ok(());
         };
         println!(
@@ -648,6 +685,13 @@ impl NullnetGrpcImpl {
 
                 let Some(net_id) = orchestrator.allocate_net_id().await else {
                     eprintln!("NET ID pool exhausted");
+                    orchestrator
+                        .events
+                        .emit(Event::net_id_pool_exhausted(
+                            server.name().to_string(),
+                            client_ethernet.to_string(),
+                        ))
+                        .await;
                     // remove placeholder
                     if let Some(stack_map) = services.write().await.get_mut(&stack)
                         && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(server.name())

@@ -66,6 +66,55 @@ pub(crate) enum Event {
         stack: String,
         timestamp: u64,
     },
+    ConfigStackRemoved {
+        stack: String,
+        timestamp: u64,
+    },
+    AllReplicasRemoved {
+        service: String,
+        stack: String,
+        ip: String,
+        timestamp: u64,
+    },
+    ServiceReachabilityToggled {
+        service: String,
+        stack: String,
+        reachable: bool,
+        timestamp: u64,
+    },
+    ProxyClientTimedOut {
+        service: String,
+        client_ip: String,
+        timestamp: u64,
+    },
+    StickySessionReused {
+        service: String,
+        client_ip: String,
+        proxy_ip: String,
+        timestamp: u64,
+    },
+    MaxNetworksLimitEnforced {
+        service: String,
+        proxy_ip: String,
+        net_id: u32,
+        limit: u32,
+        timestamp: u64,
+    },
+    NetIdPoolExhausted {
+        service: String,
+        client_ip: String,
+        timestamp: u64,
+    },
+    ProxyChainSetupFailed {
+        service: String,
+        client_ip: String,
+        timestamp: u64,
+    },
+    BackendTriggerSetupBailed {
+        service: String,
+        port: u16,
+        timestamp: u64,
+    },
 }
 
 impl Event {
@@ -81,6 +130,15 @@ impl Event {
             Self::SessionCreated { .. } => "session_created",
             Self::SessionTornDown { .. } => "session_torn_down",
             Self::ConfigReloaded { .. } => "config_reloaded",
+            Self::ConfigStackRemoved { .. } => "config_stack_removed",
+            Self::AllReplicasRemoved { .. } => "all_replicas_removed",
+            Self::ServiceReachabilityToggled { .. } => "service_reachability_toggled",
+            Self::ProxyClientTimedOut { .. } => "proxy_client_timed_out",
+            Self::StickySessionReused { .. } => "sticky_session_reused",
+            Self::MaxNetworksLimitEnforced { .. } => "max_networks_limit_enforced",
+            Self::NetIdPoolExhausted { .. } => "net_id_pool_exhausted",
+            Self::ProxyChainSetupFailed { .. } => "proxy_chain_setup_failed",
+            Self::BackendTriggerSetupBailed { .. } => "backend_trigger_setup_bailed",
         }
     }
 
@@ -161,6 +219,95 @@ impl Event {
     pub(crate) fn config_reloaded(stack: String) -> Self {
         Self::ConfigReloaded {
             stack,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn config_stack_removed(stack: String) -> Self {
+        Self::ConfigStackRemoved {
+            stack,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn all_replicas_removed(service: String, stack: String, ip: String) -> Self {
+        Self::AllReplicasRemoved {
+            service,
+            stack,
+            ip,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn service_reachability_toggled(
+        service: String,
+        stack: String,
+        reachable: bool,
+    ) -> Self {
+        Self::ServiceReachabilityToggled {
+            service,
+            stack,
+            reachable,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn proxy_client_timed_out(service: String, client_ip: String) -> Self {
+        Self::ProxyClientTimedOut {
+            service,
+            client_ip,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn sticky_session_reused(
+        service: String,
+        client_ip: String,
+        proxy_ip: String,
+    ) -> Self {
+        Self::StickySessionReused {
+            service,
+            client_ip,
+            proxy_ip,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn max_networks_limit_enforced(
+        service: String,
+        proxy_ip: String,
+        net_id: u32,
+        limit: u32,
+    ) -> Self {
+        Self::MaxNetworksLimitEnforced {
+            service,
+            proxy_ip,
+            net_id,
+            limit,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn net_id_pool_exhausted(service: String, client_ip: String) -> Self {
+        Self::NetIdPoolExhausted {
+            service,
+            client_ip,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn proxy_chain_setup_failed(service: String, client_ip: String) -> Self {
+        Self::ProxyChainSetupFailed {
+            service,
+            client_ip,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn backend_trigger_setup_bailed(service: String, port: u16) -> Self {
+        Self::BackendTriggerSetupBailed {
+            service,
+            port,
             timestamp: now_secs(),
         }
     }

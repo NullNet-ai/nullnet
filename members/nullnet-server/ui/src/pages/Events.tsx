@@ -13,6 +13,15 @@ const KIND_COLORS: Record<string, string> = {
   session_created: 'var(--green)',
   session_torn_down: 'var(--t2)',
   config_reloaded: 'var(--cyan)',
+  config_stack_removed: 'var(--amber)',
+  all_replicas_removed: 'var(--red, #f87171)',
+  service_reachability_toggled: 'var(--cyan)',
+  proxy_client_timed_out: 'var(--amber)',
+  sticky_session_reused: 'var(--t2)',
+  max_networks_limit_enforced: 'var(--amber)',
+  net_id_pool_exhausted: 'var(--red, #f87171)',
+  proxy_chain_setup_failed: 'var(--red, #f87171)',
+  backend_trigger_setup_bailed: 'var(--amber)',
 };
 
 const KIND_LABELS: Record<string, string> = {
@@ -26,6 +35,15 @@ const KIND_LABELS: Record<string, string> = {
   session_created: 'session_created',
   session_torn_down: 'session_torn_down',
   config_reloaded: 'config_reloaded',
+  config_stack_removed: 'config_stack_removed',
+  all_replicas_removed: 'all_replicas_removed',
+  service_reachability_toggled: 'service_reachability_toggled',
+  proxy_client_timed_out: 'proxy_client_timed_out',
+  sticky_session_reused: 'sticky_session_reused',
+  max_networks_limit_enforced: 'max_networks_limit_enforced',
+  net_id_pool_exhausted: 'net_id_pool_exhausted',
+  proxy_chain_setup_failed: 'proxy_chain_setup_failed',
+  backend_trigger_setup_bailed: 'backend_trigger_setup_bailed',
 };
 
 const ALL_KINDS = Object.keys(KIND_LABELS);
@@ -50,6 +68,24 @@ function eventDetail(e: EventJson): string {
       return `net ${e.net_id} · ${e.service} · ${e.client_ip}`;
     case 'config_reloaded':
       return e.stack;
+    case 'config_stack_removed':
+      return e.stack;
+    case 'all_replicas_removed':
+      return `${e.service} · ${e.stack} · ${e.ip}`;
+    case 'service_reachability_toggled':
+      return `${e.service} · ${e.stack} · ${e.reachable ? 'reachable' : 'unreachable'}`;
+    case 'proxy_client_timed_out':
+      return `${e.service} · ${e.client_ip}`;
+    case 'sticky_session_reused':
+      return `${e.service} · ${e.client_ip} via ${e.proxy_ip}`;
+    case 'max_networks_limit_enforced':
+      return `${e.service} · proxy ${e.proxy_ip} · net ${e.net_id} · limit ${e.limit}`;
+    case 'net_id_pool_exhausted':
+      return `${e.service} · ${e.client_ip}`;
+    case 'proxy_chain_setup_failed':
+      return `${e.service} · ${e.client_ip}`;
+    case 'backend_trigger_setup_bailed':
+      return `${e.service} · port ${e.port}`;
   }
 }
 
