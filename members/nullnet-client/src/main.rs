@@ -278,6 +278,7 @@ async fn declare_services(
     grpc_server: NullnetGrpcInterface,
     config_tx: UnboundedSender<HashMap<u16, String>>,
 ) -> Result<(), Error> {
+    let mut last_declared: Vec<nullnet_grpc_lib::nullnet_grpc::Service> = Vec::new();
     loop {
         // read services from file
         let services_toml = tokio::fs::read_to_string("services.toml")
@@ -318,6 +319,15 @@ async fn declare_services(
         println!("Declaring services to gRPC server: {services:?}");
         let num_services = services.services.len() as u32;
 
+        // canonical snapshot for change detection (order-independent)
+        let mut current = services.services.clone();
+        current.sort_by(|a, b| {
+            a.name.cmp(&b.name)
+                .then(a.stack.cmp(&b.stack))
+                .then(a.port.cmp(&b.port))
+                .then(a.docker_container.cmp(&b.docker_container))
+        });
+
         // send services to gRPC server; response carries the trigger ports
         // attached to the services we just declared as hosting.
         match grpc_server.services_list(services).await {
@@ -334,14 +344,17 @@ async fn declare_services(
                 });
             }
             Ok(response) => {
-                let grpc = grpc_server.clone();
-                tokio::spawn(async move {
-                    let _ = grpc.report_event(AgentEvent {
-                        event: Some(AgentEventKind::ServicesListUpdated(
-                            AgentServicesListUpdated { num_services },
-                        )),
-                    }).await;
-                });
+                if current != last_declared {
+                    last_declared = current;
+                    let grpc = grpc_server.clone();
+                    tokio::spawn(async move {
+                        let _ = grpc.report_event(AgentEvent {
+                            event: Some(AgentEventKind::ServicesListUpdated(
+                                AgentServicesListUpdated { num_services },
+                            )),
+                        }).await;
+                    });
+                }
 
                 let mut port_to_service: HashMap<u16, String> = HashMap::new();
                 for st in response.service_triggers {
