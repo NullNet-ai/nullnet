@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, broadcast};
 
 fn now_secs() -> u64 {
@@ -10,6 +10,23 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Severity {
+    Info,
+    Warning,
+    Error,
+}
+
+/// Wraps an event with its severity for serialization. Produces a flat JSON
+/// object: `{"type":"...","severity":"...","field":...}`.
+#[derive(Serialize)]
+pub(crate) struct EventEnvelope<'a> {
+    pub(crate) severity: Severity,
+    #[serde(flatten)]
+    pub(crate) event: &'a Event,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -115,6 +132,123 @@ pub(crate) enum Event {
         port: u16,
         timestamp: u64,
     },
+
+    // --- Client error events ---
+    VxlanSetupFailed {
+        vxlan_id: u32,
+        ns_name: String,
+        error_code: i32,
+        timestamp: u64,
+    },
+    VlanSetupFailed {
+        vlan_id: u16,
+        local_veth: String,
+        error_reason: String,
+        timestamp: u64,
+    },
+    VxlanTeardownFailed {
+        vxlan_id: u32,
+        ns_name: String,
+        error_code: i32,
+        timestamp: u64,
+    },
+    VlanTeardownFailed {
+        vlan_id: u16,
+        error_reason: String,
+        timestamp: u64,
+    },
+    DnatInstallFailed {
+        port: u16,
+        overlay_ip: String,
+        timestamp: u64,
+    },
+    DnatRemovalFailed {
+        port: u16,
+        overlay_ip: String,
+        timestamp: u64,
+    },
+    HostMappingFailed {
+        hostname: String,
+        ip: String,
+        docker_container: Option<String>,
+        timestamp: u64,
+    },
+    ControlChannelClosed {
+        timestamp: u64,
+    },
+    ControlChannelAckFailed {
+        msg_id: String,
+        message_type: String,
+        timestamp: u64,
+    },
+    ServicesListUpdateFailed {
+        error_message: String,
+        num_services: u32,
+        timestamp: u64,
+    },
+    BackendTriggerSendFailed {
+        service_name: String,
+        port: u16,
+        error_message: String,
+        timestamp: u64,
+    },
+    FirewallRulesLoadFailed {
+        path: String,
+        error_message: String,
+        timestamp: u64,
+    },
+
+    // --- Client info events ---
+    VxlanSetupCompleted {
+        vxlan_id: u32,
+        ns_name: String,
+        timestamp: u64,
+    },
+    VlanSetupCompleted {
+        vlan_id: u16,
+        timestamp: u64,
+    },
+    ControlChannelEstablished {
+        timestamp: u64,
+    },
+    ServicesListUpdated {
+        num_services: u32,
+        timestamp: u64,
+    },
+
+    // --- Proxy error events ---
+    UpstreamLookupFailed {
+        service_name: String,
+        client_ip: String,
+        error_message: String,
+        timestamp: u64,
+    },
+    ProxyRequestMissingHost {
+        client_ip: String,
+        timestamp: u64,
+    },
+    ProxyRequestInvalidHost {
+        client_ip: String,
+        timestamp: u64,
+    },
+    UpstreamIpParseFailed {
+        raw_ip: String,
+        service_name: String,
+        timestamp: u64,
+    },
+    ProxyClientNotInet {
+        address_family: String,
+        timestamp: u64,
+    },
+
+    // --- Proxy info events ---
+    ProxyRequestRouted {
+        service_name: String,
+        client_ip: String,
+        upstream_ip: String,
+        latency_ms: u64,
+        timestamp: u64,
+    },
 }
 
 impl Event {
@@ -139,6 +273,76 @@ impl Event {
             Self::NetIdPoolExhausted { .. } => "net_id_pool_exhausted",
             Self::ProxyChainSetupFailed { .. } => "proxy_chain_setup_failed",
             Self::BackendTriggerSetupBailed { .. } => "backend_trigger_setup_bailed",
+            Self::VxlanSetupFailed { .. } => "vxlan_setup_failed",
+            Self::VlanSetupFailed { .. } => "vlan_setup_failed",
+            Self::VxlanTeardownFailed { .. } => "vxlan_teardown_failed",
+            Self::VlanTeardownFailed { .. } => "vlan_teardown_failed",
+            Self::DnatInstallFailed { .. } => "dnat_install_failed",
+            Self::DnatRemovalFailed { .. } => "dnat_removal_failed",
+            Self::HostMappingFailed { .. } => "host_mapping_failed",
+            Self::ControlChannelClosed { .. } => "control_channel_closed",
+            Self::ControlChannelAckFailed { .. } => "control_channel_ack_failed",
+            Self::ServicesListUpdateFailed { .. } => "services_list_update_failed",
+            Self::BackendTriggerSendFailed { .. } => "backend_trigger_send_failed",
+            Self::FirewallRulesLoadFailed { .. } => "firewall_rules_load_failed",
+            Self::VxlanSetupCompleted { .. } => "vxlan_setup_completed",
+            Self::VlanSetupCompleted { .. } => "vlan_setup_completed",
+            Self::ControlChannelEstablished { .. } => "control_channel_established",
+            Self::ServicesListUpdated { .. } => "services_list_updated",
+            Self::UpstreamLookupFailed { .. } => "upstream_lookup_failed",
+            Self::ProxyRequestMissingHost { .. } => "proxy_request_missing_host",
+            Self::ProxyRequestInvalidHost { .. } => "proxy_request_invalid_host",
+            Self::UpstreamIpParseFailed { .. } => "upstream_ip_parse_failed",
+            Self::ProxyClientNotInet { .. } => "proxy_client_not_inet",
+            Self::ProxyRequestRouted { .. } => "proxy_request_routed",
+        }
+    }
+
+    pub(crate) fn severity(&self) -> Severity {
+        match self {
+            Self::NodeConnected { .. }
+            | Self::ServiceRegistered { .. }
+            | Self::SetupStarted { .. }
+            | Self::SetupAck { .. }
+            | Self::SessionCreated { .. }
+            | Self::SessionTornDown { .. }
+            | Self::ConfigReloaded { .. }
+            | Self::StickySessionReused { .. }
+            | Self::VxlanSetupCompleted { .. }
+            | Self::VlanSetupCompleted { .. }
+            | Self::ControlChannelEstablished { .. }
+            | Self::ServicesListUpdated { .. }
+            | Self::ProxyRequestRouted { .. } => Severity::Info,
+
+            Self::NodeDisconnected { .. }
+            | Self::ServiceUnregistered { .. }
+            | Self::ConfigStackRemoved { .. }
+            | Self::AllReplicasRemoved { .. }
+            | Self::ServiceReachabilityToggled { .. }
+            | Self::ProxyClientTimedOut { .. }
+            | Self::MaxNetworksLimitEnforced { .. }
+            | Self::BackendTriggerSetupBailed { .. }
+            | Self::ControlChannelClosed { .. } => Severity::Warning,
+
+            Self::SetupTimeout { .. }
+            | Self::NetIdPoolExhausted { .. }
+            | Self::ProxyChainSetupFailed { .. }
+            | Self::VxlanSetupFailed { .. }
+            | Self::VlanSetupFailed { .. }
+            | Self::VxlanTeardownFailed { .. }
+            | Self::VlanTeardownFailed { .. }
+            | Self::DnatInstallFailed { .. }
+            | Self::DnatRemovalFailed { .. }
+            | Self::HostMappingFailed { .. }
+            | Self::ControlChannelAckFailed { .. }
+            | Self::ServicesListUpdateFailed { .. }
+            | Self::BackendTriggerSendFailed { .. }
+            | Self::FirewallRulesLoadFailed { .. }
+            | Self::UpstreamLookupFailed { .. }
+            | Self::ProxyRequestMissingHost { .. }
+            | Self::ProxyRequestInvalidHost { .. }
+            | Self::UpstreamIpParseFailed { .. }
+            | Self::ProxyClientNotInet { .. } => Severity::Error,
         }
     }
 
@@ -311,6 +515,111 @@ impl Event {
             timestamp: now_secs(),
         }
     }
+
+    pub(crate) fn vxlan_setup_failed(vxlan_id: u32, ns_name: String, error_code: i32) -> Self {
+        Self::VxlanSetupFailed { vxlan_id, ns_name, error_code, timestamp: now_secs() }
+    }
+
+    pub(crate) fn vlan_setup_failed(vlan_id: u16, local_veth: String, error_reason: String) -> Self {
+        Self::VlanSetupFailed { vlan_id, local_veth, error_reason, timestamp: now_secs() }
+    }
+
+    pub(crate) fn vxlan_teardown_failed(vxlan_id: u32, ns_name: String, error_code: i32) -> Self {
+        Self::VxlanTeardownFailed { vxlan_id, ns_name, error_code, timestamp: now_secs() }
+    }
+
+    pub(crate) fn vlan_teardown_failed(vlan_id: u16, error_reason: String) -> Self {
+        Self::VlanTeardownFailed { vlan_id, error_reason, timestamp: now_secs() }
+    }
+
+    pub(crate) fn dnat_install_failed(port: u16, overlay_ip: String) -> Self {
+        Self::DnatInstallFailed { port, overlay_ip, timestamp: now_secs() }
+    }
+
+    pub(crate) fn dnat_removal_failed(port: u16, overlay_ip: String) -> Self {
+        Self::DnatRemovalFailed { port, overlay_ip, timestamp: now_secs() }
+    }
+
+    pub(crate) fn host_mapping_failed(
+        hostname: String,
+        ip: String,
+        docker_container: Option<String>,
+    ) -> Self {
+        Self::HostMappingFailed { hostname, ip, docker_container, timestamp: now_secs() }
+    }
+
+    pub(crate) fn control_channel_closed() -> Self {
+        Self::ControlChannelClosed { timestamp: now_secs() }
+    }
+
+    pub(crate) fn control_channel_ack_failed(msg_id: String, message_type: String) -> Self {
+        Self::ControlChannelAckFailed { msg_id, message_type, timestamp: now_secs() }
+    }
+
+    pub(crate) fn services_list_update_failed(error_message: String, num_services: u32) -> Self {
+        Self::ServicesListUpdateFailed { error_message, num_services, timestamp: now_secs() }
+    }
+
+    pub(crate) fn backend_trigger_send_failed(
+        service_name: String,
+        port: u16,
+        error_message: String,
+    ) -> Self {
+        Self::BackendTriggerSendFailed { service_name, port, error_message, timestamp: now_secs() }
+    }
+
+    pub(crate) fn firewall_rules_load_failed(path: String, error_message: String) -> Self {
+        Self::FirewallRulesLoadFailed { path, error_message, timestamp: now_secs() }
+    }
+
+    pub(crate) fn vxlan_setup_completed(vxlan_id: u32, ns_name: String) -> Self {
+        Self::VxlanSetupCompleted { vxlan_id, ns_name, timestamp: now_secs() }
+    }
+
+    pub(crate) fn vlan_setup_completed(vlan_id: u16) -> Self {
+        Self::VlanSetupCompleted { vlan_id, timestamp: now_secs() }
+    }
+
+    pub(crate) fn control_channel_established() -> Self {
+        Self::ControlChannelEstablished { timestamp: now_secs() }
+    }
+
+    pub(crate) fn services_list_updated(num_services: u32) -> Self {
+        Self::ServicesListUpdated { num_services, timestamp: now_secs() }
+    }
+
+    pub(crate) fn upstream_lookup_failed(
+        service_name: String,
+        client_ip: String,
+        error_message: String,
+    ) -> Self {
+        Self::UpstreamLookupFailed { service_name, client_ip, error_message, timestamp: now_secs() }
+    }
+
+    pub(crate) fn proxy_request_missing_host(client_ip: String) -> Self {
+        Self::ProxyRequestMissingHost { client_ip, timestamp: now_secs() }
+    }
+
+    pub(crate) fn proxy_request_invalid_host(client_ip: String) -> Self {
+        Self::ProxyRequestInvalidHost { client_ip, timestamp: now_secs() }
+    }
+
+    pub(crate) fn upstream_ip_parse_failed(raw_ip: String, service_name: String) -> Self {
+        Self::UpstreamIpParseFailed { raw_ip, service_name, timestamp: now_secs() }
+    }
+
+    pub(crate) fn proxy_client_not_inet(address_family: String) -> Self {
+        Self::ProxyClientNotInet { address_family, timestamp: now_secs() }
+    }
+
+    pub(crate) fn proxy_request_routed(
+        service_name: String,
+        client_ip: String,
+        upstream_ip: String,
+        latency_ms: u64,
+    ) -> Self {
+        Self::ProxyRequestRouted { service_name, client_ip, upstream_ip, latency_ms, timestamp: now_secs() }
+    }
 }
 
 /// Shared event store: ring buffer + broadcast channel for SSE subscribers.
@@ -345,13 +654,19 @@ impl EventStore {
         let _ = self.tx.send(event);
     }
 
-    /// Return stored events, optionally filtered by kind and/or capped at limit.
+    /// Return stored events, optionally filtered by kind and/or severity, capped at limit.
     /// `limit` takes the most recent N events.
-    pub(crate) async fn snapshot(&self, limit: Option<usize>, kind: Option<&str>) -> Vec<Event> {
+    pub(crate) async fn snapshot(
+        &self,
+        limit: Option<usize>,
+        kind: Option<&str>,
+        severity: Option<Severity>,
+    ) -> Vec<Event> {
         let buf = self.buffer.lock().await;
         let filtered: Vec<Event> = buf
             .iter()
             .filter(|e| kind.is_none_or(|k| e.kind() == k))
+            .filter(|e| severity.is_none_or(|s| e.severity() == s))
             .cloned()
             .collect();
         match limit {

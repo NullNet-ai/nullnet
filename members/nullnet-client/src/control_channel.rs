@@ -5,13 +5,29 @@ use crate::peers::peer::{Peers, VethKey};
 use ipnetwork::Ipv4Network;
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
-    HostMapping, MsgId, VlanSetup, VlanTeardown, VxlanSetup, VxlanTeardown, net_message,
+    AgentEvent, HostMapping, MsgId, VlanSetup, VlanTeardown, VxlanSetup, VxlanTeardown,
+    agent_event::Event as AgentEventKind, net_message,
+};
+use nullnet_grpc_lib::nullnet_grpc::{
+    AgentControlChannelAckFailed, AgentControlChannelClosed, AgentControlChannelEstablished,
+    AgentDnatInstallFailed, AgentHostMappingFailed, AgentVlanSetupCompleted,
+    AgentVlanSetupFailed, AgentVlanTeardownFailed, AgentVxlanSetupCompleted,
+    AgentVxlanSetupFailed, AgentVxlanTeardownFailed,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{RwLock, mpsc};
+
+/// Fire-and-forget: send an agent event to the server without blocking the caller.
+fn fire_event(grpc: &NullnetGrpcInterface, kind: AgentEventKind) {
+    let grpc = grpc.clone();
+    let event = AgentEvent { event: Some(kind) };
+    tokio::spawn(async move {
+        let _ = grpc.report_event(event).await;
+    });
+}
 
 pub(crate) async fn control_channel(
     server: NullnetGrpcInterface,
@@ -26,11 +42,14 @@ pub(crate) async fn control_channel(
         .await
         .handle_err(location!())?;
 
+    fire_event(&server, AgentEventKind::ControlChannelEstablished(AgentControlChannelEstablished {}));
+
     while let Ok(Some(message)) = inbound.message().await {
         let rtnetlink_handle = rtnetlink_handle.clone();
         let peers = peers.clone();
         let outbound = outbound.clone();
         let host_mappings_state = host_mappings_state.clone();
+        let server = server.clone();
         match message.message {
             Some(net_message::Message::VlanSetup(vlan_setup)) => {
                 tokio::spawn(async move {
@@ -40,6 +59,7 @@ pub(crate) async fn control_channel(
                         peers,
                         outbound,
                         host_mappings_state,
+                        server,
                     )
                     .await;
                 });
@@ -51,6 +71,7 @@ pub(crate) async fn control_channel(
                         rtnetlink_handle,
                         peers,
                         host_mappings_state,
+                        server,
                     )
                     .await;
                 });
@@ -63,6 +84,7 @@ pub(crate) async fn control_channel(
                         outbound,
                         triggers_state,
                         host_mappings_state,
+                        server,
                     )
                     .await;
                 });
@@ -70,12 +92,14 @@ pub(crate) async fn control_channel(
             Some(net_message::Message::VxlanTeardown(vxlan_teardown)) => {
                 let triggers_state = triggers_state.clone();
                 tokio::spawn(async move {
-                    handle_vxlan_teardown(vxlan_teardown, triggers_state, host_mappings_state);
+                    handle_vxlan_teardown(vxlan_teardown, triggers_state, host_mappings_state, server);
                 });
             }
             None => {}
         }
     }
+
+    fire_event(&server, AgentEventKind::ControlChannelClosed(AgentControlChannelClosed {}));
 
     Ok(())
 }
@@ -86,10 +110,11 @@ async fn handle_vlan_setup(
     peers: Arc<RwLock<Peers>>,
     outbound: Sender<MsgId>,
     host_mappings_state: Arc<HostMappingsState>,
+    grpc: NullnetGrpcInterface,
 ) -> Result<(), Error> {
     let msg_id = &message
         .msg_id
-        .ok_or("Missing message ID in VXLAN setup message")
+        .ok_or("Missing message ID in VLAN setup message")
         .handle_err(location!())?;
     let local_veth = message
         .local_veth
@@ -103,7 +128,13 @@ async fn handle_vlan_setup(
         .remote_veth
         .parse::<Ipv4Addr>()
         .handle_err(location!())?;
-    let vlan_id = u16::try_from(message.vlan_id).handle_err(location!())?;
+    let vlan_id = u16::try_from(message.vlan_id).handle_err(location!()).inspect_err(|e| {
+        fire_event(&grpc, AgentEventKind::VlanSetupFailed(AgentVlanSetupFailed {
+            vlan_id: message.vlan_id,
+            local_veth: local_veth.to_string(),
+            error_reason: e.to_string(),
+        }));
+    })?;
 
     // setup VLAN on this machine
     let init_t = std::time::Instant::now();
@@ -126,12 +157,25 @@ async fn handle_vlan_setup(
 
     // add host mapping if needed
     if let Some(host_mapping) = &message.host_mapping {
-        let _ = add_host_mapping(host_mapping, None);
+        if add_host_mapping(host_mapping, None).is_err() {
+            fire_event(&grpc, AgentEventKind::HostMappingFailed(AgentHostMappingFailed {
+                hostname: host_mapping.name.clone(),
+                ip: host_mapping.ip.clone(),
+                docker_container: None,
+            }));
+        }
         host_mappings_state.record_vlan(vlan_id, host_mapping.clone());
     }
 
     // acknowledge message
-    let _ = outbound.send(msg_id.clone()).await;
+    if outbound.send(msg_id.clone()).await.is_err() {
+        fire_event(&grpc, AgentEventKind::ControlChannelAckFailed(AgentControlChannelAckFailed {
+            msg_id: msg_id.id.clone(),
+            message_type: "vlan_setup".to_string(),
+        }));
+    }
+
+    fire_event(&grpc, AgentEventKind::VlanSetupCompleted(AgentVlanSetupCompleted { vlan_id: u32::from(vlan_id) }));
 
     Ok(())
 }
@@ -141,8 +185,14 @@ async fn handle_vlan_teardown(
     rtnetlink_handle: RtNetLinkHandle,
     peers: Arc<RwLock<Peers>>,
     host_mappings_state: Arc<HostMappingsState>,
+    grpc: NullnetGrpcInterface,
 ) -> Result<(), Error> {
-    let vlan_id = u16::try_from(message.vlan_id).handle_err(location!())?;
+    let vlan_id = u16::try_from(message.vlan_id).handle_err(location!()).inspect_err(|e| {
+        fire_event(&grpc, AgentEventKind::VlanTeardownFailed(AgentVlanTeardownFailed {
+            vlan_id: message.vlan_id,
+            error_reason: e.to_string(),
+        }));
+    })?;
 
     // teardown VLAN on this machine
     let init_t = std::time::Instant::now();
@@ -170,6 +220,7 @@ async fn handle_vxlan_setup(
     outbound: Sender<MsgId>,
     triggers_state: Arc<TriggersState>,
     host_mappings_state: Arc<HostMappingsState>,
+    grpc: NullnetGrpcInterface,
 ) -> Result<(), Error> {
     let msg_id = &message
         .msg_id
@@ -208,7 +259,20 @@ async fn handle_vxlan_setup(
     if let Some(container) = &message.docker_container {
         cmd.arg(container);
     }
-    let _ = cmd.spawn().map(|mut c| c.wait()).handle_err(location!());
+    let script_result = cmd.spawn().and_then(|mut c| c.wait());
+    let error_code = match &script_result {
+        Ok(status) if !status.success() => status.code().unwrap_or(-1),
+        Err(_) => -1,
+        _ => 0,
+    };
+    if error_code != 0 {
+        fire_event(&grpc, AgentEventKind::VxlanSetupFailed(AgentVxlanSetupFailed {
+            vxlan_id,
+            ns_name: ns_name.clone(),
+            error_code,
+        }));
+    }
+    let _ = script_result.handle_err(location!());
     println!(
         "VXLAN {vxlan_id} setup completed in {} ms (docker: {})",
         init_t.elapsed().as_millis(),
@@ -217,7 +281,13 @@ async fn handle_vxlan_setup(
 
     // add host mapping if needed
     if let Some(host_mapping) = &message.host_mapping {
-        let _ = add_host_mapping(host_mapping, message.docker_container.as_deref());
+        if add_host_mapping(host_mapping, message.docker_container.as_deref()).is_err() {
+            fire_event(&grpc, AgentEventKind::HostMappingFailed(AgentHostMappingFailed {
+                hostname: host_mapping.name.clone(),
+                ip: host_mapping.ip.clone(),
+                docker_container: message.docker_container.clone(),
+            }));
+        }
         host_mappings_state.record_vxlan(
             vxlan_id,
             host_mapping.clone(),
@@ -232,11 +302,28 @@ async fn handle_vxlan_setup(
         {
             dnat::install(dnat_port, overlay_ip);
             triggers_state.mark_active(dnat_port, vxlan_id, overlay_ip);
+        } else if message.dnat_port.is_some() {
+            fire_event(&grpc, AgentEventKind::DnatInstallFailed(AgentDnatInstallFailed {
+                port: message.dnat_port.unwrap_or(0),
+                overlay_ip: host_mapping.ip.clone(),
+            }));
         }
     }
 
     // acknowledge message
-    let _ = outbound.send(msg_id.clone()).await;
+    if outbound.send(msg_id.clone()).await.is_err() {
+        fire_event(&grpc, AgentEventKind::ControlChannelAckFailed(AgentControlChannelAckFailed {
+            msg_id: msg_id.id.clone(),
+            message_type: "vxlan_setup".to_string(),
+        }));
+    }
+
+    if error_code == 0 {
+        fire_event(&grpc, AgentEventKind::VxlanSetupCompleted(AgentVxlanSetupCompleted {
+            vxlan_id,
+            ns_name,
+        }));
+    }
 
     Ok(())
 }
@@ -245,6 +332,7 @@ fn handle_vxlan_teardown(
     message: VxlanTeardown,
     triggers_state: Arc<TriggersState>,
     host_mappings_state: Arc<HostMappingsState>,
+    grpc: NullnetGrpcInterface,
 ) {
     // remove DNAT before tearing the tunnel down so existing flows reset cleanly
     if let Some((port, overlay_ip)) = triggers_state.remove_by_vxlan(message.vxlan_id) {
@@ -260,16 +348,29 @@ fn handle_vxlan_teardown(
     // teardown VXLAN on this machine
     let init_t = std::time::Instant::now();
 
-    let vxlan_id = message.vxlan_id.to_string();
-    let ns_name = message.ns_name;
+    let vxlan_id = message.vxlan_id;
+    let ns_name = message.ns_name.clone();
     let br_name = message.br_name;
 
     let mut cmd = std::process::Command::new("./vxlan_scripts/vxlan-teardown.sh");
-    cmd.arg(&vxlan_id).arg(&ns_name).arg(&br_name);
+    cmd.arg(&vxlan_id.to_string()).arg(&ns_name).arg(&br_name);
     if let Some(container) = &message.docker_container {
         cmd.arg(container);
     }
-    let _ = cmd.spawn().map(|mut c| c.wait()).handle_err(location!());
+    let script_result = cmd.spawn().and_then(|mut c| c.wait());
+    let error_code = match &script_result {
+        Ok(status) if !status.success() => status.code().unwrap_or(-1),
+        Err(_) => -1,
+        _ => 0,
+    };
+    if error_code != 0 {
+        fire_event(&grpc, AgentEventKind::VxlanTeardownFailed(AgentVxlanTeardownFailed {
+            vxlan_id,
+            ns_name,
+            error_code,
+        }));
+    }
+    let _ = script_result.handle_err(location!());
 
     println!(
         "VXLAN teardown completed in {} ms",

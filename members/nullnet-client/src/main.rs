@@ -14,7 +14,12 @@ use clap::Parser;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use nullnet_firewall::{DataLink, Firewall, FirewallError, LogLevel};
 use nullnet_grpc_lib::NullnetGrpcInterface;
-use nullnet_grpc_lib::nullnet_grpc::{Net, Services, ServicesListResponse};
+use nullnet_grpc_lib::nullnet_grpc::{
+    AgentEvent, Net, Services, ServicesListResponse,
+    agent_event::Event as AgentEventKind,
+    AgentBackendTriggerSendFailed, AgentFirewallRulesLoadFailed,
+    AgentServicesListUpdateFailed, AgentServicesListUpdated,
+};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::ops::Sub;
@@ -81,7 +86,7 @@ async fn main() -> Result<(), Error> {
     firewall.log_level(LogLevel::Db);
     firewall.data_link(DataLink::Ethernet);
     let firewall_shared = Arc::new(RwLock::new(firewall));
-    set_firewall_rules(&firewall_shared, &firewall_path, true).await?;
+    set_firewall_rules(&firewall_shared, &firewall_path, true, None).await?;
 
     // initialize gRPC connection
     let grpc_server = grpc_init().await?;
@@ -142,14 +147,27 @@ async fn main() -> Result<(), Error> {
                 .await
             {
                 eprintln!("backend_trigger for '{service_name}' port {port} failed: {e}");
-                // allow re-trigger on next observed packet
                 triggers_state_tr.forget(port);
+                let grpc = grpc_server3.clone();
+                let svc = service_name.clone();
+                let err_msg = e.clone();
+                tokio::spawn(async move {
+                    let _ = grpc.report_event(AgentEvent {
+                        event: Some(AgentEventKind::BackendTriggerSendFailed(
+                            AgentBackendTriggerSendFailed {
+                                service_name: svc,
+                                port: u32::from(port),
+                                error_message: err_msg,
+                            },
+                        )),
+                    }).await;
+                });
             }
         }
     });
 
     // watch the file defining rules and update the firewall accordingly
-    set_firewall_rules(&firewall_shared, &firewall_path, false).await?;
+    set_firewall_rules(&firewall_shared, &firewall_path, false, Some(grpc_server.clone())).await?;
 
     Ok(())
 }
@@ -163,10 +181,12 @@ fn print_info(net: Net) {
 }
 
 /// Loads and refreshes firewall rules whenever the corresponding file is updated.
+/// `grpc` is only used in the reload path (watch loop); initial load happens before gRPC is up.
 async fn set_firewall_rules(
     firewall: &Arc<RwLock<Firewall>>,
     firewall_path: &str,
     is_init: bool,
+    grpc: Option<NullnetGrpcInterface>,
 ) -> Result<(), Error> {
     let print_info = |result: &Result<(), FirewallError>, is_init: bool| match result {
         Err(err) => {
@@ -194,6 +214,7 @@ async fn set_firewall_rules(
         }
     }
 
+    let firewall_path_owned = firewall_path.to_string();
     let mut firewall_directory = PathBuf::from(firewall_path);
     firewall_directory.pop();
 
@@ -216,8 +237,22 @@ async fn set_firewall_rules(
             if last_update_time.elapsed().as_millis() > 100 {
                 // ensure file changes are propagated
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                let result = firewall.write().await.set_rules(firewall_path);
+                let result = firewall.write().await.set_rules(&firewall_path_owned);
                 print_info(&result, is_init);
+                if let Err(ref err) = result {
+                    if let Some(ref g) = grpc {
+                        let g = g.clone();
+                        let path = firewall_path_owned.clone();
+                        let error_message = err.to_string();
+                        tokio::spawn(async move {
+                            let _ = g.report_event(AgentEvent {
+                                event: Some(AgentEventKind::FirewallRulesLoadFailed(
+                                    AgentFirewallRulesLoadFailed { path, error_message },
+                                )),
+                            }).await;
+                        });
+                    }
+                }
                 if result.is_ok() && is_init {
                     return Ok(());
                 }
@@ -280,27 +315,48 @@ async fn declare_services(
         }
 
         println!("Declaring services to gRPC server: {services:?}");
+        let num_services = services.services.len() as u32;
 
         // send services to gRPC server; response carries the trigger ports
         // attached to the services we just declared as hosting.
-        let response: ServicesListResponse = grpc_server
-            .services_list(services)
-            .await
-            .handle_err(location!())?;
-
-        let mut port_to_service: HashMap<u16, String> = HashMap::new();
-        for st in response.service_triggers {
-            for port in st.ports {
-                let Ok(port) = u16::try_from(port) else {
-                    eprintln!("server returned invalid trigger port {port}; skipping");
-                    continue;
-                };
-                port_to_service.insert(port, st.service_name.clone());
+        match grpc_server.services_list(services).await {
+            Err(e) => {
+                eprintln!("services_list failed: {e}");
+                let grpc = grpc_server.clone();
+                let error_message = e.clone();
+                tokio::spawn(async move {
+                    let _ = grpc.report_event(AgentEvent {
+                        event: Some(AgentEventKind::ServicesListUpdateFailed(
+                            AgentServicesListUpdateFailed { error_message, num_services },
+                        )),
+                    }).await;
+                });
             }
-        }
-        if config_tx.send(port_to_service).is_err() {
-            // observer task gone; nothing more to do here
-            return Ok(());
+            Ok(response) => {
+                let grpc = grpc_server.clone();
+                tokio::spawn(async move {
+                    let _ = grpc.report_event(AgentEvent {
+                        event: Some(AgentEventKind::ServicesListUpdated(
+                            AgentServicesListUpdated { num_services },
+                        )),
+                    }).await;
+                });
+
+                let mut port_to_service: HashMap<u16, String> = HashMap::new();
+                for st in response.service_triggers {
+                    for port in st.ports {
+                        let Ok(port) = u16::try_from(port) else {
+                            eprintln!("server returned invalid trigger port {port}; skipping");
+                            continue;
+                        };
+                        port_to_service.insert(port, st.service_name.clone());
+                    }
+                }
+                if config_tx.send(port_to_service).is_err() {
+                    // observer task gone; nothing more to do here
+                    return Ok(());
+                }
+            }
         }
 
         // wait before re-declaring services
