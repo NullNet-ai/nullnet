@@ -1,21 +1,17 @@
-MIT License
+Business Source License 1.1
 
-Copyright (c) 2023 Giuliano Bellini
+Licensor: NullNet AI
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Licensed Work: This repository and all source code, documentation, and related files.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Additional Use Grant:
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+You may use, copy, modify, compile, and deploy the Licensed Work for personal use, research, education, evaluation, testing, and internal business operations.
+
+You may not use the Licensed Work to provide a hosted service, managed service, cloud service, network service, security service, commercial SaaS product, resale product, OEM product, or competing commercial offering without prior written permission from NullNet AI.
+
+For clarity, internal use by a company is allowed. Offering the Licensed Work, modified versions, or substantially similar functionality to third parties as a paid or unpaid service is not allowed.
+
+Change Date: Four years from the date this license is first applied to this repository.
+
+Change License: Apache License 2.0
