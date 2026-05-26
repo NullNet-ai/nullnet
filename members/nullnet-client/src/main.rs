@@ -15,7 +15,7 @@ use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watche
 use nullnet_firewall::{DataLink, Firewall, FirewallError, LogLevel};
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentEvent, Net, Services, ServicesListResponse,
+    AgentEvent, Net, Services,
     agent_event::Event as AgentEventKind,
     AgentBackendTriggerSendFailed, AgentFirewallRulesLoadFailed,
     AgentServicesListUpdateFailed, AgentServicesListUpdated,
@@ -130,8 +130,9 @@ async fn main() -> Result<(), Error> {
     ebpf::load::load_ebpf(&ETH_NAME, config_rx, trigger_tx);
 
     // declare services + push trigger config to the eBPF observer on each refresh
+    let grpc_server_ds = grpc_server.clone();
     tokio::spawn(async move {
-        declare_services(grpc_server, config_tx)
+        declare_services(grpc_server_ds, config_tx)
             .await
             .expect("Failed to declare services");
     });

@@ -132,7 +132,7 @@ async fn handle_vlan_setup(
         fire_event(&grpc, AgentEventKind::VlanSetupFailed(AgentVlanSetupFailed {
             vlan_id: message.vlan_id,
             local_veth: local_veth.to_string(),
-            error_reason: e.to_string(),
+            error_reason: e.to_str().to_string(),
         }));
     })?;
 
@@ -190,7 +190,7 @@ async fn handle_vlan_teardown(
     let vlan_id = u16::try_from(message.vlan_id).handle_err(location!()).inspect_err(|e| {
         fire_event(&grpc, AgentEventKind::VlanTeardownFailed(AgentVlanTeardownFailed {
             vlan_id: message.vlan_id,
-            error_reason: e.to_string(),
+            error_reason: e.to_str().to_string(),
         }));
     })?;
 
