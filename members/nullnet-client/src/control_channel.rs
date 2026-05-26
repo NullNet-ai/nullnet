@@ -1,7 +1,7 @@
 use crate::commands::{RtNetLinkHandle, configure_access_port, dnat, remove_vlan};
-use crate::ebpf::triggers::TriggersState;
 use crate::host_mappings::HostMappingsState;
 use crate::peers::peer::{Peers, VethKey};
+use crate::triggers::TriggersState;
 use ipnetwork::Ipv4Network;
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
@@ -225,13 +225,31 @@ async fn handle_vxlan_setup(
         );
 
         // backend-entry edge: install DNAT(dnat_port -> overlay_ip) so the
-        // initiator's traffic on that local port is steered into the new VXLAN
+        // initiator's traffic on that local port is steered into the new
+        // VXLAN.
+        //
+        // Order matters. The NFQUEUE listener is parked on a `Notify` that
+        // `mark_active` fires; once woken it verdicts ACCEPT and the held
+        // packet traverses `nat PREROUTING`. The DNAT rule MUST already be
+        // installed by then, so we:
+        //   1. peek the initiator's bridge IP (stashed at `mark_pending`)
+        //   2. install DNAT with `-s <container_ip>`
+        //   3. mark_active → wakes the waiter, packet released into the new
+        //      rule
         if let Some(dnat_port) = message.dnat_port
             && let Ok(dnat_port) = u16::try_from(dnat_port)
             && let Ok(overlay_ip) = host_mapping.ip.parse::<Ipv4Addr>()
         {
-            dnat::install(dnat_port, overlay_ip);
-            triggers_state.mark_active(dnat_port, vxlan_id, overlay_ip);
+            let container_key = message.docker_container.as_deref().unwrap_or("");
+            let container_ip = triggers_state.peek_container_ip(container_key, dnat_port);
+            dnat::install(dnat_port, overlay_ip, container_ip);
+            triggers_state.mark_active(
+                container_key,
+                dnat_port,
+                vxlan_id,
+                overlay_ip,
+                container_ip,
+            );
         }
     }
 
@@ -246,9 +264,12 @@ fn handle_vxlan_teardown(
     triggers_state: Arc<TriggersState>,
     host_mappings_state: Arc<HostMappingsState>,
 ) {
-    // remove DNAT before tearing the tunnel down so existing flows reset cleanly
-    if let Some((port, overlay_ip)) = triggers_state.remove_by_vxlan(message.vxlan_id) {
-        dnat::remove(port, overlay_ip);
+    // remove DNAT before tearing the tunnel down so existing flows reset
+    // cleanly. The `container_ip` matches the `-s` we used at install time.
+    if let Some((_container, port, overlay_ip, container_ip)) =
+        triggers_state.remove_by_vxlan(message.vxlan_id)
+    {
+        dnat::remove(port, overlay_ip, container_ip);
     }
 
     // remove host mapping if one was installed at setup

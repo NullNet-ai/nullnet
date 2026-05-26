@@ -153,6 +153,13 @@ pub struct BackendTriggerRequest {
     /// service's configured triggers (one chain per port).
     #[prost(uint32, tag = "2")]
     pub port: u32,
+    /// Real Docker container name of the initiator replica that fired the
+    /// trigger. Empty when the initiator is a host process (no docker context),
+    /// in which case the server falls back to picking the first replica matching
+    /// sender_ip. With docker, this disambiguates the replica when multiple
+    /// replicas of the same service live on the same host.
+    #[prost(string, tag = "3")]
+    pub initiator_container: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Empty {}

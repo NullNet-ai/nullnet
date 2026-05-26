@@ -94,10 +94,19 @@ impl NullnetGrpcInterface {
     }
 
     #[allow(clippy::missing_errors_doc)]
-    pub async fn backend_trigger(&self, service_name: String, port: u32) -> Result<(), String> {
+    pub async fn backend_trigger(
+        &self,
+        service_name: String,
+        port: u32,
+        initiator_container: String,
+    ) -> Result<(), String> {
         self.client
             .clone()
-            .backend_trigger(Request::new(BackendTriggerRequest { service_name, port }))
+            .backend_trigger(Request::new(BackendTriggerRequest {
+                service_name,
+                port,
+                initiator_container,
+            }))
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())

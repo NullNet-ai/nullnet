@@ -3,13 +3,13 @@
 use crate::cli::Args;
 use crate::commands::{RtNetLinkHandle, cleanup_network, setup_br0};
 use crate::control_channel::control_channel;
-use crate::ebpf::triggers::TriggersState;
-use crate::env::{CONTROL_SERVICE_ADDR, CONTROL_SERVICE_PORT, ETH_NAME};
+use crate::env::{CONTROL_SERVICE_ADDR, CONTROL_SERVICE_PORT};
 use crate::forward::receive::receive;
 use crate::forward::send::send;
 use crate::host_mappings::HostMappingsState;
 use crate::local_endpoints::LocalEndpoints;
 use crate::peers::peer::Peers;
+use crate::triggers::TriggersState;
 use clap::Parser;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use nullnet_firewall::{DataLink, Firewall, FirewallError, LogLevel};
@@ -30,12 +30,13 @@ mod cli;
 mod commands;
 mod control_channel;
 mod craft;
-mod ebpf;
 mod env;
 mod forward;
 mod host_mappings;
 mod local_endpoints;
+mod nfqueue;
 mod peers;
+mod triggers;
 
 pub const FORWARD_PORT: u16 = 9999;
 pub const TAP_NAME: &str = "nullnet0";
@@ -97,10 +98,11 @@ async fn main() -> Result<(), Error> {
 
     print_info(net_type.net());
 
-    // shared dedup state (one trigger pending/active per port until teardown)
+    // shared dedup + waiter state, keyed by (initiator_container, port).
+    // The NFQUEUE listener marks Pending and awaits the Notify; the control
+    // channel marks Active when the matching VxlanSetup lands.
     let triggers_state = Arc::new(TriggersState::default());
     let triggers_state_cc = triggers_state.clone();
-    let triggers_state_tr = triggers_state.clone();
 
     // remember /etc/hosts entries installed at setup so teardown can undo them
     let host_mappings_state = Arc::new(HostMappingsState::default());
@@ -118,34 +120,19 @@ async fn main() -> Result<(), Error> {
         .expect("Control channel failed");
     });
 
-    // observe outgoing dependency-port traffic via eBPF; the observer's
-    // watch-port set is driven by the services-list response from the server.
+    // NFQUEUE listener owns trigger detection: kernel queues the first
+    // packet of each new watched-port flow, listener fires backend_trigger
+    // with the resolved initiator container, waits for VxlanSetup to install
+    // DNAT, then verdicts ACCEPT so the original packet hits the new chain.
     let (config_tx, config_rx) = tokio::sync::mpsc::unbounded_channel::<HashMap<u16, String>>();
-    let (trigger_tx, mut trigger_rx) = tokio::sync::mpsc::unbounded_channel::<(String, u16)>();
-    ebpf::load::load_ebpf(&ETH_NAME, config_rx, trigger_tx);
+    nfqueue::spawn_listener(grpc_server3, triggers_state, config_rx);
 
-    // declare services + push trigger config to the eBPF observer on each refresh
+    // declare services + push the port→service map to the NFQUEUE listener
+    // on each refresh
     tokio::spawn(async move {
         declare_services(grpc_server, config_tx)
             .await
             .expect("Failed to declare services");
-    });
-
-    // forward observed triggers to the gRPC server
-    tokio::spawn(async move {
-        while let Some((service_name, port)) = trigger_rx.recv().await {
-            if !triggers_state_tr.try_mark_pending(port) {
-                continue;
-            }
-            if let Err(e) = grpc_server3
-                .backend_trigger(service_name.clone(), u32::from(port))
-                .await
-            {
-                eprintln!("backend_trigger for '{service_name}' port {port} failed: {e}");
-                // allow re-trigger on next observed packet
-                triggers_state_tr.forget(port);
-            }
-        }
     });
 
     // watch the file defining rules and update the firewall accordingly

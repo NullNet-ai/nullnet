@@ -23,6 +23,4 @@ futures = "0.3.32"
 network-interface = "2.0.5"
 gag.workspace = true
 chrono.workspace = true
-aya = "0.13"
-libc = "0.2"
-log = "0.4"
+nfq = "0.2"

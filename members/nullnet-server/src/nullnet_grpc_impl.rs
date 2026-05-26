@@ -426,7 +426,12 @@ impl NullnetGrpcImpl {
 
         let req = request.into_inner();
         let port = u16::try_from(req.port).handle_err(location!())?;
-        self.handle_backend_trigger(&req.service_name, port, sender_ip)
+        let container = if req.initiator_container.is_empty() {
+            None
+        } else {
+            Some(req.initiator_container)
+        };
+        self.handle_backend_trigger(&req.service_name, port, sender_ip, container.as_deref())
             .await?;
         Ok(Response::new(Empty {}))
     }
@@ -436,8 +441,12 @@ impl NullnetGrpcImpl {
         initiator_name: &str,
         port: u16,
         sender_ip: IpAddr,
+        initiator_container: Option<&str>,
     ) -> Result<(), Error> {
-        println!("Received backend trigger for '{initiator_name}' (port {port}) from {sender_ip}");
+        println!(
+            "Received backend trigger for '{initiator_name}' (port {port}) from {sender_ip} (container: {})",
+            initiator_container.unwrap_or("<none>"),
+        );
 
         // One write guard resolves the initiator replica, refreshes heartbeat
         // on the first-dep edge if already set up, and decides whether the
@@ -456,10 +465,23 @@ impl NullnetGrpcImpl {
             let ServiceInfo::Registered(reg) = si else {
                 Err("Initiator service is not registered").handle_err(location!())?
             };
+            // Prefer the (ip, container) match when the client supplied a
+            // container name (Docker initiator). Fall back to IP-only when the
+            // container is unknown — host processes, or pre-NFQUEUE callers.
             let replica = reg
                 .replicas()
                 .iter()
-                .find(|r| r.ip() == sender_ip)
+                .find(|r| {
+                    r.ip() == sender_ip
+                        && initiator_container.is_some_and(|c| r.docker_container() == Some(c))
+                })
+                .or_else(|| {
+                    if initiator_container.is_none() {
+                        reg.replicas().iter().find(|r| r.ip() == sender_ip)
+                    } else {
+                        None
+                    }
+                })
                 .ok_or("No initiator replica found on sender host")
                 .handle_err(location!())?;
             let initiator_ip = replica.ip();

@@ -135,7 +135,7 @@ async fn trigger_backend_chain(
     port: u16,
 ) {
     server
-        .handle_backend_trigger(initiator_name, port, initiator_ip)
+        .handle_backend_trigger(initiator_name, port, initiator_ip, None)
         .await
         .expect("backend trigger failed");
 }

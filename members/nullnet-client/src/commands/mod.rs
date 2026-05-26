@@ -7,6 +7,7 @@ use std::net::Ipv4Addr;
 
 pub(crate) mod dnat;
 mod netlink;
+pub(crate) mod nfqueue;
 mod ovs;
 
 pub(crate) async fn setup_br0(rtnetlink_handle: &RtNetLinkHandle) {
@@ -84,6 +85,7 @@ impl RtNetLinkHandle {
 
 pub(crate) async fn cleanup_network(rtnetlink_handle: &RtNetLinkHandle) {
     dnat::init();
+    nfqueue::init();
     vxlan_cleanup_network();
     vlan_cleanup_network(rtnetlink_handle).await;
 }

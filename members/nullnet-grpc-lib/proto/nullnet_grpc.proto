@@ -137,6 +137,12 @@ message BackendTriggerRequest {
   // The trigger port observed by the client. Picks one chain among the
   // service's configured triggers (one chain per port).
   uint32 port = 2;
+  // Real Docker container name of the initiator replica that fired the
+  // trigger. Empty when the initiator is a host process (no docker context),
+  // in which case the server falls back to picking the first replica matching
+  // sender_ip. With docker, this disambiguates the replica when multiple
+  // replicas of the same service live on the same host.
+  string initiator_container = 3;
 }
 
 // Misc ----------------------------------------------------------------------------------------------------------------
