@@ -4,10 +4,9 @@ mod nullnet_proxy;
 use crate::nullnet_proxy::NullnetProxy;
 use async_trait::async_trait;
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentEvent, ProxyRequest,
+    AgentEvent, AgentProxyClientNotInet, AgentProxyRequestInvalidHost,
+    AgentProxyRequestMissingHost, AgentProxyRequestRouted, AgentUpstreamLookupFailed, ProxyRequest,
     agent_event::Event as AgentEventKind,
-    AgentProxyClientNotInet, AgentProxyRequestInvalidHost, AgentProxyRequestMissingHost,
-    AgentProxyRequestRouted, AgentUpstreamLookupFailed,
 };
 use nullnet_liberror::{ErrorHandler, Location, location};
 use pingora_core::server::Server;
@@ -46,13 +45,18 @@ impl ProxyHttp for NullnetProxy {
                 let server = self.server.clone();
                 let cip = client_ip_for_events.clone();
                 tokio::spawn(async move {
-                    let _ = server.report_event(AgentEvent {
-                        event: Some(AgentEventKind::ProxyRequestMissingHost(
-                            AgentProxyRequestMissingHost { client_ip: cip },
-                        )),
-                    }).await;
+                    let _ = server
+                        .report_event(AgentEvent {
+                            event: Some(AgentEventKind::ProxyRequestMissingHost(
+                                AgentProxyRequestMissingHost { client_ip: cip },
+                            )),
+                        })
+                        .await;
                 });
-                return Err(Error::explain(ErrorType::BindError, "No host header in request"));
+                return Err(Error::explain(
+                    ErrorType::BindError,
+                    "No host header in request",
+                ));
             }
         };
         let host_str = match host_header.to_str() {
@@ -61,11 +65,13 @@ impl ProxyHttp for NullnetProxy {
                 let server = self.server.clone();
                 let cip = client_ip_for_events.clone();
                 tokio::spawn(async move {
-                    let _ = server.report_event(AgentEvent {
-                        event: Some(AgentEventKind::ProxyRequestInvalidHost(
-                            AgentProxyRequestInvalidHost { client_ip: cip },
-                        )),
-                    }).await;
+                    let _ = server
+                        .report_event(AgentEvent {
+                            event: Some(AgentEventKind::ProxyRequestInvalidHost(
+                                AgentProxyRequestInvalidHost { client_ip: cip },
+                            )),
+                        })
+                        .await;
                 });
                 return Err(Error::explain(ErrorType::BindError, "Invalid host header"));
             }
@@ -78,25 +84,39 @@ impl ProxyHttp for NullnetProxy {
             None => {
                 let server = self.server.clone();
                 tokio::spawn(async move {
-                    let _ = server.report_event(AgentEvent {
-                        event: Some(AgentEventKind::ProxyClientNotInet(
-                            AgentProxyClientNotInet { address_family: "none".to_string() },
-                        )),
-                    }).await;
+                    let _ = server
+                        .report_event(AgentEvent {
+                            event: Some(AgentEventKind::ProxyClientNotInet(
+                                AgentProxyClientNotInet {
+                                    address_family: "none".to_string(),
+                                },
+                            )),
+                        })
+                        .await;
                 });
-                return Err(Error::explain(ErrorType::BindError, "Client address not found in session"));
+                return Err(Error::explain(
+                    ErrorType::BindError,
+                    "Client address not found in session",
+                ));
             }
             Some(addr) => match addr.as_inet() {
                 None => {
                     let server = self.server.clone();
                     tokio::spawn(async move {
-                        let _ = server.report_event(AgentEvent {
-                            event: Some(AgentEventKind::ProxyClientNotInet(
-                                AgentProxyClientNotInet { address_family: "non-inet".to_string() },
-                            )),
-                        }).await;
+                        let _ = server
+                            .report_event(AgentEvent {
+                                event: Some(AgentEventKind::ProxyClientNotInet(
+                                    AgentProxyClientNotInet {
+                                        address_family: "non-inet".to_string(),
+                                    },
+                                )),
+                            })
+                            .await;
                     });
-                    return Err(Error::explain(ErrorType::BindError, "Client address is not an Inet address"));
+                    return Err(Error::explain(
+                        ErrorType::BindError,
+                        "Client address is not an Inet address",
+                    ));
                 }
                 Some(inet) => inet.ip().to_string(),
             },
@@ -115,17 +135,22 @@ impl ProxyHttp for NullnetProxy {
                 let cip = client_ip.clone();
                 let svc = service_name.clone();
                 tokio::spawn(async move {
-                    let _ = server.report_event(AgentEvent {
-                        event: Some(AgentEventKind::UpstreamLookupFailed(
-                            AgentUpstreamLookupFailed {
-                                service_name: svc,
-                                client_ip: cip,
-                                error_message: "upstream lookup failed".to_string(),
-                            },
-                        )),
-                    }).await;
+                    let _ = server
+                        .report_event(AgentEvent {
+                            event: Some(AgentEventKind::UpstreamLookupFailed(
+                                AgentUpstreamLookupFailed {
+                                    service_name: svc,
+                                    client_ip: cip,
+                                    error_message: "upstream lookup failed".to_string(),
+                                },
+                            )),
+                        })
+                        .await;
                 });
-                return Err(Error::explain(ErrorType::BindError, "Failed to retrieve upstream"));
+                return Err(Error::explain(
+                    ErrorType::BindError,
+                    "Failed to retrieve upstream",
+                ));
             }
         };
         println!("upstream: {upstream}\n");
@@ -136,20 +161,21 @@ impl ProxyHttp for NullnetProxy {
         let cip = client_ip.clone();
         let uip = upstream.ip().to_string();
         tokio::spawn(async move {
-            let _ = server.report_event(AgentEvent {
-                event: Some(AgentEventKind::ProxyRequestRouted(AgentProxyRequestRouted {
-                    service_name: svc,
-                    client_ip: cip,
-                    upstream_ip: uip,
-                    latency_ms,
-                })),
-            }).await;
+            let _ = server
+                .report_event(AgentEvent {
+                    event: Some(AgentEventKind::ProxyRequestRouted(
+                        AgentProxyRequestRouted {
+                            service_name: svc,
+                            client_ip: cip,
+                            upstream_ip: uip,
+                            latency_ms,
+                        },
+                    )),
+                })
+                .await;
         });
 
-        println!(
-            "TOTAL VLANS SETUP TIME: {} ms\n",
-            latency_ms
-        );
+        println!("TOTAL VLANS SETUP TIME: {} ms\n", latency_ms);
 
         Ok(Box::new(HttpPeer::new(upstream, false, String::new())))
     }

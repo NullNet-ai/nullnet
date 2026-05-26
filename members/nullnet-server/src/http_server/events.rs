@@ -21,7 +21,10 @@ pub(crate) async fn events_handler(
         .await;
     let envelopes: Vec<EventEnvelope<'_>> = events
         .iter()
-        .map(|e| EventEnvelope { severity: e.severity(), event: e })
+        .map(|e| EventEnvelope {
+            severity: e.severity(),
+            event: e,
+        })
         .collect();
     Json(serde_json::to_value(envelopes).unwrap_or(serde_json::Value::Array(vec![])))
 }

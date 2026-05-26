@@ -13,8 +13,7 @@ use crate::timeout::check_timeouts;
 use nullnet_grpc_lib::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use nullnet_grpc_lib::nullnet_grpc::{
     AgentEvent, BackendTriggerRequest, Empty, MsgId, NetMessage, NetType, ProxyRequest,
-    ServiceTrigger, Services, ServicesListResponse, Upstream,
-    agent_event::Event as AgentEventKind,
+    ServiceTrigger, Services, ServicesListResponse, Upstream, agent_event::Event as AgentEventKind,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::{HashMap, HashSet};
@@ -977,58 +976,70 @@ impl NullnetGrpc for NullnetGrpcImpl {
             .map_err(|err| Status::internal(err.to_str()))
     }
 
-    async fn report_event(
-        &self,
-        req: Request<AgentEvent>,
-    ) -> Result<Response<Empty>, Status> {
+    async fn report_event(&self, req: Request<AgentEvent>) -> Result<Response<Empty>, Status> {
         let Some(kind) = req.into_inner().event else {
             return Ok(Response::new(Empty {}));
         };
         let event = match kind {
-            AgentEventKind::VxlanSetupFailed(e) =>
-                Event::vxlan_setup_failed(e.vxlan_id, e.ns_name, e.error_code),
-            AgentEventKind::VlanSetupFailed(e) =>
-                Event::vlan_setup_failed(e.vlan_id as u16, e.local_veth, e.error_reason),
-            AgentEventKind::VxlanTeardownFailed(e) =>
-                Event::vxlan_teardown_failed(e.vxlan_id, e.ns_name, e.error_code),
-            AgentEventKind::VlanTeardownFailed(e) =>
-                Event::vlan_teardown_failed(e.vlan_id as u16, e.error_reason),
-            AgentEventKind::DnatInstallFailed(e) =>
-                Event::dnat_install_failed(e.port as u16, e.overlay_ip),
-            AgentEventKind::DnatRemovalFailed(e) =>
-                Event::dnat_removal_failed(e.port as u16, e.overlay_ip),
-            AgentEventKind::HostMappingFailed(e) =>
-                Event::host_mapping_failed(e.hostname, e.ip, e.docker_container),
-            AgentEventKind::ControlChannelClosed(_) =>
-                Event::control_channel_closed(),
-            AgentEventKind::ControlChannelAckFailed(e) =>
-                Event::control_channel_ack_failed(e.msg_id, e.message_type),
-            AgentEventKind::ServicesListUpdateFailed(e) =>
-                Event::services_list_update_failed(e.error_message, e.num_services),
-            AgentEventKind::BackendTriggerSendFailed(e) =>
-                Event::backend_trigger_send_failed(e.service_name, e.port as u16, e.error_message),
-            AgentEventKind::FirewallRulesLoadFailed(e) =>
-                Event::firewall_rules_load_failed(e.path, e.error_message),
-            AgentEventKind::VxlanSetupCompleted(e) =>
-                Event::vxlan_setup_completed(e.vxlan_id, e.ns_name),
-            AgentEventKind::VlanSetupCompleted(e) =>
-                Event::vlan_setup_completed(e.vlan_id as u16),
-            AgentEventKind::ControlChannelEstablished(_) =>
-                Event::control_channel_established(),
-            AgentEventKind::ServicesListUpdated(e) =>
-                Event::services_list_updated(e.num_services),
-            AgentEventKind::UpstreamLookupFailed(e) =>
-                Event::upstream_lookup_failed(e.service_name, e.client_ip, e.error_message),
-            AgentEventKind::ProxyRequestMissingHost(e) =>
-                Event::proxy_request_missing_host(e.client_ip),
-            AgentEventKind::ProxyRequestInvalidHost(e) =>
-                Event::proxy_request_invalid_host(e.client_ip),
-            AgentEventKind::UpstreamIpParseFailed(e) =>
-                Event::upstream_ip_parse_failed(e.raw_ip, e.service_name),
-            AgentEventKind::ProxyClientNotInet(e) =>
-                Event::proxy_client_not_inet(e.address_family),
-            AgentEventKind::ProxyRequestRouted(e) =>
-                Event::proxy_request_routed(e.service_name, e.client_ip, e.upstream_ip, e.latency_ms),
+            AgentEventKind::VxlanSetupFailed(e) => {
+                Event::vxlan_setup_failed(e.vxlan_id, e.ns_name, e.error_code)
+            }
+            AgentEventKind::VlanSetupFailed(e) => {
+                Event::vlan_setup_failed(e.vlan_id as u16, e.local_veth, e.error_reason)
+            }
+            AgentEventKind::VxlanTeardownFailed(e) => {
+                Event::vxlan_teardown_failed(e.vxlan_id, e.ns_name, e.error_code)
+            }
+            AgentEventKind::VlanTeardownFailed(e) => {
+                Event::vlan_teardown_failed(e.vlan_id as u16, e.error_reason)
+            }
+            AgentEventKind::DnatInstallFailed(e) => {
+                Event::dnat_install_failed(e.port as u16, e.overlay_ip)
+            }
+            AgentEventKind::DnatRemovalFailed(e) => {
+                Event::dnat_removal_failed(e.port as u16, e.overlay_ip)
+            }
+            AgentEventKind::HostMappingFailed(e) => {
+                Event::host_mapping_failed(e.hostname, e.ip, e.docker_container)
+            }
+            AgentEventKind::ControlChannelClosed(_) => Event::control_channel_closed(),
+            AgentEventKind::ControlChannelAckFailed(e) => {
+                Event::control_channel_ack_failed(e.msg_id, e.message_type)
+            }
+            AgentEventKind::ServicesListUpdateFailed(e) => {
+                Event::services_list_update_failed(e.error_message, e.num_services)
+            }
+            AgentEventKind::BackendTriggerSendFailed(e) => {
+                Event::backend_trigger_send_failed(e.service_name, e.port as u16, e.error_message)
+            }
+            AgentEventKind::FirewallRulesLoadFailed(e) => {
+                Event::firewall_rules_load_failed(e.path, e.error_message)
+            }
+            AgentEventKind::VxlanSetupCompleted(e) => {
+                Event::vxlan_setup_completed(e.vxlan_id, e.ns_name)
+            }
+            AgentEventKind::VlanSetupCompleted(e) => Event::vlan_setup_completed(e.vlan_id as u16),
+            AgentEventKind::ControlChannelEstablished(_) => Event::control_channel_established(),
+            AgentEventKind::ServicesListUpdated(e) => Event::services_list_updated(e.num_services),
+            AgentEventKind::UpstreamLookupFailed(e) => {
+                Event::upstream_lookup_failed(e.service_name, e.client_ip, e.error_message)
+            }
+            AgentEventKind::ProxyRequestMissingHost(e) => {
+                Event::proxy_request_missing_host(e.client_ip)
+            }
+            AgentEventKind::ProxyRequestInvalidHost(e) => {
+                Event::proxy_request_invalid_host(e.client_ip)
+            }
+            AgentEventKind::UpstreamIpParseFailed(e) => {
+                Event::upstream_ip_parse_failed(e.raw_ip, e.service_name)
+            }
+            AgentEventKind::ProxyClientNotInet(e) => Event::proxy_client_not_inet(e.address_family),
+            AgentEventKind::ProxyRequestRouted(e) => Event::proxy_request_routed(
+                e.service_name,
+                e.client_ip,
+                e.upstream_ip,
+                e.latency_ms,
+            ),
         };
         self.orchestrator.events.emit(event).await;
         Ok(Response::new(Empty {}))

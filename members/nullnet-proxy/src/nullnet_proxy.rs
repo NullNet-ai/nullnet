@@ -1,6 +1,8 @@
 use crate::env::{CONTROL_SERVICE_ADDR, CONTROL_SERVICE_PORT};
 use nullnet_grpc_lib::NullnetGrpcInterface;
-use nullnet_grpc_lib::nullnet_grpc::{AgentEvent, AgentUpstreamIpParseFailed, ProxyRequest, agent_event::Event as AgentEventKind};
+use nullnet_grpc_lib::nullnet_grpc::{
+    AgentEvent, AgentUpstreamIpParseFailed, ProxyRequest, agent_event::Event as AgentEventKind,
+};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::net::{IpAddr, SocketAddr};
 
@@ -27,18 +29,27 @@ impl NullnetProxy {
         let response = self.server.proxy(proxy_req).await.handle_err(location!())?;
 
         let raw_ip = response.ip.clone();
-        let veth_ip: IpAddr = response.ip.parse().handle_err(location!()).inspect_err(|_| {
-            let server = self.server.clone();
-            let raw = raw_ip.clone();
-            let svc = service_name.clone();
-            tokio::spawn(async move {
-                let _ = server.report_event(AgentEvent {
-                    event: Some(AgentEventKind::UpstreamIpParseFailed(
-                        AgentUpstreamIpParseFailed { raw_ip: raw, service_name: svc },
-                    )),
-                }).await;
-            });
-        })?;
+        let veth_ip: IpAddr = response
+            .ip
+            .parse()
+            .handle_err(location!())
+            .inspect_err(|_| {
+                let server = self.server.clone();
+                let raw = raw_ip.clone();
+                let svc = service_name.clone();
+                tokio::spawn(async move {
+                    let _ = server
+                        .report_event(AgentEvent {
+                            event: Some(AgentEventKind::UpstreamIpParseFailed(
+                                AgentUpstreamIpParseFailed {
+                                    raw_ip: raw,
+                                    service_name: svc,
+                                },
+                            )),
+                        })
+                        .await;
+                });
+            })?;
         let host_port = u16::try_from(response.port).handle_err(location!())?;
         let upstream = SocketAddr::new(veth_ip, host_port);
 

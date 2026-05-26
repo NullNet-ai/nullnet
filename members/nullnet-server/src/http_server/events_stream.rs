@@ -13,13 +13,21 @@ pub(crate) async fn events_stream_handler(
     let rx = state.events.subscribe();
 
     let backfill_stream = stream::iter(backfill.into_iter().map(|e| {
-        let env = EventEnvelope { severity: e.severity(), event: &e };
-        Ok::<_, Infallible>(SseEvent::default().data(serde_json::to_string(&env).unwrap_or_default()))
+        let env = EventEnvelope {
+            severity: e.severity(),
+            event: &e,
+        };
+        Ok::<_, Infallible>(
+            SseEvent::default().data(serde_json::to_string(&env).unwrap_or_default()),
+        )
     }));
 
     let live_stream = BroadcastStream::new(rx).filter_map(|result| async move {
         result.ok().map(|e| {
-            let env = EventEnvelope { severity: e.severity(), event: &e };
+            let env = EventEnvelope {
+                severity: e.severity(),
+                event: &e,
+            };
             Ok::<_, Infallible>(
                 SseEvent::default().data(serde_json::to_string(&env).unwrap_or_default()),
             )

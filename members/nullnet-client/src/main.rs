@@ -15,10 +15,9 @@ use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watche
 use nullnet_firewall::{DataLink, Firewall, FirewallError, LogLevel};
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentEvent, Net, Services,
+    AgentBackendTriggerSendFailed, AgentEvent, AgentFirewallRulesLoadFailed,
+    AgentServicesListUpdateFailed, AgentServicesListUpdated, Net, Services,
     agent_event::Event as AgentEventKind,
-    AgentBackendTriggerSendFailed, AgentFirewallRulesLoadFailed,
-    AgentServicesListUpdateFailed, AgentServicesListUpdated,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
@@ -153,22 +152,30 @@ async fn main() -> Result<(), Error> {
                 let svc = service_name.clone();
                 let err_msg = e.clone();
                 tokio::spawn(async move {
-                    let _ = grpc.report_event(AgentEvent {
-                        event: Some(AgentEventKind::BackendTriggerSendFailed(
-                            AgentBackendTriggerSendFailed {
-                                service_name: svc,
-                                port: u32::from(port),
-                                error_message: err_msg,
-                            },
-                        )),
-                    }).await;
+                    let _ = grpc
+                        .report_event(AgentEvent {
+                            event: Some(AgentEventKind::BackendTriggerSendFailed(
+                                AgentBackendTriggerSendFailed {
+                                    service_name: svc,
+                                    port: u32::from(port),
+                                    error_message: err_msg,
+                                },
+                            )),
+                        })
+                        .await;
                 });
             }
         }
     });
 
     // watch the file defining rules and update the firewall accordingly
-    set_firewall_rules(&firewall_shared, &firewall_path, false, Some(grpc_server.clone())).await?;
+    set_firewall_rules(
+        &firewall_shared,
+        &firewall_path,
+        false,
+        Some(grpc_server.clone()),
+    )
+    .await?;
 
     Ok(())
 }
@@ -246,11 +253,16 @@ async fn set_firewall_rules(
                         let path = firewall_path_owned.clone();
                         let error_message = err.to_string();
                         tokio::spawn(async move {
-                            let _ = g.report_event(AgentEvent {
-                                event: Some(AgentEventKind::FirewallRulesLoadFailed(
-                                    AgentFirewallRulesLoadFailed { path, error_message },
-                                )),
-                            }).await;
+                            let _ = g
+                                .report_event(AgentEvent {
+                                    event: Some(AgentEventKind::FirewallRulesLoadFailed(
+                                        AgentFirewallRulesLoadFailed {
+                                            path,
+                                            error_message,
+                                        },
+                                    )),
+                                })
+                                .await;
                         });
                     }
                 }
@@ -322,7 +334,8 @@ async fn declare_services(
         // canonical snapshot for change detection (order-independent)
         let mut current = services.services.clone();
         current.sort_by(|a, b| {
-            a.name.cmp(&b.name)
+            a.name
+                .cmp(&b.name)
                 .then(a.stack.cmp(&b.stack))
                 .then(a.port.cmp(&b.port))
                 .then(a.docker_container.cmp(&b.docker_container))
@@ -336,11 +349,16 @@ async fn declare_services(
                 let grpc = grpc_server.clone();
                 let error_message = e.clone();
                 tokio::spawn(async move {
-                    let _ = grpc.report_event(AgentEvent {
-                        event: Some(AgentEventKind::ServicesListUpdateFailed(
-                            AgentServicesListUpdateFailed { error_message, num_services },
-                        )),
-                    }).await;
+                    let _ = grpc
+                        .report_event(AgentEvent {
+                            event: Some(AgentEventKind::ServicesListUpdateFailed(
+                                AgentServicesListUpdateFailed {
+                                    error_message,
+                                    num_services,
+                                },
+                            )),
+                        })
+                        .await;
                 });
             }
             Ok(response) => {
@@ -348,11 +366,13 @@ async fn declare_services(
                     last_declared = current;
                     let grpc = grpc_server.clone();
                     tokio::spawn(async move {
-                        let _ = grpc.report_event(AgentEvent {
-                            event: Some(AgentEventKind::ServicesListUpdated(
-                                AgentServicesListUpdated { num_services },
-                            )),
-                        }).await;
+                        let _ = grpc
+                            .report_event(AgentEvent {
+                                event: Some(AgentEventKind::ServicesListUpdated(
+                                    AgentServicesListUpdated { num_services },
+                                )),
+                            })
+                            .await;
                     });
                 }
 

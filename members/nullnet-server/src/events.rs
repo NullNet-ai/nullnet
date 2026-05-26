@@ -517,27 +517,58 @@ impl Event {
     }
 
     pub(crate) fn vxlan_setup_failed(vxlan_id: u32, ns_name: String, error_code: i32) -> Self {
-        Self::VxlanSetupFailed { vxlan_id, ns_name, error_code, timestamp: now_secs() }
+        Self::VxlanSetupFailed {
+            vxlan_id,
+            ns_name,
+            error_code,
+            timestamp: now_secs(),
+        }
     }
 
-    pub(crate) fn vlan_setup_failed(vlan_id: u16, local_veth: String, error_reason: String) -> Self {
-        Self::VlanSetupFailed { vlan_id, local_veth, error_reason, timestamp: now_secs() }
+    pub(crate) fn vlan_setup_failed(
+        vlan_id: u16,
+        local_veth: String,
+        error_reason: String,
+    ) -> Self {
+        Self::VlanSetupFailed {
+            vlan_id,
+            local_veth,
+            error_reason,
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn vxlan_teardown_failed(vxlan_id: u32, ns_name: String, error_code: i32) -> Self {
-        Self::VxlanTeardownFailed { vxlan_id, ns_name, error_code, timestamp: now_secs() }
+        Self::VxlanTeardownFailed {
+            vxlan_id,
+            ns_name,
+            error_code,
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn vlan_teardown_failed(vlan_id: u16, error_reason: String) -> Self {
-        Self::VlanTeardownFailed { vlan_id, error_reason, timestamp: now_secs() }
+        Self::VlanTeardownFailed {
+            vlan_id,
+            error_reason,
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn dnat_install_failed(port: u16, overlay_ip: String) -> Self {
-        Self::DnatInstallFailed { port, overlay_ip, timestamp: now_secs() }
+        Self::DnatInstallFailed {
+            port,
+            overlay_ip,
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn dnat_removal_failed(port: u16, overlay_ip: String) -> Self {
-        Self::DnatRemovalFailed { port, overlay_ip, timestamp: now_secs() }
+        Self::DnatRemovalFailed {
+            port,
+            overlay_ip,
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn host_mapping_failed(
@@ -545,19 +576,34 @@ impl Event {
         ip: String,
         docker_container: Option<String>,
     ) -> Self {
-        Self::HostMappingFailed { hostname, ip, docker_container, timestamp: now_secs() }
+        Self::HostMappingFailed {
+            hostname,
+            ip,
+            docker_container,
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn control_channel_closed() -> Self {
-        Self::ControlChannelClosed { timestamp: now_secs() }
+        Self::ControlChannelClosed {
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn control_channel_ack_failed(msg_id: String, message_type: String) -> Self {
-        Self::ControlChannelAckFailed { msg_id, message_type, timestamp: now_secs() }
+        Self::ControlChannelAckFailed {
+            msg_id,
+            message_type,
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn services_list_update_failed(error_message: String, num_services: u32) -> Self {
-        Self::ServicesListUpdateFailed { error_message, num_services, timestamp: now_secs() }
+        Self::ServicesListUpdateFailed {
+            error_message,
+            num_services,
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn backend_trigger_send_failed(
@@ -565,27 +611,48 @@ impl Event {
         port: u16,
         error_message: String,
     ) -> Self {
-        Self::BackendTriggerSendFailed { service_name, port, error_message, timestamp: now_secs() }
+        Self::BackendTriggerSendFailed {
+            service_name,
+            port,
+            error_message,
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn firewall_rules_load_failed(path: String, error_message: String) -> Self {
-        Self::FirewallRulesLoadFailed { path, error_message, timestamp: now_secs() }
+        Self::FirewallRulesLoadFailed {
+            path,
+            error_message,
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn vxlan_setup_completed(vxlan_id: u32, ns_name: String) -> Self {
-        Self::VxlanSetupCompleted { vxlan_id, ns_name, timestamp: now_secs() }
+        Self::VxlanSetupCompleted {
+            vxlan_id,
+            ns_name,
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn vlan_setup_completed(vlan_id: u16) -> Self {
-        Self::VlanSetupCompleted { vlan_id, timestamp: now_secs() }
+        Self::VlanSetupCompleted {
+            vlan_id,
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn control_channel_established() -> Self {
-        Self::ControlChannelEstablished { timestamp: now_secs() }
+        Self::ControlChannelEstablished {
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn services_list_updated(num_services: u32) -> Self {
-        Self::ServicesListUpdated { num_services, timestamp: now_secs() }
+        Self::ServicesListUpdated {
+            num_services,
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn upstream_lookup_failed(
@@ -593,23 +660,41 @@ impl Event {
         client_ip: String,
         error_message: String,
     ) -> Self {
-        Self::UpstreamLookupFailed { service_name, client_ip, error_message, timestamp: now_secs() }
+        Self::UpstreamLookupFailed {
+            service_name,
+            client_ip,
+            error_message,
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn proxy_request_missing_host(client_ip: String) -> Self {
-        Self::ProxyRequestMissingHost { client_ip, timestamp: now_secs() }
+        Self::ProxyRequestMissingHost {
+            client_ip,
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn proxy_request_invalid_host(client_ip: String) -> Self {
-        Self::ProxyRequestInvalidHost { client_ip, timestamp: now_secs() }
+        Self::ProxyRequestInvalidHost {
+            client_ip,
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn upstream_ip_parse_failed(raw_ip: String, service_name: String) -> Self {
-        Self::UpstreamIpParseFailed { raw_ip, service_name, timestamp: now_secs() }
+        Self::UpstreamIpParseFailed {
+            raw_ip,
+            service_name,
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn proxy_client_not_inet(address_family: String) -> Self {
-        Self::ProxyClientNotInet { address_family, timestamp: now_secs() }
+        Self::ProxyClientNotInet {
+            address_family,
+            timestamp: now_secs(),
+        }
     }
 
     pub(crate) fn proxy_request_routed(
@@ -618,7 +703,13 @@ impl Event {
         upstream_ip: String,
         latency_ms: u64,
     ) -> Self {
-        Self::ProxyRequestRouted { service_name, client_ip, upstream_ip, latency_ms, timestamp: now_secs() }
+        Self::ProxyRequestRouted {
+            service_name,
+            client_ip,
+            upstream_ip,
+            latency_ms,
+            timestamp: now_secs(),
+        }
     }
 }
 
