@@ -397,7 +397,7 @@ fn handle_vxlan_teardown(
     let br_name = message.br_name;
 
     let mut cmd = std::process::Command::new("./vxlan_scripts/vxlan-teardown.sh");
-    cmd.arg(&vxlan_id.to_string()).arg(&ns_name).arg(&br_name);
+    cmd.arg(vxlan_id.to_string()).arg(&ns_name).arg(&br_name);
     if let Some(container) = &message.docker_container {
         cmd.arg(container);
     }

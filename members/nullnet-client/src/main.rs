@@ -247,24 +247,24 @@ async fn set_firewall_rules(
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 let result = firewall.write().await.set_rules(&firewall_path_owned);
                 print_info(&result, is_init);
-                if let Err(ref err) = result {
-                    if let Some(ref g) = grpc {
-                        let g = g.clone();
-                        let path = firewall_path_owned.clone();
-                        let error_message = err.to_string();
-                        tokio::spawn(async move {
-                            let _ = g
-                                .report_event(AgentEvent {
-                                    event: Some(AgentEventKind::FirewallRulesLoadFailed(
-                                        AgentFirewallRulesLoadFailed {
-                                            path,
-                                            error_message,
-                                        },
-                                    )),
-                                })
-                                .await;
-                        });
-                    }
+                if let Err(ref err) = result
+                    && let Some(ref g) = grpc
+                {
+                    let g = g.clone();
+                    let path = firewall_path_owned.clone();
+                    let error_message = err.to_string();
+                    tokio::spawn(async move {
+                        let _ = g
+                            .report_event(AgentEvent {
+                                event: Some(AgentEventKind::FirewallRulesLoadFailed(
+                                    AgentFirewallRulesLoadFailed {
+                                        path,
+                                        error_message,
+                                    },
+                                )),
+                            })
+                            .await;
+                    });
                 }
                 if result.is_ok() && is_init {
                     return Ok(());
