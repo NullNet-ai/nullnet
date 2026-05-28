@@ -742,7 +742,7 @@ async fn proxy_timeout_A() {
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 
     let mut guard = server.services().write().await;
-    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator()).await;
+    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator(), "default").await;
     assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_A.dot");
 
     // A is still registered but has no proxy clients
@@ -772,14 +772,14 @@ async fn proxy_timeout_A_then_B() {
     // A expires after 1s
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let mut guard = server.services().write().await;
-    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator()).await;
+    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator(), "default").await;
     assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_A.dot");
     drop(guard);
 
     // B expires after 2s total
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let mut guard = server.services().write().await;
-    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator()).await;
+    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator(), "default").await;
     assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_A_then_B.dot");
 
     // all services still registered, but no proxy clients left
@@ -806,7 +806,7 @@ async fn proxy_timeout_all_at_once() {
     tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
 
     let mut guard = server.services().write().await;
-    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator()).await;
+    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator(), "default").await;
     assert_graphviz(&guard, PROXY_TIMEOUT, "after_timeout_all.dot");
 
     for (_, si) in stack_view(&guard).iter() {
@@ -1745,7 +1745,7 @@ async fn max_networks_reuse_lifecycle() {
 
     {
         let mut guard = server.services().write().await;
-        apply_timeouts(stack_view_mut(&mut guard), server.orchestrator()).await;
+        apply_timeouts(stack_view_mut(&mut guard), server.orchestrator(), "default").await;
         assert_graphviz(&guard, MAX_NETWORKS, "after_first_timeout.dot");
 
         let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] else {
@@ -1774,7 +1774,7 @@ async fn max_networks_reuse_lifecycle() {
 
     {
         let mut guard = server.services().write().await;
-        apply_timeouts(stack_view_mut(&mut guard), server.orchestrator()).await;
+        apply_timeouts(stack_view_mut(&mut guard), server.orchestrator(), "default").await;
         assert_graphviz(&guard, MAX_NETWORKS, "after_second_timeout.dot");
 
         let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] else {

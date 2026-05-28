@@ -1,4 +1,5 @@
 mod env;
+mod events;
 mod graphviz;
 mod http_server;
 mod net;
@@ -37,6 +38,7 @@ async fn main() -> Result<(), Error> {
     let nullnet = init_nullnet().await?;
     let app_state = http_server::AppState {
         services: nullnet.services().clone(),
+        events: nullnet.orchestrator().events.clone(),
         orchestrator: nullnet.orchestrator().clone(),
     };
 

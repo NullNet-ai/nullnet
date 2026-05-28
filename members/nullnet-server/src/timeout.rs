@@ -32,7 +32,7 @@ pub(crate) async fn check_timeouts(
         let stack_names: Vec<String> = services_mut.keys().cloned().collect();
         for stack in stack_names {
             if let Some(stack_map) = services_mut.get_mut(&stack) {
-                apply_timeouts(stack_map, &orchestrator).await;
+                apply_timeouts(stack_map, &orchestrator, &stack).await;
             }
         }
     }
@@ -41,10 +41,11 @@ pub(crate) async fn check_timeouts(
 pub(crate) async fn apply_timeouts(
     services: &mut HashMap<String, ServiceInfo>,
     orchestrator: &Orchestrator,
+    stack: &str,
 ) {
     let changes = collect_timed_out_clients(services);
     if !changes.is_empty() {
-        apply_changes(changes, services, None, orchestrator).await;
+        apply_changes(changes, services, None, orchestrator, stack).await;
     }
 }
 

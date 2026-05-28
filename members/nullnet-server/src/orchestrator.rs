@@ -1,4 +1,5 @@
 use crate::env::NET_TYPE;
+use crate::events::{Event, EventStore};
 use crate::net::NetExt;
 use crate::net_id_pool::NetIdPool;
 use crate::services::changes::{apply_changes, detect_node_disconnect_changes};
@@ -20,6 +21,7 @@ pub struct Orchestrator {
     clients: Arc<RwLock<HashMap<IpAddr, OutboundStream>>>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
     net_id_pool: Arc<Mutex<NetIdPool>>,
+    pub(crate) events: EventStore,
 }
 
 impl Orchestrator {
@@ -28,6 +30,7 @@ impl Orchestrator {
             clients: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
             net_id_pool: Arc::new(Mutex::new(NetIdPool::new())),
+            events: EventStore::new(),
         }
     }
 
@@ -44,6 +47,9 @@ impl Orchestrator {
             .ip();
 
         self.clients.write().await.insert(client_ip, outbound);
+        self.events
+            .emit(Event::node_connected(client_ip.to_string()))
+            .await;
 
         let mut inbound = request.into_inner();
         let orchestrator = self.clone();
@@ -55,6 +61,10 @@ impl Orchestrator {
             }
 
             println!("Control channel from '{client_ip}' closed");
+            orchestrator
+                .events
+                .emit(Event::node_disconnected(client_ip.to_string()))
+                .await;
             orchestrator
                 .handle_node_disconnect(client_ip, &services)
                 .await;
@@ -83,7 +93,7 @@ impl Orchestrator {
                 continue;
             };
             let changes = detect_node_disconnect_changes(stack_map, client_ip);
-            apply_changes(changes, stack_map, None, self).await;
+            apply_changes(changes, stack_map, None, self, &stack).await;
         }
     }
 

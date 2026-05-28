@@ -1,3 +1,4 @@
+use crate::events::EventStore;
 use crate::orchestrator::Orchestrator;
 use crate::services::input::StackMap;
 use axum::Router;
@@ -7,6 +8,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 mod config;
+mod events;
+mod events_stream;
 mod graph;
 mod health;
 mod nodes;
@@ -21,6 +24,7 @@ const HTTP_PORT: u16 = 8080;
 pub(crate) struct AppState {
     pub(crate) services: Arc<RwLock<StackMap>>,
     pub(crate) orchestrator: Orchestrator,
+    pub(crate) events: EventStore,
 }
 
 pub async fn serve(state: AppState) {
@@ -33,6 +37,11 @@ pub async fn serve(state: AppState) {
         .route("/api/graph/{stack}", get(graph::graph_handler))
         .route("/api/sessions", get(sessions::list_handler))
         .route("/api/sessions/{id}", delete(sessions::teardown_handler))
+        .route("/api/events", get(events::events_handler))
+        .route(
+            "/api/events/stream",
+            get(events_stream::events_stream_handler),
+        )
         .fallback(get(static_files::static_handler))
         .with_state(state);
 

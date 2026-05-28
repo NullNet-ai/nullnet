@@ -24,6 +24,9 @@ service NullnetGrpc {
 
   // Backend trigger — for service-to-service chains that do not involve the proxy.
   rpc BackendTrigger(BackendTriggerRequest) returns (Empty);
+
+  // Report an event from a client or proxy agent back to the server.
+  rpc ReportEvent(AgentEvent) returns (Empty);
 }
 
 // TAP-based clients ---------------------------------------------------------------------------------------------------
@@ -142,3 +145,58 @@ message BackendTriggerRequest {
 // Misc ----------------------------------------------------------------------------------------------------------------
 
 message Empty { }
+
+// Agent event report — sent from nullnet-client or nullnet-proxy to the server.
+message AgentEvent {
+  oneof event {
+    // Client error events
+    AgentVxlanSetupFailed       vxlan_setup_failed       = 1;
+    AgentVlanSetupFailed        vlan_setup_failed        = 2;
+    AgentVxlanTeardownFailed    vxlan_teardown_failed    = 3;
+    AgentVlanTeardownFailed     vlan_teardown_failed     = 4;
+    AgentDnatInstallFailed      dnat_install_failed      = 5;
+    AgentDnatRemovalFailed      dnat_removal_failed      = 6;
+    AgentHostMappingFailed      host_mapping_failed      = 7;
+    AgentControlChannelClosed   control_channel_closed   = 8;
+    AgentControlChannelAckFailed control_channel_ack_failed = 9;
+    AgentServicesListUpdateFailed services_list_update_failed = 10;
+    AgentBackendTriggerSendFailed backend_trigger_send_failed = 11;
+    AgentFirewallRulesLoadFailed  firewall_rules_load_failed  = 12;
+    // Client info events
+    AgentVxlanSetupCompleted      vxlan_setup_completed      = 13;
+    AgentVlanSetupCompleted       vlan_setup_completed       = 14;
+    AgentControlChannelEstablished control_channel_established = 15;
+    AgentServicesListUpdated      services_list_updated      = 16;
+    // Proxy error events
+    AgentUpstreamLookupFailed     upstream_lookup_failed     = 17;
+    AgentProxyRequestMissingHost  proxy_request_missing_host = 18;
+    AgentProxyRequestInvalidHost  proxy_request_invalid_host = 19;
+    AgentUpstreamIpParseFailed    upstream_ip_parse_failed   = 20;
+    AgentProxyClientNotInet       proxy_client_not_inet      = 21;
+    // Proxy info events
+    AgentProxyRequestRouted       proxy_request_routed       = 22;
+  }
+}
+
+message AgentVxlanSetupFailed       { uint32 vxlan_id = 1; string ns_name = 2; int32 error_code = 3; }
+message AgentVlanSetupFailed        { uint32 vlan_id = 1; string local_veth = 2; string error_reason = 3; }
+message AgentVxlanTeardownFailed    { uint32 vxlan_id = 1; string ns_name = 2; int32 error_code = 3; }
+message AgentVlanTeardownFailed     { uint32 vlan_id = 1; string error_reason = 2; }
+message AgentDnatInstallFailed      { uint32 port = 1; string overlay_ip = 2; }
+message AgentDnatRemovalFailed      { uint32 port = 1; string overlay_ip = 2; }
+message AgentHostMappingFailed      { string hostname = 1; string ip = 2; optional string docker_container = 3; }
+message AgentControlChannelClosed   {}
+message AgentControlChannelAckFailed { string msg_id = 1; string message_type = 2; }
+message AgentServicesListUpdateFailed { string error_message = 1; uint32 num_services = 2; }
+message AgentBackendTriggerSendFailed { string service_name = 1; uint32 port = 2; string error_message = 3; }
+message AgentFirewallRulesLoadFailed  { string path = 1; string error_message = 2; }
+message AgentVxlanSetupCompleted    { uint32 vxlan_id = 1; string ns_name = 2; }
+message AgentVlanSetupCompleted     { uint32 vlan_id = 1; }
+message AgentControlChannelEstablished {}
+message AgentServicesListUpdated    { uint32 num_services = 1; }
+message AgentUpstreamLookupFailed   { string service_name = 1; string client_ip = 2; string error_message = 3; }
+message AgentProxyRequestMissingHost { string client_ip = 1; }
+message AgentProxyRequestInvalidHost { string client_ip = 1; }
+message AgentUpstreamIpParseFailed  { string raw_ip = 1; string service_name = 2; }
+message AgentProxyClientNotInet     { string address_family = 1; }
+message AgentProxyRequestRouted     { string service_name = 1; string client_ip = 2; string upstream_ip = 3; uint64 latency_ms = 4; }
