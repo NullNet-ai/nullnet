@@ -2,7 +2,20 @@ use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::process::Stdio;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
+
+/// First 12 hex chars of `NetworkSettings.SandboxID` are what Docker uses
+/// in `gateway_<id>` endpoint names on docker_gwbridge — that's the join
+/// key for resolving Swarm task sandboxes back to their owning container.
+const SANDBOX_PREFIX_LEN: usize = 12;
+
+/// Upper bound on how long any `docker` subprocess in this module is
+/// allowed to take. The `docker` CLI normally returns in well under 100 ms;
+/// 5 s is room for an unusually slow daemon plus headroom. If the daemon
+/// hangs entirely we'd rather log + bail than stall the events watcher,
+/// which would freeze the cache forever.
+const DOCKER_SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Bridge-IP → container-name lookup the NFQUEUE listener consults on every
 /// queued packet. Populated by enumerating every Docker network and joining
@@ -117,18 +130,7 @@ async fn query_docker() -> Result<HashMap<Ipv4Addr, String>, String> {
 }
 
 async fn list_container_ids() -> Result<Vec<String>, String> {
-    let out = tokio::process::Command::new("docker")
-        .args(["ps", "-q", "--no-trunc"])
-        .output()
-        .await
-        .map_err(|e| format!("docker ps: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "docker ps exited {}: {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr)
-        ));
-    }
+    let out = run_docker(&["ps", "-q", "--no-trunc"], "docker ps").await?;
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(str::trim)
@@ -138,24 +140,13 @@ async fn list_container_ids() -> Result<Vec<String>, String> {
 }
 
 async fn inspect_container_index(ids: &[String]) -> Result<ContainerIndex, String> {
-    let mut args: Vec<String> = vec![
-        "inspect".to_string(),
-        "--format".to_string(),
-        "{{.Name}}|{{.NetworkSettings.SandboxID}}".to_string(),
+    let mut args: Vec<&str> = vec![
+        "inspect",
+        "--format",
+        "{{.Name}}|{{.NetworkSettings.SandboxID}}",
     ];
-    args.extend(ids.iter().cloned());
-    let out = tokio::process::Command::new("docker")
-        .args(&args)
-        .output()
-        .await
-        .map_err(|e| format!("docker inspect: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "docker inspect exited {}: {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr)
-        ));
-    }
+    args.extend(ids.iter().map(String::as_str));
+    let out = run_docker(&args, "docker inspect").await?;
     Ok(parse_container_index(&String::from_utf8_lossy(&out.stdout)))
 }
 
@@ -172,8 +163,8 @@ fn parse_container_index(s: &str) -> ContainerIndex {
         }
         names.insert(name.clone());
         let sandbox = sandbox_part.trim();
-        if sandbox.len() >= 12 {
-            sandbox12_to_name.insert(sandbox[..12].to_string(), name);
+        if sandbox.len() >= SANDBOX_PREFIX_LEN {
+            sandbox12_to_name.insert(sandbox[..SANDBOX_PREFIX_LEN].to_string(), name);
         }
     }
     ContainerIndex {
@@ -183,18 +174,7 @@ fn parse_container_index(s: &str) -> ContainerIndex {
 }
 
 async fn list_network_ids() -> Result<Vec<String>, String> {
-    let out = tokio::process::Command::new("docker")
-        .args(["network", "ls", "-q", "--no-trunc"])
-        .output()
-        .await
-        .map_err(|e| format!("docker network ls: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "docker network ls exited {}: {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr)
-        ));
-    }
+    let out = run_docker(&["network", "ls", "-q", "--no-trunc"], "docker network ls").await?;
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(str::trim)
@@ -207,27 +187,47 @@ async fn inspect_network_endpoints(net_id: &str) -> Result<Vec<(String, String)>
     // `{{"\n"}}` in the Go template emits a real newline between endpoints
     // so the output stays parseable as one record per line even when an
     // endpoint name contains no special chars.
-    let out = tokio::process::Command::new("docker")
-        .args([
+    let out = run_docker(
+        &[
             "network",
             "inspect",
             net_id,
             "--format",
             r#"{{range $k, $v := .Containers}}{{$v.Name}}|{{$v.IPv4Address}}{{"\n"}}{{end}}"#,
-        ])
-        .output()
-        .await
-        .map_err(|e| format!("docker network inspect: {e}"))?;
+        ],
+        "docker network inspect",
+    )
+    .await?;
+    Ok(parse_network_endpoints(&String::from_utf8_lossy(
+        &out.stdout,
+    )))
+}
+
+/// Run `docker` with the given args, bounded by `DOCKER_SUBPROCESS_TIMEOUT`
+/// and with `kill_on_drop` so the child is reaped if we abandon it. Any
+/// timeout / spawn / non-zero-exit case becomes `Err(String)` the caller can
+/// propagate. `label` is folded into error messages so the source of the
+/// failure is identifiable in logs.
+async fn run_docker(args: &[&str], label: &str) -> Result<std::process::Output, String> {
+    let mut cmd = tokio::process::Command::new("docker");
+    cmd.args(args).kill_on_drop(true);
+    let out = match tokio::time::timeout(DOCKER_SUBPROCESS_TIMEOUT, cmd.output()).await {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return Err(format!("{label}: {e}")),
+        Err(_) => {
+            return Err(format!(
+                "{label}: timed out after {DOCKER_SUBPROCESS_TIMEOUT:?}"
+            ));
+        }
+    };
     if !out.status.success() {
         return Err(format!(
-            "exited {}: {}",
+            "{label} exited {}: {}",
             out.status,
             String::from_utf8_lossy(&out.stderr)
         ));
     }
-    Ok(parse_network_endpoints(&String::from_utf8_lossy(
-        &out.stdout,
-    )))
+    Ok(out)
 }
 
 fn parse_network_endpoints(s: &str) -> Vec<(String, String)> {
@@ -258,7 +258,7 @@ fn resolve_endpoint(endpoint_name: &str, idx: &ContainerIndex) -> Option<String>
     // `gateway_<sandboxid[..12]>`. The 12-hex check rejects
     // `gateway_ingress-sbox` and anything else with a non-hex tail.
     if let Some(tail) = endpoint_name.strip_prefix("gateway_")
-        && tail.len() == 12
+        && tail.len() == SANDBOX_PREFIX_LEN
         && tail.bytes().all(|b| b.is_ascii_hexdigit())
     {
         return idx.sandbox12_to_name.get(tail).cloned();

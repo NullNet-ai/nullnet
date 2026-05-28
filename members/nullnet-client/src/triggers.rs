@@ -147,13 +147,19 @@ impl TriggersState {
             Lifecycle::Active { vxlan_id: v, .. } if *v == vxlan_id => Some((c.clone(), *p)),
             _ => None,
         })?;
-        match by_key.remove(&key)? {
-            Lifecycle::Active {
+        // The lock is held across the `iter().find_map` and the `remove`
+        // below, so the removed entry is guaranteed to be the same `Active`
+        // one we just matched on. A `Pending` here would mean the lock
+        // protection was broken.
+        match by_key.remove(&key) {
+            Some(Lifecycle::Active {
                 overlay_ip,
                 container_ip,
                 ..
-            } => Some((key.0, key.1, overlay_ip, container_ip)),
-            Lifecycle::Pending { .. } => None,
+            }) => Some((key.0, key.1, overlay_ip, container_ip)),
+            Some(Lifecycle::Pending { .. }) | None => {
+                unreachable!("find_map matched Active for {key:?}; lock held across remove")
+            }
         }
     }
 }

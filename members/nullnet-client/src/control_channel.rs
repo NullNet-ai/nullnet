@@ -250,6 +250,16 @@ async fn handle_vxlan_setup(
                 overlay_ip,
                 container_ip,
             );
+        } else if message.dnat_port.is_some() {
+            // Backend-entry edge with a malformed port or host IP — DNAT
+            // can't be installed and the trigger waiter on this host will
+            // block until `ACTIVE_TIMEOUT` then drop the held packet. Log
+            // loudly instead of silently no-op'ing.
+            eprintln!(
+                "[vxlan_setup] backend entry malformed: dnat_port={:?}, host_mapping.ip={:?}; \
+                 DNAT not installed, trigger waiter will time out",
+                message.dnat_port, host_mapping.ip
+            );
         }
     }
 

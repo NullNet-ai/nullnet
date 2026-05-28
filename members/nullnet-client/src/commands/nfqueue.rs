@@ -19,19 +19,25 @@ const PROTOS: [&str; 2] = ["tcp", "udp"];
 /// repeated init calls don't stack duplicates. The ipset is created if
 /// missing and flushed each time so stale ports don't survive a restart.
 pub(crate) fn init() {
-    // ipset: create if missing, flush so we start with no ports.
-    let _ = sudo(&[
-        "ipset",
-        "create",
-        "-exist",
-        SET_NAME,
-        "bitmap:port",
-        "range",
-        "0-65535",
-    ]);
-    let _ = sudo(&["ipset", "flush", SET_NAME]);
+    // ipset: create if missing, flush so we start with no ports. Both must
+    // succeed — without them the iptables rules below match an empty/missing
+    // set and queue nothing.
+    sudo_must(
+        "ipset create",
+        &[
+            "ipset",
+            "create",
+            "-exist",
+            SET_NAME,
+            "bitmap:port",
+            "range",
+            "0-65535",
+        ],
+    );
+    sudo_must("ipset flush", &["ipset", "flush", SET_NAME]);
 
-    // ESTABLISHED,RELATED bypass at top of mangle PREROUTING.
+    // ESTABLISHED,RELATED bypass at top of mangle PREROUTING. Pre-delete is
+    // intentional idempotency — silently ignore its result.
     let _ = sudo(&[
         "iptables",
         "-t",
@@ -45,22 +51,26 @@ pub(crate) fn init() {
         "-j",
         "ACCEPT",
     ]);
-    let _ = sudo(&[
-        "iptables",
-        "-t",
-        "mangle",
-        "-I",
-        "PREROUTING",
-        "1",
-        "-m",
-        "conntrack",
-        "--ctstate",
-        "ESTABLISHED,RELATED",
-        "-j",
-        "ACCEPT",
-    ]);
+    sudo_must(
+        "iptables -I PREROUTING ESTABLISHED bypass",
+        &[
+            "iptables",
+            "-t",
+            "mangle",
+            "-I",
+            "PREROUTING",
+            "1",
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "ESTABLISHED,RELATED",
+            "-j",
+            "ACCEPT",
+        ],
+    );
 
-    // NFQUEUE rules for tcp + udp.
+    // NFQUEUE rules for tcp + udp. Pre-deletes stay quiet; appends must
+    // succeed or new flows on watched ports won't be queued.
     for proto in PROTOS {
         let _ = sudo(&[
             "iptables",
@@ -81,28 +91,42 @@ pub(crate) fn init() {
             QUEUE_NUM,
             "--queue-bypass",
         ]);
-        let _ = sudo(&[
-            "iptables",
-            "-t",
-            "mangle",
-            "-A",
-            "PREROUTING",
-            "-p",
-            proto,
-            "-m",
-            "set",
-            "--match-set",
-            SET_NAME,
-            "dst",
-            "-j",
-            "NFQUEUE",
-            "--queue-num",
-            QUEUE_NUM,
-            "--queue-bypass",
-        ]);
+        sudo_must(
+            &format!("iptables -A PREROUTING NFQUEUE {proto}"),
+            &[
+                "iptables",
+                "-t",
+                "mangle",
+                "-A",
+                "PREROUTING",
+                "-p",
+                proto,
+                "-m",
+                "set",
+                "--match-set",
+                SET_NAME,
+                "dst",
+                "-j",
+                "NFQUEUE",
+                "--queue-num",
+                QUEUE_NUM,
+                "--queue-bypass",
+            ],
+        );
     }
 
     println!("[nfqueue] init: ipset {SET_NAME} ready, mangle PREROUTING rules installed");
+}
+
+/// Run a `sudo` command that must succeed for the NFQUEUE plumbing to be
+/// usable, logging any failure. Used for ipset create/flush and iptables
+/// add operations; pre-delete idempotency calls bypass this and stay quiet.
+fn sudo_must(label: &str, args: &[&str]) {
+    match sudo(args) {
+        Ok(s) if s.success() => {}
+        Ok(s) => eprintln!("[nfqueue] init: {label} exited {s}"),
+        Err(e) => eprintln!("[nfqueue] init: {label}: {e}"),
+    }
 }
 
 /// Apply the diff between two port sets to the ipset. Mirrors the old eBPF
