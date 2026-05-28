@@ -171,17 +171,55 @@ async fn decide_verdict(
 ) -> Verdict {
     match ctx.triggers_state.state(container, dst_port) {
         TriggerState::Active => Verdict::Accept,
-        TriggerState::Pending(notify) => match timeout(ACTIVE_TIMEOUT, notify.notified()).await {
-            Ok(_) => Verdict::Accept,
-            Err(_) => {
-                eprintln!(
-                    "[nfqueue] timeout waiting for active state on '{service}' port {dst_port} container {container}"
-                );
-                Verdict::Drop
+        TriggerState::Pending(notify) => {
+            // `mark_active` wakes us with `Notify::notify_waiters()`, which
+            // only delivers to currently-registered futures — there is no
+            // stored-permit fallback. So we must `.enable()` the Notified
+            // future BEFORE awaiting, and then re-check state synchronously
+            // to close the window between the `state()` call above and our
+            // registration. Without this, `mark_active` firing in that
+            // window is a silently-lost wake-up and the held packet drops
+            // 5 s later for no reason — the visible symptom is the
+            // "[nfqueue] no VxlanSetup …" / "timeout waiting for active
+            // state …" log line on a chain that demonstrably came up.
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            if notified.as_mut().enable()
+                || matches!(
+                    ctx.triggers_state.state(container, dst_port),
+                    TriggerState::Active
+                )
+            {
+                return Verdict::Accept;
             }
-        },
+            match timeout(ACTIVE_TIMEOUT, notified).await {
+                Ok(_) => Verdict::Accept,
+                Err(_) => {
+                    eprintln!(
+                        "[nfqueue] timeout waiting for active state on '{service}' port {dst_port} container {container}"
+                    );
+                    Verdict::Drop
+                }
+            }
+        }
         TriggerState::Fresh => {
             let notify = ctx.triggers_state.mark_pending(container, dst_port, src_ip);
+            // Register BEFORE the gRPC round-trip: the server can dispatch
+            // `VxlanSetup` (→ `mark_active` here) faster than its reply to
+            // `backend_trigger` arrives back, especially on multi-edge
+            // chains where `net_chain_setup` returns only after the slowest
+            // edge finishes. Without pre-registration the early
+            // `mark_active`'s wake fires to zero waiters and is lost.
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            if notified.as_mut().enable()
+                || matches!(
+                    ctx.triggers_state.state(container, dst_port),
+                    TriggerState::Active
+                )
+            {
+                return Verdict::Accept;
+            }
             let res = timeout(
                 TRIGGER_TIMEOUT,
                 ctx.grpc.backend_trigger(
@@ -192,7 +230,7 @@ async fn decide_verdict(
             )
             .await;
             match res {
-                Ok(Ok(())) => match timeout(ACTIVE_TIMEOUT, notify.notified()).await {
+                Ok(Ok(())) => match timeout(ACTIVE_TIMEOUT, notified).await {
                     Ok(_) => Verdict::Accept,
                     Err(_) => {
                         eprintln!(

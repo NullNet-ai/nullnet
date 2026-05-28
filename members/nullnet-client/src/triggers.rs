@@ -199,6 +199,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn state_recheck_catches_mark_active_that_fired_before_enable() {
+        // The listener race: `mark_active` runs (and its
+        // `notify_waiters()` wakes zero waiters because we haven't called
+        // `notified()` yet) between `mark_pending` returning and the
+        // listener registering the Notified future. The recovery is the
+        // synchronous state recheck after `.enable()` — it must observe
+        // the Active state set by mark_active and short-circuit the await.
+        let state = Arc::new(TriggersState::default());
+        let notify = state.mark_pending("c1", 80, IP);
+
+        // mark_active fires BEFORE the listener registers a waiter — this
+        // is exactly the lost-wake race.
+        state.mark_active("c1", 80, 42, OVERLAY, IP);
+
+        // The listener's race-protected pattern.
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        let trip_via_enable = notified.as_mut().enable();
+        let trip_via_state = matches!(state.state("c1", 80), TriggerState::Active);
+        assert!(
+            trip_via_enable || trip_via_state,
+            "race-fix must observe Active even when mark_active fired before enable"
+        );
+
+        // Demonstrate the wake really was lost from the Notify's POV: if
+        // the listener had skipped the recheck and just awaited the
+        // Notified, it would time out. This is why the recheck is load-
+        // bearing — `notify_waiters()` doesn't store a permit for late
+        // registrants the way `notify_one()` would.
+        let lost = timeout(Duration::from_millis(50), notified).await.is_err();
+        assert!(
+            lost,
+            "without the recheck, the Notify wake would already be lost"
+        );
+    }
+
+    #[tokio::test]
+    async fn enabled_notified_wakes_on_subsequent_mark_active() {
+        // The other half of the fix: once `.enable()` has registered the
+        // Notified future, any future `notify_waiters()` from mark_active
+        // is delivered. This covers the case where mark_active fires
+        // during `backend_trigger`'s round-trip — after enable, before the
+        // listener resumes awaiting.
+        let state = Arc::new(TriggersState::default());
+        let notify = state.mark_pending("c1", 80, IP);
+
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        assert!(matches!(state.state("c1", 80), TriggerState::Pending(_)));
+
+        // mark_active fires AFTER enable but before await.
+        state.mark_active("c1", 80, 42, OVERLAY, IP);
+
+        let result = timeout(Duration::from_millis(50), notified).await;
+        assert!(
+            result.is_ok(),
+            "an enabled Notified must wake on notify_waiters"
+        );
+    }
+
+    #[tokio::test]
     async fn concurrent_pending_share_notify() {
         let state = Arc::new(TriggersState::default());
         let n1 = state.mark_pending("c1", 80, IP);
