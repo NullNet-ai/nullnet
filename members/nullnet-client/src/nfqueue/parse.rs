@@ -25,8 +25,9 @@ mod tests {
     /// Build a minimal IPv4 + TCP frame as NFQUEUE would hand it to us.
     fn ipv4_tcp(src: Ipv4Addr, dst: Ipv4Addr, src_port: u16, dst_port: u16) -> Vec<u8> {
         let mut buf = vec![0u8; 20 + 20];
+        let total_len = (buf.len() as u16).to_be_bytes();
         buf[0] = 0x45; // version=4, IHL=5
-        buf[2..4].copy_from_slice(&(buf.len() as u16).to_be_bytes()); // total length
+        buf[2..4].copy_from_slice(&total_len); // total length
         buf[9] = 6; // TCP
         buf[12..16].copy_from_slice(&src.octets());
         buf[16..20].copy_from_slice(&dst.octets());
@@ -39,8 +40,9 @@ mod tests {
 
     fn ipv4_udp(src: Ipv4Addr, dst: Ipv4Addr, src_port: u16, dst_port: u16) -> Vec<u8> {
         let mut buf = vec![0u8; 20 + 8];
+        let total_len = (buf.len() as u16).to_be_bytes();
         buf[0] = 0x45;
-        buf[2..4].copy_from_slice(&(buf.len() as u16).to_be_bytes());
+        buf[2..4].copy_from_slice(&total_len);
         buf[9] = 17; // UDP
         buf[12..16].copy_from_slice(&src.octets());
         buf[16..20].copy_from_slice(&dst.octets());
@@ -97,8 +99,9 @@ mod tests {
     #[test]
     fn rejects_unknown_protocol() {
         let mut buf = vec![0u8; 24];
+        let total_len = (buf.len() as u16).to_be_bytes();
         buf[0] = 0x45;
-        buf[2..4].copy_from_slice(&(buf.len() as u16).to_be_bytes());
+        buf[2..4].copy_from_slice(&total_len);
         buf[9] = 1; // ICMP — not TCP/UDP
         assert!(ipv4_src_and_dst_port(&buf).is_none());
     }
