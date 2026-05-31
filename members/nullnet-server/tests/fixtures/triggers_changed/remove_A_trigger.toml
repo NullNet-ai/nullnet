@@ -1,7 +1,7 @@
 [[services]]
 name = "A"
 timeout = 0
-proxy_dependencies = ["B"]
+proxy_dependencies = [["B"]]
 
 [[services]]
 name = "D"

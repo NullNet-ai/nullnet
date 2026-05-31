@@ -14,7 +14,7 @@ pub(crate) enum ServiceInfo {
 
 impl ServiceInfo {
     pub(crate) fn new(
-        proxy_deps: Vec<String>,
+        proxy_deps: Vec<Vec<String>>,
         triggers: HashMap<u16, Vec<String>>,
         timeout: Option<u64>,
         max_networks: Option<u32>,
@@ -118,7 +118,7 @@ impl ServiceInfo {
         }
     }
 
-    pub(crate) fn proxy_deps(&self) -> &[String] {
+    pub(crate) fn proxy_deps(&self) -> &[Vec<String>] {
         match self {
             ServiceInfo::Unregistered(unreg) => &unreg.proxy_deps,
             ServiceInfo::Registered(reg) => &reg.proxy_deps,
@@ -134,15 +134,16 @@ impl ServiceInfo {
 
     /// True iff `other` appears in any of this service's dep lists (proxy or backend).
     pub(crate) fn deps_contain(&self, other: &str) -> bool {
-        self.proxy_deps().iter().any(|d| d == other)
+        self.proxy_deps().iter().flatten().any(|d| d == other)
             || self.triggers().values().flatten().any(|d| d == other)
     }
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct UnregisteredServiceInfo {
-    /// Linear dep chain walked on proxy-triggered setup.
-    proxy_deps: Vec<String>,
+    /// Independent dep chains walked on proxy-triggered setup. Each inner `Vec`
+    /// is one linear branch; all branches are brought up in parallel.
+    proxy_deps: Vec<Vec<String>>,
     /// Backend-triggered chains keyed by the trigger port observed on the
     /// initiator's host. One linear chain per port; no implicit fan-out.
     triggers: HashMap<u16, Vec<String>>,
@@ -154,7 +155,7 @@ pub(crate) struct UnregisteredServiceInfo {
 
 impl UnregisteredServiceInfo {
     fn new(
-        proxy_deps: Vec<String>,
+        proxy_deps: Vec<Vec<String>>,
         triggers: HashMap<u16, Vec<String>>,
         timeout: Option<u64>,
         max_networks: Option<u32>,
@@ -210,8 +211,9 @@ impl Replica {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RegisteredServiceInfo {
-    /// Linear dep chain walked on proxy-triggered setup.
-    proxy_deps: Vec<String>,
+    /// Independent dep chains walked on proxy-triggered setup. Each inner `Vec`
+    /// is one linear branch; all branches are brought up in parallel.
+    proxy_deps: Vec<Vec<String>>,
     /// Backend-triggered chains keyed by the trigger port observed on the
     /// initiator's host. One linear chain per port; no implicit fan-out.
     triggers: HashMap<u16, Vec<String>>,
@@ -224,7 +226,9 @@ pub(crate) struct RegisteredServiceInfo {
 }
 
 impl RegisteredServiceInfo {
-    /// Build the linear chain of edges for a proxy-triggered chain.
+    /// Build the edges for a proxy-triggered chain. Each branch in `proxy_deps`
+    /// is an independent linear chain rooted at this service; the per-branch
+    /// edges are concatenated.
     pub(crate) fn proxy_dependency_chain(
         &self,
         service_name: String,
@@ -232,13 +236,18 @@ impl RegisteredServiceInfo {
         service_docker: Option<&str>,
         services: &HashMap<String, ServiceInfo>,
     ) -> Vec<Edge> {
-        build_linear_chain(
-            &self.proxy_deps,
-            service_name,
-            service_ip,
-            service_docker,
-            services,
-        )
+        self.proxy_deps
+            .iter()
+            .flat_map(|branch| {
+                build_linear_chain(
+                    branch,
+                    service_name.clone(),
+                    service_ip,
+                    service_docker,
+                    services,
+                )
+            })
+            .collect()
     }
 
     /// Build the chain of edges for the trigger at `port`, if one exists.

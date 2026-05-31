@@ -1,7 +1,7 @@
 [[services]]
 name = "color.com"
 timeout = 0
-proxy_dependencies = ["fs.color.com"]
+proxy_dependencies = [["fs.color.com"]]
 max_networks = 2
 
 [[services.triggers]]

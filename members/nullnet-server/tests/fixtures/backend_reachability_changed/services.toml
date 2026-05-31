@@ -9,4 +9,4 @@ chain = ["C"]
 [[services]]
 name = "Z"
 timeout = 0
-proxy_dependencies = ["A", "C"]
+proxy_dependencies = [["A", "C"]]

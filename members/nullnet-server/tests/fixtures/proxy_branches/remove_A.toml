@@ -1,0 +1,4 @@
+# A removed entirely; an unrelated service keeps the stack non-empty.
+[[services]]
+name = "Z"
+timeout = 0

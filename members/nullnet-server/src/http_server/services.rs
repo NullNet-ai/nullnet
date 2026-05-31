@@ -20,7 +20,7 @@ struct ServiceJson {
     name: String,
     registered: bool,
     replicas: Vec<ReplicaJson>,
-    proxy_dependencies: Vec<String>,
+    proxy_dependencies: Vec<Vec<String>>,
     triggers: HashMap<String, Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     timeout_secs: Option<u64>,

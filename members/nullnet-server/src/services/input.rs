@@ -110,16 +110,29 @@ impl ServicesToml {
 
     pub(crate) fn services_map(self) -> HashMap<String, ServiceInfo> {
         // Proxy: last-write-wins per dep (a name referenced from multiple
-        // services has its tail overwritten by the last processor).
-        let mut proxy_accum: HashMap<String, Vec<String>> = HashMap::new();
+        // branches/services has its tail overwritten by the last processor).
+        // Each intermediate dep is registered as a single-branch service whose
+        // chain is the remainder of its own branch, so the walkers can
+        // reconstruct deep edges node-by-node.
+        let mut proxy_accum: HashMap<String, Vec<Vec<String>>> = HashMap::new();
         // Trigger-chain deps: discoverable as (non-entry-point) services so
         // hosts can register replicas of them.
         let mut trigger_dep_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
 
         for s in &self.services {
-            for d in &s.proxy_dependencies {
-                proxy_accum.insert(d.clone(), tail_after(&s.proxy_dependencies, d));
+            for branch in &s.proxy_dependencies {
+                for d in branch {
+                    let tail = tail_after(branch, d);
+                    // A leaf (empty tail) registers as a service with no deps;
+                    // otherwise its remainder is stored as a single branch.
+                    let stored = if tail.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![tail]
+                    };
+                    proxy_accum.insert(d.clone(), stored);
+                }
             }
             for t in &s.triggers {
                 for dep in &t.chain {
@@ -219,9 +232,10 @@ struct ServiceToml {
     /// point; backend deps without a proxy-reachable role should be left out
     /// of explicit declarations and picked up implicitly via trigger chains.
     timeout: Option<u64>,
-    /// Linear dep chain walked on proxy-triggered setup.
+    /// Independent dep chains walked on proxy-triggered setup. Each inner array
+    /// is one linear branch; all branches are brought up in parallel.
     #[serde(default)]
-    proxy_dependencies: Vec<String>,
+    proxy_dependencies: Vec<Vec<String>>,
     /// Backend-triggered chains: each entry pairs a port observed by the
     /// service host with the linear chain to bring up. One chain per port.
     #[serde(default)]
@@ -250,7 +264,7 @@ mod tests {
 [[services]]
 name = "color.com"
 timeout = 0
-proxy_dependencies = ["pre.fs.color.com", "fs.color.com"]
+proxy_dependencies = [["pre.fs.color.com", "fs.color.com"]]
 
 [[services.triggers]]
 port = 5555
@@ -275,6 +289,38 @@ timeout = 30
         assert_eq!(map["deeper.dep"].timeout(), None);
     }
 
+    #[test]
+    fn parses_parallel_proxy_branches() {
+        let toml_str = r#"
+[[services]]
+name = "app"
+timeout = 0
+proxy_dependencies = [["a", "b"], ["c", "d"]]
+"#;
+        let parsed: ServicesToml = toml::from_str(toml_str).unwrap();
+        let map = parsed.services_map();
+
+        // The entry point keeps both branches verbatim.
+        assert_eq!(
+            map["app"].proxy_deps(),
+            vec![
+                vec!["a".to_string(), "b".to_string()],
+                vec!["c".to_string(), "d".to_string()],
+            ]
+        );
+        // Every dep across both branches is registered.
+        for name in ["a", "b", "c", "d"] {
+            assert!(map.contains_key(name), "{name} not registered");
+            assert_eq!(map[name].timeout(), None);
+        }
+        // Each intermediate dep stores the remainder of its own branch as a
+        // single branch; leaves store nothing.
+        assert_eq!(map["a"].proxy_deps(), vec![vec!["b".to_string()]]);
+        assert_eq!(map["c"].proxy_deps(), vec![vec!["d".to_string()]]);
+        assert!(map["b"].proxy_deps().is_empty());
+        assert!(map["d"].proxy_deps().is_empty());
+    }
+
     #[tokio::test]
     async fn loads_each_toml_as_its_own_stack() {
         let dir = std::env::temp_dir().join(format!("nullnet-stack-test-{}", uuid::Uuid::new_v4()));
@@ -283,7 +329,7 @@ timeout = 30
 [[services]]
 name = "a.svc"
 timeout = 0
-proxy_dependencies = ["a.dep"]
+proxy_dependencies = [["a.dep"]]
 "#;
         let stack_b = r#"
 [[services]]

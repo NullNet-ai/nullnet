@@ -2,4 +2,4 @@
 name = "A"
 timeout = 1
 max_networks = 1
-proxy_dependencies = ["B"]
+proxy_dependencies = [["B"]]

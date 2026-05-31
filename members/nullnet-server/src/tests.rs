@@ -286,7 +286,7 @@ async fn dep_changed_add_E_to_A() {
 
     assert_eq!(
         stack_view(&guard)["A"].proxy_deps(),
-        vec!["B".to_string(), "C".to_string(), "E".to_string()]
+        vec![vec!["B".to_string(), "C".to_string(), "E".to_string()]]
     );
     assert!(stack_view(&guard).contains_key("E"));
     assert!(matches!(
@@ -307,7 +307,10 @@ async fn dep_changed_drop_C_from_A() {
     assert_graphviz(&guard, DEP_CHANGED, "after_drop_C_from_A.dot");
 
     assert!(stack_view(&guard).contains_key("A"));
-    assert_eq!(stack_view(&guard)["A"].proxy_deps(), vec!["B".to_string()]);
+    assert_eq!(
+        stack_view(&guard)["A"].proxy_deps(),
+        vec![vec!["B".to_string()]]
+    );
     assert!(stack_view(&guard).contains_key("C"));
 }
 
@@ -339,7 +342,7 @@ async fn dep_changed_swap_C_for_E() {
 
     assert_eq!(
         stack_view(&guard)["A"].proxy_deps(),
-        vec!["B".to_string(), "E".to_string()]
+        vec![vec!["B".to_string(), "E".to_string()]]
     );
     assert!(stack_view(&guard).contains_key("E"));
     assert!(matches!(
@@ -1902,7 +1905,7 @@ async fn max_networks_different_proxy_bypasses() {
 }
 
 // ===========================================================================
-// triggers_changed: A entry-point with proxy_dependencies=["B"] and
+// triggers_changed: A entry-point with proxy_dependencies=[["B"]] and
 // triggers=[{5555, ["C"]}]; D entry-point with triggers=[{6666, ["C"]}].
 // proxy1→A→B (proxy chain), A→C and D→C (backend chains).
 // ===========================================================================
@@ -2008,7 +2011,7 @@ async fn triggers_changed_drop_D_trigger() {
 
 // ===========================================================================
 // backend_reachability_changed: A entry-point with triggers=[{5555, ["C"]}].
-// Z is also an entry-point with proxy_dependencies=["A","C"], used to keep A
+// Z is also an entry-point with proxy_dependencies=[["A","C"]], used to keep A
 // and C in the map after A loses its [[services]] entry. Z's chains are not
 // activated; it serves only as a config-level reference holder.
 // ===========================================================================
@@ -2064,7 +2067,7 @@ async fn backend_reachability_changed_lose_entry_point_A() {
 
 // ===========================================================================
 // backend_service_unregistered: A entry-point with co-located replicas a1, a2
-// at 1.1.1.1, proxy_dependencies=["B"], triggers=[{5555, ["C"]}]. Tests
+// at 1.1.1.1, proxy_dependencies=[["B"]], triggers=[{5555, ["C"]}]. Tests
 // selective replica/service removal via apply_services_list while backend
 // chains coexist with a proxy chain.
 // ===========================================================================
@@ -2492,4 +2495,75 @@ async fn backend_multi_replica_disconnect_swarm_host() {
 
     // A→B and E→B freed; D→B survives = 1
     assert_net_ids_in_use(&server, 1).await;
+}
+
+// ===========================================================================
+// proxy_branches: A fans out into two parallel proxy chains, A→B→C and A→D.
+// Exercises construction (one linear chain per branch) and teardown (the
+// multi-branch walk in collect_dep_chain_edges).
+// ===========================================================================
+
+const PROXY_BRANCHES: &str = "proxy_branches";
+
+async fn proxy_branches_setup() -> NullnetGrpcImpl {
+    let services = load_fixture(PROXY_BRANCHES).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+
+    let ip_map = HashMap::from([
+        ("A", ip(1, 1, 1, 1)),
+        ("B", ip(2, 2, 2, 2)),
+        ("C", ip(3, 3, 3, 3)),
+        ("D", ip(4, 4, 4, 4)),
+    ]);
+    let proxy = ip(5, 5, 5, 5);
+    register_services(&server, &ip_map, 8080).await;
+    server.orchestrator().register_fake_client(proxy).await;
+
+    setup_proxy_chain(&server, "A", proxy, "10.0.0.1").await;
+
+    // Both branches come up: proxy→A, A→B, B→C, A→D = 4 IDs. If only one
+    // branch were walked, this would be 2 or 3.
+    assert_net_ids_in_use(&server, 4).await;
+
+    server
+}
+
+/// Construction fans out across both branches; the entry point keeps both.
+#[tokio::test]
+async fn proxy_branches_setup_fans_out() {
+    let server = proxy_branches_setup().await;
+
+    let guard = server.services().read().await;
+    assert_eq!(
+        stack_view(&guard)["A"].proxy_deps(),
+        vec![
+            vec!["B".to_string(), "C".to_string()],
+            vec!["D".to_string()],
+        ]
+    );
+    // Every dep across both branches is registered with a replica.
+    for name in ["B", "C", "D"] {
+        assert!(matches!(
+            stack_view(&guard)[name],
+            ServiceInfo::Registered(_)
+        ));
+    }
+}
+
+/// Removing A tears down BOTH branches — the walker must follow each one or
+/// edges leak. Asserts every NET ID is freed.
+#[tokio::test]
+async fn proxy_branches_remove_A_tears_down_both() {
+    let server = proxy_branches_setup().await;
+    let new_config = load_config(PROXY_BRANCHES, "remove_A.toml").await;
+
+    let mut guard = server.services().write().await;
+    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
+    drop(guard);
+
+    // proxy→A, A→B, B→C, A→D all freed = 0 IDs (a single-branch walk would leak).
+    assert_net_ids_in_use(&server, 0).await;
+
+    let guard = server.services().read().await;
+    assert!(!stack_view(&guard).contains_key("A"));
 }

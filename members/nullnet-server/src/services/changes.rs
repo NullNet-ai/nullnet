@@ -304,10 +304,12 @@ async fn teardown_chain(
     }
 }
 
-/// Walk the proxy dependency chain starting from a specific service replica
-/// (read-only) and collect the `(client, dep_service_name)` edges. Walks
-/// `proxy_deps` recursively (linear chain, possibly with ghost edges from
-/// ancestor levels).
+/// Walk the proxy dependency chains starting from a specific service replica
+/// (read-only) and collect the `(client, dep_service_name)` edges. `proxy_deps`
+/// holds one or more independent branches; each branch's head is the real next
+/// hop (the remainder of the branch is stored on the head itself via
+/// `tail_after`), so we emit the edge to each head and recurse into it. A
+/// visited set guards against cycles from malformed configs.
 pub(crate) fn collect_dep_chain_edges(
     service_name: &str,
     replica_ip: IpAddr,
@@ -315,41 +317,38 @@ pub(crate) fn collect_dep_chain_edges(
     services: &HashMap<String, ServiceInfo>,
 ) -> Vec<(Client, String)> {
     let mut edges = Vec::new();
-    let mut current_name = service_name.to_string();
-    let mut current_ip = replica_ip;
-    let mut current_docker: Option<String> = replica_docker.map(String::from);
+    let mut visited: HashSet<String> = HashSet::new();
+    // Worklist of nodes still to walk: (name, ip, docker).
+    let mut stack = vec![(
+        service_name.to_string(),
+        replica_ip,
+        replica_docker.map(String::from),
+    )];
 
-    loop {
-        let deps = services
-            .get(&current_name)
-            .map(ServiceInfo::proxy_deps)
-            .unwrap_or_default();
-        if deps.is_empty() {
-            break;
+    while let Some((current_name, current_ip, current_docker)) = stack.pop() {
+        // Don't re-walk a node's subtree (a dep reachable via two branches is
+        // still walked once); edges *into* it are emitted before this check.
+        if !visited.insert(current_name.clone()) {
+            continue;
         }
-
-        let mut next: Option<(String, IpAddr, Option<String>)> = None;
-        for dep_name in deps {
+        let Some(deps) = services.get(&current_name).map(ServiceInfo::proxy_deps) else {
+            continue;
+        };
+        for branch in deps {
+            let Some(head) = branch.first() else {
+                continue;
+            };
             let hop = emit_edge_and_probe_hop(
                 &mut edges,
                 &current_name,
                 current_ip,
                 current_docker.as_deref(),
-                dep_name,
+                head,
                 services,
             );
             if let Some((ip, docker)) = hop {
-                next = Some((dep_name.clone(), ip, docker));
+                stack.push((head.clone(), ip, docker));
             }
-        }
-
-        match next {
-            Some((name, ip, docker)) => {
-                current_name = name;
-                current_ip = ip;
-                current_docker = docker;
-            }
-            None => break,
         }
     }
 
