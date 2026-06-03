@@ -13,7 +13,7 @@ export interface ServiceJson {
   name: string;
   registered: boolean;
   replicas: ReplicaJson[];
-  proxy_dependencies: string[];
+  proxy_dependencies: string[][];
   triggers: Record<string, string[]>;
   timeout_secs?: number;
   max_networks?: number;

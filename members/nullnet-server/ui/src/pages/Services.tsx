@@ -87,8 +87,8 @@ export default function Services() {
                         {svc.replicas.length}
                       </td>
                       <td>
-                        {svc.proxy_dependencies.length > 0
-                          ? svc.proxy_dependencies.map(d => <span key={d} className="dep-tag">{d}</span>)
+                        {svc.proxy_dependencies.flat().length > 0
+                          ? svc.proxy_dependencies.flat().map((d, i) => <span key={`${d}-${i}`} className="dep-tag">{d}</span>)
                           : <span style={{ color: 'var(--t2)', fontSize: 11 }}>—</span>}
                       </td>
                       <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--cyan)' }}>
@@ -141,10 +141,10 @@ export default function Services() {
                                         <td style={{ color: 'var(--cyan)', fontSize: 10 }}>{chain.join(' → ')}</td>
                                       </tr>
                                     ))}
-                                    {svc.proxy_dependencies.length > 0 && (
+                                    {svc.proxy_dependencies.flat().length > 0 && (
                                       <tr>
                                         <td style={{ color: 'var(--t2)' }}>Dependencies</td>
-                                        <td>{svc.proxy_dependencies.map(d => <span key={d} className="dep-tag">{d}</span>)}</td>
+                                        <td>{svc.proxy_dependencies.flat().map((d, i) => <span key={`${d}-${i}`} className="dep-tag">{d}</span>)}</td>
                                       </tr>
                                     )}
                                   </tbody>

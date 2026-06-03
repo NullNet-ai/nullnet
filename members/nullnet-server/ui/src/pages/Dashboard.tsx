@@ -141,8 +141,8 @@ export default function Dashboard() {
                     {svc.replicas.length}
                   </td>
                   <td>
-                    {svc.proxy_dependencies.map(d => (
-                      <span key={d} className="dep-tag">{d}</span>
+                    {svc.proxy_dependencies.flat().map((d, i) => (
+                      <span key={`${d}-${i}`} className="dep-tag">{d}</span>
                     ))}
                   </td>
                   <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--t2)', fontSize: 11 }}>
