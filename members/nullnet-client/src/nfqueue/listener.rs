@@ -233,10 +233,14 @@ async fn decide_verdict(
                 Ok(Ok(())) => match timeout(ACTIVE_TIMEOUT, notified).await {
                     Ok(_) => Verdict::Accept,
                     Err(_) => {
+                        // No `forget`: the trigger was accepted, so a VxlanSetup
+                        // is just slow. Forgetting wipes the stashed container_ip,
+                        // making the late setup install an unscoped DNAT. Keeping
+                        // Pending lets it peek the real IP; entry ages out at
+                        // PENDING_TIMEOUT so re-trigger still works.
                         eprintln!(
                             "[nfqueue] no VxlanSetup for '{service}' port {dst_port} container {container}"
                         );
-                        ctx.triggers_state.forget(container, dst_port);
                         Verdict::Drop
                     }
                 },
