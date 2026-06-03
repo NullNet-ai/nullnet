@@ -3,7 +3,7 @@ import { useStack } from '../StackContext';
 import { useApi } from '../hooks/useApi';
 import type { SessionJson } from '../types';
 
-type Page = 'dashboard' | 'services' | 'nodes' | 'sessions' | 'pool' | 'config';
+type Page = 'dashboard' | 'services' | 'nodes' | 'sessions' | 'pool' | 'config' | 'events';
 
 interface Props {
   page: Page;
@@ -31,7 +31,7 @@ const NAV = [
   {
     group: 'Ops',
     items: [
-      { id: 'events', icon: '≡', label: 'Events', to: null },
+      { id: 'events', icon: '≡', label: 'Events', to: '/events' },
       { id: 'config', icon: '⚙', label: 'Config', to: '/config' },
     ],
   },

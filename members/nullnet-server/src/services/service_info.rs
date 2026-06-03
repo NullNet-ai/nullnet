@@ -52,6 +52,16 @@ impl ServiceInfo {
         }
     }
 
+    pub(crate) fn has_replica(&self, ip: IpAddr, docker_container: Option<&str>) -> bool {
+        match self {
+            ServiceInfo::Unregistered(_) => false,
+            ServiceInfo::Registered(reg) => reg
+                .replicas
+                .iter()
+                .any(|r| r.matches_identity(ip, docker_container)),
+        }
+    }
+
     /// Remove all replicas on the given IP.
     /// Transitions to `Unregistered` if no replicas remain.
     pub(crate) fn remove_replicas_on_ip(&mut self, ip: IpAddr) {

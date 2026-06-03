@@ -95,7 +95,7 @@ pub(super) async fn teardown_handler(
         return StatusCode::NOT_FOUND.into_response();
     };
     let changes = vec![ServiceChange::ForceSessionTeardown { name, client }];
-    apply_changes(changes, stack_map, None, &state.orchestrator).await;
+    apply_changes(changes, stack_map, None, &state.orchestrator, &stack).await;
 
     StatusCode::NO_CONTENT.into_response()
 }

@@ -163,6 +163,219 @@ pub struct BackendTriggerRequest {
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Empty {}
+/// Agent event report — sent from nullnet-client or nullnet-proxy to the server.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentEvent {
+    #[prost(
+        oneof = "agent_event::Event",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22"
+    )]
+    pub event: ::core::option::Option<agent_event::Event>,
+}
+/// Nested message and enum types in `AgentEvent`.
+pub mod agent_event {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Event {
+        /// Client error events
+        #[prost(message, tag = "1")]
+        VxlanSetupFailed(super::AgentVxlanSetupFailed),
+        #[prost(message, tag = "2")]
+        VlanSetupFailed(super::AgentVlanSetupFailed),
+        #[prost(message, tag = "3")]
+        VxlanTeardownFailed(super::AgentVxlanTeardownFailed),
+        #[prost(message, tag = "4")]
+        VlanTeardownFailed(super::AgentVlanTeardownFailed),
+        #[prost(message, tag = "5")]
+        DnatInstallFailed(super::AgentDnatInstallFailed),
+        #[prost(message, tag = "6")]
+        DnatRemovalFailed(super::AgentDnatRemovalFailed),
+        #[prost(message, tag = "7")]
+        HostMappingFailed(super::AgentHostMappingFailed),
+        #[prost(message, tag = "8")]
+        ControlChannelClosed(super::AgentControlChannelClosed),
+        #[prost(message, tag = "9")]
+        ControlChannelAckFailed(super::AgentControlChannelAckFailed),
+        #[prost(message, tag = "10")]
+        ServicesListUpdateFailed(super::AgentServicesListUpdateFailed),
+        #[prost(message, tag = "11")]
+        BackendTriggerSendFailed(super::AgentBackendTriggerSendFailed),
+        #[prost(message, tag = "12")]
+        FirewallRulesLoadFailed(super::AgentFirewallRulesLoadFailed),
+        /// Client info events
+        #[prost(message, tag = "13")]
+        VxlanSetupCompleted(super::AgentVxlanSetupCompleted),
+        #[prost(message, tag = "14")]
+        VlanSetupCompleted(super::AgentVlanSetupCompleted),
+        #[prost(message, tag = "15")]
+        ControlChannelEstablished(super::AgentControlChannelEstablished),
+        #[prost(message, tag = "16")]
+        ServicesListUpdated(super::AgentServicesListUpdated),
+        /// Proxy error events
+        #[prost(message, tag = "17")]
+        UpstreamLookupFailed(super::AgentUpstreamLookupFailed),
+        #[prost(message, tag = "18")]
+        ProxyRequestMissingHost(super::AgentProxyRequestMissingHost),
+        #[prost(message, tag = "19")]
+        ProxyRequestInvalidHost(super::AgentProxyRequestInvalidHost),
+        #[prost(message, tag = "20")]
+        UpstreamIpParseFailed(super::AgentUpstreamIpParseFailed),
+        #[prost(message, tag = "21")]
+        ProxyClientNotInet(super::AgentProxyClientNotInet),
+        /// Proxy info events
+        #[prost(message, tag = "22")]
+        ProxyRequestRouted(super::AgentProxyRequestRouted),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentVxlanSetupFailed {
+    #[prost(uint32, tag = "1")]
+    pub vxlan_id: u32,
+    #[prost(string, tag = "2")]
+    pub ns_name: ::prost::alloc::string::String,
+    #[prost(int32, tag = "3")]
+    pub error_code: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentVlanSetupFailed {
+    #[prost(uint32, tag = "1")]
+    pub vlan_id: u32,
+    #[prost(string, tag = "2")]
+    pub local_veth: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub error_reason: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentVxlanTeardownFailed {
+    #[prost(uint32, tag = "1")]
+    pub vxlan_id: u32,
+    #[prost(string, tag = "2")]
+    pub ns_name: ::prost::alloc::string::String,
+    #[prost(int32, tag = "3")]
+    pub error_code: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentVlanTeardownFailed {
+    #[prost(uint32, tag = "1")]
+    pub vlan_id: u32,
+    #[prost(string, tag = "2")]
+    pub error_reason: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentDnatInstallFailed {
+    #[prost(uint32, tag = "1")]
+    pub port: u32,
+    #[prost(string, tag = "2")]
+    pub overlay_ip: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentDnatRemovalFailed {
+    #[prost(uint32, tag = "1")]
+    pub port: u32,
+    #[prost(string, tag = "2")]
+    pub overlay_ip: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentHostMappingFailed {
+    #[prost(string, tag = "1")]
+    pub hostname: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub ip: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "3")]
+    pub docker_container: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentControlChannelClosed {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentControlChannelAckFailed {
+    #[prost(string, tag = "1")]
+    pub msg_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub message_type: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentServicesListUpdateFailed {
+    #[prost(string, tag = "1")]
+    pub error_message: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub num_services: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentBackendTriggerSendFailed {
+    #[prost(string, tag = "1")]
+    pub service_name: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub port: u32,
+    #[prost(string, tag = "3")]
+    pub error_message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentFirewallRulesLoadFailed {
+    #[prost(string, tag = "1")]
+    pub path: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub error_message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentVxlanSetupCompleted {
+    #[prost(uint32, tag = "1")]
+    pub vxlan_id: u32,
+    #[prost(string, tag = "2")]
+    pub ns_name: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentVlanSetupCompleted {
+    #[prost(uint32, tag = "1")]
+    pub vlan_id: u32,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentControlChannelEstablished {}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentServicesListUpdated {
+    #[prost(uint32, tag = "1")]
+    pub num_services: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentUpstreamLookupFailed {
+    #[prost(string, tag = "1")]
+    pub service_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub client_ip: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub error_message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentProxyRequestMissingHost {
+    #[prost(string, tag = "1")]
+    pub client_ip: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentProxyRequestInvalidHost {
+    #[prost(string, tag = "1")]
+    pub client_ip: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentUpstreamIpParseFailed {
+    #[prost(string, tag = "1")]
+    pub raw_ip: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub service_name: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentProxyClientNotInet {
+    #[prost(string, tag = "1")]
+    pub address_family: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentProxyRequestRouted {
+    #[prost(string, tag = "1")]
+    pub service_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub client_ip: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub upstream_ip: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "4")]
+    pub latency_ms: u64,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum Net {
@@ -397,6 +610,28 @@ pub mod nullnet_grpc_client {
                 .insert(GrpcMethod::new("nullnet_grpc.NullnetGrpc", "BackendTrigger"));
             self.inner.unary(req, path, codec).await
         }
+        /// Report an event from a client or proxy agent back to the server.
+        pub async fn report_event(
+            &mut self,
+            request: impl tonic::IntoRequest<super::AgentEvent>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/nullnet_grpc.NullnetGrpc/ReportEvent",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("nullnet_grpc.NullnetGrpc", "ReportEvent"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -449,6 +684,11 @@ pub mod nullnet_grpc_server {
         async fn backend_trigger(
             &self,
             request: tonic::Request<super::BackendTriggerRequest>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
+        /// Report an event from a client or proxy agent back to the server.
+        async fn report_event(
+            &self,
+            request: tonic::Request<super::AgentEvent>,
         ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
     }
     #[derive(Debug)]
@@ -730,6 +970,49 @@ pub mod nullnet_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = BackendTriggerSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/nullnet_grpc.NullnetGrpc/ReportEvent" => {
+                    #[allow(non_camel_case_types)]
+                    struct ReportEventSvc<T: NullnetGrpc>(pub Arc<T>);
+                    impl<T: NullnetGrpc> tonic::server::UnaryService<super::AgentEvent>
+                    for ReportEventSvc<T> {
+                        type Response = super::Empty;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::AgentEvent>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as NullnetGrpc>::report_event(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ReportEventSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

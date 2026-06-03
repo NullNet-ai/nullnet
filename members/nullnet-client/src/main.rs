@@ -14,7 +14,11 @@ use clap::Parser;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use nullnet_firewall::{DataLink, Firewall, FirewallError, LogLevel};
 use nullnet_grpc_lib::NullnetGrpcInterface;
-use nullnet_grpc_lib::nullnet_grpc::{Net, Services, ServicesListResponse};
+use nullnet_grpc_lib::nullnet_grpc::{
+    AgentEvent, AgentFirewallRulesLoadFailed, AgentServicesListUpdateFailed,
+    AgentServicesListUpdated, Net, Services,
+    agent_event::Event as AgentEventKind,
+};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::ops::Sub;
@@ -82,7 +86,7 @@ async fn main() -> Result<(), Error> {
     firewall.log_level(LogLevel::Db);
     firewall.data_link(DataLink::Ethernet);
     let firewall_shared = Arc::new(RwLock::new(firewall));
-    set_firewall_rules(&firewall_shared, &firewall_path, true).await?;
+    set_firewall_rules(&firewall_shared, &firewall_path, true, None).await?;
 
     // initialize gRPC connection
     let grpc_server = grpc_init().await?;
@@ -143,15 +147,23 @@ async fn main() -> Result<(), Error> {
     );
 
     // declare services + push the port→service map to the NFQUEUE listener
-    // on each refresh
+    // on each refresh. Clone the grpc handle: the original is still needed
+    // below for `set_firewall_rules`' event reporting.
+    let grpc_server_ds = grpc_server.clone();
     tokio::spawn(async move {
-        declare_services(grpc_server, config_tx, docker_changed)
+        declare_services(grpc_server_ds, config_tx, docker_changed)
             .await
             .expect("Failed to declare services");
     });
 
     // watch the file defining rules and update the firewall accordingly
-    set_firewall_rules(&firewall_shared, &firewall_path, false).await?;
+    set_firewall_rules(
+        &firewall_shared,
+        &firewall_path,
+        false,
+        Some(grpc_server.clone()),
+    )
+    .await?;
 
     Ok(())
 }
@@ -165,10 +177,12 @@ fn print_info(net: Net) {
 }
 
 /// Loads and refreshes firewall rules whenever the corresponding file is updated.
+/// `grpc` is only used in the reload path (watch loop); initial load happens before gRPC is up.
 async fn set_firewall_rules(
     firewall: &Arc<RwLock<Firewall>>,
     firewall_path: &str,
     is_init: bool,
+    grpc: Option<NullnetGrpcInterface>,
 ) -> Result<(), Error> {
     let print_info = |result: &Result<(), FirewallError>, is_init: bool| match result {
         Err(err) => {
@@ -196,6 +210,7 @@ async fn set_firewall_rules(
         }
     }
 
+    let firewall_path_owned = firewall_path.to_string();
     let mut firewall_directory = PathBuf::from(firewall_path);
     firewall_directory.pop();
 
@@ -218,8 +233,27 @@ async fn set_firewall_rules(
             if last_update_time.elapsed().as_millis() > 100 {
                 // ensure file changes are propagated
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                let result = firewall.write().await.set_rules(firewall_path);
+                let result = firewall.write().await.set_rules(&firewall_path_owned);
                 print_info(&result, is_init);
+                if let Err(ref err) = result
+                    && let Some(ref g) = grpc
+                {
+                    let g = g.clone();
+                    let path = firewall_path_owned.clone();
+                    let error_message = err.to_string();
+                    tokio::spawn(async move {
+                        let _ = g
+                            .report_event(AgentEvent {
+                                event: Some(AgentEventKind::FirewallRulesLoadFailed(
+                                    AgentFirewallRulesLoadFailed {
+                                        path,
+                                        error_message,
+                                    },
+                                )),
+                            })
+                            .await;
+                    });
+                }
                 if result.is_ok() && is_init {
                     return Ok(());
                 }
@@ -245,6 +279,7 @@ async fn declare_services(
     config_tx: UnboundedSender<HashMap<u16, String>>,
     docker_changed: Arc<Notify>,
 ) -> Result<(), Error> {
+    let mut last_declared: Vec<nullnet_grpc_lib::nullnet_grpc::Service> = Vec::new();
     loop {
         // read services from file
         let services_toml = tokio::fs::read_to_string("services.toml")
@@ -283,27 +318,68 @@ async fn declare_services(
         }
 
         println!("Declaring services to gRPC server: {services:?}");
+        let num_services = services.services.len() as u32;
+
+        // canonical snapshot for change detection (order-independent)
+        let mut current = services.services.clone();
+        current.sort_by(|a, b| {
+            a.name
+                .cmp(&b.name)
+                .then(a.stack.cmp(&b.stack))
+                .then(a.port.cmp(&b.port))
+                .then(a.docker_container.cmp(&b.docker_container))
+        });
 
         // send services to gRPC server; response carries the trigger ports
         // attached to the services we just declared as hosting.
-        let response: ServicesListResponse = grpc_server
-            .services_list(services)
-            .await
-            .handle_err(location!())?;
-
-        let mut port_to_service: HashMap<u16, String> = HashMap::new();
-        for st in response.service_triggers {
-            for port in st.ports {
-                let Ok(port) = u16::try_from(port) else {
-                    eprintln!("server returned invalid trigger port {port}; skipping");
-                    continue;
-                };
-                port_to_service.insert(port, st.service_name.clone());
+        match grpc_server.services_list(services).await {
+            Err(e) => {
+                eprintln!("services_list failed: {e}");
+                let grpc = grpc_server.clone();
+                let error_message = e.clone();
+                tokio::spawn(async move {
+                    let _ = grpc
+                        .report_event(AgentEvent {
+                            event: Some(AgentEventKind::ServicesListUpdateFailed(
+                                AgentServicesListUpdateFailed {
+                                    error_message,
+                                    num_services,
+                                },
+                            )),
+                        })
+                        .await;
+                });
             }
-        }
-        if config_tx.send(port_to_service).is_err() {
-            // observer task gone; nothing more to do here
-            return Ok(());
+            Ok(response) => {
+                if current != last_declared {
+                    last_declared = current;
+                    let grpc = grpc_server.clone();
+                    tokio::spawn(async move {
+                        let _ = grpc
+                            .report_event(AgentEvent {
+                                event: Some(AgentEventKind::ServicesListUpdated(
+                                    AgentServicesListUpdated { num_services },
+                                )),
+                            })
+                            .await;
+                    });
+                }
+
+                let mut port_to_service: HashMap<u16, String> = HashMap::new();
+                for st in response.service_triggers {
+                    for port in st.ports {
+                        let Ok(port) = u16::try_from(port) else {
+                            eprintln!("server returned invalid trigger port {port}; skipping");
+                            continue;
+                        };
+                        port_to_service.insert(port, st.service_name.clone());
+                    }
+                }
+                if config_tx.send(port_to_service).is_err() {
+                    // observer task gone; nothing more to do here
+                    return Ok(());
+                }
+            }
         }
 
         // Wait up to 10 s before re-declaring, but cut the wait short on a

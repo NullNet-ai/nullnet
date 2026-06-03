@@ -12,7 +12,9 @@ prost.workspace = true
 tonic-prost.workspace = true
 nullnet-liberror.workspace = true
 nullnet-grpc-lib.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "fs"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "fs", "sync"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
 ctrlc = { version = "3.5.2", features = ["termination"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

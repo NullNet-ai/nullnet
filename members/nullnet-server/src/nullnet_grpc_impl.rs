@@ -1,4 +1,5 @@
 use crate::env::NET_TYPE;
+use crate::events::Event;
 use crate::graphviz::generate_graphviz;
 use crate::orchestrator::Orchestrator;
 use crate::services::changes::{
@@ -11,8 +12,8 @@ use crate::services::service_info::ServiceInfo;
 use crate::timeout::check_timeouts;
 use nullnet_grpc_lib::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use nullnet_grpc_lib::nullnet_grpc::{
-    BackendTriggerRequest, Empty, MsgId, NetMessage, NetType, ProxyRequest, ServiceTrigger,
-    Services, ServicesListResponse, Upstream,
+    AgentEvent, BackendTriggerRequest, Empty, MsgId, NetMessage, NetType, ProxyRequest,
+    ServiceTrigger, Services, ServicesListResponse, Upstream, agent_event::Event as AgentEventKind,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::{HashMap, HashSet};
@@ -144,6 +145,15 @@ impl NullnetGrpcImpl {
         if let Some(upstream) = registered.is_client_setup(&proxy_client) {
             println!("'{client_ip}' ---> '{service_name}' is already set up");
 
+            self.orchestrator
+                .events
+                .emit(Event::sticky_session_reused(
+                    service_name.to_string(),
+                    client_ip.to_string(),
+                    proxy_ip.to_string(),
+                ))
+                .await;
+
             // update the latest timestamp for this client since it's being used again
             let mut services_mut = self.services.write().await;
             if let Some(stack_map) = services_mut.get_mut(&stack)
@@ -166,6 +176,15 @@ impl NullnetGrpcImpl {
                 "Max networks ({max}) reached for '{service_name}', \
                  reusing network on proxy {proxy_ip}"
             );
+            self.orchestrator
+                .events
+                .emit(Event::max_networks_limit_enforced(
+                    service_name.to_string(),
+                    proxy_ip.to_string(),
+                    net_id,
+                    max,
+                ))
+                .await;
             let mut services_mut = self.services.write().await;
             if let Some(stack_map) = services_mut.get_mut(&stack) {
                 if let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(service_name) {
@@ -195,10 +214,22 @@ impl NullnetGrpcImpl {
             return Ok(upstream);
         }
 
-        let response = self
+        match self
             .new_proxy_chain(&stack, service_name, proxy_ip, client_ip)
-            .await?;
-        Ok(response.into_inner())
+            .await
+        {
+            Ok(response) => Ok(response.into_inner()),
+            Err(e) => {
+                self.orchestrator
+                    .events
+                    .emit(Event::proxy_chain_setup_failed(
+                        service_name.to_string(),
+                        client_ip.to_string(),
+                    ))
+                    .await;
+                Err(e)
+            }
+        }
     }
 
     async fn services_list_impl(
@@ -545,6 +576,13 @@ impl NullnetGrpcImpl {
             println!(
                 "[trigger] build_backend_dep_chain returned None for '{initiator_name}' port {port}"
             );
+            self.orchestrator
+                .events
+                .emit(Event::backend_trigger_setup_bailed(
+                    initiator_name.to_string(),
+                    port,
+                ))
+                .await;
             return Ok(());
         };
         println!(
@@ -592,7 +630,7 @@ impl NullnetGrpcImpl {
                 continue;
             };
             let changes = detect_services_list_changes(stack_map, sender_ip, stack_list);
-            apply_changes(changes, stack_map, None, &self.orchestrator).await;
+            apply_changes(changes, stack_map, None, &self.orchestrator, stack).await;
         }
 
         // Add/update replicas for services in the matching stacks.
@@ -601,9 +639,19 @@ impl NullnetGrpcImpl {
                 continue;
             };
             for (name, port, docker_container) in list {
+                let is_new = stack_map
+                    .get(name)
+                    .map(|si| !si.has_replica(sender_ip, docker_container.as_deref()))
+                    .unwrap_or(false);
                 stack_map.entry(name.clone()).and_modify(|si| {
                     si.add_replica(sender_ip, *port, docker_container.clone());
                 });
+                if is_new {
+                    self.orchestrator
+                        .events
+                        .emit(Event::service_registered(name.clone(), stack.clone()))
+                        .await;
+                }
             }
         }
 
@@ -665,6 +713,13 @@ impl NullnetGrpcImpl {
 
                 let Some(net_id) = orchestrator.allocate_net_id().await else {
                     eprintln!("NET ID pool exhausted");
+                    orchestrator
+                        .events
+                        .emit(Event::net_id_pool_exhausted(
+                            server.name().to_string(),
+                            client_ethernet.to_string(),
+                        ))
+                        .await;
                     // remove placeholder
                     if let Some(stack_map) = services.write().await.get_mut(&stack)
                         && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(server.name())
@@ -673,6 +728,17 @@ impl NullnetGrpcImpl {
                     }
                     return EdgeOutcome::Failed;
                 };
+
+                if client.is_proxy().is_some() {
+                    orchestrator
+                        .events
+                        .emit(Event::setup_started(
+                            net_id,
+                            server.name().to_string(),
+                            client_ethernet.to_string(),
+                        ))
+                        .await;
+                }
 
                 let orch = orchestrator.clone();
                 let cd = client_docker.clone();
@@ -700,6 +766,12 @@ impl NullnetGrpcImpl {
                 let (server_ok, client_ok) = tokio::join!(server_res, client_res);
 
                 if server_ok.is_none() || client_ok.is_none() {
+                    if client.is_proxy().is_some() {
+                        orchestrator
+                            .events
+                            .emit(Event::setup_timeout(net_id, server.name().to_string()))
+                            .await;
+                    }
                     // rollback
                     orchestrator
                         .send_net_teardown(
@@ -725,6 +797,17 @@ impl NullnetGrpcImpl {
 
                 println!("{server_ethernet} acknowledged");
                 println!("{client_ethernet} acknowledged");
+
+                if client.is_proxy().is_some() {
+                    orchestrator
+                        .events
+                        .emit(Event::setup_ack(
+                            net_id,
+                            server.name().to_string(),
+                            init_time.elapsed().as_millis() as u64,
+                        ))
+                        .await;
+                }
 
                 // register the link between the two services
                 let mut guard = services.write().await;
@@ -769,6 +852,14 @@ impl NullnetGrpcImpl {
                 }
 
                 let proxy_upstream = if client.is_proxy().is_some() {
+                    orchestrator
+                        .events
+                        .emit(Event::session_created(
+                            net_id,
+                            server.name().to_string(),
+                            client_ethernet.to_string(),
+                        ))
+                        .await;
                     Some(net_ip_server)
                 } else {
                     None
@@ -905,5 +996,74 @@ impl NullnetGrpc for NullnetGrpcImpl {
         self.backend_trigger_impl(req)
             .await
             .map_err(|err| Status::internal(err.to_str()))
+    }
+
+    async fn report_event(&self, req: Request<AgentEvent>) -> Result<Response<Empty>, Status> {
+        let Some(kind) = req.into_inner().event else {
+            return Ok(Response::new(Empty {}));
+        };
+        let event = match kind {
+            AgentEventKind::VxlanSetupFailed(e) => {
+                Event::vxlan_setup_failed(e.vxlan_id, e.ns_name, e.error_code)
+            }
+            AgentEventKind::VlanSetupFailed(e) => {
+                Event::vlan_setup_failed(e.vlan_id as u16, e.local_veth, e.error_reason)
+            }
+            AgentEventKind::VxlanTeardownFailed(e) => {
+                Event::vxlan_teardown_failed(e.vxlan_id, e.ns_name, e.error_code)
+            }
+            AgentEventKind::VlanTeardownFailed(e) => {
+                Event::vlan_teardown_failed(e.vlan_id as u16, e.error_reason)
+            }
+            AgentEventKind::DnatInstallFailed(e) => {
+                Event::dnat_install_failed(e.port as u16, e.overlay_ip)
+            }
+            AgentEventKind::DnatRemovalFailed(e) => {
+                Event::dnat_removal_failed(e.port as u16, e.overlay_ip)
+            }
+            AgentEventKind::HostMappingFailed(e) => {
+                Event::host_mapping_failed(e.hostname, e.ip, e.docker_container)
+            }
+            AgentEventKind::ControlChannelClosed(_) => Event::control_channel_closed(),
+            AgentEventKind::ControlChannelAckFailed(e) => {
+                Event::control_channel_ack_failed(e.msg_id, e.message_type)
+            }
+            AgentEventKind::ServicesListUpdateFailed(e) => {
+                Event::services_list_update_failed(e.error_message, e.num_services)
+            }
+            AgentEventKind::BackendTriggerSendFailed(e) => {
+                Event::backend_trigger_send_failed(e.service_name, e.port as u16, e.error_message)
+            }
+            AgentEventKind::FirewallRulesLoadFailed(e) => {
+                Event::firewall_rules_load_failed(e.path, e.error_message)
+            }
+            AgentEventKind::VxlanSetupCompleted(e) => {
+                Event::vxlan_setup_completed(e.vxlan_id, e.ns_name)
+            }
+            AgentEventKind::VlanSetupCompleted(e) => Event::vlan_setup_completed(e.vlan_id as u16),
+            AgentEventKind::ControlChannelEstablished(_) => Event::control_channel_established(),
+            AgentEventKind::ServicesListUpdated(e) => Event::services_list_updated(e.num_services),
+            AgentEventKind::UpstreamLookupFailed(e) => {
+                Event::upstream_lookup_failed(e.service_name, e.client_ip, e.error_message)
+            }
+            AgentEventKind::ProxyRequestMissingHost(e) => {
+                Event::proxy_request_missing_host(e.client_ip)
+            }
+            AgentEventKind::ProxyRequestInvalidHost(e) => {
+                Event::proxy_request_invalid_host(e.client_ip)
+            }
+            AgentEventKind::UpstreamIpParseFailed(e) => {
+                Event::upstream_ip_parse_failed(e.raw_ip, e.service_name)
+            }
+            AgentEventKind::ProxyClientNotInet(e) => Event::proxy_client_not_inet(e.address_family),
+            AgentEventKind::ProxyRequestRouted(e) => Event::proxy_request_routed(
+                e.service_name,
+                e.client_ip,
+                e.upstream_ip,
+                e.latency_ms,
+            ),
+        };
+        self.orchestrator.events.emit(event).await;
+        Ok(Response::new(Empty {}))
     }
 }
