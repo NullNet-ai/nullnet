@@ -2213,6 +2213,131 @@ async fn backend_service_unregistered_drop_C() {
 }
 
 // ===========================================================================
+// backend_trigger_disambiguation: A entry-point with co-located replicas
+// a1, a2 at 1.1.1.1, trigger 5555 → C. Drives handle_backend_trigger directly
+// to exercise initiator-replica resolution by (ip, container) — the path the
+// NFQUEUE client takes when it supplies the container name it resolved from
+// the source IP. The other backend tests reach setup_backend_chain with an
+// already-resolved replica, so this is the only coverage of the resolution
+// `.find` itself.
+// ===========================================================================
+
+/// Topology only: A(a1, a2 @ 1.1.1.1), B, C registered, no chains pre-built so
+/// each test owns the trigger that resolves the initiator replica.
+async fn backend_disambiguation_setup() -> NullnetGrpcImpl {
+    let services = load_fixture(BACKEND_SERVICE_UNREGISTERED).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+
+    let ip_map = HashMap::from([("B", ip(2, 2, 2, 2)), ("C", ip(3, 3, 3, 3))]);
+    register_services(&server, &ip_map, 8080).await;
+
+    // A: co-located replicas a1 and a2 at 1.1.1.1 (Docker Swarm)
+    {
+        let mut services = server.services().write().await;
+        let a = stack_view_mut(&mut services)
+            .get_mut("A")
+            .expect("A in fixture");
+        a.add_replica(ip(1, 1, 1, 1), 8080, Some("a1".into()));
+        a.add_replica(ip(1, 1, 1, 1), 8080, Some("a2".into()));
+    }
+    server
+        .orchestrator()
+        .register_fake_client(ip(1, 1, 1, 1))
+        .await;
+
+    server
+}
+
+/// A container name picks its own replica out of two co-located ones: a trigger
+/// carrying "a2" must build the A(a2)→C chain and leave A(a1) untouched.
+#[tokio::test]
+async fn backend_trigger_disambiguates_colocated_replica_by_container() {
+    let server = backend_disambiguation_setup().await;
+
+    server
+        .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), Some("a2"))
+        .await
+        .expect("backend trigger for a2 should succeed");
+
+    let guard = server.services().read().await;
+    let ServiceInfo::Registered(reg_c) = &stack_view(&guard)["C"] else {
+        panic!("C should be registered");
+    };
+    let a2_client = crate::services::clients::Client::new_service(
+        "A".to_string(),
+        ip(1, 1, 1, 1),
+        Some("a2".to_string()),
+    );
+    let a1_client = crate::services::clients::Client::new_service(
+        "A".to_string(),
+        ip(1, 1, 1, 1),
+        Some("a1".to_string()),
+    );
+    assert!(
+        reg_c.is_client_setup(&a2_client).is_some(),
+        "A(a2)→C chain should be set up"
+    );
+    assert!(
+        reg_c.is_client_setup(&a1_client).is_none(),
+        "A(a1) must not have a chain — only a2 fired"
+    );
+    assert_eq!(reg_c.client_count(), 1, "exactly one initiator (a2) on C");
+    drop(guard);
+
+    // Only A(a2)→C exists.
+    assert_net_ids_in_use(&server, 1).await;
+}
+
+/// A container name that matches no replica is a hard error — there is NO
+/// fall back to IP-only when a container was supplied, otherwise co-located
+/// replicas would be ambiguous again. Nothing is built.
+#[tokio::test]
+async fn backend_trigger_unknown_container_errors_without_ip_fallback() {
+    let server = backend_disambiguation_setup().await;
+
+    let result = server
+        .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), Some("ghost"))
+        .await;
+
+    assert!(
+        result.is_err(),
+        "a container that matches no replica must not silently fall back to IP-only"
+    );
+    assert_net_ids_in_use(&server, 0).await;
+}
+
+/// No container (host process / pre-NFQUEUE caller) keeps the IP-only path:
+/// the first replica on the sender IP is chosen.
+#[tokio::test]
+async fn backend_trigger_without_container_falls_back_to_ip_only() {
+    let server = backend_disambiguation_setup().await;
+
+    server
+        .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None)
+        .await
+        .expect("IP-only trigger should succeed");
+
+    let guard = server.services().read().await;
+    let ServiceInfo::Registered(reg_c) = &stack_view(&guard)["C"] else {
+        panic!("C should be registered");
+    };
+    // a1 is inserted first, so the IP-only find resolves to it.
+    let a1_client = crate::services::clients::Client::new_service(
+        "A".to_string(),
+        ip(1, 1, 1, 1),
+        Some("a1".to_string()),
+    );
+    assert!(
+        reg_c.is_client_setup(&a1_client).is_some(),
+        "IP-only resolution should pick the first replica (a1)"
+    );
+    assert_eq!(reg_c.client_count(), 1);
+    drop(guard);
+
+    assert_net_ids_in_use(&server, 1).await;
+}
+
+// ===========================================================================
 // backend_node_disconnected: same mixed topology as backend_service_unregistered
 // (A co-located a1, a2 on 1.1.1.1, B on 2.2.2.2, C on 3.3.3.3, proxy1 on
 // 5.5.5.5). Tests handle_node_disconnect's interaction with backend chains.
