@@ -423,16 +423,15 @@ fn handle_vxlan_teardown(
     // cleanly. The `container_ip` matches the `-s` we used at install time.
     if let Some((_container, port, overlay_ip, container_ip)) =
         triggers_state.remove_by_vxlan(message.vxlan_id)
+        && !dnat::remove(port, overlay_ip, container_ip)
     {
-        if !dnat::remove(port, overlay_ip, container_ip) {
-            fire_event(
-                &grpc,
-                AgentEventKind::DnatRemovalFailed(AgentDnatRemovalFailed {
-                    port: u32::from(port),
-                    overlay_ip: overlay_ip.to_string(),
-                }),
-            );
-        }
+        fire_event(
+            &grpc,
+            AgentEventKind::DnatRemovalFailed(AgentDnatRemovalFailed {
+                port: u32::from(port),
+                overlay_ip: overlay_ip.to_string(),
+            }),
+        );
     }
 
     // remove host mapping if one was installed at setup
