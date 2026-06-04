@@ -8,6 +8,9 @@ sudo apt-get install -y unzip && \
   sudo mv protoc3/bin/* /usr/local/bin/ && \
   sudo mv protoc3/include/* /usr/local/include/ ; }; } && \
 git pull && \
+{ command -v npm >/dev/null || { \
+  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && \
+  sudo apt-get install -y nodejs ; }; } && \
 cargo build -p nullnet-server --release && \
 sudo cp members/nullnet-server/nullnet-server.service /etc/systemd/system/ && \
 sudo systemctl enable nullnet-server && \
