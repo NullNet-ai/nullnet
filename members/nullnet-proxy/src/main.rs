@@ -1,7 +1,10 @@
 mod env;
 mod nullnet_proxy;
+mod tls;
 
+use crate::env::CERTS_DIR;
 use crate::nullnet_proxy::NullnetProxy;
+use crate::tls::{CertStore, TlsResolver};
 use async_trait::async_trait;
 use nullnet_grpc_lib::nullnet_grpc::{
     AgentEvent, AgentProxyClientNotInet, AgentProxyRequestInvalidHost,
@@ -9,20 +12,48 @@ use nullnet_grpc_lib::nullnet_grpc::{
     agent_event::Event as AgentEventKind,
 };
 use nullnet_liberror::{ErrorHandler, Location, location};
+use pingora_core::listeners::tls::TlsSettings;
 use pingora_core::server::Server;
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::{Error, ErrorType, Result};
+use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{ProxyHttp, Session};
 use std::process;
+use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
 const PROXY_PORT: u16 = 80;
+const HTTPS_PROXY_PORT: u16 = 443;
 
 #[async_trait]
 impl ProxyHttp for NullnetProxy {
     type CTX = ();
     fn new_ctx(&self) -> Self::CTX {}
+
+    async fn request_filter(&self, session: &mut Session, _ctx: &mut ()) -> Result<bool> {
+        // only the HTTP listener redirects, and only for hosts we can serve over TLS
+        if self.tls {
+            return Ok(false);
+        }
+        let req = session.req_header();
+        let hostname = req
+            .headers
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(':').next())
+            .unwrap_or("");
+        if !self.certs.has_cert(hostname) {
+            return Ok(false);
+        }
+
+        let location = https_redirect_url(req, HTTPS_PROXY_PORT);
+        let mut resp = ResponseHeader::build(301, None)?;
+        resp.insert_header("location", location.as_str())?;
+        resp.insert_header("content-length", "0")?;
+        session.write_response_header(Box::new(resp), true).await?;
+        Ok(true)
+    }
 
     async fn upstream_peer(&self, session: &mut Session, _ctx: &mut ()) -> Result<Box<HttpPeer>> {
         println!(
@@ -76,9 +107,7 @@ impl ProxyHttp for NullnetProxy {
                 return Err(Error::explain(ErrorType::BindError, "Invalid host header"));
             }
         };
-        let url = host_str
-            .strip_suffix(&format!(":{PROXY_PORT}"))
-            .unwrap_or(host_str);
+        let url = host_str.rsplit_once(':').map_or(host_str, |(host, _)| host);
 
         let client_ip = match session.client_addr() {
             None => {
@@ -198,23 +227,53 @@ async fn main() -> Result<(), nullnet_liberror::Error> {
     })
     .handle_err(location!())?;
 
-    let proxy_address = format!("0.0.0.0:{PROXY_PORT}");
+    let http_address = format!("0.0.0.0:{PROXY_PORT}");
+    let https_address = format!("0.0.0.0:{HTTPS_PROXY_PORT}");
 
     // start proxy server
     let mut my_server = Server::new(None).handle_err(location!())?;
     my_server.bootstrap();
 
-    let nullnet_proxy = NullnetProxy::new().await?;
-    let mut proxy = pingora_proxy::http_proxy_service(&my_server.configuration, nullnet_proxy);
-    proxy.add_tcp(&proxy_address);
-    my_server.add_service(proxy);
+    let cert_store = Arc::new(CertStore::load(CERTS_DIR.as_str()));
+    let nullnet_proxy = NullnetProxy::new(cert_store.clone()).await?;
 
-    println!("Running Nullnet proxy at {proxy_address}\n");
+    // HTTP listener: redirects to HTTPS for hosts that have a cert
+    let mut http_proxy =
+        pingora_proxy::http_proxy_service(&my_server.configuration, nullnet_proxy.clone());
+    http_proxy.add_tcp(&http_address);
+    my_server.add_service(http_proxy);
+
+    // HTTPS listener: per-domain cert resolved by SNI (exact + wildcard)
+    let mut https_app = nullnet_proxy;
+    https_app.tls = true;
+    let tls_settings = TlsSettings::with_callbacks(Box::new(TlsResolver::new(cert_store)))
+        .handle_err(location!())?;
+    let mut https_proxy = pingora_proxy::http_proxy_service(&my_server.configuration, https_app);
+    https_proxy.add_tls_with_settings(&https_address, None, tls_settings);
+    my_server.add_service(https_proxy);
+
+    println!("Running Nullnet proxy at {http_address} (HTTP) and {https_address} (HTTPS)\n");
 
     // run on separate thread to avoid "cannot start a runtime from within a runtime"
     let handle = thread::spawn(|| my_server.run_forever());
     handle.join().unwrap();
     Ok(())
+}
+
+/// Build the `https://` redirect target from an HTTP request's Host header,
+/// stripping any port (the target port is always `https_port`).
+fn https_redirect_url(req: &RequestHeader, https_port: u16) -> String {
+    let host_header = req
+        .headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let hostname = host_header.split(':').next().unwrap_or(host_header);
+    if https_port == 443 {
+        format!("https://{hostname}{}", req.uri)
+    } else {
+        format!("https://{hostname}:{https_port}{}", req.uri)
+    }
 }
 
 // fn redirect_stdout_stderr_to_file()

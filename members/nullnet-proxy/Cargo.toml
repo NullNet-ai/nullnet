@@ -7,8 +7,11 @@ authors.workspace = true
 
 [dependencies]
 async-trait.workspace = true
-pingora-core = { version = "0.8.0", features = ["rustls"] }
+pingora-core = { version = "0.8.0", features = ["openssl"] }
 pingora-proxy = "0.8.0"
+pingora-http = "0.8.0"
+pingora-openssl = "0.8.0"
+openssl = "0.10"
 nullnet-grpc-lib.workspace = true
 nullnet-liberror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
