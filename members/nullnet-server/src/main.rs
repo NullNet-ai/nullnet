@@ -1,3 +1,4 @@
+mod certs;
 mod env;
 mod events;
 mod graphviz;
@@ -33,6 +34,12 @@ async fn main() -> Result<(), Error> {
 
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), PORT);
 
+    // TODO(grpc-tls): the gRPC server is plaintext. Once certificate private
+    // keys are served over this channel (GetCertificates/WatchCertificates),
+    // enable TLS here (e.g. `Server::builder().tls_config(...)`) — and ideally
+    // mTLS — so keys never travel in the clear. Until then the control plane
+    // must run on a trusted network. The proxy already supports a TLS channel
+    // via `NullnetGrpcInterface::new(.., tls = true)`.
     let mut server = Server::builder();
 
     let nullnet = init_nullnet().await?;

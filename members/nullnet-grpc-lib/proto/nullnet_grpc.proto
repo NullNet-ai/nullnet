@@ -27,6 +27,13 @@ service NullnetGrpc {
 
   // Report an event from a client or proxy agent back to the server.
   rpc ReportEvent(AgentEvent) returns (Empty);
+
+  // TLS certificate distribution APIs ---------------------------------------------------------------------------------
+
+  // Long-lived stream: the server pushes the full certificate set immediately on
+  // subscribe (proxy startup load) and again whenever it changes, so every proxy
+  // hot-reloads without a restart.
+  rpc WatchCertificates(Empty) returns (stream CertBundle);
 }
 
 // TAP-based clients ---------------------------------------------------------------------------------------------------
@@ -146,6 +153,27 @@ message BackendTriggerRequest {
   // sender_ip. With docker, this disambiguates the replica when multiple
   // replicas of the same service live on the same host.
   string initiator_container = 3;
+}
+
+// TLS certificates ----------------------------------------------------------------------------------------------------
+
+// A single TLS certificate, keyed by the SNI name it serves (exact, e.g.
+// "color.com", or wildcard, e.g. "*.color.com").
+message TlsCertificate {
+  string domain = 1;
+  // Leaf certificate followed by any intermediates, PEM-encoded.
+  string fullchain_pem = 2;
+  // PEM-encoded private key.
+  // TODO(encryption-at-rest): the key is currently stored and transmitted in
+  // plaintext. Once encryption-at-rest lands, the server should decrypt just
+  // before sending and this channel must be TLS-protected (see gRPC TLS TODO).
+  string key_pem = 3;
+}
+
+// The full certificate set. Sent in whole on every GetCertificates call and on
+// every WatchCertificates push (the proxy rebuilds its store from the snapshot).
+message CertBundle {
+  repeated TlsCertificate certificates = 1;
 }
 
 // Misc ----------------------------------------------------------------------------------------------------------------

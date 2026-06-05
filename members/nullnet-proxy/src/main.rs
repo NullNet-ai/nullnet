@@ -2,10 +2,11 @@ mod env;
 mod nullnet_proxy;
 mod tls;
 
-use crate::env::CERTS_DIR;
 use crate::nullnet_proxy::NullnetProxy;
 use crate::tls::{CertStore, TlsResolver};
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
     AgentEvent, AgentProxyClientNotInet, AgentProxyRequestInvalidHost,
     AgentProxyRequestMissingHost, AgentProxyRequestRouted, AgentUpstreamLookupFailed, ProxyRequest,
@@ -43,7 +44,7 @@ impl ProxyHttp for NullnetProxy {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.split(':').next())
             .unwrap_or("");
-        if !self.certs.has_cert(hostname) {
+        if !self.certs.load().has_cert(hostname) {
             return Ok(false);
         }
 
@@ -234,8 +235,17 @@ async fn main() -> Result<(), nullnet_liberror::Error> {
     let mut my_server = Server::new(None).handle_err(location!())?;
     my_server.bootstrap();
 
-    let cert_store = Arc::new(CertStore::load(CERTS_DIR.as_str()));
+    // Certificates come from the control service over gRPC. Start empty; the
+    // watch task fills this and hot-reloads it on every change.
+    let cert_store: Arc<ArcSwap<CertStore>> = Arc::new(ArcSwap::from_pointee(CertStore::default()));
     let nullnet_proxy = NullnetProxy::new(cert_store.clone()).await?;
+
+    // subscribe to certificate updates (initial set + every subsequent change)
+    {
+        let server = nullnet_proxy.server.clone();
+        let store = cert_store.clone();
+        tokio::spawn(async move { watch_certificates(server, store).await });
+    }
 
     // HTTP listener: redirects to HTTPS for hosts that have a cert
     let mut http_proxy =
@@ -273,6 +283,32 @@ fn https_redirect_url(req: &RequestHeader, https_port: u16) -> String {
         format!("https://{hostname}{}", req.uri)
     } else {
         format!("https://{hostname}:{https_port}{}", req.uri)
+    }
+}
+
+/// Subscribe to the control service's certificate stream and atomically swap the
+/// proxy's cert store on every push (initial set + each change). Reconnects with
+/// a short backoff if the stream drops.
+async fn watch_certificates(server: NullnetGrpcInterface, store: Arc<ArcSwap<CertStore>>) {
+    loop {
+        match server.watch_certificates().await {
+            Ok(mut stream) => loop {
+                match stream.message().await {
+                    Ok(Some(bundle)) => {
+                        let n = bundle.certificates.len();
+                        store.store(Arc::new(CertStore::from_bundle(&bundle)));
+                        println!("Loaded {n} TLS certificate(s) from control service");
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        eprintln!("Certificate watch stream error: {e}");
+                        break;
+                    }
+                }
+            },
+            Err(e) => eprintln!("Failed to open certificate watch stream: {e}"),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }
 

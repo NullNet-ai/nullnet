@@ -161,6 +161,29 @@ pub struct BackendTriggerRequest {
     #[prost(string, tag = "3")]
     pub initiator_container: ::prost::alloc::string::String,
 }
+/// A single TLS certificate, keyed by the SNI name it serves (exact, e.g.
+/// "color.com", or wildcard, e.g. "\*.color.com").
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TlsCertificate {
+    #[prost(string, tag = "1")]
+    pub domain: ::prost::alloc::string::String,
+    /// Leaf certificate followed by any intermediates, PEM-encoded.
+    #[prost(string, tag = "2")]
+    pub fullchain_pem: ::prost::alloc::string::String,
+    /// PEM-encoded private key.
+    /// TODO(encryption-at-rest): the key is currently stored and transmitted in
+    /// plaintext. Once encryption-at-rest lands, the server should decrypt just
+    /// before sending and this channel must be TLS-protected (see gRPC TLS TODO).
+    #[prost(string, tag = "3")]
+    pub key_pem: ::prost::alloc::string::String,
+}
+/// The full certificate set. Sent in whole on every GetCertificates call and on
+/// every WatchCertificates push (the proxy rebuilds its store from the snapshot).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CertBundle {
+    #[prost(message, repeated, tag = "1")]
+    pub certificates: ::prost::alloc::vec::Vec<TlsCertificate>,
+}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Empty {}
 /// Agent event report — sent from nullnet-client or nullnet-proxy to the server.
@@ -632,6 +655,35 @@ pub mod nullnet_grpc_client {
                 .insert(GrpcMethod::new("nullnet_grpc.NullnetGrpc", "ReportEvent"));
             self.inner.unary(req, path, codec).await
         }
+        /// Long-lived stream: the server pushes the full certificate set immediately on
+        /// subscribe (proxy startup load) and again whenever it changes, so every proxy
+        /// hot-reloads without a restart.
+        pub async fn watch_certificates(
+            &mut self,
+            request: impl tonic::IntoRequest<super::Empty>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::CertBundle>>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/nullnet_grpc.NullnetGrpc/WatchCertificates",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("nullnet_grpc.NullnetGrpc", "WatchCertificates"),
+                );
+            self.inner.server_streaming(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -690,6 +742,22 @@ pub mod nullnet_grpc_server {
             &self,
             request: tonic::Request<super::AgentEvent>,
         ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
+        /// Server streaming response type for the WatchCertificates method.
+        type WatchCertificatesStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::CertBundle, tonic::Status>,
+            >
+            + std::marker::Send
+            + 'static;
+        /// Long-lived stream: the server pushes the full certificate set immediately on
+        /// subscribe (proxy startup load) and again whenever it changes, so every proxy
+        /// hot-reloads without a restart.
+        async fn watch_certificates(
+            &self,
+            request: tonic::Request<super::Empty>,
+        ) -> std::result::Result<
+            tonic::Response<Self::WatchCertificatesStream>,
+            tonic::Status,
+        >;
     }
     #[derive(Debug)]
     pub struct NullnetGrpcServer<T> {
@@ -1024,6 +1092,53 @@ pub mod nullnet_grpc_server {
                                 max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/nullnet_grpc.NullnetGrpc/WatchCertificates" => {
+                    #[allow(non_camel_case_types)]
+                    struct WatchCertificatesSvc<T: NullnetGrpc>(pub Arc<T>);
+                    impl<
+                        T: NullnetGrpc,
+                    > tonic::server::ServerStreamingService<super::Empty>
+                    for WatchCertificatesSvc<T> {
+                        type Response = super::CertBundle;
+                        type ResponseStream = T::WatchCertificatesStream;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::Empty>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as NullnetGrpc>::watch_certificates(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = WatchCertificatesSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.server_streaming(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)

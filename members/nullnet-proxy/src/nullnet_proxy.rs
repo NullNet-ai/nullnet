@@ -1,5 +1,6 @@
 use crate::env::{CONTROL_SERVICE_ADDR, CONTROL_SERVICE_PORT};
 use crate::tls::CertStore;
+use arc_swap::ArcSwap;
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
     AgentEvent, AgentUpstreamIpParseFailed, ProxyRequest, agent_event::Event as AgentEventKind,
@@ -11,15 +12,19 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct NullnetProxy {
     pub(crate) server: NullnetGrpcInterface,
-    pub(crate) certs: Arc<CertStore>,
+    pub(crate) certs: Arc<ArcSwap<CertStore>>,
     pub(crate) tls: bool,
 }
 
 impl NullnetProxy {
-    pub async fn new(certs: Arc<CertStore>) -> Result<Self, Error> {
+    pub async fn new(certs: Arc<ArcSwap<CertStore>>) -> Result<Self, Error> {
         let host = CONTROL_SERVICE_ADDR.to_string();
         let port = *CONTROL_SERVICE_PORT;
 
+        // TODO(grpc-tls): connecting with tls = false. Cert private keys are
+        // delivered over this channel via WatchCertificates, so enable TLS
+        // (tls = true) once the control service serves gRPC over TLS, so keys
+        // never travel in the clear.
         let server = NullnetGrpcInterface::new(&host, port, false)
             .await
             .handle_err(location!())?;

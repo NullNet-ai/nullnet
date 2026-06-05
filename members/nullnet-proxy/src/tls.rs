@@ -1,4 +1,6 @@
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use nullnet_grpc_lib::nullnet_grpc::CertBundle;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use openssl::ssl::NameType;
 use pingora_core::listeners::TlsAccept;
@@ -43,42 +45,28 @@ impl Certificate {
     }
 }
 
-/// In-memory certificate store keyed by domain, loaded once from disk at startup.
+/// In-memory certificate store keyed by domain (SNI). Rebuilt wholesale from a
+/// `CertBundle` pushed by the control service and swapped in atomically.
 ///
-/// Expected layout: `<dir>/<domain>/fullchain.pem` + `<dir>/<domain>/privkey.pem`.
-/// A wildcard cert lives under a directory named `*.example.com`.
+/// Keys are SNI names: exact (`color.com`) or wildcard (`*.color.com`).
+#[derive(Default)]
 pub struct CertStore {
     certs: HashMap<String, Arc<Certificate>>,
 }
 
 impl CertStore {
-    pub fn load(dir: &str) -> Self {
+    /// Build a store from a bundle received over gRPC, validating each
+    /// certificate/key pair and skipping any that fail.
+    pub fn from_bundle(bundle: &CertBundle) -> Self {
         let mut certs = HashMap::new();
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            println!("Could not read certs dir '{dir}'; starting with no TLS certificates");
-            return Self { certs };
-        };
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(domain) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            let (Ok(cert_pem), Ok(key_pem)) = (
-                std::fs::read_to_string(path.join("fullchain.pem")),
-                std::fs::read_to_string(path.join("privkey.pem")),
-            ) else {
-                continue;
-            };
-            match Certificate::new(&cert_pem, &key_pem) {
+        for c in &bundle.certificates {
+            match Certificate::new(&c.fullchain_pem, &c.key_pem) {
                 Ok(cert) => {
-                    println!("Loaded TLS certificate for '{domain}'");
-                    certs.insert(domain.to_string(), Arc::new(cert));
+                    certs.insert(c.domain.clone(), Arc::new(cert));
                 }
-                Err(_) => println!("Skipping '{domain}': invalid certificate or key"),
+                Err(_) => println!("Skipping '{}': invalid certificate or key", c.domain),
             }
         }
-
         Self { certs }
     }
 
@@ -99,12 +87,13 @@ impl CertStore {
 }
 
 /// SNI-based certificate resolver invoked by pingora during the TLS handshake.
+/// Reads the live `ArcSwap` so hot-reloaded certs are picked up immediately.
 pub struct TlsResolver {
-    store: Arc<CertStore>,
+    store: Arc<ArcSwap<CertStore>>,
 }
 
 impl TlsResolver {
-    pub fn new(store: Arc<CertStore>) -> Self {
+    pub fn new(store: Arc<ArcSwap<CertStore>>) -> Self {
         Self { store }
     }
 }
@@ -116,7 +105,8 @@ impl TlsAccept for TlsResolver {
             println!("TLS handshake without SNI; no certificate selected");
             return;
         };
-        let Some(cert) = self.store.get(hostname) else {
+        let store = self.store.load();
+        let Some(cert) = store.get(hostname) else {
             println!("No TLS certificate found for '{hostname}'");
             return;
         };
