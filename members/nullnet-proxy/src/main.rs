@@ -297,18 +297,8 @@ async fn watch_certificates(server: NullnetGrpcInterface, store: Arc<ArcSwap<Cer
                     Ok(Some(bundle)) => {
                         let (new_store, failures) = CertStore::from_bundle(&bundle);
                         let n = new_store.len();
-                        // Guard: never let a transient empty (or all-invalid) bundle
-                        // wipe live certs and take every HTTPS host dark. Keep the
-                        // last-known-good set; clearing all certs needs a restart.
-                        let live = store.load().len();
-                        if n == 0 && live > 0 {
-                            eprintln!(
-                                "Ignoring empty certificate set from control service; keeping {live} live cert(s)"
-                            );
-                        } else {
-                            store.store(Arc::new(new_store));
-                            println!("Loaded {n} TLS certificate(s) from control service");
-                        }
+                        store.store(Arc::new(new_store));
+                        println!("Loaded {n} TLS certificate(s) from control service");
                         for (domain, reason) in failures {
                             eprintln!("Skipping TLS certificate for '{domain}': {reason}");
                             let _ = server

@@ -176,8 +176,8 @@ pub struct TlsCertificate {
     #[prost(string, tag = "3")]
     pub key_pem: ::prost::alloc::string::String,
 }
-/// The full certificate set. Sent in whole on every GetCertificates call and on
-/// every WatchCertificates push (the proxy rebuilds its store from the snapshot).
+/// The full certificate set. Sent in whole on every WatchCertificates push
+/// (the proxy rebuilds its store from the snapshot).
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CertBundle {
     #[prost(message, repeated, tag = "1")]

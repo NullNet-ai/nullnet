@@ -117,8 +117,8 @@ pub(super) async fn upload_handler(
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// Remove a cert. Note: clearing the *last* cert won't fully propagate until the
-/// proxies restart (they keep the last-known-good set to avoid going dark).
+/// Remove a cert. The change is pushed to the proxies and hot-reloaded like any
+/// other; removing the last cert clears the set everywhere.
 pub(super) async fn delete_handler(
     State(state): State<AppState>,
     AxumPath(domain): AxumPath<String>,

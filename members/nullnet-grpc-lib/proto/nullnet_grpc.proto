@@ -169,8 +169,8 @@ message TlsCertificate {
   string key_pem = 3;
 }
 
-// The full certificate set. Sent in whole on every GetCertificates call and on
-// every WatchCertificates push (the proxy rebuilds its store from the snapshot).
+// The full certificate set. Sent in whole on every WatchCertificates push
+// (the proxy rebuilds its store from the snapshot).
 message CertBundle {
   repeated TlsCertificate certificates = 1;
 }
