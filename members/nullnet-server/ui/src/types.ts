@@ -102,4 +102,8 @@ export type EventJson =
   | WithSeverity & { type: 'proxy_client_not_inet'; address_family: string }
   | WithSeverity & { type: 'tls_certificate_invalid'; domain: string; reason: string }
   // Proxy info events
-  | WithSeverity & { type: 'proxy_request_routed'; service_name: string; client_ip: string; upstream_ip: string; latency_ms: number };
+  | WithSeverity & { type: 'proxy_request_routed'; service_name: string; client_ip: string; upstream_ip: string; latency_ms: number }
+  // Certificate events
+  | WithSeverity & { type: 'certificate_installed'; domain: string }
+  | WithSeverity & { type: 'certificate_renewed'; domain: string }
+  | WithSeverity & { type: 'certificate_removed'; domain: string };

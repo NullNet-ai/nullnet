@@ -254,6 +254,20 @@ pub(crate) enum Event {
         latency_ms: u64,
         timestamp: u64,
     },
+
+    // --- Certificate events ---
+    CertificateInstalled {
+        domain: String,
+        timestamp: u64,
+    },
+    CertificateRenewed {
+        domain: String,
+        timestamp: u64,
+    },
+    CertificateRemoved {
+        domain: String,
+        timestamp: u64,
+    },
 }
 
 impl Event {
@@ -301,6 +315,9 @@ impl Event {
             Self::ProxyClientNotInet { .. } => "proxy_client_not_inet",
             Self::TlsCertificateInvalid { .. } => "tls_certificate_invalid",
             Self::ProxyRequestRouted { .. } => "proxy_request_routed",
+            Self::CertificateInstalled { .. } => "certificate_installed",
+            Self::CertificateRenewed { .. } => "certificate_renewed",
+            Self::CertificateRemoved { .. } => "certificate_removed",
         }
     }
 
@@ -318,7 +335,9 @@ impl Event {
             | Self::VlanSetupCompleted { .. }
             | Self::ControlChannelEstablished { .. }
             | Self::ServicesListUpdated { .. }
-            | Self::ProxyRequestRouted { .. } => Severity::Info,
+            | Self::ProxyRequestRouted { .. }
+            | Self::CertificateInstalled { .. }
+            | Self::CertificateRenewed { .. } => Severity::Info,
 
             Self::NodeDisconnected { .. }
             | Self::ServiceUnregistered { .. }
@@ -328,7 +347,8 @@ impl Event {
             | Self::ProxyClientTimedOut { .. }
             | Self::MaxNetworksLimitEnforced { .. }
             | Self::BackendTriggerSetupBailed { .. }
-            | Self::ControlChannelClosed { .. } => Severity::Warning,
+            | Self::ControlChannelClosed { .. }
+            | Self::CertificateRemoved { .. } => Severity::Warning,
 
             Self::SetupTimeout { .. }
             | Self::NetIdPoolExhausted { .. }
@@ -723,6 +743,27 @@ impl Event {
             client_ip,
             upstream_ip,
             latency_ms,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn certificate_installed(domain: String) -> Self {
+        Self::CertificateInstalled {
+            domain,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn certificate_renewed(domain: String) -> Self {
+        Self::CertificateRenewed {
+            domain,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn certificate_removed(domain: String) -> Self {
+        Self::CertificateRemoved {
+            domain,
             timestamp: now_secs(),
         }
     }

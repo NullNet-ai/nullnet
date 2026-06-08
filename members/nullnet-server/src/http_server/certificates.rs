@@ -1,6 +1,8 @@
+use super::AppState;
 use crate::certs::{CERTS_DIR, KEY_ENCRYPTED, KEY_PLAINTEXT};
 use crate::crypto;
-use axum::extract::Path as AxumPath;
+use crate::events::Event;
+use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
@@ -63,7 +65,10 @@ pub(super) async fn list_handler() -> impl IntoResponse {
 /// Ingest or replace (renew) a cert: writes the cert plaintext + the key
 /// encrypted at rest. The certs watcher then pushes it to the proxies, which
 /// validate it and report any problem back as an event.
-pub(super) async fn upload_handler(axum::Json(req): axum::Json<UploadReq>) -> impl IntoResponse {
+pub(super) async fn upload_handler(
+    State(state): State<AppState>,
+    axum::Json(req): axum::Json<UploadReq>,
+) -> impl IntoResponse {
     let Some(domain) = sanitize_domain(&req.domain) else {
         return bad_request("invalid domain");
     };
@@ -84,6 +89,7 @@ pub(super) async fn upload_handler(axum::Json(req): axum::Json<UploadReq>) -> im
     };
 
     let dir = PathBuf::from(CERTS_DIR).join(&domain);
+    let renewal = tokio::fs::try_exists(&dir).await.unwrap_or(false);
     if tokio::fs::create_dir_all(&dir).await.is_err()
         || tokio::fs::write(dir.join("fullchain.pem"), &req.fullchain_pem)
             .await
@@ -102,18 +108,30 @@ pub(super) async fn upload_handler(axum::Json(req): axum::Json<UploadReq>) -> im
     }
     // drop any stale plaintext key from a previous file-drop
     let _ = tokio::fs::remove_file(dir.join(KEY_PLAINTEXT)).await;
+    let event = if renewal {
+        Event::certificate_renewed(domain)
+    } else {
+        Event::certificate_installed(domain)
+    };
+    state.events.emit(event).await;
     StatusCode::NO_CONTENT.into_response()
 }
 
 /// Remove a cert. Note: clearing the *last* cert won't fully propagate until the
 /// proxies restart (they keep the last-known-good set to avoid going dark).
-pub(super) async fn delete_handler(AxumPath(domain): AxumPath<String>) -> impl IntoResponse {
+pub(super) async fn delete_handler(
+    State(state): State<AppState>,
+    AxumPath(domain): AxumPath<String>,
+) -> impl IntoResponse {
     let Some(domain) = sanitize_domain(&domain) else {
         return StatusCode::BAD_REQUEST;
     };
     let dir = PathBuf::from(CERTS_DIR).join(&domain);
     match tokio::fs::remove_dir_all(&dir).await {
-        Ok(()) => StatusCode::NO_CONTENT,
+        Ok(()) => {
+            state.events.emit(Event::certificate_removed(domain)).await;
+            StatusCode::NO_CONTENT
+        }
         Err(_) => StatusCode::NOT_FOUND,
     }
 }
