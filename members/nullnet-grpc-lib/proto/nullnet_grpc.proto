@@ -206,6 +206,7 @@ message AgentEvent {
     AgentProxyRequestInvalidHost  proxy_request_invalid_host = 19;
     AgentUpstreamIpParseFailed    upstream_ip_parse_failed   = 20;
     AgentProxyClientNotInet       proxy_client_not_inet      = 21;
+    AgentTlsCertificateInvalid    tls_certificate_invalid    = 23;
     // Proxy info events
     AgentProxyRequestRouted       proxy_request_routed       = 22;
   }
@@ -232,4 +233,5 @@ message AgentProxyRequestMissingHost { string client_ip = 1; }
 message AgentProxyRequestInvalidHost { string client_ip = 1; }
 message AgentUpstreamIpParseFailed  { string raw_ip = 1; string service_name = 2; }
 message AgentProxyClientNotInet     { string address_family = 1; }
+message AgentTlsCertificateInvalid  { string domain = 1; string reason = 2; }
 message AgentProxyRequestRouted     { string service_name = 1; string client_ip = 2; string upstream_ip = 3; uint64 latency_ms = 4; }

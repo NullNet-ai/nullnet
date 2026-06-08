@@ -190,7 +190,7 @@ pub struct Empty {}
 pub struct AgentEvent {
     #[prost(
         oneof = "agent_event::Event",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 22"
     )]
     pub event: ::core::option::Option<agent_event::Event>,
 }
@@ -243,6 +243,8 @@ pub mod agent_event {
         UpstreamIpParseFailed(super::AgentUpstreamIpParseFailed),
         #[prost(message, tag = "21")]
         ProxyClientNotInet(super::AgentProxyClientNotInet),
+        #[prost(message, tag = "23")]
+        TlsCertificateInvalid(super::AgentTlsCertificateInvalid),
         /// Proxy info events
         #[prost(message, tag = "22")]
         ProxyRequestRouted(super::AgentProxyRequestRouted),
@@ -386,6 +388,13 @@ pub struct AgentUpstreamIpParseFailed {
 pub struct AgentProxyClientNotInet {
     #[prost(string, tag = "1")]
     pub address_family: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentTlsCertificateInvalid {
+    #[prost(string, tag = "1")]
+    pub domain: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub reason: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AgentProxyRequestRouted {

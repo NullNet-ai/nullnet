@@ -240,6 +240,11 @@ pub(crate) enum Event {
         address_family: String,
         timestamp: u64,
     },
+    TlsCertificateInvalid {
+        domain: String,
+        reason: String,
+        timestamp: u64,
+    },
 
     // --- Proxy info events ---
     ProxyRequestRouted {
@@ -294,6 +299,7 @@ impl Event {
             Self::ProxyRequestInvalidHost { .. } => "proxy_request_invalid_host",
             Self::UpstreamIpParseFailed { .. } => "upstream_ip_parse_failed",
             Self::ProxyClientNotInet { .. } => "proxy_client_not_inet",
+            Self::TlsCertificateInvalid { .. } => "tls_certificate_invalid",
             Self::ProxyRequestRouted { .. } => "proxy_request_routed",
         }
     }
@@ -342,7 +348,8 @@ impl Event {
             | Self::ProxyRequestMissingHost { .. }
             | Self::ProxyRequestInvalidHost { .. }
             | Self::UpstreamIpParseFailed { .. }
-            | Self::ProxyClientNotInet { .. } => Severity::Error,
+            | Self::ProxyClientNotInet { .. }
+            | Self::TlsCertificateInvalid { .. } => Severity::Error,
         }
     }
 
@@ -693,6 +700,14 @@ impl Event {
     pub(crate) fn proxy_client_not_inet(address_family: String) -> Self {
         Self::ProxyClientNotInet {
             address_family,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn tls_certificate_invalid(domain: String, reason: String) -> Self {
+        Self::TlsCertificateInvalid {
+            domain,
+            reason,
             timestamp: now_secs(),
         }
     }

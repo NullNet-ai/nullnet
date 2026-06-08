@@ -1094,6 +1094,9 @@ impl NullnetGrpc for NullnetGrpcImpl {
                 Event::upstream_ip_parse_failed(e.raw_ip, e.service_name)
             }
             AgentEventKind::ProxyClientNotInet(e) => Event::proxy_client_not_inet(e.address_family),
+            AgentEventKind::TlsCertificateInvalid(e) => {
+                Event::tls_certificate_invalid(e.domain, e.reason)
+            }
             AgentEventKind::ProxyRequestRouted(e) => Event::proxy_request_routed(
                 e.service_name,
                 e.client_ip,

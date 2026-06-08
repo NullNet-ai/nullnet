@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
     AgentEvent, AgentProxyClientNotInet, AgentProxyRequestInvalidHost,
-    AgentProxyRequestMissingHost, AgentProxyRequestRouted, AgentUpstreamLookupFailed, ProxyRequest,
-    agent_event::Event as AgentEventKind,
+    AgentProxyRequestMissingHost, AgentProxyRequestRouted, AgentTlsCertificateInvalid,
+    AgentUpstreamLookupFailed, ProxyRequest, agent_event::Event as AgentEventKind,
 };
 use nullnet_liberror::{ErrorHandler, Location, location};
 use pingora_core::listeners::tls::TlsSettings;
@@ -295,8 +295,19 @@ async fn watch_certificates(server: NullnetGrpcInterface, store: Arc<ArcSwap<Cer
             Ok(mut stream) => loop {
                 match stream.message().await {
                     Ok(Some(bundle)) => {
-                        let n = bundle.certificates.len();
-                        store.store(Arc::new(CertStore::from_bundle(&bundle)));
+                        let (new_store, failures) = CertStore::from_bundle(&bundle);
+                        let n = new_store.len();
+                        store.store(Arc::new(new_store));
+                        for (domain, reason) in failures {
+                            eprintln!("Skipping TLS certificate for '{domain}': {reason}");
+                            let _ = server
+                                .report_event(AgentEvent {
+                                    event: Some(AgentEventKind::TlsCertificateInvalid(
+                                        AgentTlsCertificateInvalid { domain, reason },
+                                    )),
+                                })
+                                .await;
+                        }
                         println!("Loaded {n} TLS certificate(s) from control service");
                     }
                     Ok(None) => break,
