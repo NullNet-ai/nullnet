@@ -256,8 +256,10 @@ async fn main() -> Result<(), nullnet_liberror::Error> {
     // HTTPS listener: per-domain cert resolved by SNI (exact + wildcard)
     let mut https_app = nullnet_proxy;
     https_app.tls = true;
-    let tls_settings = TlsSettings::with_callbacks(Box::new(TlsResolver::new(cert_store)))
+    let mut tls_settings = TlsSettings::with_callbacks(Box::new(TlsResolver::new(cert_store)))
         .handle_err(location!())?;
+    // advertise HTTP/2 (and HTTP/1.1) via ALPN during the TLS handshake
+    tls_settings.enable_h2();
     let mut https_proxy = pingora_proxy::http_proxy_service(&my_server.configuration, https_app);
     https_proxy.add_tls_with_settings(&https_address, None, tls_settings);
     my_server.add_service(https_proxy);
@@ -320,6 +322,43 @@ async fn watch_certificates(server: NullnetGrpcInterface, store: Arc<ArcSwap<Cer
             Err(e) => eprintln!("Failed to open certificate watch stream: {e}"),
         }
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal GET request with the given Host header and target URI.
+    fn req(host: &str, uri: &str) -> RequestHeader {
+        let mut req = RequestHeader::build("GET", uri.as_bytes(), None).unwrap();
+        req.insert_header("host", host).unwrap();
+        req
+    }
+
+    #[test]
+    fn redirect_strips_port_and_targets_443() {
+        let r = req("color.com:80", "/");
+        assert_eq!(https_redirect_url(&r, 443), "https://color.com/");
+    }
+
+    #[test]
+    fn redirect_preserves_path_and_query() {
+        let r = req("color.com", "/a/b?x=1&y=2");
+        assert_eq!(https_redirect_url(&r, 443), "https://color.com/a/b?x=1&y=2");
+    }
+
+    #[test]
+    fn redirect_includes_non_default_https_port() {
+        let r = req("color.com:8080", "/path");
+        assert_eq!(https_redirect_url(&r, 8443), "https://color.com:8443/path");
+    }
+
+    #[test]
+    fn redirect_with_missing_host_yields_empty_authority() {
+        let mut r = RequestHeader::build("GET", b"/", None).unwrap();
+        r.remove_header("host");
+        assert_eq!(https_redirect_url(&r, 443), "https:///");
     }
 }
 
