@@ -71,44 +71,50 @@ impl ProxyHttp for NullnetProxy {
             .map(|a| a.ip().to_string());
         let client_ip_for_events = client_ip_opt.clone().unwrap_or_default();
 
-        let host_header = match session.get_header("host") {
-            Some(h) => h,
-            None => {
-                let server = self.server.clone();
-                let cip = client_ip_for_events.clone();
-                tokio::spawn(async move {
-                    let _ = server
-                        .report_event(AgentEvent {
-                            event: Some(AgentEventKind::ProxyRequestMissingHost(
-                                AgentProxyRequestMissingHost { client_ip: cip },
-                            )),
-                        })
-                        .await;
-                });
-                return Err(Error::explain(
-                    ErrorType::BindError,
-                    "No host header in request",
-                ));
-            }
+        // HTTP/1.1 carries the target in the `Host` header; HTTP/2 carries it in
+        // the `:authority` pseudo-header, which pingora exposes via the request URI.
+        let host_str = match session.get_header("host") {
+            Some(h) => match h.to_str() {
+                Ok(s) => s.to_string(),
+                Err(_) => {
+                    let server = self.server.clone();
+                    let cip = client_ip_for_events.clone();
+                    tokio::spawn(async move {
+                        let _ = server
+                            .report_event(AgentEvent {
+                                event: Some(AgentEventKind::ProxyRequestInvalidHost(
+                                    AgentProxyRequestInvalidHost { client_ip: cip },
+                                )),
+                            })
+                            .await;
+                    });
+                    return Err(Error::explain(ErrorType::BindError, "Invalid host header"));
+                }
+            },
+            None => match session.req_header().uri.host() {
+                Some(h) => h.to_string(),
+                None => {
+                    let server = self.server.clone();
+                    let cip = client_ip_for_events.clone();
+                    tokio::spawn(async move {
+                        let _ = server
+                            .report_event(AgentEvent {
+                                event: Some(AgentEventKind::ProxyRequestMissingHost(
+                                    AgentProxyRequestMissingHost { client_ip: cip },
+                                )),
+                            })
+                            .await;
+                    });
+                    return Err(Error::explain(
+                        ErrorType::BindError,
+                        "No host header in request",
+                    ));
+                }
+            },
         };
-        let host_str = match host_header.to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                let server = self.server.clone();
-                let cip = client_ip_for_events.clone();
-                tokio::spawn(async move {
-                    let _ = server
-                        .report_event(AgentEvent {
-                            event: Some(AgentEventKind::ProxyRequestInvalidHost(
-                                AgentProxyRequestInvalidHost { client_ip: cip },
-                            )),
-                        })
-                        .await;
-                });
-                return Err(Error::explain(ErrorType::BindError, "Invalid host header"));
-            }
-        };
-        let url = host_str.rsplit_once(':').map_or(host_str, |(host, _)| host);
+        let url = host_str
+            .rsplit_once(':')
+            .map_or(host_str.as_str(), |(host, _)| host);
 
         let client_ip = match session.client_addr() {
             None => {
