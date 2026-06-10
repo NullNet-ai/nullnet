@@ -240,6 +240,11 @@ pub(crate) enum Event {
         address_family: String,
         timestamp: u64,
     },
+    TlsCertificateInvalid {
+        domain: String,
+        reason: String,
+        timestamp: u64,
+    },
 
     // --- Proxy info events ---
     ProxyRequestRouted {
@@ -247,6 +252,20 @@ pub(crate) enum Event {
         client_ip: String,
         upstream_ip: String,
         latency_ms: u64,
+        timestamp: u64,
+    },
+
+    // --- Certificate events ---
+    CertificateInstalled {
+        domain: String,
+        timestamp: u64,
+    },
+    CertificateRenewed {
+        domain: String,
+        timestamp: u64,
+    },
+    CertificateRemoved {
+        domain: String,
         timestamp: u64,
     },
 }
@@ -294,7 +313,11 @@ impl Event {
             Self::ProxyRequestInvalidHost { .. } => "proxy_request_invalid_host",
             Self::UpstreamIpParseFailed { .. } => "upstream_ip_parse_failed",
             Self::ProxyClientNotInet { .. } => "proxy_client_not_inet",
+            Self::TlsCertificateInvalid { .. } => "tls_certificate_invalid",
             Self::ProxyRequestRouted { .. } => "proxy_request_routed",
+            Self::CertificateInstalled { .. } => "certificate_installed",
+            Self::CertificateRenewed { .. } => "certificate_renewed",
+            Self::CertificateRemoved { .. } => "certificate_removed",
         }
     }
 
@@ -312,7 +335,9 @@ impl Event {
             | Self::VlanSetupCompleted { .. }
             | Self::ControlChannelEstablished { .. }
             | Self::ServicesListUpdated { .. }
-            | Self::ProxyRequestRouted { .. } => Severity::Info,
+            | Self::ProxyRequestRouted { .. }
+            | Self::CertificateInstalled { .. }
+            | Self::CertificateRenewed { .. } => Severity::Info,
 
             Self::NodeDisconnected { .. }
             | Self::ServiceUnregistered { .. }
@@ -322,7 +347,8 @@ impl Event {
             | Self::ProxyClientTimedOut { .. }
             | Self::MaxNetworksLimitEnforced { .. }
             | Self::BackendTriggerSetupBailed { .. }
-            | Self::ControlChannelClosed { .. } => Severity::Warning,
+            | Self::ControlChannelClosed { .. }
+            | Self::CertificateRemoved { .. } => Severity::Warning,
 
             Self::SetupTimeout { .. }
             | Self::NetIdPoolExhausted { .. }
@@ -342,7 +368,8 @@ impl Event {
             | Self::ProxyRequestMissingHost { .. }
             | Self::ProxyRequestInvalidHost { .. }
             | Self::UpstreamIpParseFailed { .. }
-            | Self::ProxyClientNotInet { .. } => Severity::Error,
+            | Self::ProxyClientNotInet { .. }
+            | Self::TlsCertificateInvalid { .. } => Severity::Error,
         }
     }
 
@@ -697,6 +724,14 @@ impl Event {
         }
     }
 
+    pub(crate) fn tls_certificate_invalid(domain: String, reason: String) -> Self {
+        Self::TlsCertificateInvalid {
+            domain,
+            reason,
+            timestamp: now_secs(),
+        }
+    }
+
     pub(crate) fn proxy_request_routed(
         service_name: String,
         client_ip: String,
@@ -708,6 +743,27 @@ impl Event {
             client_ip,
             upstream_ip,
             latency_ms,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn certificate_installed(domain: String) -> Self {
+        Self::CertificateInstalled {
+            domain,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn certificate_renewed(domain: String) -> Self {
+        Self::CertificateRenewed {
+            domain,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn certificate_removed(domain: String) -> Self {
+        Self::CertificateRemoved {
+            domain,
             timestamp: now_secs(),
         }
     }

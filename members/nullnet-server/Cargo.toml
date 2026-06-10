@@ -25,8 +25,21 @@ notify.workspace = true
 gag.workspace = true
 chrono.workspace = true
 axum = "0.8"
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rcgen = "0.14"
 rust-embed = { version = "8", features = ["axum"] }
 mime_guess = "2"
+aes-gcm = "0.10"
+base64 = "0.22"
+x509-parser = "0.16"
+# ACME (Let's Encrypt) cert issuance via DNS-01, ported from ../routix
+anyhow = "1.0"
+instant-acme = { version = "0.8", features = ["hyper-rustls"] }
+reqwest = { version = "0.13", features = ["json", "query", "form"] }
+openssl = "0.10"
+quick-xml = "0.39"
+aws-sdk-route53 = "1"
+aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
 
 [build-dependencies]
 

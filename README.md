@@ -38,7 +38,11 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   ```
   NET_TYPE=VXLAN
   TIMEOUT=0
+  CERT_ENCRYPTION_KEY=<32 raw bytes or 64 hex chars>
   ```
+  `CERT_ENCRYPTION_KEY` is **required** — the server refuses to start without it. It encrypts
+  TLS certificate private keys at rest; keep it stable, since rotating it makes existing
+  encrypted keys undecryptable. Generate one with `openssl rand -hex 32`.
 
 - service configuration is split per **stack** — one TOML file per stack under
   `members/nullnet-server/services/`. The filename (minus `.toml`) is the stack name.
@@ -91,7 +95,8 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   ./setup-proxy.sh
   ```
 
-- the proxy will run on port 80 and receive requests in the form `service_name:80`
+- the proxy listens on port 80 (requests in the form `service_name:80`) and, for hosts that have a
+  TLS certificate, on port 443 — HTTP requests to those hosts get a 301 redirect to HTTPS
 
 ***
 

@@ -12,14 +12,14 @@ use crate::services::service_info::ServiceInfo;
 use crate::timeout::check_timeouts;
 use nullnet_grpc_lib::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentEvent, BackendTriggerRequest, Empty, MsgId, NetMessage, NetType, ProxyRequest,
+    AgentEvent, BackendTriggerRequest, CertBundle, Empty, MsgId, NetMessage, NetType, ProxyRequest,
     ServiceTrigger, Services, ServicesListResponse, Upstream, agent_event::Event as AgentEventKind,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
-use tokio::sync::{Notify, RwLock, mpsc};
+use tokio::sync::{Notify, RwLock, mpsc, watch};
 use tokio::task::JoinSet;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
@@ -29,6 +29,9 @@ pub(crate) struct NullnetGrpcImpl {
     services: Arc<RwLock<StackMap>>,
     /// Orchestrator to manage TAP-based clients and NET setups
     orchestrator: Orchestrator,
+    /// Latest TLS certificate set, kept in sync with `./certs` by a watcher.
+    /// Proxies fetch the current value and subscribe for updates.
+    certs: watch::Receiver<CertBundle>,
 }
 
 /// Return the stack name that holds `service_name`, if any. Service names
@@ -72,9 +75,18 @@ impl NullnetGrpcImpl {
             check_timeouts(services_2, orchestrator_2, config_changed).await;
         });
 
+        // load TLS certificates and keep them in sync with the ./certs dir
+        let (certs_tx, certs_rx) = watch::channel(crate::certs::load_certificates().await);
+        tokio::spawn(async move {
+            if let Err(e) = crate::certs::watch(certs_tx).await {
+                eprintln!("failed to watch certs for changes: {e:?}");
+            }
+        });
+
         Ok(NullnetGrpcImpl {
             services,
             orchestrator,
+            certs: certs_rx,
         })
     }
 
@@ -930,9 +942,11 @@ struct SuccessfulEdge {
 #[cfg(test)]
 impl NullnetGrpcImpl {
     pub(crate) fn new_for_test(services: StackMap) -> Self {
+        let (_, certs) = watch::channel(CertBundle::default());
         NullnetGrpcImpl {
             services: Arc::new(RwLock::new(services)),
             orchestrator: Orchestrator::new(),
+            certs,
         }
     }
 
@@ -998,6 +1012,30 @@ impl NullnetGrpc for NullnetGrpcImpl {
             .map_err(|err| Status::internal(err.to_str()))
     }
 
+    type WatchCertificatesStream = ReceiverStream<Result<CertBundle, Status>>;
+
+    async fn watch_certificates(
+        &self,
+        _: Request<Empty>,
+    ) -> Result<Response<Self::WatchCertificatesStream>, Status> {
+        let mut certs = self.certs.clone();
+        let (tx, rx) = mpsc::channel(4);
+        tokio::spawn(async move {
+            // send the current set immediately, then one snapshot per change
+            let initial = certs.borrow_and_update().clone();
+            if tx.send(Ok(initial)).await.is_err() {
+                return;
+            }
+            while certs.changed().await.is_ok() {
+                let snapshot = certs.borrow_and_update().clone();
+                if tx.send(Ok(snapshot)).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
     async fn report_event(&self, req: Request<AgentEvent>) -> Result<Response<Empty>, Status> {
         let Some(kind) = req.into_inner().event else {
             return Ok(Response::new(Empty {}));
@@ -1056,6 +1094,9 @@ impl NullnetGrpc for NullnetGrpcImpl {
                 Event::upstream_ip_parse_failed(e.raw_ip, e.service_name)
             }
             AgentEventKind::ProxyClientNotInet(e) => Event::proxy_client_not_inet(e.address_family),
+            AgentEventKind::TlsCertificateInvalid(e) => {
+                Event::tls_certificate_invalid(e.domain, e.reason)
+            }
             AgentEventKind::ProxyRequestRouted(e) => Event::proxy_request_routed(
                 e.service_name,
                 e.client_ip,

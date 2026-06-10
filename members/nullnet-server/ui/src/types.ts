@@ -46,6 +46,11 @@ export interface SessionJson {
   created_at: number;
 }
 
+export interface CertJson {
+  domain: string;
+  expires_at: number | null;
+}
+
 export type Severity = 'info' | 'warning' | 'error';
 
 type WithSeverity = { severity: Severity; timestamp: number };
@@ -95,5 +100,10 @@ export type EventJson =
   | WithSeverity & { type: 'proxy_request_invalid_host'; client_ip: string }
   | WithSeverity & { type: 'upstream_ip_parse_failed'; raw_ip: string; service_name: string }
   | WithSeverity & { type: 'proxy_client_not_inet'; address_family: string }
+  | WithSeverity & { type: 'tls_certificate_invalid'; domain: string; reason: string }
   // Proxy info events
-  | WithSeverity & { type: 'proxy_request_routed'; service_name: string; client_ip: string; upstream_ip: string; latency_ms: number };
+  | WithSeverity & { type: 'proxy_request_routed'; service_name: string; client_ip: string; upstream_ip: string; latency_ms: number }
+  // Certificate events
+  | WithSeverity & { type: 'certificate_installed'; domain: string }
+  | WithSeverity & { type: 'certificate_renewed'; domain: string }
+  | WithSeverity & { type: 'certificate_removed'; domain: string };

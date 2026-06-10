@@ -2,8 +2,8 @@ mod proto;
 
 use crate::nullnet_grpc::nullnet_grpc_client::NullnetGrpcClient;
 use crate::nullnet_grpc::{
-    AgentEvent, BackendTriggerRequest, Empty, MsgId, NetMessage, NetType, ProxyRequest, Services,
-    ServicesListResponse, Upstream,
+    AgentEvent, BackendTriggerRequest, CertBundle, Empty, MsgId, NetMessage, NetType, ProxyRequest,
+    Services, ServicesListResponse, Upstream,
 };
 pub use proto::*;
 use tokio::sync::mpsc;
@@ -120,5 +120,18 @@ impl NullnetGrpcInterface {
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())
+    }
+
+    /// Subscribe to certificate changes: the returned stream yields the full
+    /// certificate set immediately on subscribe and again whenever it changes.
+    #[allow(clippy::missing_errors_doc)]
+    pub async fn watch_certificates(&self) -> Result<Streaming<CertBundle>, String> {
+        Ok(self
+            .client
+            .clone()
+            .watch_certificates(Request::new(Empty {}))
+            .await
+            .map_err(|e| e.to_string())?
+            .into_inner())
     }
 }

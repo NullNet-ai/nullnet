@@ -6,7 +6,11 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/api': 'http://localhost:8080',
+      // backend now serves HTTPS with a self-signed cert; secure:false skips cert validation
+      '/api': {
+        target: 'https://localhost:8080',
+        secure: false,
+      },
     },
   },
 })

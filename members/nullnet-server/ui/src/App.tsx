@@ -7,6 +7,7 @@ import Sessions from './pages/Sessions';
 import Pool from './pages/Pool';
 import Config from './pages/Config';
 import Events from './pages/Events';
+import Certificates from './pages/Certificates';
 
 export default function App() {
   return (
@@ -19,6 +20,7 @@ export default function App() {
           <Route path="/sessions" element={<Sessions />} />
           <Route path="/pool" element={<Pool />} />
           <Route path="/config" element={<Config />} />
+          <Route path="/certificates" element={<Certificates />} />
           <Route path="/events" element={<Events />} />
         </Routes>
       </BrowserRouter>
