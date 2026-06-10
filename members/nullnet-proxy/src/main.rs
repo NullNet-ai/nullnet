@@ -24,6 +24,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
+// TODO: store in certs also encrypted API keys to allow automatic renewals
+
 const PROXY_PORT: u16 = 80;
 const HTTPS_PROXY_PORT: u16 = 443;
 
