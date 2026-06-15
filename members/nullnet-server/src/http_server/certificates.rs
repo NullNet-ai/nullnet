@@ -13,8 +13,6 @@ struct CertJson {
     domain: String,
     /// Leaf `notAfter` as unix seconds (best-effort; `None` if unparseable).
     expires_at: Option<i64>,
-    /// Whether stored DNS credentials let this cert auto-renew (ACME-issued only).
-    auto_renew: bool,
 }
 
 #[derive(Serialize)]
@@ -32,18 +30,13 @@ fn bad_request(error: &str) -> axum::response::Response {
         .into_response()
 }
 
-/// List installed certs (domain + best-effort expiry + auto-renew flag). Never
-/// returns keys or credentials.
+/// List installed certs (domain + best-effort expiry). Never returns keys or
+/// credentials.
 pub(super) async fn list_handler() -> impl IntoResponse {
     let mut certs: Vec<CertJson> = Vec::new();
     for domain in crate::certs::cert_domains().await {
         let expires_at = crate::certs::read_expiry(&domain).await;
-        let auto_renew = crate::certs::load_dns_credentials(&domain).await.is_some();
-        certs.push(CertJson {
-            domain,
-            expires_at,
-            auto_renew,
-        });
+        certs.push(CertJson { domain, expires_at });
     }
     certs.sort_by(|a, b| a.domain.cmp(&b.domain));
     axum::Json(certs)

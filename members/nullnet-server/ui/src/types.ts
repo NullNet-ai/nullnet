@@ -49,8 +49,6 @@ export interface SessionJson {
 export interface CertJson {
   domain: string;
   expires_at: number | null;
-  /** ACME-issued with stored DNS credentials — renews automatically before expiry. */
-  auto_renew: boolean;
 }
 
 export type Severity = 'info' | 'warning' | 'error';

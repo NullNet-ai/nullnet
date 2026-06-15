@@ -142,13 +142,12 @@ export default function Certificates() {
               <tr>
                 <th>Domain</th>
                 <th>Expires</th>
-                <th>Renewal</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={4} style={{ color: 'var(--t2)', padding: '20px 16px' }}>Loading…</td></tr>
+                <tr><td colSpan={3} style={{ color: 'var(--t2)', padding: '20px 16px' }}>Loading…</td></tr>
               )}
               {list.map(c => {
                 const exp = formatExpiry(c.expires_at);
@@ -156,10 +155,6 @@ export default function Certificates() {
                   <tr key={c.domain}>
                     <td style={{ fontWeight: 500, fontFamily: "'JetBrains Mono',monospace" }}>{c.domain}</td>
                     <td style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: exp.color }}>{exp.text}</td>
-                    <td style={{ fontSize: 11, color: c.auto_renew ? 'var(--t1)' : 'var(--t2)' }}
-                        title={c.auto_renew ? 'Renews automatically via Let’s Encrypt before expiry' : 'Manual cert — replace it yourself before expiry'}>
-                      {c.auto_renew ? 'Auto' : 'Manual'}
-                    </td>
                     <td>
                       <button className="teardown-btn" onClick={() => remove(c.domain)} disabled={deleting.has(c.domain)}>
                         {deleting.has(c.domain) ? '…' : 'Delete'}
@@ -169,7 +164,7 @@ export default function Certificates() {
                 );
               })}
               {!loading && list.length === 0 && (
-                <tr><td colSpan={4} style={{ color: 'var(--t2)', padding: '20px 16px' }}>No certificates installed</td></tr>
+                <tr><td colSpan={3} style={{ color: 'var(--t2)', padding: '20px 16px' }}>No certificates installed</td></tr>
               )}
             </tbody>
           </table>
