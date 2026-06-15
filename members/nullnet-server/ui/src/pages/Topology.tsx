@@ -44,7 +44,8 @@ export default function Topology() {
     panel?.type === 'node' ? panel.nodeId :
     panel?.type === 'internet' ? INTERNET_ID :
     null;
-  const selectedEdgeIdx = panel?.type === 'edge' ? panel.edgeIdx : null;
+  const selectedEdgeKey =
+    panel?.type === 'edge' ? `${panel.fromId}\0${panel.toId}` : null;
 
   function handleNodeClick(nodeId: string) {
     if (nodeId === INTERNET_ID) {
@@ -53,8 +54,12 @@ export default function Topology() {
     }
     setPanel(p => p?.type === 'node' && p.nodeId === nodeId ? null : { type: 'node', nodeId });
   }
-  function handleEdgeClick(edgeIdx: number) {
-    setPanel(p => p?.type === 'edge' && p.edgeIdx === edgeIdx ? null : { type: 'edge', edgeIdx });
+  function handleEdgeClick(fromId: string, toId: string, edgeIndices: number[]) {
+    setPanel(p =>
+      p?.type === 'edge' && p.fromId === fromId && p.toId === toId
+        ? null
+        : { type: 'edge', fromId, toId, edgeIndices },
+    );
   }
 
   return (
@@ -130,7 +135,7 @@ export default function Topology() {
                 showRegistered={showRegistered}
                 showUnregistered={showUnregistered}
                 selectedNodeId={selectedNodeId}
-                selectedEdgeIdx={selectedEdgeIdx}
+                selectedEdgeKey={selectedEdgeKey}
                 onNodeClick={handleNodeClick}
                 onEdgeClick={handleEdgeClick}
               />
@@ -169,8 +174,8 @@ export default function Topology() {
                 {graph.edges.map((e, i) => (
                   <tr
                     key={i}
-                    onClick={() => handleEdgeClick(i)}
-                    style={{ cursor: 'pointer', background: selectedEdgeIdx === i ? 'rgba(91,156,246,.07)' : undefined }}
+                    onClick={() => handleEdgeClick(e.from, e.to, [i])}
+                    style={{ cursor: 'pointer', background: panel?.type === 'edge' && panel.edgeIndices.includes(i) ? 'rgba(91,156,246,.07)' : undefined }}
                   >
                     <td style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 500 }}>{e.from}</td>
                     <td style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: '#fbbf24' }}>

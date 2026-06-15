@@ -13,23 +13,36 @@ export function buildTopoGraph(graph: GraphJson): { nodes: TopoNode[]; edges: To
     nodes.push({ kind: 'internet', id: INTERNET_ID });
   }
 
-  const edges: TopoEdge[] = [];
-
-  // Internet → Proxy edges
+  const inetEdges: TopoEdge[] = [];
   for (const ip of proxyIps) {
-    edges.push({ from: INTERNET_ID, to: ip, net_id: -1, setup_ms: 0, isProxyHop: false, isInternetEdge: true, originalIdx: -1 });
+    inetEdges.push({ from: INTERNET_ID, to: ip, net_id: -1, setup_ms: 0, isProxyHop: false, isInternetEdge: true, originalIndices: [] });
   }
 
+  // De-duplicate service/proxy edges by (from, to) key — multiple sessions share one drawn edge.
+  const edgeMap = new Map<string, TopoEdge>();
   for (let idx = 0; idx < graph.edges.length; idx++) {
     const e = graph.edges[idx];
     if (e.via_proxy) {
-      edges.push({ from: e.from, to: e.via_proxy, net_id: e.net_id, setup_ms: 0, isProxyHop: true, isInternetEdge: false, originalIdx: idx });
-      edges.push({ from: e.via_proxy, to: e.to, net_id: e.net_id, setup_ms: e.setup_ms, isProxyHop: true, isInternetEdge: false, originalIdx: idx });
+      const k1 = `${e.from}\0${e.via_proxy}`;
+      if (!edgeMap.has(k1)) {
+        edgeMap.set(k1, { from: e.from, to: e.via_proxy, net_id: e.net_id, setup_ms: 0, isProxyHop: true, isInternetEdge: false, originalIndices: [] });
+      }
+      edgeMap.get(k1)!.originalIndices.push(idx);
+
+      const k2 = `${e.via_proxy}\0${e.to}`;
+      if (!edgeMap.has(k2)) {
+        edgeMap.set(k2, { from: e.via_proxy, to: e.to, net_id: e.net_id, setup_ms: e.setup_ms, isProxyHop: true, isInternetEdge: false, originalIndices: [] });
+      }
+      edgeMap.get(k2)!.originalIndices.push(idx);
     } else {
-      edges.push({ from: e.from, to: e.to, net_id: e.net_id, setup_ms: e.setup_ms, isProxyHop: false, isInternetEdge: false, originalIdx: idx });
+      const k = `${e.from}\0${e.to}`;
+      if (!edgeMap.has(k)) {
+        edgeMap.set(k, { from: e.from, to: e.to, net_id: e.net_id, setup_ms: e.setup_ms, isProxyHop: false, isInternetEdge: false, originalIndices: [] });
+      }
+      edgeMap.get(k)!.originalIndices.push(idx);
     }
   }
-  return { nodes, edges };
+  return { nodes, edges: [...inetEdges, ...edgeMap.values()] };
 }
 
 export function layoutNodes(nodes: TopoNode[], edges: TopoEdge[]): Map<string, Pos> {

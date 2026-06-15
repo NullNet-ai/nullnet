@@ -18,10 +18,7 @@ export default function TopologyPanel({ panel, graph, services, sessions, onClos
   function getTitle(): string {
     if (!panel) return '–';
     if (panel.type === 'internet') return 'Internet Clients';
-    if (panel.type === 'edge') {
-      const e = graph.edges[panel.edgeIdx];
-      return e ? `${e.from} → ${e.to}` : '–';
-    }
+    if (panel.type === 'edge') return `${panel.fromId} → ${panel.toId}`;
     return panel.nodeId;
   }
 
@@ -33,8 +30,8 @@ export default function TopologyPanel({ panel, graph, services, sessions, onClos
     }
 
     if (panel.type === 'edge') {
-      const e = graph.edges[panel.edgeIdx];
-      return e ? <EdgePanel edge={e} /> : null;
+      const edges = panel.edgeIndices.map(i => graph.edges[i]).filter(Boolean);
+      return <EdgePanel edges={edges} />;
     }
 
     const { nodeId } = panel;

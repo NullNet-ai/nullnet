@@ -7,9 +7,9 @@ interface Props {
   showRegistered: boolean;
   showUnregistered: boolean;
   selectedNodeId: string | null;
-  selectedEdgeIdx: number | null;
+  selectedEdgeKey: string | null;
   onNodeClick: (id: string) => void;
-  onEdgeClick: (originalIdx: number) => void;
+  onEdgeClick: (fromId: string, toId: string, edgeIndices: number[]) => void;
 }
 
 export default function TopologyGraph({
@@ -17,7 +17,7 @@ export default function TopologyGraph({
   showRegistered,
   showUnregistered,
   selectedNodeId,
-  selectedEdgeIdx,
+  selectedEdgeKey,
   onNodeClick,
   onEdgeClick,
 }: Props) {
@@ -81,7 +81,9 @@ export default function TopologyGraph({
         const fp = pos.get(e.from);
         const tp = pos.get(e.to);
         if (!fp || !tp) return null;
-        const isSel = e.originalIdx === selectedEdgeIdx;
+        const edgeKey = `${e.from}\0${e.to}`;
+        const isSel = selectedEdgeKey === edgeKey;
+        const count = e.originalIndices.length;
         const stroke = isSel
           ? 'rgba(91,156,246,.9)'
           : e.isProxyHop ? 'rgba(251,191,36,.35)' : 'rgba(255,255,255,.18)';
@@ -89,7 +91,7 @@ export default function TopologyGraph({
         const midX = (fp.x + tp.x) / 2 + NODE_W / 2;
         const midY = (fp.y + tp.y) / 2 + NODE_H / 2;
         return (
-          <g key={i} onClick={() => onEdgeClick(e.originalIdx)} style={{ cursor: 'pointer' }}>
+          <g key={i} onClick={() => onEdgeClick(e.from, e.to, e.originalIndices)} style={{ cursor: 'pointer' }}>
             <path d={edgePath(fp, tp)} fill="none" stroke="transparent" strokeWidth="14" />
             <path
               d={edgePath(fp, tp)} fill="none" stroke={stroke}
@@ -98,7 +100,12 @@ export default function TopologyGraph({
               markerEnd={`url(#${arrowId})`}
               pointerEvents="none"
             />
-            {e.setup_ms > 0 && !isSel && (
+            {!isSel && count > 1 && (
+              <text x={midX} y={midY} textAnchor="middle" fill="rgba(255,255,255,.45)" fontSize="9" pointerEvents="none">
+                {count} sessions
+              </text>
+            )}
+            {!isSel && count === 1 && e.setup_ms > 0 && (
               <text x={midX} y={midY} textAnchor="middle" fill="rgba(255,255,255,.3)" fontSize="9" pointerEvents="none">
                 net {e.net_id} · {e.setup_ms}ms
               </text>

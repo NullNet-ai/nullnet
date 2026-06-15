@@ -17,7 +17,7 @@ export interface Pos { x: number; y: number }
 export type PanelState =
   | null
   | { type: 'node'; nodeId: string }
-  | { type: 'edge'; edgeIdx: number }
+  | { type: 'edge'; fromId: string; toId: string; edgeIndices: number[] }
   | { type: 'internet' };
 
 export interface TopoServiceNode extends GraphNodeJson { kind: 'service' }
@@ -32,5 +32,5 @@ export interface TopoEdge {
   setup_ms: number;
   isProxyHop: boolean;
   isInternetEdge: boolean;
-  originalIdx: number;
+  originalIndices: number[];
 }
