@@ -1,40 +1,32 @@
-import type { GraphJson, ServiceJson, SessionJson } from '../../types';
-import type { PanelState } from './types';
+import { useTopologyData, useTopologyUI } from './TopologyContext';
 import ServiceNodePanel from './ServiceNodePanel';
 import ProxyNodePanel from './ProxyNodePanel';
 import EdgePanel from './EdgePanel';
 import InternetPanel from './InternetPanel';
 
-interface Props {
-  panel: PanelState;
-  graph: GraphJson;
-  services: ServiceJson[] | null;
-  sessions: SessionJson[] | null;
-  onClose: () => void;
-  onNodeClick: (id: string) => void;
-}
+export default function TopologyPanel() {
+  const { graph, services } = useTopologyData();
+  const { panel, dispatch } = useTopologyUI();
 
-export default function TopologyPanel({ panel, graph, services, sessions, onClose, onNodeClick }: Props) {
+  if (!graph) return null;
+
   function getTitle(): string {
     if (!panel) return '–';
     if (panel.type === 'internet') return 'Internet Clients';
-    if (panel.type === 'edge') {
-      const e = graph.edges[panel.edgeIdx];
-      return e ? `${e.from} → ${e.to}` : '–';
-    }
+    if (panel.type === 'edge') return `${panel.fromId} → ${panel.toId}`;
     return panel.nodeId;
   }
 
   function renderContent() {
-    if (!panel) return null;
+    if (!panel || !graph) return null;
 
     if (panel.type === 'internet') {
-      return <InternetPanel sessions={sessions ?? []} />;
+      return <InternetPanel />;
     }
 
     if (panel.type === 'edge') {
-      const e = graph.edges[panel.edgeIdx];
-      return e ? <EdgePanel edge={e} /> : null;
+      const edges = panel.edgeIndices.map(i => graph.edges[i]).filter(Boolean);
+      return <EdgePanel edges={edges} />;
     }
 
     const { nodeId } = panel;
@@ -44,7 +36,7 @@ export default function TopologyPanel({ panel, graph, services, sessions, onClos
         <ServiceNodePanel
           node={{ ...graphNode, kind: 'service' }}
           service={services?.find(s => s.name === nodeId)}
-          onDepClick={onNodeClick}
+          onDepClick={id => dispatch({ type: 'NODE_CLICKED', nodeId: id })}
         />
       );
     }
@@ -73,7 +65,10 @@ export default function TopologyPanel({ panel, graph, services, sessions, onClos
         }}>
           {getTitle()}
         </span>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--t2)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0, flexShrink: 0 }}>
+        <button
+          onClick={() => dispatch({ type: 'PANEL_CLOSED' })}
+          style={{ background: 'none', border: 'none', color: 'var(--t2)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0, flexShrink: 0 }}
+        >
           ✕
         </button>
       </div>

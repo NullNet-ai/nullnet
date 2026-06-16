@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { SessionJson } from '../../types';
 import { spRow, spKey, SpSep } from './panelStyles';
+import { useTopologyData, useTopologyUI } from './TopologyContext';
 
 const PREVIEW_LIMIT = 5;
 
@@ -23,10 +24,14 @@ function formatTime(unix: number): string {
   return new Date(unix * 1000).toLocaleTimeString([], { hour12: false });
 }
 
-export default function InternetPanel({ sessions }: { sessions: SessionJson[] }) {
+export default function InternetPanel() {
+  const { sessions } = useTopologyData();
+  const { focusedClientIp, dispatch } = useTopologyUI();
   const [expanded, setExpanded] = useState(new Set<string>());
 
-  if (sessions.length === 0) {
+  const sessionList = sessions ?? [];
+
+  if (sessionList.length === 0) {
     return (
       <div style={{ color: 'var(--t2)', fontSize: 11, textAlign: 'center', paddingTop: 24 }}>
         No active clients
@@ -34,7 +39,7 @@ export default function InternetPanel({ sessions }: { sessions: SessionJson[] })
     );
   }
 
-  const groups = groupBySubnet(sessions);
+  const groups = groupBySubnet(sessionList);
 
   return (
     <>
@@ -42,8 +47,8 @@ export default function InternetPanel({ sessions }: { sessions: SessionJson[] })
         <div style={spKey}>Summary</div>
         <div style={{ fontSize: 12, color: 'var(--t0)', display: 'flex', gap: 8, alignItems: 'baseline' }}>
           <span>
-            <span style={{ color: 'var(--cyan)', fontFamily: "'JetBrains Mono',monospace" }}>{sessions.length}</span>
-            {' '}client{sessions.length !== 1 ? 's' : ''}
+            <span style={{ color: 'var(--cyan)', fontFamily: "'JetBrains Mono',monospace" }}>{sessionList.length}</span>
+            {' '}client{sessionList.length !== 1 ? 's' : ''}
           </span>
           <span style={{ color: 'var(--t3)' }}>·</span>
           <span>
@@ -79,23 +84,39 @@ export default function InternetPanel({ sessions }: { sessions: SessionJson[] })
               </span>
             </div>
 
-            {shown.map(s => (
-              <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', borderBottom: '1px solid rgba(255,255,255,.03)' }}>
-                <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--blue)', flexShrink: 0 }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: 'var(--t0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
-                    {s.client_ip}
+            {shown.map(s => {
+              const isFocused = focusedClientIp === s.client_ip;
+              return (
+                <div
+                  key={s.id}
+                  onClick={() => dispatch({ type: 'CLIENT_FOCUSED', ip: s.client_ip })}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '5px 6px',
+                    marginBottom: 2,
+                    borderRadius: 5,
+                    border: `1px solid ${isFocused ? 'rgba(91,156,246,.45)' : 'transparent'}`,
+                    background: isFocused ? 'rgba(91,156,246,.08)' : 'transparent',
+                    cursor: 'pointer',
+                    transition: 'background .12s, border-color .12s',
+                  }}
+                >
+                  <div style={{ width: 6, height: 6, borderRadius: '50%', background: isFocused ? 'var(--blue)' : 'rgba(91,156,246,.4)', flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: isFocused ? 'var(--t0)' : 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
+                      {s.client_ip}
+                    </div>
+                    <div style={{ fontSize: 9.5, color: 'var(--t2)' }}>{s.service}</div>
                   </div>
-                  <div style={{ fontSize: 9.5, color: 'var(--t2)' }}>{s.service}</div>
-                </div>
-                <div style={{ flexShrink: 0, textAlign: 'right' as const }}>
-                  <div style={{ fontSize: 9.5, fontFamily: "'JetBrains Mono',monospace", color: 'var(--cyan)' }}>
-                    net {s.network_id}
+                  <div style={{ flexShrink: 0, textAlign: 'right' as const }}>
+                    <div style={{ fontSize: 9.5, fontFamily: "'JetBrains Mono',monospace", color: 'var(--cyan)' }}>
+                      net {s.network_id}
+                    </div>
+                    <div style={{ fontSize: 9, color: 'var(--t2)' }}>{formatTime(s.created_at)}</div>
                   </div>
-                  <div style={{ fontSize: 9, color: 'var(--t2)' }}>{formatTime(s.created_at)}</div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
 
             {hasMore && (
               <button

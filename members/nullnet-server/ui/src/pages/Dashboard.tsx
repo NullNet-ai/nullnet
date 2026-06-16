@@ -2,8 +2,7 @@ import Layout from '../components/Layout';
 import { useApi } from '../hooks/useApi';
 import { useStack } from '../StackContext';
 import type { SessionJson, ServiceJson, NodeJson, PoolJson, GraphJson } from '../types';
-import { buildTopoGraph, layoutNodes, svgDims, edgePath, inetEdgePath } from '../components/topology/layout';
-import { NODE_W, NODE_H, INET_W, INET_H, INTERNET_ID } from '../components/topology/types';
+import TopologyGraphSvg from '../components/topology/TopologyGraphSvg';
 
 export default function Dashboard() {
   const { stack } = useStack();
@@ -69,90 +68,7 @@ export default function Dashboard() {
               {!graph && (
                 <div style={{ color: 'var(--t2)', fontSize: 11, padding: '40px 0', textAlign: 'center' }}>loading topology…</div>
               )}
-              {graph && (() => {
-                const { nodes: topoNodes, edges: topoEdges } = buildTopoGraph(graph);
-                const pos = layoutNodes(topoNodes, topoEdges);
-                const { w, h } = svgDims(pos, topoNodes);
-                return (
-                  <svg viewBox={`0 0 ${w} ${h}`} xmlns="http://www.w3.org/2000/svg" style={{ width: '100%', display: 'block', fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
-                    <defs>
-                      <filter id="db-gT"><feGaussianBlur stdDeviation="2.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-                      <marker id="db-arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-                        <path d="M0,0 L0,6 L6,3 z" fill="rgba(255,255,255,.2)" />
-                      </marker>
-                      <marker id="db-arr-proxy" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-                        <path d="M0,0 L0,6 L6,3 z" fill="rgba(251,191,36,.35)" />
-                      </marker>
-                      <marker id="db-arr-inet" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-                        <path d="M0,0 L0,6 L6,3 z" fill="rgba(91,156,246,.35)" />
-                      </marker>
-                    </defs>
-
-                    {/* Internet → proxy edges */}
-                    {topoEdges.filter(e => e.isInternetEdge).map((e, i) => {
-                      const fp = pos.get(e.from); const tp = pos.get(e.to);
-                      if (!fp || !tp) return null;
-                      return <path key={`ie-${i}`} d={inetEdgePath(fp, tp)} fill="none" stroke="rgba(91,156,246,.3)" strokeWidth="1" strokeDasharray="4 3" markerEnd="url(#db-arr-inet)" pointerEvents="none" />;
-                    })}
-
-                    {/* Service / proxy edges */}
-                    {topoEdges.filter(e => !e.isInternetEdge).map((e, i) => {
-                      const fp = pos.get(e.from); const tp = pos.get(e.to);
-                      if (!fp || !tp) return null;
-                      return <path key={i} d={edgePath(fp, tp)} fill="none"
-                        stroke={e.isProxyHop ? 'rgba(251,191,36,.3)' : 'rgba(255,255,255,.15)'}
-                        strokeWidth="1"
-                        strokeDasharray={e.isProxyHop ? '4 3' : undefined}
-                        markerEnd={e.isProxyHop ? 'url(#db-arr-proxy)' : 'url(#db-arr)'}
-                        pointerEvents="none" />;
-                    })}
-
-                    {/* Nodes */}
-                    {topoNodes.map(n => {
-                      const p = pos.get(n.id);
-                      if (!p) return null;
-
-                      if (n.kind === 'internet') return (
-                        <g key={INTERNET_ID}>
-                          <rect x={p.x} y={p.y} width={INET_W} height={INET_H} rx="11"
-                            fill="rgba(91,156,246,.05)" stroke="rgba(91,156,246,.2)"
-                            strokeWidth="1" strokeDasharray="4 3" filter="url(#db-gT)" />
-                          <text x={p.x + INET_W / 2} y={p.y + INET_H / 2 + 4}
-                            textAnchor="middle" fill="rgba(91,156,246,.7)" fontSize="9.5" fontWeight="600" pointerEvents="none">
-                            ⬡ internet
-                          </text>
-                        </g>
-                      );
-
-                      if (n.kind === 'proxy') return (
-                        <g key={n.id}>
-                          <rect x={p.x} y={p.y} width={NODE_W} height={NODE_H} rx="8"
-                            fill="rgba(251,191,36,.06)" stroke="rgba(251,191,36,.4)"
-                            strokeWidth="1" strokeDasharray="5 3" filter="url(#db-gT)" />
-                          <circle cx={p.x + 15} cy={p.y + 19} r="3.5" fill="#fbbf24" />
-                          <text x={p.x + 27} y={p.y + 16} fill="rgba(251,191,36,.9)" fontSize="9.5" fontWeight="500" pointerEvents="none">proxy</text>
-                          <text x={p.x + 27} y={p.y + 28} fill="rgba(255,255,255,.4)" fontSize="8" fontFamily="'JetBrains Mono',monospace" pointerEvents="none">{n.id}</text>
-                        </g>
-                      );
-
-                      const color = n.registered ? '#34d399' : '#f87171';
-                      const strokeColor = n.registered ? 'rgba(52,211,153,.3)' : 'rgba(248,113,113,.2)';
-                      return (
-                        <g key={n.id}>
-                          <rect x={p.x} y={p.y} width={NODE_W} height={NODE_H} rx="8"
-                            fill="rgba(255,255,255,.04)" stroke={strokeColor} strokeWidth="1" filter="url(#db-gT)" />
-                          <circle cx={p.x + 15} cy={p.y + 19} r="3.5" fill={color} />
-                          <text x={p.x + 27} y={p.y + 16} fill="rgba(255,255,255,.85)" fontSize="9.5" fontWeight="500" pointerEvents="none">{n.id}</text>
-                          <text x={p.x + 27} y={p.y + 28} fill="rgba(255,255,255,.3)" fontSize="8" pointerEvents="none">
-                            {n.registered ? `${n.active_replica_count}/${n.replica_count} active` : 'unregistered'}
-                            {n.entry_point ? ' · entry' : ''}
-                          </text>
-                        </g>
-                      );
-                    })}
-                  </svg>
-                );
-              })()}
+              {graph && <TopologyGraphSvg graph={graph} />}
             </div>
           </div>
 

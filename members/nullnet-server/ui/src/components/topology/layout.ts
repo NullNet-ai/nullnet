@@ -13,23 +13,36 @@ export function buildTopoGraph(graph: GraphJson): { nodes: TopoNode[]; edges: To
     nodes.push({ kind: 'internet', id: INTERNET_ID });
   }
 
-  const edges: TopoEdge[] = [];
-
-  // Internet → Proxy edges
+  const inetEdges: TopoEdge[] = [];
   for (const ip of proxyIps) {
-    edges.push({ from: INTERNET_ID, to: ip, net_id: -1, setup_ms: 0, isProxyHop: false, isInternetEdge: true, originalIdx: -1 });
+    inetEdges.push({ from: INTERNET_ID, to: ip, net_id: -1, setup_ms: 0, isProxyHop: false, isInternetEdge: true, originalIndices: [] });
   }
 
+  // De-duplicate service/proxy edges by (from, to) key — multiple sessions share one drawn edge.
+  const edgeMap = new Map<string, TopoEdge>();
   for (let idx = 0; idx < graph.edges.length; idx++) {
     const e = graph.edges[idx];
     if (e.via_proxy) {
-      edges.push({ from: e.from, to: e.via_proxy, net_id: e.net_id, setup_ms: 0, isProxyHop: true, isInternetEdge: false, originalIdx: idx });
-      edges.push({ from: e.via_proxy, to: e.to, net_id: e.net_id, setup_ms: e.setup_ms, isProxyHop: true, isInternetEdge: false, originalIdx: idx });
+      const k1 = `${e.from}\0${e.via_proxy}`;
+      if (!edgeMap.has(k1)) {
+        edgeMap.set(k1, { from: e.from, to: e.via_proxy, net_id: e.net_id, setup_ms: 0, isProxyHop: true, isInternetEdge: false, originalIndices: [] });
+      }
+      edgeMap.get(k1)!.originalIndices.push(idx);
+
+      const k2 = `${e.via_proxy}\0${e.to}`;
+      if (!edgeMap.has(k2)) {
+        edgeMap.set(k2, { from: e.via_proxy, to: e.to, net_id: e.net_id, setup_ms: e.setup_ms, isProxyHop: true, isInternetEdge: false, originalIndices: [] });
+      }
+      edgeMap.get(k2)!.originalIndices.push(idx);
     } else {
-      edges.push({ from: e.from, to: e.to, net_id: e.net_id, setup_ms: e.setup_ms, isProxyHop: false, isInternetEdge: false, originalIdx: idx });
+      const k = `${e.from}\0${e.to}`;
+      if (!edgeMap.has(k)) {
+        edgeMap.set(k, { from: e.from, to: e.to, net_id: e.net_id, setup_ms: e.setup_ms, isProxyHop: false, isInternetEdge: false, originalIndices: [] });
+      }
+      edgeMap.get(k)!.originalIndices.push(idx);
     }
   }
-  return { nodes, edges };
+  return { nodes, edges: [...inetEdges, ...edgeMap.values()] };
 }
 
 export function layoutNodes(nodes: TopoNode[], edges: TopoEdge[]): Map<string, Pos> {
@@ -122,6 +135,54 @@ export function edgePath(from: Pos, to: Pos): string {
   const y2 = to.y + NODE_H / 2;
   const cx = (x1 + x2) / 2;
   return `M ${x1} ${y1} C ${cx} ${y1}, ${cx} ${y2}, ${x2} ${y2}`;
+}
+
+// Positions for per-edge labels when a client is focused.
+// src/dst are placed just outside the node endpoints; mid is the curve midpoint.
+type TextAnchor = 'start' | 'middle' | 'end';
+
+export function edgeLabelPoints(from: Pos, to: Pos): {
+  src: { x: number; y: number; anchor: TextAnchor };
+  dst: { x: number; y: number; anchor: TextAnchor };
+  mid: { x: number; y: number };
+} {
+  const fromMidY = from.y + NODE_H / 2;
+  const toMidY = to.y + NODE_H / 2;
+
+  if (toMidY > fromMidY + NODE_H) {
+    // downward — exits bottom-center, enters top-center
+    const x1 = from.x + NODE_W / 2, y1 = from.y + NODE_H;
+    const x2 = to.x + NODE_W / 2,   y2 = to.y;
+    return {
+      src: { x: x1, y: y1 + 13, anchor: 'middle' },
+      dst: { x: x2, y: y2 - 7,  anchor: 'middle' },
+      mid: { x: (x1 + x2) / 2,  y: (y1 + y2) / 2 },
+    };
+  }
+  if (fromMidY > toMidY + NODE_H) {
+    // upward — exits top-center, enters bottom-center
+    const x1 = from.x + NODE_W / 2, y1 = from.y;
+    const x2 = to.x + NODE_W / 2,   y2 = to.y + NODE_H;
+    return {
+      src: { x: x1, y: y1 - 7,  anchor: 'middle' },
+      dst: { x: x2, y: y2 + 13, anchor: 'middle' },
+      mid: { x: (x1 + x2) / 2,  y: (y1 + y2) / 2 },
+    };
+  }
+  // horizontal — exits left/right side
+  const goRight = to.x >= from.x;
+  const x1 = goRight ? from.x + NODE_W : from.x;
+  const y1 = from.y + NODE_H / 2;
+  const x2 = goRight ? to.x : to.x + NODE_W;
+  const y2 = to.y + NODE_H / 2;
+  const midX = (x1 + x2) / 2;
+  const midY = (y1 + y2) / 2;
+  const t = goRight ? 1 : -1;
+  return {
+    src: { x: x1 + t * 10, y: midY - 16, anchor: 'middle' },
+    dst: { x: x2 - t * 10, y: midY - 16, anchor: 'middle' },
+    mid: { x: midX, y: midY },
+  };
 }
 
 export function inetEdgePath(from: Pos, to: Pos): string {
