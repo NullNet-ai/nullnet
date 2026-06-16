@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from 'react';
+import { useRef, useState, useCallback, useEffect } from 'react';
 
 const MIN_SCALE = 0.2;
 const MAX_SCALE = 4;
@@ -19,18 +19,24 @@ export default function ZoomFrame({ height, children }: Props) {
   const dragging = useRef<{ startX: number; startY: number; startTx: number; startTy: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    setZoom(prev => {
-      const factor = e.deltaY < 0 ? 1.1 : 0.9;
-      const newScale = Math.min(Math.max(prev.scale * factor, MIN_SCALE), MAX_SCALE);
-      const rect = containerRef.current!.getBoundingClientRect();
-      const mx = e.clientX - rect.left;
-      const my = e.clientY - rect.top;
-      const newTx = mx - (mx - prev.tx) * (newScale / prev.scale);
-      const newTy = my - (my - prev.ty) * (newScale / prev.scale);
-      return { scale: newScale, tx: newTx, ty: newTy };
-    });
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      setZoom(prev => {
+        const factor = e.deltaY < 0 ? 1.1 : 0.9;
+        const newScale = Math.min(Math.max(prev.scale * factor, MIN_SCALE), MAX_SCALE);
+        const rect = el.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const newTx = mx - (mx - prev.tx) * (newScale / prev.scale);
+        const newTy = my - (my - prev.ty) * (newScale / prev.scale);
+        return { scale: newScale, tx: newTx, ty: newTy };
+      });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -40,9 +46,10 @@ export default function ZoomFrame({ height, children }: Props) {
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     if (!dragging.current) return;
-    const dx = e.clientX - dragging.current.startX;
-    const dy = e.clientY - dragging.current.startY;
-    setZoom(prev => ({ ...prev, tx: dragging.current!.startTx + dx, ty: dragging.current!.startTy + dy }));
+    const { startX, startY, startTx, startTy } = dragging.current;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    setZoom(prev => ({ ...prev, tx: startTx + dx, ty: startTy + dy }));
   }, []);
 
   const stopDrag = useCallback(() => { dragging.current = null; }, []);
@@ -60,8 +67,8 @@ export default function ZoomFrame({ height, children }: Props) {
           overflow: 'hidden',
           position: 'relative',
           cursor: dragging.current ? 'grabbing' : 'grab',
+          userSelect: 'none',
         }}
-        onWheel={handleWheel}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={stopDrag}
