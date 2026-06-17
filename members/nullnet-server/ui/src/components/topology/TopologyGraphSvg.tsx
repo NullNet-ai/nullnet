@@ -4,8 +4,6 @@ import { buildTopoGraph, layoutNodes, svgDims, edgePath, inetEdgePath, edgeLabel
 
 interface Props {
   graph: GraphJson;
-  showRegistered?: boolean;
-  showUnregistered?: boolean;
   selectedNodeId?: string | null;
   selectedEdgeKey?: string | null;
   focusedNetIds?: Set<number> | null;
@@ -17,8 +15,6 @@ interface Props {
 
 export default function TopologyGraphSvg({
   graph,
-  showRegistered = true,
-  showUnregistered = true,
   selectedNodeId = null,
   selectedEdgeKey = null,
   focusedNetIds = null,
@@ -27,16 +23,7 @@ export default function TopologyGraphSvg({
   onNodeClick,
   onEdgeClick,
 }: Props) {
-  const { nodes: allNodes, edges: allEdges } = buildTopoGraph(graph);
-
-  const nodes = allNodes.filter(n => {
-    if (n.kind !== 'service') return true;
-    if (n.registered && !showRegistered) return false;
-    if (!n.registered && !showUnregistered) return false;
-    return true;
-  });
-  const visibleIds = new Set(nodes.map(n => n.id));
-  const edges = allEdges.filter(e => visibleIds.has(e.from) && visibleIds.has(e.to));
+  const { nodes, edges } = buildTopoGraph(graph);
 
   const pos = layoutNodes(nodes, edges);
   const { w, h } = svgDims(pos, nodes);

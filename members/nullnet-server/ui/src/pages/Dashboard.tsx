@@ -3,6 +3,7 @@ import { useApi } from '../hooks/useApi';
 import { useStack } from '../StackContext';
 import type { SessionJson, ServiceJson, NodeJson, PoolJson, GraphJson } from '../types';
 import TopologyGraphSvg from '../components/topology/TopologyGraphSvg';
+import ZoomFrame from '../components/topology/ZoomFrame';
 
 export default function Dashboard() {
   const { stack } = useStack();
@@ -64,11 +65,15 @@ export default function Dashboard() {
                 <span className="live-dot" />live · 5s
               </span>
             </div>
-            <div style={{ background: 'rgba(0,0,0,.25)', padding: 12 }}>
+            <div style={{ background: 'rgba(0,0,0,.25)' }}>
               {!graph && (
                 <div style={{ color: 'var(--t2)', fontSize: 11, padding: '40px 0', textAlign: 'center' }}>loading topology…</div>
               )}
-              {graph && <TopologyGraphSvg graph={graph} />}
+              {graph && (
+                <ZoomFrame height={280}>
+                  <TopologyGraphSvg graph={graph} />
+                </ZoomFrame>
+              )}
             </div>
           </div>
 

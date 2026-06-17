@@ -17,6 +17,7 @@ mod nodes;
 mod pool;
 mod services;
 mod sessions;
+mod stacks;
 mod static_files;
 
 const HTTP_PORT: u16 = 8080;
@@ -31,6 +32,7 @@ pub(crate) struct AppState {
 pub async fn serve(state: AppState) {
     let app = Router::new()
         .route("/api/health", get(health::health))
+        .route("/api/stacks", get(stacks::stacks_handler))
         .route("/api/services/{stack}", get(services::services_handler))
         .route("/api/nodes", get(nodes::nodes_handler))
         .route("/api/pool", get(pool::pool_handler))

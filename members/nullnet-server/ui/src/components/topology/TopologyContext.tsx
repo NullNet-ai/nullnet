@@ -22,8 +22,6 @@ const TopologyDataContext = createContext<TopologyData>({
 
 interface UIState {
   panel: PanelState;
-  showRegistered: boolean;
-  showUnregistered: boolean;
   focusedClientIp: string | null;
 }
 
@@ -31,15 +29,11 @@ export type UIAction =
   | { type: 'NODE_CLICKED'; nodeId: string }
   | { type: 'EDGE_CLICKED'; fromId: string; toId: string; edgeIndices: number[] }
   | { type: 'PANEL_CLOSED' }
-  | { type: 'REGISTERED_TOGGLED' }
-  | { type: 'UNREGISTERED_TOGGLED' }
   | { type: 'CLIENT_FOCUSED'; ip: string }
   | { type: 'STACK_CHANGED' };
 
 const initialUIState: UIState = {
   panel: null,
-  showRegistered: true,
-  showUnregistered: true,
   focusedClientIp: null,
 };
 
@@ -72,10 +66,6 @@ function uiReducer(state: UIState, action: UIAction): UIState {
       };
     case 'PANEL_CLOSED':
       return { ...state, panel: null };
-    case 'REGISTERED_TOGGLED':
-      return { ...state, showRegistered: !state.showRegistered };
-    case 'UNREGISTERED_TOGGLED':
-      return { ...state, showUnregistered: !state.showUnregistered };
     case 'CLIENT_FOCUSED':
       return {
         ...state,
@@ -96,6 +86,7 @@ interface TopologyUI extends UIState {
   nodeIps: Map<string, string>;
   dispatch: React.Dispatch<UIAction>;
 }
+
 
 const TopologyUIContext = createContext<TopologyUI>({
   ...initialUIState,

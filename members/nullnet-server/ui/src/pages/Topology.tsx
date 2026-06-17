@@ -6,7 +6,7 @@ import TopologyPanel from '../components/topology/TopologyPanel';
 
 function TopologyView() {
   const { graph } = useTopologyData();
-  const { showRegistered, showUnregistered, panel, dispatch } = useTopologyUI();
+  const { panel, dispatch } = useTopologyUI();
   const { stack } = useStack();
 
   const nodeCount = graph?.nodes.length ?? 0;
@@ -39,23 +39,6 @@ function TopologyView() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 2px', flexWrap: 'wrap' as const }}>
-          <span style={{ fontSize: 10, color: 'var(--t2)', letterSpacing: '.08em' }}>FILTER</span>
-          <button
-            className={`filter-chip${showRegistered ? ' on' : ''}`}
-            onClick={() => dispatch({ type: 'REGISTERED_TOGGLED' })}
-          >
-            Registered
-          </button>
-          <button
-            className={`filter-chip${showUnregistered ? ' on' : ''}`}
-            onClick={() => dispatch({ type: 'UNREGISTERED_TOGGLED' })}
-          >
-            Unregistered
-          </button>
-          <span style={{ width: 1, height: 18, background: 'var(--t3)', margin: '0 2px', display: 'inline-block' }} />
-          <span style={{ fontSize: 11, color: 'var(--t2)' }}>Click node or edge to inspect</span>
-        </div>
 
         <div className="card glass">
           <div className="card-head">
@@ -70,7 +53,7 @@ function TopologyView() {
               ) : 'loading…'}
             </span>
           </div>
-          <div style={{ background: 'rgba(0,0,0,.25)', padding: 16, minHeight: 200 }}>
+          <div style={{ background: 'rgba(0,0,0,.25)', padding: 0 }}>
             {!graph && (
               <div style={{ color: 'var(--t2)', fontSize: 11, padding: '40px 0', textAlign: 'center' }}>
                 loading topology…

@@ -2,6 +2,7 @@ import { NavLink } from 'react-router-dom';
 import { useStack } from '../StackContext';
 import { useApi } from '../hooks/useApi';
 import type { SessionJson } from '../types';
+import { useRef, useState, useEffect } from 'react';
 
 type Page = 'dashboard' | 'topology' | 'services' | 'nodes' | 'sessions' | 'pool' | 'config' | 'certificates' | 'events';
 
@@ -41,6 +42,20 @@ const NAV = [
 export default function Layout({ page, topbarRight, children }: Props) {
   const { stack, setStack, editing, setEditing } = useStack();
   const { data: sessions } = useApi<SessionJson[]>('/api/sessions', 5000);
+  const { data: availableStacks } = useApi<string[]>('/api/stacks', 10000);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!dropdownOpen) return;
+    function onClickOutside(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', onClickOutside);
+    return () => document.removeEventListener('mousedown', onClickOutside);
+  }, [dropdownOpen]);
 
   const sessionCount = sessions?.length ?? null;
 
@@ -86,7 +101,7 @@ export default function Layout({ page, topbarRight, children }: Props) {
 
         <div className="foot">
           <div className="foot-row"><span className="dot dot-g"></span>HTTP · 8080</div>
-          <div className="foot-stack">
+          <div className="foot-stack" ref={dropdownRef} style={{ position: 'relative' }}>
             <span>stack:</span>
             {editing ? (
               <input
@@ -99,7 +114,65 @@ export default function Layout({ page, topbarRight, children }: Props) {
                 }}
               />
             ) : (
-              <span className="foot-stack-name" title="Click to change stack" style={{ cursor: 'pointer' }} onClick={() => setEditing(true)}>{stack}</span>
+              <span
+                className="foot-stack-name"
+                title="Click to select or type a stack"
+                style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3 }}
+                onClick={() => setDropdownOpen(o => !o)}
+                onDoubleClick={() => { setDropdownOpen(false); setEditing(true); }}
+              >
+                {stack}
+                <span style={{ fontSize: 8, color: 'var(--t3)', lineHeight: 1 }}>▾</span>
+              </span>
+            )}
+            {dropdownOpen && availableStacks && availableStacks.length > 0 && (
+              <div style={{
+                position: 'absolute',
+                bottom: '100%',
+                left: 0,
+                marginBottom: 4,
+                background: 'var(--surface, #1a1d24)',
+                border: '1px solid rgba(255,255,255,.12)',
+                borderRadius: 6,
+                padding: '4px 0',
+                minWidth: 140,
+                zIndex: 100,
+                boxShadow: '0 4px 16px rgba(0,0,0,.5)',
+              }}>
+                {availableStacks.map(s => (
+                  <div
+                    key={s}
+                    onClick={() => { setStack(s); setDropdownOpen(false); }}
+                    style={{
+                      padding: '5px 12px',
+                      fontSize: 11,
+                      cursor: 'pointer',
+                      color: s === stack ? 'var(--accent, #5b9cf6)' : 'rgba(255,255,255,.75)',
+                      background: s === stack ? 'rgba(91,156,246,.08)' : 'transparent',
+                      fontFamily: "'JetBrains Mono', monospace",
+                    }}
+                    onMouseEnter={e => { if (s !== stack) (e.target as HTMLElement).style.background = 'rgba(255,255,255,.05)'; }}
+                    onMouseLeave={e => { (e.target as HTMLElement).style.background = s === stack ? 'rgba(91,156,246,.08)' : 'transparent'; }}
+                  >
+                    {s}
+                  </div>
+                ))}
+                <div
+                  style={{
+                    padding: '5px 12px',
+                    fontSize: 10,
+                    cursor: 'pointer',
+                    color: 'var(--t3)',
+                    borderTop: '1px solid rgba(255,255,255,.06)',
+                    marginTop: 2,
+                  }}
+                  onClick={() => { setDropdownOpen(false); setEditing(true); }}
+                  onMouseEnter={e => { (e.target as HTMLElement).style.color = 'rgba(255,255,255,.5)'; }}
+                  onMouseLeave={e => { (e.target as HTMLElement).style.color = 'var(--t3)'; }}
+                >
+                  type custom…
+                </div>
+              </div>
             )}
           </div>
         </div>
