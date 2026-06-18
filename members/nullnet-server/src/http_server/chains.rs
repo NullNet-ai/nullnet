@@ -87,15 +87,15 @@ fn collect_dep_net_ids(
 
             let mut found = false;
             'replica: for dep_replica in dep_reg.replicas() {
-                if let Some(ci) = dep_replica.clients().get(&dep_client) {
-                    if ci.net_id() != 0 {
-                        all_net_ids.push(ci.net_id());
-                        current_name = dep_name.clone();
-                        current_ip = Some(dep_replica.ip());
-                        current_docker = dep_replica.docker_container().map(String::from);
-                        found = true;
-                        break 'replica;
-                    }
+                if let Some(ci) = dep_replica.clients().get(&dep_client)
+                    && ci.net_id() != 0
+                {
+                    all_net_ids.push(ci.net_id());
+                    current_name = dep_name.clone();
+                    current_ip = Some(dep_replica.ip());
+                    current_docker = dep_replica.docker_container().map(String::from);
+                    found = true;
+                    break 'replica;
                 }
             }
 
