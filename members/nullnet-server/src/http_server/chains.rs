@@ -80,8 +80,7 @@ fn collect_dep_net_ids(
             let Some(ip) = current_ip else {
                 break;
             };
-            let dep_client =
-                Client::new_service(current_name.clone(), ip, current_docker.clone());
+            let dep_client = Client::new_service(current_name.clone(), ip, current_docker.clone());
             let Some(ServiceInfo::Registered(dep_reg)) = stack_map.get(dep_name) else {
                 break;
             };
