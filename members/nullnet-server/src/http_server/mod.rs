@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 mod certificates;
+mod chains;
 mod config;
 mod events;
 mod events_stream;
@@ -40,6 +41,7 @@ pub async fn serve(state: AppState) {
         .route("/api/graph/{stack}", get(graph::graph_handler))
         .route("/api/sessions", get(sessions::list_handler))
         .route("/api/sessions/{id}", delete(sessions::teardown_handler))
+        .route("/api/chains/{stack}", get(chains::chains_handler))
         .route("/api/certificates", get(certificates::list_handler))
         .route(
             "/api/certificates/request",

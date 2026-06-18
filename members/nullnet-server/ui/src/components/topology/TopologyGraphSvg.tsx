@@ -194,12 +194,13 @@ export default function TopologyGraphSvg({
       })}
 
       {/* Nodes */}
-      {nodes.map(n => {
+      {nodes.map((n, ni) => {
         const p = pos.get(n.id);
         if (!p) return null;
         const isSel = n.id === selectedNodeId;
         const nodeDimmed = focusedNetIds != null && !focusedNodeIds.has(n.id);
         const clickHandler = onNodeClick ? () => onNodeClick(n.id) : undefined;
+        const clipId = `nc-${ni}`;
 
         if (n.kind === 'internet') {
           return (
@@ -222,6 +223,11 @@ export default function TopologyGraphSvg({
         if (n.kind === 'proxy') {
           return (
             <g key={n.id} onClick={clickHandler} style={{ cursor: onNodeClick ? 'pointer' : 'default', opacity: nodeDimmed ? 0.12 : 1 }}>
+              <defs>
+                <clipPath id={clipId}>
+                  <rect x={p.x + 4} y={p.y + 2} width={NODE_W - 8} height={NODE_H - 4} />
+                </clipPath>
+              </defs>
               {isSel && (
                 <rect x={p.x - 3} y={p.y - 3} width={NODE_W + 6} height={NODE_H + 6} rx="10"
                   fill="none" stroke="rgba(91,156,246,.6)" strokeWidth="1.5" />
@@ -230,8 +236,10 @@ export default function TopologyGraphSvg({
                 fill="rgba(251,191,36,.06)" stroke="rgba(251,191,36,.4)"
                 strokeWidth="1" strokeDasharray="5 3" filter="url(#gT)" />
               <circle cx={p.x + 15} cy={p.y + 22} r="3.5" fill="#fbbf24" />
-              <text x={p.x + 27} y={p.y + 20} fill="rgba(251,191,36,.9)" fontSize="9.5" fontWeight="500" pointerEvents="none">proxy</text>
-              <text x={p.x + 27} y={p.y + 32} fill="rgba(255,255,255,.4)" fontSize="8" fontFamily="'JetBrains Mono',monospace" pointerEvents="none">{n.id}</text>
+              <g clipPath={`url(#${clipId})`} pointerEvents="none">
+                <text x={p.x + 27} y={p.y + 20} fill="rgba(251,191,36,.9)" fontSize="9.5" fontWeight="500">proxy</text>
+                <text x={p.x + 27} y={p.y + 32} fill="rgba(255,255,255,.4)" fontSize="8" fontFamily="'JetBrains Mono',monospace">{n.id}</text>
+              </g>
             </g>
           );
         }
@@ -241,6 +249,12 @@ export default function TopologyGraphSvg({
         const ip = nodeIps.get(n.id);
         return (
           <g key={n.id} onClick={clickHandler} style={{ cursor: onNodeClick ? 'pointer' : 'default', opacity: nodeDimmed ? 0.12 : 1 }}>
+            <title>{n.id}</title>
+            <defs>
+              <clipPath id={clipId}>
+                <rect x={p.x + 4} y={p.y + 2} width={NODE_W - 8} height={NODE_H - 4} />
+              </clipPath>
+            </defs>
             {isSel && (
               <rect x={p.x - 3} y={p.y - 3} width={NODE_W + 6} height={NODE_H + 6} rx="10"
                 fill="none" stroke="rgba(91,156,246,.6)" strokeWidth="1.5" />
@@ -248,14 +262,16 @@ export default function TopologyGraphSvg({
             <rect x={p.x} y={p.y} width={NODE_W} height={NODE_H} rx="8"
               fill="rgba(255,255,255,.04)" stroke={strokeColor} strokeWidth="1" filter="url(#gT)" />
             <circle cx={p.x + 15} cy={p.y + 17} r="3.5" fill={color} />
-            <text x={p.x + 27} y={p.y + 20} fill="rgba(255,255,255,.85)" fontSize="9.5" fontWeight="500" pointerEvents="none">{n.id}</text>
-            {ip && (
-              <text x={p.x + 27} y={p.y + 31} fill="rgba(255,255,255,.35)" fontSize="8" fontFamily="'JetBrains Mono',monospace" pointerEvents="none">{ip}</text>
-            )}
-            <text x={p.x + 27} y={p.y + (ip ? 42 : 31)} fill="rgba(255,255,255,.3)" fontSize="7.5" pointerEvents="none">
-              {n.registered ? `${n.active_replica_count}/${n.replica_count} active` : 'unregistered'}
-              {n.entry_point ? ' · entry' : ''}
-            </text>
+            <g clipPath={`url(#${clipId})`} pointerEvents="none">
+              <text x={p.x + 27} y={p.y + 20} fill="rgba(255,255,255,.85)" fontSize="9.5" fontWeight="500">{n.id}</text>
+              {ip && (
+                <text x={p.x + 27} y={p.y + 31} fill="rgba(255,255,255,.35)" fontSize="8" fontFamily="'JetBrains Mono',monospace">{ip}</text>
+              )}
+              <text x={p.x + 27} y={p.y + (ip ? 42 : 31)} fill="rgba(255,255,255,.3)" fontSize="7.5">
+                {n.registered ? `${n.active_replica_count}/${n.replica_count} active` : 'unregistered'}
+                {n.entry_point ? ' · entry' : ''}
+              </text>
+            </g>
           </g>
         );
       })}
