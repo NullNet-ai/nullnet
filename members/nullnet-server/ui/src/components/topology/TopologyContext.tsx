@@ -112,7 +112,7 @@ export function TopologyProvider({
   const { data: graph, refetch } = useApi<GraphJson>(`/api/graph/${stack}`);
   const { data: services } = useApi<ServiceJson[]>(`/api/services/${stack}`, 5000);
   const { data: sessions } = useApi<SessionJson[]>('/api/sessions', 5000);
-  const { data: chains } = useApi<ChainJson[]>(`/api/chains/${stack}`, 5000);
+  const { data: chains, refetch: refetchChains } = useApi<ChainJson[]>(`/api/chains/${stack}`);
 
   const [uiState, dispatch] = useReducer(uiReducer, initialUIState);
 
@@ -125,9 +125,11 @@ export function TopologyProvider({
     }
   }, [stack]);
 
-  // SSE: re-fetch the graph whenever a session is created or torn down.
+  // SSE: re-fetch graph and chains whenever a session is created or torn down.
   const refetchRef = useRef(refetch);
   refetchRef.current = refetch;
+  const refetchChainsRef = useRef(refetchChains);
+  refetchChainsRef.current = refetchChains;
   useEffect(() => {
     const es = new EventSource('/api/events/stream');
     es.onmessage = (ev) => {
@@ -135,6 +137,7 @@ export function TopologyProvider({
         const event = JSON.parse(ev.data);
         if (event.type === 'session_created' || event.type === 'session_torn_down') {
           refetchRef.current();
+          refetchChainsRef.current();
         }
       } catch { /* ignore */ }
     };
