@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { SessionJson } from '../../types';
 import { spRow, spKey, SpSep } from './panelStyles';
 import { useTopologyData, useTopologyUI } from './TopologyContext';
@@ -25,8 +25,14 @@ function formatTime(unix: number): string {
 }
 
 export default function InternetPanel() {
-  const { sessions } = useTopologyData();
+  const { sessions, chains } = useTopologyData();
   const { focusedClientIp, dispatch } = useTopologyUI();
+
+  const chainByProxyNetId = useMemo(() => {
+    const m = new Map<number, number[]>();
+    for (const c of chains ?? []) m.set(c.proxy_net_id, c.all_net_ids);
+    return m;
+  }, [chains]);
   const [expanded, setExpanded] = useState(new Set<string>());
 
   const sessionList = sessions ?? [];
@@ -110,7 +116,9 @@ export default function InternetPanel() {
                   </div>
                   <div style={{ flexShrink: 0, textAlign: 'right' as const }}>
                     <div style={{ fontSize: 9.5, fontFamily: "'JetBrains Mono',monospace", color: 'var(--cyan)' }}>
-                      net {s.network_id}
+                      {chainByProxyNetId.has(s.network_id)
+                        ? `nets ${chainByProxyNetId.get(s.network_id)!.join(', ')}`
+                        : `net ${s.network_id}`}
                     </div>
                     <div style={{ fontSize: 9, color: 'var(--t2)' }}>{formatTime(s.created_at)}</div>
                   </div>

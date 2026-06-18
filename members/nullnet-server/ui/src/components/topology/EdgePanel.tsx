@@ -1,11 +1,21 @@
+import { useMemo } from 'react';
 import type { GraphEdgeJson } from '../../types';
 import { spRow, spKey, spCode } from './panelStyles';
+import { useTopologyData } from './TopologyContext';
 
 interface Props {
   edges: GraphEdgeJson[];
 }
 
 export default function EdgePanel({ edges }: Props) {
+  const { chains } = useTopologyData();
+
+  const chainByProxyNetId = useMemo(() => {
+    const m = new Map<number, number[]>();
+    for (const c of chains ?? []) m.set(c.proxy_net_id, c.all_net_ids);
+    return m;
+  }, [chains]);
+
   if (edges.length === 0) return null;
   const first = edges[0];
 
@@ -46,7 +56,9 @@ export default function EdgePanel({ edges }: Props) {
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
             <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: 'var(--cyan)' }}>
-              net {e.net_id}
+              {e.via_proxy && chainByProxyNetId.has(e.net_id)
+                ? `nets ${chainByProxyNetId.get(e.net_id)!.join(', ')}`
+                : `net ${e.net_id}`}
             </span>
             {e.setup_ms > 0 && (
               <span style={{ fontSize: 10, color: 'var(--t2)' }}>{e.setup_ms}ms setup</span>

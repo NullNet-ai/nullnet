@@ -128,3 +128,8 @@ export interface GraphJson {
   nodes: GraphNodeJson[];
   edges: GraphEdgeJson[];
 }
+
+export interface ChainJson {
+  proxy_net_id: number;
+  all_net_ids: number[];
+}

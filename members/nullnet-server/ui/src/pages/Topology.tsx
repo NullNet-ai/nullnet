@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import Layout from '../components/Layout';
 import { useStack } from '../StackContext';
 import { TopologyProvider, useTopologyData, useTopologyUI } from '../components/topology/TopologyContext';
@@ -5,8 +6,14 @@ import TopologyGraph from '../components/topology/TopologyGraph';
 import TopologyPanel from '../components/topology/TopologyPanel';
 
 function TopologyView() {
-  const { graph } = useTopologyData();
+  const { graph, chains } = useTopologyData();
   const { panel, dispatch } = useTopologyUI();
+
+  const chainByProxyNetId = useMemo(() => {
+    const m = new Map<number, number[]>();
+    for (const c of chains ?? []) m.set(c.proxy_net_id, c.all_net_ids);
+    return m;
+  }, [chains]);
   const { stack } = useStack();
 
   const nodeCount = graph?.nodes.length ?? 0;
@@ -112,7 +119,11 @@ function TopologyView() {
                       {e.via_proxy ?? <span style={{ color: 'var(--t3)' }}>—</span>}
                     </td>
                     <td style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 500 }}>{e.to}</td>
-                    <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--cyan)' }}>{e.net_id}</td>
+                    <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--cyan)' }}>
+                      {e.via_proxy && chainByProxyNetId.has(e.net_id)
+                        ? chainByProxyNetId.get(e.net_id)!.join(', ')
+                        : e.net_id}
+                    </td>
                     <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--t2)', fontSize: 11 }}>
                       {e.setup_ms > 0 ? `${e.setup_ms}ms` : '—'}
                     </td>
