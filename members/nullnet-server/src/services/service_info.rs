@@ -2,9 +2,31 @@ use crate::orchestrator::Orchestrator;
 use crate::services::clients::{Client, ClientInfo, Clients};
 use crate::services::edge::Edge;
 use nullnet_grpc_lib::nullnet_grpc::Upstream;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, Instant};
+
+/// Service names that participate in backend trigger chains: those that declare
+/// triggers ("have backend deps") and every service named in a trigger chain
+/// ("is a backend dep"). These are never paused — backend-dep networks aren't
+/// torn down on idle (see `decrement_chain`), so pausing them would strand their
+/// networks and leave the replica unreachable.
+pub(crate) fn backend_involved_services(
+    services: &HashMap<String, ServiceInfo>,
+) -> HashSet<String> {
+    let mut pinned = HashSet::new();
+    for (name, info) in services {
+        let triggers = info.triggers();
+        if triggers.is_empty() {
+            continue;
+        }
+        pinned.insert(name.clone());
+        for dep in triggers.values().flatten() {
+            pinned.insert(dep.clone());
+        }
+    }
+    pinned
+}
 
 #[derive(Clone, Debug)]
 pub(crate) enum ServiceInfo {
@@ -186,7 +208,9 @@ pub(crate) struct Replica {
     docker_container: Option<String>,
     clients: Clients,
     /// Whether the backing Docker container is currently paused. Invariant for
-    /// Docker-backed replicas: `suspended ⟺ clients is empty`.
+    /// non-pinned Docker-backed replicas: `suspended ⟺ clients is empty`
+    /// (backend-involved services are pinned and never paused — see
+    /// [`backend_involved_services`]).
     suspended: bool,
 }
 
@@ -227,10 +251,11 @@ impl Replica {
     }
 
     /// Pause this replica's Docker container when it is Docker-backed, has no
-    /// clients, and isn't already suspended. Fire-and-forget; flips the flag so
-    /// the invariant `suspended ⟺ no clients` holds.
-    async fn reconcile_suspend(&mut self, orchestrator: &Orchestrator) {
-        if self.suspended || !self.clients.clients().is_empty() {
+    /// clients, isn't already suspended, and the service isn't `pinned`
+    /// (backend-involved — see [`backend_involved_services`]). Fire-and-forget;
+    /// flips the flag so the invariant `suspended ⟺ no clients` holds.
+    async fn reconcile_suspend(&mut self, orchestrator: &Orchestrator, pinned: bool) {
+        if pinned || self.suspended || !self.clients.clients().is_empty() {
             return;
         }
         let Some(container) = self.docker_container.clone() else {
@@ -326,7 +351,12 @@ impl RegisteredServiceInfo {
 
     /// Decrement `active_chains` for a specific client entry.
     /// If it reaches 0, the VXLAN is torn down and the entry is removed.
-    pub(crate) async fn decrement_chain(&mut self, client: &Client, orchestrator: &Orchestrator) {
+    pub(crate) async fn decrement_chain(
+        &mut self,
+        client: &Client,
+        orchestrator: &Orchestrator,
+        pinned: bool,
+    ) {
         for replica in &mut self.replicas {
             if let Some(ci) = replica.clients.clients_mut().get_mut(client) {
                 ci.remove_active_chains(1);
@@ -342,8 +372,8 @@ impl RegisteredServiceInfo {
                             ci.net_id(),
                         )
                         .await;
-                    // Invariant: a Docker-backed replica with no clients is paused.
-                    replica.reconcile_suspend(orchestrator).await;
+                    // Invariant: a non-pinned Docker-backed replica with no clients is paused.
+                    replica.reconcile_suspend(orchestrator, pinned).await;
                 }
                 return;
             }
@@ -353,9 +383,9 @@ impl RegisteredServiceInfo {
     /// Pause every Docker-backed replica that is idle and not yet suspended.
     /// Used as the registration-time and periodic safety net that enforces the
     /// invariant for replicas missed by the per-event hooks.
-    pub(crate) async fn reconcile_suspends(&mut self, orchestrator: &Orchestrator) {
+    pub(crate) async fn reconcile_suspends(&mut self, orchestrator: &Orchestrator, pinned: bool) {
         for replica in &mut self.replicas {
-            replica.reconcile_suspend(orchestrator).await;
+            replica.reconcile_suspend(orchestrator, pinned).await;
         }
     }
 

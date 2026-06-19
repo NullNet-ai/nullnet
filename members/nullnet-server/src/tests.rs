@@ -2817,6 +2817,71 @@ async fn docker_replica_suspended_on_registration() {
     assert_eq!(total_suspends(&log.lock().await), 1);
 }
 
+/// Services that participate in backend trigger chains are pinned: the
+/// initiator ("has backend deps") and the dep ("is a backend dep") are never
+/// paused, even idle and Docker-backed, because backend-dep networks aren't
+/// torn down on idle. A plain Docker replica in the same list is still paused.
+#[tokio::test]
+async fn backend_involved_replicas_never_suspended() {
+    let mut inner = HashMap::new();
+    // initiator declares a trigger chain → dep (so it "has backend deps")
+    inner.insert(
+        "initiator".to_string(),
+        ServiceInfo::new(
+            vec![],
+            HashMap::from([(8080u16, vec!["dep".to_string()])]),
+            Some(30),
+            None,
+        ),
+    );
+    // dep is named in the trigger chain (so it "is a backend dep")
+    inner.insert(
+        "dep".to_string(),
+        ServiceInfo::new(vec![], HashMap::new(), None, None),
+    );
+    // a plain entry-point service with no backend involvement (control)
+    inner.insert(
+        "plain".to_string(),
+        ServiceInfo::new(vec![], HashMap::new(), Some(30), None),
+    );
+    let server = NullnetGrpcImpl::new_for_test(into_stack_map(inner));
+
+    let svc_ip = ip(1, 1, 1, 1);
+    let log = server
+        .orchestrator()
+        .register_recording_client(svc_ip)
+        .await;
+
+    let list = declared_list(vec![
+        ("initiator", 8080, Some("initiator_c1")),
+        ("dep", 9090, Some("dep_c1")),
+        ("plain", 7070, Some("plain_c1")),
+    ]);
+    server
+        .apply_services_list_by_stack(svc_ip, &list)
+        .await
+        .expect("services list apply failed");
+
+    {
+        let guard = server.services().read().await;
+        assert!(!replica_is_suspended(
+            &guard,
+            "initiator",
+            svc_ip,
+            "initiator_c1"
+        ));
+        assert!(!replica_is_suspended(&guard, "dep", svc_ip, "dep_c1"));
+        // control: the unrelated replica is still paused while idle
+        assert!(replica_is_suspended(&guard, "plain", svc_ip, "plain_c1"));
+    }
+
+    // only the plain replica was ever suspended
+    wait_for_log(&log, |l| count_suspends(l, "plain_c1") == 1).await;
+    assert_eq!(count_suspends(&log.lock().await, "initiator_c1"), 0);
+    assert_eq!(count_suspends(&log.lock().await, "dep_c1"), 0);
+    assert_eq!(total_suspends(&log.lock().await), 1);
+}
+
 #[tokio::test]
 async fn proxy_request_resumes_suspended_replica() {
     let server = suspend_test_server();

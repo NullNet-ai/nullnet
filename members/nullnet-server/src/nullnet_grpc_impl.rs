@@ -8,7 +8,7 @@ use crate::services::changes::{
 use crate::services::clients::{Client, ClientInfo};
 use crate::services::edge::{Edge, RegisteredEdge};
 use crate::services::input::{ServicesToml, StackMap};
-use crate::services::service_info::ServiceInfo;
+use crate::services::service_info::{ServiceInfo, backend_involved_services};
 use crate::timeout::check_timeouts;
 use nullnet_grpc_lib::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use nullnet_grpc_lib::nullnet_grpc::{
@@ -676,13 +676,16 @@ impl NullnetGrpcImpl {
 
         // Enforce the invariant: any Docker-backed replica that is idle (e.g. a
         // freshly declared, never-requested container at startup) must be paused.
+        // Backend-involved services are pinned and never paused.
         for stack in service_list_by_stack.keys() {
             let Some(stack_map) = services_mut.get_mut(stack) else {
                 continue;
             };
-            for si in stack_map.values_mut() {
+            let pinned = backend_involved_services(stack_map);
+            for (name, si) in stack_map.iter_mut() {
                 if let ServiceInfo::Registered(reg) = si {
-                    reg.reconcile_suspends(&self.orchestrator).await;
+                    reg.reconcile_suspends(&self.orchestrator, pinned.contains(name))
+                        .await;
                 }
             }
         }
@@ -967,10 +970,16 @@ impl NullnetGrpcImpl {
         if any_failure {
             let mut services_mut = self.services.write().await;
             if let Some(stack_map) = services_mut.get_mut(stack) {
+                let pinned = backend_involved_services(stack_map);
                 for edge in &successful {
                     if let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&edge.server_name)
                     {
-                        reg.decrement_chain(&edge.client, &self.orchestrator).await;
+                        reg.decrement_chain(
+                            &edge.client,
+                            &self.orchestrator,
+                            pinned.contains(&edge.server_name),
+                        )
+                        .await;
                     }
                 }
             }

@@ -1,7 +1,7 @@
 use crate::events::Event;
 use crate::orchestrator::Orchestrator;
 use crate::services::clients::Client;
-use crate::services::service_info::ServiceInfo;
+use crate::services::service_info::{ServiceInfo, backend_involved_services};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::time::Duration;
@@ -432,9 +432,12 @@ async fn teardown_backend_chain(
         only_through,
         services,
     );
+    let pinned = backend_involved_services(services);
     for (client, dep_name) in edges {
         if let Some(ServiceInfo::Registered(dep_reg)) = services.get_mut(&dep_name) {
-            dep_reg.decrement_chain(&client, orchestrator).await;
+            dep_reg
+                .decrement_chain(&client, orchestrator, pinned.contains(&dep_name))
+                .await;
         }
     }
 }
@@ -502,9 +505,12 @@ async fn teardown_dep_chain(
     orchestrator: &Orchestrator,
 ) {
     let edges = collect_dep_chain_edges(service_name, replica_ip, replica_docker, services);
+    let pinned = backend_involved_services(services);
     for (client, dep_name) in edges {
         if let Some(ServiceInfo::Registered(dep_reg)) = services.get_mut(&dep_name) {
-            dep_reg.decrement_chain(&client, orchestrator).await;
+            dep_reg
+                .decrement_chain(&client, orchestrator, pinned.contains(&dep_name))
+                .await;
         }
     }
 }
