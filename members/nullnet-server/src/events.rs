@@ -197,6 +197,16 @@ pub(crate) enum Event {
         error_message: String,
         timestamp: u64,
     },
+    ContainerSuspendFailed {
+        docker_container: String,
+        error_message: String,
+        timestamp: u64,
+    },
+    ContainerResumeFailed {
+        docker_container: String,
+        error_message: String,
+        timestamp: u64,
+    },
 
     // --- Client info events ---
     VxlanSetupCompleted {
@@ -304,6 +314,8 @@ impl Event {
             Self::ServicesListUpdateFailed { .. } => "services_list_update_failed",
             Self::BackendTriggerSendFailed { .. } => "backend_trigger_send_failed",
             Self::FirewallRulesLoadFailed { .. } => "firewall_rules_load_failed",
+            Self::ContainerSuspendFailed { .. } => "container_suspend_failed",
+            Self::ContainerResumeFailed { .. } => "container_resume_failed",
             Self::VxlanSetupCompleted { .. } => "vxlan_setup_completed",
             Self::VlanSetupCompleted { .. } => "vlan_setup_completed",
             Self::ControlChannelEstablished { .. } => "control_channel_established",
@@ -364,6 +376,8 @@ impl Event {
             | Self::ServicesListUpdateFailed { .. }
             | Self::BackendTriggerSendFailed { .. }
             | Self::FirewallRulesLoadFailed { .. }
+            | Self::ContainerSuspendFailed { .. }
+            | Self::ContainerResumeFailed { .. }
             | Self::UpstreamLookupFailed { .. }
             | Self::ProxyRequestMissingHost { .. }
             | Self::ProxyRequestInvalidHost { .. }
@@ -649,6 +663,25 @@ impl Event {
     pub(crate) fn firewall_rules_load_failed(path: String, error_message: String) -> Self {
         Self::FirewallRulesLoadFailed {
             path,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn container_suspend_failed(
+        docker_container: String,
+        error_message: String,
+    ) -> Self {
+        Self::ContainerSuspendFailed {
+            docker_container,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn container_resume_failed(docker_container: String, error_message: String) -> Self {
+        Self::ContainerResumeFailed {
+            docker_container,
             error_message,
             timestamp: now_secs(),
         }

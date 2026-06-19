@@ -6,7 +6,7 @@ pub struct NetType {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NetMessage {
-    #[prost(oneof = "net_message::Message", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "net_message::Message", tags = "1, 2, 3, 4, 5, 6")]
     pub message: ::core::option::Option<net_message::Message>,
 }
 /// Nested message and enum types in `NetMessage`.
@@ -23,7 +23,29 @@ pub mod net_message {
         VxlanSetup(super::VxlanSetup),
         #[prost(message, tag = "4")]
         VxlanTeardown(super::VxlanTeardown),
+        /// Docker container suspend (fire-and-forget) and resume (ack'd)
+        #[prost(message, tag = "5")]
+        ContainerSuspend(super::ContainerSuspend),
+        #[prost(message, tag = "6")]
+        ContainerResume(super::ContainerResume),
     }
+}
+/// Pause an idle Docker container: the client runs `docker pause`. No ack —
+/// the server treats the replica as suspended optimistically.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ContainerSuspend {
+    #[prost(string, tag = "1")]
+    pub docker_container: ::prost::alloc::string::String,
+}
+/// Resume a suspended Docker container: the client runs `docker unpause`,
+/// confirms it is running, then acks via `msg_id` so the server only returns
+/// the upstream to the proxy once the service is serving again.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ContainerResume {
+    #[prost(message, optional, tag = "1")]
+    pub msg_id: ::core::option::Option<MsgId>,
+    #[prost(string, tag = "2")]
+    pub docker_container: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VlanSetup {
@@ -190,7 +212,7 @@ pub struct Empty {}
 pub struct AgentEvent {
     #[prost(
         oneof = "agent_event::Event",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 22"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 25, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 22"
     )]
     pub event: ::core::option::Option<agent_event::Event>,
 }
@@ -223,6 +245,10 @@ pub mod agent_event {
         BackendTriggerSendFailed(super::AgentBackendTriggerSendFailed),
         #[prost(message, tag = "12")]
         FirewallRulesLoadFailed(super::AgentFirewallRulesLoadFailed),
+        #[prost(message, tag = "24")]
+        ContainerSuspendFailed(super::AgentContainerSuspendFailed),
+        #[prost(message, tag = "25")]
+        ContainerResumeFailed(super::AgentContainerResumeFailed),
         /// Client info events
         #[prost(message, tag = "13")]
         VxlanSetupCompleted(super::AgentVxlanSetupCompleted),
@@ -336,6 +362,20 @@ pub struct AgentBackendTriggerSendFailed {
 pub struct AgentFirewallRulesLoadFailed {
     #[prost(string, tag = "1")]
     pub path: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub error_message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentContainerSuspendFailed {
+    #[prost(string, tag = "1")]
+    pub docker_container: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub error_message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentContainerResumeFailed {
+    #[prost(string, tag = "1")]
+    pub docker_container: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub error_message: ::prost::alloc::string::String,
 }

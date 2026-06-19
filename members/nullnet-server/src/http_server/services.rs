@@ -13,6 +13,7 @@ struct ReplicaJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     docker_container: Option<String>,
     active_sessions: usize,
+    suspended: bool,
 }
 
 #[derive(Serialize)]
@@ -48,6 +49,7 @@ pub(super) async fn services_handler(
                         port: r.port(),
                         docker_container: r.docker_container().map(String::from),
                         active_sessions: r.clients().len(),
+                        suspended: r.suspended(),
                     })
                     .collect()
             } else {

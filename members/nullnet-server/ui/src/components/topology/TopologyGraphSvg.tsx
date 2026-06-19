@@ -269,6 +269,7 @@ export default function TopologyGraphSvg({
               )}
               <text x={p.x + 27} y={p.y + (ip ? 42 : 31)} fill="rgba(255,255,255,.3)" fontSize="7.5">
                 {n.registered ? `${n.active_replica_count}/${n.replica_count} active` : 'unregistered'}
+                {n.registered && n.paused_replica_count > 0 ? ` · ${n.paused_replica_count} paused` : ''}
                 {n.entry_point ? ' · entry' : ''}
               </text>
             </g>

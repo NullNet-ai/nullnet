@@ -3,11 +3,11 @@ digraph G {
 	node [color=white, fontcolor=white];
 	edge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];
 
-	"A" [label="A (2/2)"] [style=solid, color=green];
+	"A" [label=<A<BR/><FONT POINT-SIZE="9">2 active / 0 paused / 2 total</FONT>>] [style=solid, color=green];
 
-	"B" [label="B"] [style=dashed, color=red];
+	"B" [label=<B>] [style=dashed, color=red];
 
-	"C" [label="C (1/1)"] [style=dashed, color=green];
-	"A" -> "C" [label="VXLAN 103 [0ms]"];
+	"C" [label=<C<BR/><FONT POINT-SIZE="9">1 active / 0 paused / 1 total</FONT>>] [style=dashed, color=green];
 	"A" -> "C" [label="VXLAN 104 [0ms]"];
+	"A" -> "C" [label="VXLAN 103 [0ms]"];
 }

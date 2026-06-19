@@ -71,6 +71,7 @@ export default function Services() {
               {visible.map(svc => {
                 const isOpen = expanded.has(svc.name);
                 const totalSessions = svc.replicas.reduce((n, r) => n + r.active_sessions, 0);
+                const pausedCount = svc.replicas.filter(r => r.suspended).length;
                 return (
                   <>
                     <tr key={svc.name} onClick={() => toggle(svc.name)} style={{ cursor: 'pointer' }}>
@@ -85,6 +86,9 @@ export default function Services() {
                       </td>
                       <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--t1)' }}>
                         {svc.replicas.length}
+                        {pausedCount > 0 && (
+                          <span className="badge b-amber" style={{ marginLeft: 6 }}>{pausedCount} paused</span>
+                        )}
                       </td>
                       <td>
                         {svc.proxy_dependencies.flat().length > 0
@@ -108,7 +112,7 @@ export default function Services() {
                                 {svc.replicas.length > 0 ? (
                                   <table className="sub-tbl">
                                     <thead>
-                                      <tr><th>IP</th><th>Port</th><th>Sessions</th>{svc.replicas.some(r => r.docker_container) && <th>Container</th>}</tr>
+                                      <tr><th>IP</th><th>Port</th><th>Sessions</th><th>State</th>{svc.replicas.some(r => r.docker_container) && <th>Container</th>}</tr>
                                     </thead>
                                     <tbody>
                                       {svc.replicas.map((r, i) => (
@@ -116,6 +120,7 @@ export default function Services() {
                                           <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--cyan)' }}>{r.ip}</td>
                                           <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--t1)' }}>:{r.port}</td>
                                           <td style={{ fontFamily: "'JetBrains Mono',monospace", color: r.active_sessions > 0 ? 'var(--green)' : 'var(--t2)' }}>{r.active_sessions}</td>
+                                          <td><span className={`badge ${r.suspended ? 'b-amber' : 'b-green'}`}>{r.suspended ? 'Paused' : 'Running'}</span></td>
                                           {r.docker_container && <td style={{ color: 'var(--t2)', fontSize: 10 }}>{r.docker_container}</td>}
                                         </tr>
                                       ))}

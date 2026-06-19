@@ -7,6 +7,7 @@ export interface ReplicaJson {
   port: number;
   docker_container?: string;
   active_sessions: number;
+  suspended: boolean;
 }
 
 export interface ServiceJson {
@@ -89,6 +90,8 @@ export type EventJson =
   | WithSeverity & { type: 'services_list_update_failed'; error_message: string; num_services: number }
   | WithSeverity & { type: 'backend_trigger_send_failed'; service_name: string; port: number; error_message: string }
   | WithSeverity & { type: 'firewall_rules_load_failed'; path: string; error_message: string }
+  | WithSeverity & { type: 'container_suspend_failed'; docker_container: string; error_message: string }
+  | WithSeverity & { type: 'container_resume_failed'; docker_container: string; error_message: string }
   // Client info events
   | WithSeverity & { type: 'vxlan_setup_completed'; vxlan_id: number; ns_name: string }
   | WithSeverity & { type: 'vlan_setup_completed'; vlan_id: number }
@@ -114,6 +117,7 @@ export interface GraphNodeJson {
   entry_point: boolean;
   replica_count: number;
   active_replica_count: number;
+  paused_replica_count: number;
 }
 
 export interface GraphEdgeJson {

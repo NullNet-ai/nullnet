@@ -3,9 +3,9 @@ digraph G {
 	node [color=white, fontcolor=white];
 	edge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];
 
-	"A" [label="A (0/2)"] [style=solid, color=green];
+	"A" [label=<A<BR/><FONT POINT-SIZE="9">0 active / 0 paused / 2 total</FONT>>] [style=solid, color=green];
 
-	"B" [label="B (0/1)"] [style=dashed, color=green];
+	"B" [label=<B<BR/><FONT POINT-SIZE="9">0 active / 0 paused / 1 total</FONT>>] [style=dashed, color=green];
 
-	"C" [label="C"] [style=dashed, color=red];
+	"C" [label=<C>] [style=dashed, color=red];
 }

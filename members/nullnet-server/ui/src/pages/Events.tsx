@@ -43,6 +43,8 @@ const KIND_LABELS: Record<string, string> = {
   services_list_update_failed: 'services_list_update_failed',
   backend_trigger_send_failed: 'backend_trigger_send_failed',
   firewall_rules_load_failed: 'firewall_rules_load_failed',
+  container_suspend_failed: 'container_suspend_failed',
+  container_resume_failed: 'container_resume_failed',
   // Client info
   vxlan_setup_completed: 'vxlan_setup_completed',
   vlan_setup_completed: 'vlan_setup_completed',
@@ -119,6 +121,9 @@ function eventDetail(e: EventJson): string {
       return `${e.service_name} · port ${e.port} · ${e.error_message}`;
     case 'firewall_rules_load_failed':
       return `${e.path} · ${e.error_message}`;
+    case 'container_suspend_failed':
+    case 'container_resume_failed':
+      return `${e.docker_container} · ${e.error_message}`;
     // Client info
     case 'vxlan_setup_completed':
       return `vxlan ${e.vxlan_id} · ${e.ns_name}`;

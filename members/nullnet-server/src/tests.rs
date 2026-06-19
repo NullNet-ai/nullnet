@@ -5,6 +5,7 @@ use crate::nullnet_grpc_impl::NullnetGrpcImpl;
 use crate::services::input::{ServicesToml, StackMap, apply_config_update};
 use crate::services::service_info::ServiceInfo;
 use crate::timeout::apply_timeouts;
+use nullnet_grpc_lib::nullnet_grpc::{NetMessage, net_message};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -2691,4 +2692,231 @@ async fn proxy_branches_remove_A_tears_down_both() {
 
     let guard = server.services().read().await;
     assert!(!stack_view(&guard).contains_key("A"));
+}
+
+// ===========================================================================
+// container suspend/resume: idle Docker-backed replicas are paused on
+// registration (startup invariant); a proxy request resumes the selected
+// replica before returning the upstream. Host replicas are never touched.
+// ===========================================================================
+
+fn count_msgs(
+    log: &[NetMessage],
+    suspend_container: Option<&str>,
+    resume_container: Option<&str>,
+) -> usize {
+    log.iter()
+        .filter(|m| match &m.message {
+            Some(net_message::Message::ContainerSuspend(s)) => {
+                suspend_container.is_some_and(|c| c == s.docker_container)
+            }
+            Some(net_message::Message::ContainerResume(r)) => {
+                resume_container.is_some_and(|c| c == r.docker_container)
+            }
+            _ => false,
+        })
+        .count()
+}
+
+fn count_suspends(log: &[NetMessage], container: &str) -> usize {
+    count_msgs(log, Some(container), None)
+}
+
+fn count_resumes(log: &[NetMessage], container: &str) -> usize {
+    count_msgs(log, None, Some(container))
+}
+
+fn total_suspends(log: &[NetMessage]) -> usize {
+    log.iter()
+        .filter(|m| matches!(&m.message, Some(net_message::Message::ContainerSuspend(_))))
+        .count()
+}
+
+fn replica_is_suspended(guard: &StackMap, service: &str, svc_ip: IpAddr, container: &str) -> bool {
+    match stack_view(guard).get(service) {
+        Some(ServiceInfo::Registered(reg)) => reg.replica_suspended(svc_ip, Some(container)),
+        _ => false,
+    }
+}
+
+/// Poll the recording log until `want` holds. The suspend command is
+/// fire-and-forget (no ack to synchronize on), so we wait for it to drain.
+/// Bounded so a genuine failure still terminates.
+async fn wait_for_log(
+    log: &std::sync::Arc<tokio::sync::Mutex<Vec<NetMessage>>>,
+    want: impl Fn(&[NetMessage]) -> bool,
+) {
+    for _ in 0..200 {
+        if want(&log.lock().await) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("log condition not met within timeout");
+}
+
+fn suspend_test_server() -> NullnetGrpcImpl {
+    let mut inner = HashMap::new();
+    // both are proxy entry points (timeout = Some); one Docker-backed, one host
+    inner.insert(
+        "svc".to_string(),
+        ServiceInfo::new(vec![], HashMap::new(), Some(30), None),
+    );
+    inner.insert(
+        "host_svc".to_string(),
+        ServiceInfo::new(vec![], HashMap::new(), Some(30), None),
+    );
+    NullnetGrpcImpl::new_for_test(into_stack_map(inner))
+}
+
+fn declared_list(
+    entries: Vec<(&str, u16, Option<&str>)>,
+) -> HashMap<String, Vec<(String, u16, Option<String>)>> {
+    HashMap::from([(
+        TEST_STACK.to_string(),
+        entries
+            .into_iter()
+            .map(|(n, p, d)| (n.to_string(), p, d.map(ToString::to_string)))
+            .collect(),
+    )])
+}
+
+#[tokio::test]
+async fn docker_replica_suspended_on_registration() {
+    let server = suspend_test_server();
+    let svc_ip = ip(1, 1, 1, 1);
+    let log = server
+        .orchestrator()
+        .register_recording_client(svc_ip)
+        .await;
+
+    let list = declared_list(vec![
+        ("svc", 8080, Some("svc_c1")),
+        ("host_svc", 9090, None),
+    ]);
+    server
+        .apply_services_list_by_stack(svc_ip, &list)
+        .await
+        .expect("services list apply failed");
+
+    // the Docker-backed, never-requested replica is paused immediately
+    {
+        let guard = server.services().read().await;
+        assert!(replica_is_suspended(&guard, "svc", svc_ip, "svc_c1"));
+    }
+    // exactly one suspend command was sent, only for the Docker-backed replica
+    wait_for_log(&log, |l| count_suspends(l, "svc_c1") == 1).await;
+    assert_eq!(total_suspends(&log.lock().await), 1);
+
+    // re-declaration (the client's 10s heartbeat) does not re-suspend
+    server
+        .apply_services_list_by_stack(svc_ip, &list)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    assert_eq!(total_suspends(&log.lock().await), 1);
+}
+
+/// Services that participate in backend trigger chains are pinned: the
+/// initiator ("has backend deps") and the dep ("is a backend dep") are never
+/// paused, even idle and Docker-backed, because backend-dep networks aren't
+/// torn down on idle. A plain Docker replica in the same list is still paused.
+#[tokio::test]
+async fn backend_involved_replicas_never_suspended() {
+    let mut inner = HashMap::new();
+    // initiator declares a trigger chain → dep (so it "has backend deps")
+    inner.insert(
+        "initiator".to_string(),
+        ServiceInfo::new(
+            vec![],
+            HashMap::from([(8080u16, vec!["dep".to_string()])]),
+            Some(30),
+            None,
+        ),
+    );
+    // dep is named in the trigger chain (so it "is a backend dep")
+    inner.insert(
+        "dep".to_string(),
+        ServiceInfo::new(vec![], HashMap::new(), None, None),
+    );
+    // a plain entry-point service with no backend involvement (control)
+    inner.insert(
+        "plain".to_string(),
+        ServiceInfo::new(vec![], HashMap::new(), Some(30), None),
+    );
+    let server = NullnetGrpcImpl::new_for_test(into_stack_map(inner));
+
+    let svc_ip = ip(1, 1, 1, 1);
+    let log = server
+        .orchestrator()
+        .register_recording_client(svc_ip)
+        .await;
+
+    let list = declared_list(vec![
+        ("initiator", 8080, Some("initiator_c1")),
+        ("dep", 9090, Some("dep_c1")),
+        ("plain", 7070, Some("plain_c1")),
+    ]);
+    server
+        .apply_services_list_by_stack(svc_ip, &list)
+        .await
+        .expect("services list apply failed");
+
+    {
+        let guard = server.services().read().await;
+        assert!(!replica_is_suspended(
+            &guard,
+            "initiator",
+            svc_ip,
+            "initiator_c1"
+        ));
+        assert!(!replica_is_suspended(&guard, "dep", svc_ip, "dep_c1"));
+        // control: the unrelated replica is still paused while idle
+        assert!(replica_is_suspended(&guard, "plain", svc_ip, "plain_c1"));
+    }
+
+    // only the plain replica was ever suspended
+    wait_for_log(&log, |l| count_suspends(l, "plain_c1") == 1).await;
+    assert_eq!(count_suspends(&log.lock().await, "initiator_c1"), 0);
+    assert_eq!(count_suspends(&log.lock().await, "dep_c1"), 0);
+    assert_eq!(total_suspends(&log.lock().await), 1);
+}
+
+#[tokio::test]
+async fn proxy_request_resumes_suspended_replica() {
+    let server = suspend_test_server();
+    let svc_ip = ip(1, 1, 1, 1);
+    let proxy_ip = ip(5, 5, 5, 5);
+    let log = server
+        .orchestrator()
+        .register_recording_client(svc_ip)
+        .await;
+    server.orchestrator().register_fake_client(proxy_ip).await;
+
+    let list = declared_list(vec![("svc", 8080, Some("svc_c1"))]);
+    server
+        .apply_services_list_by_stack(svc_ip, &list)
+        .await
+        .unwrap();
+
+    // precondition: suspended after registration
+    {
+        let guard = server.services().read().await;
+        assert!(replica_is_suspended(&guard, "svc", svc_ip, "svc_c1"));
+    }
+
+    // a proxy request resumes it before returning the upstream
+    server
+        .handle_proxy_request("svc", proxy_ip, "10.0.0.1")
+        .await
+        .expect("proxy request failed");
+
+    {
+        let guard = server.services().read().await;
+        assert!(
+            !replica_is_suspended(&guard, "svc", svc_ip, "svc_c1"),
+            "replica should be resumed once a client is attached"
+        );
+    }
+    assert_eq!(count_resumes(&log.lock().await, "svc_c1"), 1);
 }

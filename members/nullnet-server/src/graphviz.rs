@@ -59,7 +59,7 @@ pub(crate) fn render_graphviz(services: &HashMap<String, ServiceInfo>) -> String
         let style = info.graphviz_style();
         let label = info.graphviz_label(name, &initiators);
         let _ =
-            writeln!(graphviz, "\t\"{name}\" [label=\"{label}\"] {style};").handle_err(location!());
+            writeln!(graphviz, "\t\"{name}\" [label=<{label}>] {style};").handle_err(location!());
         if let ServiceInfo::Registered(registered) = info {
             let mut edges: Vec<_> = registered
                 .replicas()
@@ -131,7 +131,12 @@ impl ServiceInfo {
                         ))
                 })
                 .count();
-            return format!("{name} ({active}/{total})");
+            let paused = reg.replicas().iter().filter(|r| r.suspended()).count();
+            // HTML-like label: counts on their own line at edge-label size (9) so
+            // the node stays narrow and the name keeps the default size.
+            return format!(
+                "{name}<BR/><FONT POINT-SIZE=\"9\">{active} active / {paused} paused / {total} total</FONT>"
+            );
         }
         name.to_string()
     }
@@ -181,6 +186,7 @@ struct GraphNodeJson {
     entry_point: bool,
     replica_count: usize,
     active_replica_count: usize,
+    paused_replica_count: usize,
 }
 
 #[derive(Serialize)]
@@ -201,30 +207,33 @@ pub(crate) fn render_graph_json(services: &HashMap<String, ServiceInfo>) -> Grap
         .map(|(name, info)| {
             let registered = matches!(info, ServiceInfo::Registered(_));
             let entry_point = info.timeout().is_some();
-            let (replica_count, active_replica_count) = if let ServiceInfo::Registered(reg) = info {
-                let total = reg.replicas().len();
-                let active = reg
-                    .replicas()
-                    .iter()
-                    .filter(|r| {
-                        !r.clients().is_empty()
-                            || initiators.contains(&(
-                                name.clone(),
-                                r.ip(),
-                                r.docker_container().map(String::from),
-                            ))
-                    })
-                    .count();
-                (total, active)
-            } else {
-                (0, 0)
-            };
+            let (replica_count, active_replica_count, paused_replica_count) =
+                if let ServiceInfo::Registered(reg) = info {
+                    let total = reg.replicas().len();
+                    let active = reg
+                        .replicas()
+                        .iter()
+                        .filter(|r| {
+                            !r.clients().is_empty()
+                                || initiators.contains(&(
+                                    name.clone(),
+                                    r.ip(),
+                                    r.docker_container().map(String::from),
+                                ))
+                        })
+                        .count();
+                    let paused = reg.replicas().iter().filter(|r| r.suspended()).count();
+                    (total, active, paused)
+                } else {
+                    (0, 0, 0)
+                };
             GraphNodeJson {
                 id: name.clone(),
                 registered,
                 entry_point,
                 replica_count,
                 active_replica_count,
+                paused_replica_count,
             }
         })
         .collect();

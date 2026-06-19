@@ -8,7 +8,7 @@ use crate::services::changes::{
 use crate::services::clients::{Client, ClientInfo};
 use crate::services::edge::{Edge, RegisteredEdge};
 use crate::services::input::{ServicesToml, StackMap};
-use crate::services::service_info::ServiceInfo;
+use crate::services::service_info::{ServiceInfo, backend_involved_services};
 use crate::timeout::check_timeouts;
 use nullnet_grpc_lib::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use nullnet_grpc_lib::nullnet_grpc::{
@@ -352,6 +352,9 @@ impl NullnetGrpcImpl {
             )
             .await?;
 
+        // Suspended replicas are unpaused per-edge inside `net_chain_setup`, so by
+        // the time the chain is built every container in it is already serving.
+
         Ok(Response::new(Upstream {
             ip: upstream_ip.to_string(),
             port: u32::from(service_port),
@@ -671,6 +674,22 @@ impl NullnetGrpcImpl {
             }
         }
 
+        // Enforce the invariant: any Docker-backed replica that is idle (e.g. a
+        // freshly declared, never-requested container at startup) must be paused.
+        // Backend-involved services are pinned and never paused.
+        for stack in service_list_by_stack.keys() {
+            let Some(stack_map) = services_mut.get_mut(stack) else {
+                continue;
+            };
+            let pinned = backend_involved_services(stack_map);
+            for (name, si) in stack_map.iter_mut() {
+                if let ServiceInfo::Registered(reg) = si {
+                    reg.reconcile_suspends(&self.orchestrator, pinned.contains(name))
+                        .await;
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -724,8 +743,46 @@ impl NullnetGrpcImpl {
                     client.clone(),
                     ClientInfo::placeholder(client_ethernet),
                 );
+                // Does the target replica need unpausing before traffic flows?
+                let server_suspended =
+                    reg.replica_suspended(server_ethernet, server_docker.as_deref());
 
                 drop(services_guard);
+
+                // Resume the target container before bringing up the link, so it is
+                // serving by the time traffic arrives. This covers the proxy entry,
+                // proxy dependencies, and every hop of a backend-triggered chain
+                // uniformly (it mirrors the per-edge suspend in `decrement_chain`).
+                if server_suspended && let Some(container) = server_docker.clone() {
+                    if orchestrator
+                        .send_container_resume(server_ethernet, container.clone())
+                        .await
+                    {
+                        if let Some(stack_map) = services.write().await.get_mut(&stack)
+                            && let Some(ServiceInfo::Registered(reg)) =
+                                stack_map.get_mut(server.name())
+                        {
+                            reg.mark_replica_resumed(server_ethernet, server_docker.as_deref());
+                        }
+                    } else {
+                        orchestrator
+                            .events
+                            .emit(Event::container_resume_failed(
+                                container,
+                                format!("no ack from {server_ethernet} within timeout"),
+                            ))
+                            .await;
+                        // roll back the reserved placeholder; the idle replica stays
+                        // suspended (consistent) and the request fails fast.
+                        if let Some(stack_map) = services.write().await.get_mut(&stack)
+                            && let Some(ServiceInfo::Registered(reg)) =
+                                stack_map.get_mut(server.name())
+                        {
+                            reg.remove_client(&client);
+                        }
+                        return EdgeOutcome::Failed;
+                    }
+                }
 
                 let Some(net_id) = orchestrator.allocate_net_id().await else {
                     eprintln!("NET ID pool exhausted");
@@ -913,10 +970,16 @@ impl NullnetGrpcImpl {
         if any_failure {
             let mut services_mut = self.services.write().await;
             if let Some(stack_map) = services_mut.get_mut(stack) {
+                let pinned = backend_involved_services(stack_map);
                 for edge in &successful {
                     if let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&edge.server_name)
                     {
-                        reg.decrement_chain(&edge.client, &self.orchestrator).await;
+                        reg.decrement_chain(
+                            &edge.client,
+                            &self.orchestrator,
+                            pinned.contains(&edge.server_name),
+                        )
+                        .await;
                     }
                 }
             }
@@ -1078,6 +1141,12 @@ impl NullnetGrpc for NullnetGrpcImpl {
             }
             AgentEventKind::FirewallRulesLoadFailed(e) => {
                 Event::firewall_rules_load_failed(e.path, e.error_message)
+            }
+            AgentEventKind::ContainerSuspendFailed(e) => {
+                Event::container_suspend_failed(e.docker_container, e.error_message)
+            }
+            AgentEventKind::ContainerResumeFailed(e) => {
+                Event::container_resume_failed(e.docker_container, e.error_message)
             }
             AgentEventKind::VxlanSetupCompleted(e) => {
                 Event::vxlan_setup_completed(e.vxlan_id, e.ns_name)

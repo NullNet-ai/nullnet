@@ -31,7 +31,7 @@ export default function ServiceNodePanel({ node, service, onDepClick }: Props) {
 
       <div style={spRow}>
         <div style={spKey}>Replicas</div>
-        <div style={spVal}>{node.active_replica_count} active / {node.replica_count} total</div>
+        <div style={spVal}>{node.active_replica_count} active / {node.paused_replica_count} paused / {node.replica_count} total</div>
       </div>
 
       {service?.timeout_secs != null && (

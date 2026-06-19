@@ -3,9 +3,9 @@ digraph G {
 	node [color=white, fontcolor=white];
 	edge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];
 
-	"B" [label="B (1/1)"] [style=solid, color=green];
+	"B" [label=<B<BR/><FONT POINT-SIZE="9">1 active / 0 paused / 1 total</FONT>>] [style=solid, color=green];
 	"10.0.0.1 (via 5.5.5.5)" -> "B" [label="VXLAN 105 [0ms]"];
 
-	"D" [label="D (1/1)"] [style=dashed, color=green];
+	"D" [label=<D<BR/><FONT POINT-SIZE="9">1 active / 0 paused / 1 total</FONT>>] [style=dashed, color=green];
 	"B" -> "D" [label="VXLAN 104 [0ms]"];
 }

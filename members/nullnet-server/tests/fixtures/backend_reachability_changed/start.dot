@@ -3,10 +3,10 @@ digraph G {
 	node [color=white, fontcolor=white];
 	edge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];
 
-	"A" [label="A (1/1)"] [style=solid, color=green];
+	"A" [label=<A<BR/><FONT POINT-SIZE="9">1 active / 0 paused / 1 total</FONT>>] [style=solid, color=green];
 
-	"C" [label="C (1/1)"] [style=dashed, color=green];
+	"C" [label=<C<BR/><FONT POINT-SIZE="9">1 active / 0 paused / 1 total</FONT>>] [style=dashed, color=green];
 	"A" -> "C" [label="VXLAN 101 [0ms]"];
 
-	"Z" [label="Z (0/1)"] [style=solid, color=green];
+	"Z" [label=<Z<BR/><FONT POINT-SIZE="9">0 active / 0 paused / 1 total</FONT>>] [style=solid, color=green];
 }

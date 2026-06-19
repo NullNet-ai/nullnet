@@ -5,14 +5,15 @@ use crate::triggers::TriggersState;
 use ipnetwork::Ipv4Network;
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentControlChannelAckFailed, AgentControlChannelClosed, AgentControlChannelEstablished,
-    AgentDnatInstallFailed, AgentDnatRemovalFailed, AgentHostMappingFailed,
-    AgentVlanSetupCompleted, AgentVlanSetupFailed, AgentVlanTeardownFailed,
-    AgentVxlanSetupCompleted, AgentVxlanSetupFailed, AgentVxlanTeardownFailed,
+    AgentContainerResumeFailed, AgentContainerSuspendFailed, AgentControlChannelAckFailed,
+    AgentControlChannelClosed, AgentControlChannelEstablished, AgentDnatInstallFailed,
+    AgentDnatRemovalFailed, AgentHostMappingFailed, AgentVlanSetupCompleted, AgentVlanSetupFailed,
+    AgentVlanTeardownFailed, AgentVxlanSetupCompleted, AgentVxlanSetupFailed,
+    AgentVxlanTeardownFailed,
 };
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentEvent, HostMapping, MsgId, VlanSetup, VlanTeardown, VxlanSetup, VxlanTeardown,
-    agent_event::Event as AgentEventKind, net_message,
+    AgentEvent, ContainerResume, ContainerSuspend, HostMapping, MsgId, VlanSetup, VlanTeardown,
+    VxlanSetup, VxlanTeardown, agent_event::Event as AgentEventKind, net_message,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::net::Ipv4Addr;
@@ -101,6 +102,16 @@ pub(crate) async fn control_channel(
                         host_mappings_state,
                         server,
                     );
+                });
+            }
+            Some(net_message::Message::ContainerSuspend(container_suspend)) => {
+                tokio::spawn(async move {
+                    handle_container_suspend(container_suspend, server);
+                });
+            }
+            Some(net_message::Message::ContainerResume(container_resume)) => {
+                tokio::spawn(async move {
+                    let _ = handle_container_resume(container_resume, outbound, server).await;
                 });
             }
             None => {}
@@ -474,6 +485,126 @@ fn handle_vxlan_teardown(
         "VXLAN teardown completed in {} ms",
         init_t.elapsed().as_millis()
     );
+}
+
+/// Pause an idle container. Fire-and-forget: the server marks the replica
+/// suspended optimistically, so we only report a structured event on failure.
+/// An already-paused container is treated as success (e.g. after a server
+/// restart re-issues the command).
+fn handle_container_suspend(message: ContainerSuspend, grpc: NullnetGrpcInterface) {
+    let container = message.docker_container;
+    let init_t = std::time::Instant::now();
+    match docker_action("pause", &container, "is already paused") {
+        Ok(()) => println!(
+            "Paused container '{container}' in {} ms",
+            init_t.elapsed().as_millis()
+        ),
+        Err(error_message) => fire_event(
+            &grpc,
+            AgentEventKind::ContainerSuspendFailed(AgentContainerSuspendFailed {
+                docker_container: container,
+                error_message,
+            }),
+        ),
+    }
+}
+
+/// Resume a suspended container, confirm it is actually running, then ack so the
+/// server only returns the upstream to the proxy once the service is serving.
+/// On any failure we report an event and deliberately do NOT ack — the server's
+/// resume wait then times out and surfaces the failure to the proxy.
+async fn handle_container_resume(
+    message: ContainerResume,
+    outbound: Sender<MsgId>,
+    grpc: NullnetGrpcInterface,
+) -> Result<(), Error> {
+    let msg_id = message
+        .msg_id
+        .ok_or("Missing message ID in container resume message")
+        .handle_err(location!())?;
+    let container = message.docker_container;
+    let init_t = std::time::Instant::now();
+
+    // unpause (tolerate an already-running container)
+    if let Err(error_message) = docker_action("unpause", &container, "is not paused") {
+        fire_event(
+            &grpc,
+            AgentEventKind::ContainerResumeFailed(AgentContainerResumeFailed {
+                docker_container: container,
+                error_message,
+            }),
+        );
+        return Ok(());
+    }
+
+    // confirm it is running and not paused before acking; unpause preserves the
+    // listening socket, so a running container is immediately serving.
+    if !container_running(&container) {
+        fire_event(
+            &grpc,
+            AgentEventKind::ContainerResumeFailed(AgentContainerResumeFailed {
+                docker_container: container,
+                error_message: "container not running after unpause".to_string(),
+            }),
+        );
+        return Ok(());
+    }
+
+    println!(
+        "Resumed container '{container}' in {} ms",
+        init_t.elapsed().as_millis()
+    );
+
+    // acknowledge — tells the server the service is serving again
+    if outbound.send(msg_id.clone()).await.is_err() {
+        fire_event(
+            &grpc,
+            AgentEventKind::ControlChannelAckFailed(AgentControlChannelAckFailed {
+                msg_id: msg_id.id.clone(),
+                message_type: "container_resume".to_string(),
+            }),
+        );
+    }
+
+    Ok(())
+}
+
+/// Run `docker <action> <container>`, treating a non-zero exit whose stderr
+/// contains `benign` (the container is already in the target state) as success.
+fn docker_action(action: &str, container: &str, benign: &str) -> Result<(), String> {
+    match std::process::Command::new("docker")
+        .args([action, container])
+        .output()
+    {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if stderr.contains(benign) {
+                Ok(())
+            } else {
+                Err(stderr.trim().to_string())
+            }
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// True when the container is running and not paused.
+fn container_running(container: &str) -> bool {
+    match std::process::Command::new("docker")
+        .args([
+            "inspect",
+            "-f",
+            "{{.State.Running}} {{.State.Paused}}",
+            container,
+        ])
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            String::from_utf8_lossy(&out.stdout).trim() == "true false"
+        }
+        _ => false,
+    }
 }
 
 fn add_host_mapping(hm: &HostMapping, docker_container: Option<&str>) -> Result<(), Error> {
