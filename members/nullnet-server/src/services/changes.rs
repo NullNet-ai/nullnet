@@ -75,7 +75,8 @@ pub(crate) fn detect_config_changes(
     // services with changed deps, reachability, or timeout
     for (name, loaded_info) in loaded {
         if let Some(old_info) = current.get(name) {
-            if loaded_info.proxy_deps() != old_info.proxy_deps() {
+            if loaded_info.timeout().is_some() && loaded_info.proxy_deps() != old_info.proxy_deps()
+            {
                 changes.push(ServiceChange::ProxyDepsChanged { name: name.clone() });
             }
             if loaded_info.triggers() != old_info.triggers() {
@@ -318,10 +319,14 @@ async fn teardown_chain(
 
 /// Walk the proxy dependency chains starting from a specific service replica
 /// (read-only) and collect the `(client, dep_service_name)` edges. `proxy_deps`
-/// holds one or more independent branches; each branch's head is the real next
-/// hop (the remainder of the branch is stored on the head itself via
-/// `tail_after`), so we emit the edge to each head and recurse into it. A
-/// visited set guards against cycles from malformed configs.
+/// holds one or more independent branches; each is walked as a full linear chain
+/// rooted at this service, following the actual connected replica at each hop.
+///
+/// This mirrors the setup-side traversal (`proxy_dependency_chain`) branch-for-
+/// branch, so teardown reconstructs exactly the edges setup built. Walking each
+/// branch in full (rather than recursing into each hop's own stored `proxy_deps`)
+/// is what keeps the two sides in agreement even when a shared dependency is
+/// reached via different continuations from different entry points.
 pub(crate) fn collect_dep_chain_edges(
     service_name: &str,
     replica_ip: IpAddr,
@@ -329,41 +334,32 @@ pub(crate) fn collect_dep_chain_edges(
     services: &HashMap<String, ServiceInfo>,
 ) -> Vec<(Client, String)> {
     let mut edges = Vec::new();
-    let mut visited: HashSet<String> = HashSet::new();
-    // Worklist of nodes still to walk: (name, ip, docker).
-    let mut stack = vec![(
-        service_name.to_string(),
-        replica_ip,
-        replica_docker.map(String::from),
-    )];
-
-    while let Some((current_name, current_ip, current_docker)) = stack.pop() {
-        // Don't re-walk a node's subtree (a dep reachable via two branches is
-        // still walked once); edges *into* it are emitted before this check.
-        if !visited.insert(current_name.clone()) {
-            continue;
-        }
-        let Some(deps) = services.get(&current_name).map(ServiceInfo::proxy_deps) else {
-            continue;
-        };
-        for branch in deps {
-            let Some(head) = branch.first() else {
-                continue;
-            };
+    let Some(deps) = services.get(service_name).map(ServiceInfo::proxy_deps) else {
+        return edges;
+    };
+    for branch in deps {
+        let mut current_name = service_name.to_string();
+        let mut current_ip = replica_ip;
+        let mut current_docker: Option<String> = replica_docker.map(String::from);
+        for dep_name in branch {
             let hop = emit_edge_and_probe_hop(
                 &mut edges,
                 &current_name,
                 current_ip,
                 current_docker.as_deref(),
-                head,
+                dep_name,
                 services,
             );
-            if let Some((ip, docker)) = hop {
-                stack.push((head.clone(), ip, docker));
+            match hop {
+                Some((ip, docker)) => {
+                    current_name.clone_from(dep_name);
+                    current_ip = ip;
+                    current_docker = docker;
+                }
+                None => break,
             }
         }
     }
-
     edges
 }
 

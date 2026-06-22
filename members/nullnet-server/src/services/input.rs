@@ -109,50 +109,31 @@ impl ServicesToml {
     }
 
     pub(crate) fn services_map(self) -> HashMap<String, ServiceInfo> {
-        // Proxy: last-write-wins per dep (a name referenced from multiple
-        // branches/services has its tail overwritten by the last processor).
-        // Each intermediate dep is registered as a single-branch service whose
-        // chain is the remainder of its own branch, so the walkers can
-        // reconstruct deep edges node-by-node.
-        let mut proxy_accum: HashMap<String, Vec<Vec<String>>> = HashMap::new();
-        // Trigger-chain deps: discoverable as (non-entry-point) services so
-        // hosts can register replicas of them.
-        let mut trigger_dep_names: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-
+        // Every name referenced in a proxy branch or trigger chain is registered
+        // as a discoverable, non-entry-point placeholder (no deps, no timeout) so
+        // hosts can register its replicas. The full chain lives on the declaring
+        // service — proxy branches are walked from the entry point and trigger
+        // chains from the initiator — so deps carry no continuation of their own.
+        let mut dep_names: std::collections::HashSet<String> = std::collections::HashSet::new();
         for s in &self.services {
-            for branch in &s.proxy_dependencies {
-                for d in branch {
-                    let tail = tail_after(branch, d);
-                    // A leaf (empty tail) registers as a service with no deps;
-                    // otherwise its remainder is stored as a single branch.
-                    let stored = if tail.is_empty() {
-                        Vec::new()
-                    } else {
-                        vec![tail]
-                    };
-                    proxy_accum.insert(d.clone(), stored);
-                }
+            for dep in s.proxy_dependencies.iter().flatten() {
+                dep_names.insert(dep.clone());
             }
-            for t in &s.triggers {
-                for dep in &t.chain {
-                    trigger_dep_names.insert(dep.clone());
-                }
+            for dep in s.triggers.iter().flat_map(|t| &t.chain) {
+                dep_names.insert(dep.clone());
             }
         }
 
         let mut ret_val: HashMap<String, ServiceInfo> = HashMap::new();
-        for (name, proxy) in proxy_accum {
-            ret_val.insert(name, ServiceInfo::new(proxy, HashMap::new(), None, None));
-        }
-        for name in trigger_dep_names {
-            ret_val
-                .entry(name)
-                .or_insert_with(|| ServiceInfo::new(Vec::new(), HashMap::new(), None, None));
+        for name in dep_names {
+            ret_val.insert(
+                name,
+                ServiceInfo::new(Vec::new(), HashMap::new(), None, None),
+            );
         }
 
-        // Explicit declarations override any implicit entries for the same
-        // name, carrying their `timeout` verbatim: `Some` makes the service a
+        // Explicit declarations override any placeholder for the same name,
+        // carrying their `timeout` verbatim: `Some` makes the service a
         // proxy-reachable entry point, `None` (omitted) leaves it backend-only.
         // A declared service can thus host triggers without being reachable.
         for s in self.services {
@@ -173,15 +154,6 @@ async fn parse_file(path: &Path) -> Result<HashMap<String, ServiceInfo>, Error> 
         .handle_err(location!())?;
     let parsed: ServicesToml = toml::from_str(&str_repr).handle_err(location!())?;
     Ok(parsed.services_map())
-}
-
-/// Return the elements of `slice` that come after the first occurrence of `elem`.
-fn tail_after(slice: &[String], elem: &str) -> Vec<String> {
-    slice
-        .iter()
-        .position(|d| d == elem)
-        .map(|i| slice[i + 1..].to_vec())
-        .unwrap_or_default()
 }
 
 pub(crate) async fn apply_config_update(
@@ -345,12 +317,14 @@ proxy_dependencies = [["a", "b"], ["c", "d"]]
             assert!(map.contains_key(name), "{name} not registered");
             assert_eq!(map[name].timeout(), None);
         }
-        // Each intermediate dep stores the remainder of its own branch as a
-        // single branch; leaves store nothing.
-        assert_eq!(map["a"].proxy_deps(), vec![vec!["b".to_string()]]);
-        assert_eq!(map["c"].proxy_deps(), vec![vec!["d".to_string()]]);
-        assert!(map["b"].proxy_deps().is_empty());
-        assert!(map["d"].proxy_deps().is_empty());
+        // Deps are bare placeholders — the full chain lives on the entry point,
+        // so no intermediate dep carries a continuation of its own.
+        for name in ["a", "b", "c", "d"] {
+            assert!(
+                map[name].proxy_deps().is_empty(),
+                "{name} should carry no deps"
+            );
+        }
     }
 
     #[tokio::test]
