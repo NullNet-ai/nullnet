@@ -509,9 +509,6 @@ impl NullnetGrpcImpl {
                 .to_string();
             let stack_map = &guard[&stack];
             let si = &stack_map[initiator_name];
-            if si.timeout().is_none() {
-                Err("Initiator service is not a configured entry point").handle_err(location!())?;
-            }
             let ServiceInfo::Registered(reg) = si else {
                 Err("Initiator service is not registered").handle_err(location!())?
             };

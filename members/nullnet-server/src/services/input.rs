@@ -1,4 +1,3 @@
-use crate::env::TIMEOUT;
 use crate::events::Event as ServerEvent;
 use crate::orchestrator::Orchestrator;
 use crate::services::changes::{apply_changes, detect_config_changes};
@@ -153,19 +152,14 @@ impl ServicesToml {
         }
 
         // Explicit declarations override any implicit entries for the same
-        // name and are treated as entry points (`Some(timeout)`). To register a
-        // service as a backend dep without making it an entry point, do not
-        // declare it explicitly — listing it in a `triggers.chain` is enough.
+        // name, carrying their `timeout` verbatim: `Some` makes the service a
+        // proxy-reachable entry point, `None` (omitted) leaves it backend-only.
+        // A declared service can thus host triggers without being reachable.
         for s in self.services {
             let triggers = s.triggers.into_iter().map(|t| (t.port, t.chain)).collect();
             ret_val.insert(
                 s.name,
-                ServiceInfo::new(
-                    s.proxy_dependencies,
-                    triggers,
-                    Some(s.timeout.unwrap_or(*TIMEOUT)),
-                    s.max_networks,
-                ),
+                ServiceInfo::new(s.proxy_dependencies, triggers, s.timeout, s.max_networks),
             );
         }
 
@@ -242,11 +236,10 @@ pub(crate) async fn apply_config_update(
 #[derive(Deserialize)]
 struct ServiceToml {
     name: String,
-    /// Per-service entry timeout in seconds for proxy clients. If omitted,
-    /// defaults to the global `TIMEOUT` env var (or 60s). A value of 0
-    /// disables the timeout. Any explicit declaration is treated as an entry
-    /// point; backend deps without a proxy-reachable role should be left out
-    /// of explicit declarations and picked up implicitly via trigger chains.
+    /// Proxy-reachability for this service. Present → reachable entry point
+    /// with this per-client timeout in seconds (0 disables the timeout).
+    /// Omitted → not proxy-reachable (backend-only); the service is still
+    /// declarable to host triggers or backend deps.
     timeout: Option<u64>,
     /// Independent dep chains walked on proxy-triggered setup. Each inner array
     /// is one linear branch; all branches are brought up in parallel.
@@ -303,6 +296,29 @@ timeout = 30
         assert_eq!(map["pre.fs.color.com"].timeout(), None);
         assert_eq!(map["ts.color.com"].timeout(), None);
         assert_eq!(map["deeper.dep"].timeout(), None);
+    }
+
+    #[test]
+    fn declared_service_without_timeout_is_unreachable_but_keeps_triggers() {
+        // A declared service may omit `timeout` to stay off the proxy while
+        // still hosting backend trigger chains.
+        let toml_str = r#"
+[[services]]
+name = "backend.only"
+proxy_dependencies = [["dep.a"]]
+
+[[services.triggers]]
+port = 5555
+chain = ["dep.b"]
+"#;
+        let parsed: ServicesToml = toml::from_str(toml_str).unwrap();
+        let map = parsed.services_map();
+
+        // Not proxy-reachable...
+        assert_eq!(map["backend.only"].timeout(), None);
+        // ...yet it carries its triggers and proxy deps verbatim.
+        assert_eq!(map["backend.only"].triggers()[&5555], vec!["dep.b"]);
+        assert_eq!(map["backend.only"].proxy_deps(), vec![vec!["dep.a"]]);
     }
 
     #[test]

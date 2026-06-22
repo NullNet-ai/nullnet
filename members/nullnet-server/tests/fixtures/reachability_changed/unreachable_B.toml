@@ -1,7 +1,9 @@
 [[services]]
 name = "A"
+timeout = 0
 proxy_dependencies = [["B", "C"]]
 
 [[services]]
 name = "D"
+timeout = 0
 proxy_dependencies = [["E"]]

@@ -1,11 +1,14 @@
 [[services]]
 name = "A"
+timeout = 0
 proxy_dependencies = [["B"]]
 
 [[services]]
 name = "C"
+timeout = 0
 proxy_dependencies = [["B"]]
 
 [[services]]
 name = "D"
+timeout = 0
 proxy_dependencies = [["B"]]

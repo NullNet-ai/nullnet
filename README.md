@@ -72,6 +72,9 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   ...
   ```
 
+- `timeout` controls proxy-reachability: when present the service is a proxy-reachable entry point
+  with that per-client idle timeout in seconds (`0` disables the timeout); omit it to keep the
+  service off the proxy (backend-only)
 - `proxy_dependencies` is a list of independent dep chains walked when the service is reached via a
   `Proxy` RPC from nullnet-proxy; each inner array is one linear branch and all branches are brought
   up in parallel
