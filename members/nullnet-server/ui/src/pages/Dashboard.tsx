@@ -132,7 +132,7 @@ export default function Dashboard() {
                     ))}
                   </td>
                   <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--t2)', fontSize: 11 }}>
-                    {svc.timeout_secs ? `${svc.timeout_secs}s` : '—'}
+                    {svc.timeout_secs != null ? `${svc.timeout_secs}s` : '—'}
                   </td>
                 </tr>
               ))}
