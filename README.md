@@ -37,7 +37,6 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
 - set environment variables (in `members/nullnet-server/.env`)
   ```
   NET_TYPE=VXLAN
-  TIMEOUT=0
   CERT_ENCRYPTION_KEY=<32 raw bytes or 64 hex chars>
   ```
   `CERT_ENCRYPTION_KEY` is **required** — the server refuses to start without it. It encrypts

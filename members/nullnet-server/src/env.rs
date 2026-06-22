@@ -12,12 +12,3 @@ pub static NET_TYPE: std::sync::LazyLock<Net> = std::sync::LazyLock::new(|| {
         _ => Net::default(),
     }
 });
-
-pub static TIMEOUT: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
-    let str = std::env::var("TIMEOUT").unwrap_or_else(|_| {
-        println!("'TIMEOUT' environment variable not set");
-        String::new()
-    });
-
-    str.parse().unwrap_or(60)
-});

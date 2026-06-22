@@ -1,4 +1,3 @@
-use crate::env::TIMEOUT;
 use crate::orchestrator::Orchestrator;
 use crate::services::changes::{ServiceChange, apply_changes};
 use crate::services::input::StackMap;
@@ -7,6 +6,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Notify, RwLock};
+
+/// Upper bound on how long the loop sleeps when no proxy client is nearer to
+/// expiry. Also the cadence of the idle-replica suspend safety net, so it must
+/// stay finite and non-zero.
+const MAX_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
 pub(crate) async fn check_timeouts(
     services: Arc<RwLock<StackMap>>,
@@ -20,7 +24,7 @@ pub(crate) async fn check_timeouts(
                 .values()
                 .map(nearest_timeout)
                 .min()
-                .unwrap_or(Duration::from_secs(*TIMEOUT))
+                .unwrap_or(MAX_POLL_INTERVAL)
         };
 
         tokio::select! {
@@ -88,7 +92,7 @@ fn collect_timed_out_clients(services: &HashMap<String, ServiceInfo>) -> Vec<Ser
 }
 
 fn nearest_timeout(services: &HashMap<String, ServiceInfo>) -> Duration {
-    let mut nearest = Duration::from_secs(*TIMEOUT);
+    let mut nearest = MAX_POLL_INTERVAL;
 
     for si in services.values() {
         let Some(timeout) = si.timeout() else {
