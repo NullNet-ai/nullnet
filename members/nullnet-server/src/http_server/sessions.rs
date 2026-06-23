@@ -24,11 +24,16 @@ struct ErrorJson {
     error: &'static str,
 }
 
-pub(super) async fn list_handler(State(state): State<AppState>) -> impl IntoResponse {
+pub(super) async fn list_handler(
+    Path(stack): Path<String>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
     let services = state.services.read().await;
-    let mut sessions: Vec<SessionJson> = services
-        .values()
-        .flat_map(|stack_map| stack_map.iter())
+    let Some(stack_map) = services.get(&stack) else {
+        return axum::Json(Vec::<SessionJson>::new()).into_response();
+    };
+    let mut sessions: Vec<SessionJson> = stack_map
+        .iter()
         .flat_map(|(name, info)| {
             if let ServiceInfo::Registered(reg) = info {
                 reg.all_clients_owned()
@@ -57,31 +62,38 @@ pub(super) async fn list_handler(State(state): State<AppState>) -> impl IntoResp
         })
         .collect();
     sessions.sort_by_key(|s| s.id);
-    axum::Json(sessions)
+    axum::Json(sessions).into_response()
 }
 
 pub(super) async fn teardown_handler(
     State(state): State<AppState>,
-    Path(id): Path<u32>,
+    Path((stack, id)): Path<(String, u32)>,
 ) -> impl IntoResponse {
     let mut services = state.services.write().await;
 
-    // Sessions span every stack; locate the (stack, service, client) triple
-    // that owns this NET id.
-    let found = services.iter().find_map(|(stack, stack_map)| {
+    let found = {
+        let Some(stack_map) = services.get(&stack) else {
+            return (
+                StatusCode::NOT_FOUND,
+                axum::Json(ErrorJson {
+                    error: "session not found",
+                }),
+            )
+                .into_response();
+        };
         stack_map.iter().find_map(|(name, info)| {
             if let ServiceInfo::Registered(reg) = info {
                 reg.all_clients_owned()
                     .into_iter()
                     .find(|(c, ci, _, _)| c.is_proxy().is_some() && ci.net_id() == id)
-                    .map(|(client, _, _, _)| (stack.clone(), name.clone(), client))
+                    .map(|(client, _, _, _)| (name.clone(), client))
             } else {
                 None
             }
         })
-    });
+    };
 
-    let Some((stack, name, client)) = found else {
+    let Some((name, client)) = found else {
         return (
             StatusCode::NOT_FOUND,
             axum::Json(ErrorJson {

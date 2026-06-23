@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import Layout from '../components/Layout';
 import { useApi } from '../hooks/useApi';
+import { useStack } from '../StackContext';
 import type { NodeJson } from '../types';
 
 export default function Nodes() {
-  const { data: nodes, loading } = useApi<NodeJson[]>('/api/nodes', 5000);
+  const { stack } = useStack();
+  const { data: nodes, loading } = useApi<NodeJson[]>(`/api/nodes/${stack}`, 5000);
   const [selected, setSelected] = useState<string | null>(null);
 
   const selectedNode = nodes?.find(n => n.ip === selected) ?? null;
@@ -55,12 +57,6 @@ export default function Nodes() {
                   <div className="nc-stat">
                     <div className="nc-stat-k">Services</div>
                     <div className="nc-stat-v">{node.hosted_services.length}</div>
-                  </div>
-                  <div className="nc-stat">
-                    <div className="nc-stat-k">Stacks</div>
-                    <div className="nc-stat-v" style={{ color: 'var(--blue)' }}>
-                      {new Set(node.hosted_services.map(s => s.stack)).size}
-                    </div>
                   </div>
                 </div>
 

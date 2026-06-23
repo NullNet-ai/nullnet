@@ -1,6 +1,6 @@
 use super::AppState;
 use crate::services::service_info::ServiceInfo;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -18,14 +18,17 @@ struct NodeJson {
     hosted_services: Vec<HostedServiceJson>,
 }
 
-pub(super) async fn nodes_handler(State(state): State<AppState>) -> impl IntoResponse {
+pub(super) async fn nodes_handler(
+    Path(stack): Path<String>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
     let connected_ips = state.orchestrator.connected_node_ips().await;
     let services = state.services.read().await;
 
     let mut ip_services: HashMap<IpAddr, Vec<HostedServiceJson>> =
         connected_ips.iter().map(|ip| (*ip, vec![])).collect();
 
-    for (stack, stack_map) in services.iter() {
+    if let Some(stack_map) = services.get(&stack) {
         for (name, info) in stack_map {
             if let ServiceInfo::Registered(reg) = info {
                 for replica in reg.replicas() {
