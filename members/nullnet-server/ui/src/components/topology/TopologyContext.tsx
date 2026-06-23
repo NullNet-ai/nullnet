@@ -111,7 +111,7 @@ export function TopologyProvider({
 }) {
   const { data: graph, refetch } = useApi<GraphJson>(`/api/graph/${stack}`);
   const { data: services } = useApi<ServiceJson[]>(`/api/services/${stack}`, 5000);
-  const { data: sessions } = useApi<SessionJson[]>('/api/sessions', 5000);
+  const { data: sessions } = useApi<SessionJson[]>(`/api/sessions/${stack}`, 5000);
   const { data: chains, refetch: refetchChains } = useApi<ChainJson[]>(`/api/chains/${stack}`);
 
   const [uiState, dispatch] = useReducer(uiReducer, initialUIState);

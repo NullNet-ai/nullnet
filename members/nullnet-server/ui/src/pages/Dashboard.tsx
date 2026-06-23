@@ -7,9 +7,9 @@ import ZoomFrame from '../components/topology/ZoomFrame';
 
 export default function Dashboard() {
   const { stack } = useStack();
-  const { data: sessions } = useApi<SessionJson[]>('/api/sessions', 5000);
+  const { data: sessions } = useApi<SessionJson[]>(`/api/sessions/${stack}`, 5000);
   const { data: services } = useApi<ServiceJson[]>(`/api/services/${stack}`, 5000);
-  const { data: nodes } = useApi<NodeJson[]>('/api/nodes', 5000);
+  const { data: nodes } = useApi<NodeJson[]>(`/api/nodes/${stack}`, 5000);
   const { data: pool } = useApi<PoolJson>('/api/pool', 5000);
   const { data: graph } = useApi<GraphJson>(`/api/graph/${stack}`, 5000);
 
