@@ -14,39 +14,59 @@ interface Props {
   children: React.ReactNode;
 }
 
+function computeHome(cw: number, ch: number, contentH: number): ZoomState {
+  let scale = 1, tx = 0, ty = 0;
+  if (contentH > ch) {
+    scale = (ch / contentH) * 0.9;
+    tx = (cw * (1 - scale)) / 2;
+    ty = (ch - contentH * scale) / 2;
+  } else {
+    ty = (ch - contentH) / 2;
+  }
+  return { scale, tx, ty };
+}
+
 export default function ZoomFrame({ height, children }: Props) {
   const [zoom, setZoom] = useState<ZoomState>({ scale: 1, tx: 0, ty: 0 });
   const dragging = useRef<{ startX: number; startY: number; startTx: number; startTy: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const homeZoom = useRef<ZoomState>({ scale: 1, tx: 0, ty: 0 });
+  const prevContentH = useRef(0);
 
-  // Compute centered initial position synchronously before first paint
+  // Initial centering before first paint — sets prevContentH so the ResizeObserver
+  // below skips its first fire (same size) and only re-fits on actual graph changes.
   useLayoutEffect(() => {
     const container = containerRef.current;
     const content = contentRef.current;
     if (!container || !content) return;
-
     const cw = container.clientWidth;
     const ch = container.clientHeight;
     const contentH = content.clientHeight;
     if (!contentH) return;
-
-    let scale = 1;
-    let tx = 0;
-    let ty = 0;
-
-    if (contentH > ch) {
-      scale = (ch / contentH) * 0.9;
-      tx = (cw * (1 - scale)) / 2;
-      ty = (ch - contentH * scale) / 2;
-    } else {
-      ty = (ch - contentH) / 2;
-    }
-
-    const home: ZoomState = { scale, tx, ty };
+    prevContentH.current = contentH;
+    const home = computeHome(cw, ch, contentH);
     homeZoom.current = home;
     setZoom(home);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-fit when the SVG grows or shrinks (new nodes added/removed, window resize).
+  useEffect(() => {
+    const container = containerRef.current;
+    const content = contentRef.current;
+    if (!container || !content) return;
+    const observer = new ResizeObserver(() => {
+      const contentH = content.clientHeight;
+      if (contentH === prevContentH.current) return;
+      prevContentH.current = contentH;
+      const cw = container.clientWidth;
+      const ch = container.clientHeight;
+      const home = computeHome(cw, ch, contentH);
+      homeZoom.current = home;
+      setZoom(home);
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
