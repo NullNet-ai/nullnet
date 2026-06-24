@@ -144,7 +144,7 @@ export default function Topology() {
   const { stack } = useStack();
   return (
     <Layout
-      page="topology"
+      page="dashboard"
       topbarRight={
         <span style={{ fontSize: 11, color: 'var(--t1)', display: 'flex', alignItems: 'center', gap: 5 }}>
           <span className="live-dot" />live · SSE
