@@ -21,6 +21,12 @@ function DashboardView() {
     return m;
   }, [chains]);
 
+  const sessionByNetId = useMemo(() => {
+    const m = new Map<number, NonNullable<typeof sessions>[number]>();
+    for (const s of sessions ?? []) m.set(s.network_id, s);
+    return m;
+  }, [sessions]);
+
   const sessionCount = sessions?.length ?? 0;
   const nodeCount = nodes?.length ?? 0;
   const edgeCount = graph?.edges.length ?? 0;
@@ -78,36 +84,47 @@ function DashboardView() {
                     <th>Via Proxy</th>
                     <th>To</th>
                     <th>Net ID</th>
+                    <th>Client Net</th>
+                    <th>Server Net</th>
                     <th>Setup</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {graph.edges.map((e, i) => (
-                    <tr
-                      key={i}
-                      onClick={() => dispatch({ type: 'EDGE_CLICKED', fromId: e.from, toId: e.to, edgeIndices: [i] })}
-                      style={{
-                        cursor: 'pointer',
-                        background: panel?.type === 'edge' && panel.edgeIndices.includes(i)
-                          ? 'rgba(91,156,246,.07)'
-                          : undefined,
-                      }}
-                    >
-                      <td style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 500 }}>{e.from}</td>
-                      <td style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: '#fbbf24' }}>
-                        {e.via_proxy ?? <span style={{ color: 'var(--t3)' }}>—</span>}
-                      </td>
-                      <td style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 500 }}>{e.to}</td>
-                      <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--cyan)' }}>
-                        {e.via_proxy && chainByProxyNetId.has(e.net_id)
-                          ? chainByProxyNetId.get(e.net_id)!.join(', ')
-                          : e.net_id}
-                      </td>
-                      <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--t2)', fontSize: 11 }}>
-                        {e.setup_ms > 0 ? `${e.setup_ms}ms` : '—'}
-                      </td>
-                    </tr>
-                  ))}
+                  {graph.edges.map((e, i) => {
+                    const session = sessionByNetId.get(e.net_id);
+                    return (
+                      <tr
+                        key={i}
+                        onClick={() => dispatch({ type: 'EDGE_CLICKED', fromId: e.from, toId: e.to, edgeIndices: [i] })}
+                        style={{
+                          cursor: 'pointer',
+                          background: panel?.type === 'edge' && panel.edgeIndices.includes(i)
+                            ? 'rgba(91,156,246,.07)'
+                            : undefined,
+                        }}
+                      >
+                        <td style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 500 }}>{e.from}</td>
+                        <td style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: '#fbbf24' }}>
+                          {e.via_proxy ?? <span style={{ color: 'var(--t3)' }}>—</span>}
+                        </td>
+                        <td style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 500 }}>{e.to}</td>
+                        <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--cyan)' }}>
+                          {e.via_proxy && chainByProxyNetId.has(e.net_id)
+                            ? chainByProxyNetId.get(e.net_id)!.join(', ')
+                            : e.net_id}
+                        </td>
+                        <td style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: 'var(--t1)' }}>
+                          {session?.client_net ?? <span style={{ color: 'var(--t3)' }}>—</span>}
+                        </td>
+                        <td style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: 'var(--t1)' }}>
+                          {session?.server_net ?? <span style={{ color: 'var(--t3)' }}>—</span>}
+                        </td>
+                        <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--t2)', fontSize: 11 }}>
+                          {e.setup_ms > 0 ? `${e.setup_ms}ms` : '—'}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
