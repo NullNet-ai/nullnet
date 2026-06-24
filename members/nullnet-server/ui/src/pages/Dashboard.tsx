@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import Layout from '../components/Layout';
 import { useApi } from '../hooks/useApi';
 import { useStack } from '../StackContext';
@@ -11,6 +11,7 @@ function DashboardView() {
   const { stack } = useStack();
   const { graph, sessions, chains } = useTopologyData();
   const { panel, dispatch } = useTopologyUI();
+  const [connectionsOpen, setConnectionsOpen] = useState(true);
 
   const { data: nodes } = useApi<NodeJson[]>(`/api/nodes/${stack}`, 5000);
   const { data: pool } = useApi<PoolJson>('/api/pool', 5000);
@@ -59,26 +60,23 @@ function DashboardView() {
           ))}
         </div>
 
-        {/* Full-width topology card */}
-        <div className="card glass">
-          <div className="card-head">
-            <span className="card-label">Service Topology</span>
-            <span style={{ fontSize: 10, color: 'var(--t2)', display: 'flex', gap: 10, alignItems: 'center' }}>
-              {graph ? (
-                <>
-                  <span>{nodeCountG} services</span>
-                  {proxyCount > 0 && <span style={{ color: '#fbbf24' }}>{proxyCount} prox{proxyCount === 1 ? 'y' : 'ies'}</span>}
-                  <span>{edgeCount} edges</span>
-                </>
-              ) : 'loading…'}
-            </span>
-          </div>
-
-          {/* Active Connections — scrollable table pinned above the graph */}
-          {graph && graph.edges.length > 0 && (
-            <div style={{ maxHeight: 200, overflowY: 'auto', borderBottom: '1px solid var(--t3)' }}>
+        {/* Active Connections — collapsible card */}
+        {graph && graph.edges.length > 0 && (
+          <div className="card glass" style={{ marginBottom: 12 }}>
+            <div
+              className="card-head"
+              onClick={() => setConnectionsOpen(v => !v)}
+              style={{ cursor: 'pointer', userSelect: 'none' }}
+            >
+              <span className="card-label">Active Connections</span>
+              <span style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 10, color: 'var(--t2)' }}>
+                <span>{edgeCount} edge{edgeCount !== 1 ? 's' : ''}</span>
+                <span style={{ fontSize: 11, lineHeight: 1 }}>{connectionsOpen ? '▾' : '▸'}</span>
+              </span>
+            </div>
+            {connectionsOpen && (
               <table className="tbl">
-                <thead style={{ position: 'sticky', top: 0, zIndex: 1, background: 'rgba(6,9,13,.97)' }}>
+                <thead>
                   <tr>
                     <th>From</th>
                     <th>Via Proxy</th>
@@ -127,8 +125,24 @@ function DashboardView() {
                   })}
                 </tbody>
               </table>
-            </div>
-          )}
+            )}
+          </div>
+        )}
+
+        {/* Full-width topology card */}
+        <div className="card glass">
+          <div className="card-head">
+            <span className="card-label">Service Topology</span>
+            <span style={{ fontSize: 10, color: 'var(--t2)', display: 'flex', gap: 10, alignItems: 'center' }}>
+              {graph ? (
+                <>
+                  <span>{nodeCountG} services</span>
+                  {proxyCount > 0 && <span style={{ color: '#fbbf24' }}>{proxyCount} prox{proxyCount === 1 ? 'y' : 'ies'}</span>}
+                  <span>{edgeCount} edges</span>
+                </>
+              ) : 'loading…'}
+            </span>
+          </div>
 
           {/* Graph */}
           <div style={{ background: 'rgba(0,0,0,.25)' }}>
