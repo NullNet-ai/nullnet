@@ -81,7 +81,7 @@ export default function Nodes() {
         <div className="dp" style={{ width: dpWidth }}>
           <div className="drag-handle" onMouseDown={onResizeStart} />
           <div className="dp-head">
-            <span className="dp-title">{selectedNode ? selectedNode.ip : '–'}</span>
+            <span className="dp-title" title={selectedNode?.ip}>{selectedNode ? selectedNode.ip : '–'}</span>
             {selectedNode && (
               <button className="dp-close" onClick={() => setSelected(null)}>✕</button>
             )}

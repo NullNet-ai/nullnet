@@ -61,7 +61,7 @@ export default function TopologyPanel() {
     }}>
       <div className="drag-handle" onMouseDown={onResizeStart} />
       <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--t3)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
-        <span style={{
+        <span title={getTitle()} style={{
           fontSize: 13, fontWeight: 600, color: 'var(--t0)',
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           maxWidth: width - 58, fontFamily: "'JetBrains Mono',monospace",
