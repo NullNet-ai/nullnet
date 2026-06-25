@@ -115,11 +115,10 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
 ### nullnet-client
 
 - set environment variables (in `members/nullnet-client/.env`; set `CONTROL_SERVICE_ADDR` to the IP
-  of `nullnet-server`, `ETH_NAME` to the ethernet interface to monitor)
+  of `nullnet-server`). The uplink interface is auto-detected from the host's default route.
   ```
   CONTROL_SERVICE_ADDR=192.168.1.100
   CONTROL_SERVICE_PORT=50051
-  ETH_NAME=ens18
   ```
 
 - service configuration must be stored at `members/nullnet-client/services.toml`. Each entry

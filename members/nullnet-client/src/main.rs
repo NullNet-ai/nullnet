@@ -296,9 +296,11 @@ async fn setup_ebpf_firewall(rtnetlink_handle: &RtNetLinkHandle) -> Result<ebpf:
         .ok_or("could not resolve CONTROL_SERVICE_ADDR to an IPv4 address")
         .handle_err(location!())?;
     if server_ip.is_unspecified() {
-        return Err("CONTROL_SERVICE_ADDR is unspecified (0.0.0.0); refusing to enable the \
-                    firewall as it would block the control plane")
-            .handle_err(location!());
+        return Err(
+            "CONTROL_SERVICE_ADDR is unspecified (0.0.0.0); refusing to enable the \
+                    firewall as it would block the control plane",
+        )
+        .handle_err(location!());
     }
 
     let eth_ip = find_ethernet_ip(rtnetlink_handle)
@@ -319,10 +321,13 @@ fn resolve_server_ip() -> Option<std::net::Ipv4Addr> {
     use std::net::{IpAddr, ToSocketAddrs};
     let host = CONTROL_SERVICE_ADDR.as_str();
     let port = *CONTROL_SERVICE_PORT;
-    (host, port).to_socket_addrs().ok()?.find_map(|sa| match sa.ip() {
-        IpAddr::V4(v4) => Some(v4),
-        IpAddr::V6(_) => None,
-    })
+    (host, port)
+        .to_socket_addrs()
+        .ok()?
+        .find_map(|sa| match sa.ip() {
+            IpAddr::V4(v4) => Some(v4),
+            IpAddr::V6(_) => None,
+        })
 }
 
 async fn grpc_init() -> Result<NullnetGrpcInterface, Error> {

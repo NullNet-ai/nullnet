@@ -70,13 +70,16 @@ pub(crate) fn find_ethernet_interface(ip: Ipv4Addr) -> Option<String> {
     use network_interface::{NetworkInterface, NetworkInterfaceConfig};
     use std::net::IpAddr;
 
-    NetworkInterface::show().ok()?.into_iter().find_map(|iface| {
-        iface
-            .addr
-            .iter()
-            .any(|addr| matches!(addr.ip(), IpAddr::V4(v4) if v4 == ip))
-            .then_some(iface.name)
-    })
+    NetworkInterface::show()
+        .ok()?
+        .into_iter()
+        .find_map(|iface| {
+            iface
+                .addr
+                .iter()
+                .any(|addr| matches!(addr.ip(), IpAddr::V4(v4) if v4 == ip))
+                .then_some(iface.name)
+        })
 }
 
 #[derive(Clone)]
