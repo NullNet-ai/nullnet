@@ -1,7 +1,9 @@
 #![allow(clippy::used_underscore_binding)]
 
 use crate::cli::Args;
-use crate::commands::{RtNetLinkHandle, cleanup_network, setup_br0};
+use crate::commands::{
+    RtNetLinkHandle, cleanup_network, find_ethernet_interface, find_ethernet_ip, setup_br0,
+};
 use crate::control_channel::control_channel;
 use crate::env::{CONTROL_SERVICE_ADDR, CONTROL_SERVICE_PORT};
 use crate::forward::receive::receive;
@@ -33,6 +35,7 @@ mod cli;
 mod commands;
 mod control_channel;
 mod craft;
+mod ebpf;
 mod env;
 mod forward;
 mod host_mappings;
@@ -101,6 +104,22 @@ async fn main() -> Result<(), Error> {
 
     print_info(net_type.net());
 
+    // bring up the host-NIC eBPF default-deny firewall. Must happen before the
+    // control channel learns peers so its add()/remove() land in the PEERS map.
+    // Held alive for the whole run (drop = detach). Fails closed: any error
+    // aborts startup rather than running unprotected.
+    let ebpf_firewall = match setup_ebpf_firewall(&rtnetlink_handle).await {
+        Ok(fw) => {
+            println!("eBPF host firewall enabled (strict nullnet-only)");
+            fw
+        }
+        Err(e) => {
+            eprintln!("Failed to enable eBPF firewall: {e:?}");
+            process::exit(1);
+        }
+    };
+    let firewall_peers = ebpf_firewall.peers.clone();
+
     // shared dedup + waiter state, keyed by (initiator_container, port).
     // The NFQUEUE listener marks Pending and awaits the Notify; the control
     // channel marks Active when the matching VxlanSetup lands.
@@ -118,6 +137,7 @@ async fn main() -> Result<(), Error> {
             rtnetlink_handle,
             triggers_state_cc,
             host_mappings_state,
+            firewall_peers,
         )
         .await
         {
@@ -266,6 +286,43 @@ async fn set_firewall_rules(
             }
         }
     }
+}
+
+/// Resolve, attach, and return the host-NIC eBPF firewall. Fails closed: any
+/// problem (unresolvable server, missing NIC, load error) aborts startup rather
+/// than running unprotected after `--ebpf-firewall` was requested.
+async fn setup_ebpf_firewall(rtnetlink_handle: &RtNetLinkHandle) -> Result<ebpf::Firewall, Error> {
+    let server_ip = resolve_server_ip()
+        .ok_or("could not resolve CONTROL_SERVICE_ADDR to an IPv4 address")
+        .handle_err(location!())?;
+    if server_ip.is_unspecified() {
+        return Err("CONTROL_SERVICE_ADDR is unspecified (0.0.0.0); refusing to enable the \
+                    firewall as it would block the control plane")
+            .handle_err(location!());
+    }
+
+    let eth_ip = find_ethernet_ip(rtnetlink_handle)
+        .await
+        .ok_or("could not find the local ethernet IP")
+        .handle_err(location!())?;
+    let iface = find_ethernet_interface(eth_ip)
+        .ok_or("could not find the ethernet interface name")
+        .handle_err(location!())?;
+
+    let control_port = *CONTROL_SERVICE_PORT;
+    println!("Attaching eBPF firewall to {iface} (allow control plane {server_ip}:{control_port})");
+    ebpf::enable(&iface, server_ip, control_port)
+}
+
+/// Resolve `CONTROL_SERVICE_ADDR:CONTROL_SERVICE_PORT` to its first IPv4.
+fn resolve_server_ip() -> Option<std::net::Ipv4Addr> {
+    use std::net::{IpAddr, ToSocketAddrs};
+    let host = CONTROL_SERVICE_ADDR.as_str();
+    let port = *CONTROL_SERVICE_PORT;
+    (host, port).to_socket_addrs().ok()?.find_map(|sa| match sa.ip() {
+        IpAddr::V4(v4) => Some(v4),
+        IpAddr::V6(_) => None,
+    })
 }
 
 async fn grpc_init() -> Result<NullnetGrpcInterface, Error> {
