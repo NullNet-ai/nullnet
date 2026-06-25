@@ -35,46 +35,54 @@ function DashboardView() {
   const proxyCount = graph
     ? new Set(graph.edges.filter(e => e.via_proxy).map(e => e.via_proxy!)).size
     : 0;
-  const poolPct = pool ? ((pool.in_use / pool.total) * 100).toFixed(1) : '—';
-  const poolUsed = pool ? `${pool.in_use.toLocaleString()} / ${pool.total.toLocaleString()}` : '—';
-
-  const stats = [
-    { label: 'Active Sessions', value: sessionCount, color: 'var(--cyan)',  sub: 'isolated networks' },
-    { label: 'Connected Nodes', value: nodeCount,    color: 'var(--green)', sub: 'agent nodes' },
-    { label: 'Active Edges',    value: edgeCount,    color: 'var(--blue)',  sub: 'live connections' },
-    { label: 'Pool Used',       value: pool ? `${poolPct}%` : '—', color: 'var(--t0)', sub: poolUsed },
-  ];
+  const poolPct = pool ? ((pool.in_use / pool.total) * 100).toFixed(1) : null;
 
   return (
     <>
       <div className="content">
 
-        {/* Compact stat row */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginBottom: 20 }}>
-          {stats.map(({ label, value, color, sub }) => (
-            <div key={label} className="stat glass" style={{ padding: '12px 16px' }}>
-              <div className="stat-label">{label}</div>
-              <div className="stat-value" style={{ fontSize: 20, color }}>{value}</div>
-              <div className="stat-sub">{sub}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* Active Connections — collapsible card */}
-        {graph && graph.edges.length > 0 && (
-          <div className="card glass" style={{ marginBottom: 12 }}>
-            <div
-              className="card-head"
-              onClick={() => setConnectionsOpen(v => !v)}
-              style={{ cursor: 'pointer', userSelect: 'none' }}
-            >
-              <span className="card-label">Active Connections</span>
-              <span style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 10, color: 'var(--t2)' }}>
-                <span>{edgeCount} edge{edgeCount !== 1 ? 's' : ''}</span>
-                <span style={{ fontSize: 11, lineHeight: 1 }}>{connectionsOpen ? '▾' : '▸'}</span>
+        {/* Active Connections — always-visible collapsible card with stats in header */}
+        <div className="card glass" style={{ marginBottom: 12 }}>
+          <div
+            className="card-head"
+            onClick={() => setConnectionsOpen(v => !v)}
+            style={{ cursor: 'pointer', userSelect: 'none' }}
+          >
+            <span className="card-label">Active Connections</span>
+            <span style={{ display: 'flex', gap: 14, alignItems: 'center', fontSize: 10, color: 'var(--t2)' }}>
+              <span>
+                <span style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--cyan)', marginRight: 4 }}>{sessionCount}</span>
+                sessions
               </span>
-            </div>
-            {connectionsOpen && (
+              <span style={{ color: 'var(--t3)' }}>·</span>
+              <span>
+                <span style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--green)', marginRight: 4 }}>{nodeCount}</span>
+                nodes
+              </span>
+              <span style={{ color: 'var(--t3)' }}>·</span>
+              <span>
+                <span style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--blue)', marginRight: 4 }}>{edgeCount}</span>
+                edges
+              </span>
+              {poolPct !== null && (
+                <>
+                  <span style={{ color: 'var(--t3)' }}>·</span>
+                  <span>
+                    <span style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--t1)', marginRight: 4 }}>{poolPct}%</span>
+                    pool
+                  </span>
+                </>
+              )}
+              <span style={{ fontSize: 11, lineHeight: 1, marginLeft: 2 }}>{connectionsOpen ? '▾' : '▸'}</span>
+            </span>
+          </div>
+
+          {connectionsOpen && (
+            edgeCount === 0 ? (
+              <div style={{ padding: '20px 18px', color: 'var(--t2)', fontSize: 11, textAlign: 'center' }}>
+                No active connections
+              </div>
+            ) : (
               <table className="tbl">
                 <thead>
                   <tr>
@@ -88,7 +96,7 @@ function DashboardView() {
                   </tr>
                 </thead>
                 <tbody>
-                  {graph.edges.map((e, i) => {
+                  {graph!.edges.map((e, i) => {
                     const session = sessionByNetId.get(e.net_id);
                     return (
                       <tr
@@ -125,9 +133,9 @@ function DashboardView() {
                   })}
                 </tbody>
               </table>
-            )}
-          </div>
-        )}
+            )
+          )}
+        </div>
 
         {/* Full-width topology card */}
         <div className="card glass">
@@ -144,7 +152,6 @@ function DashboardView() {
             </span>
           </div>
 
-          {/* Graph */}
           <div style={{ background: 'rgba(0,0,0,.25)' }}>
             {!graph && (
               <div style={{ color: 'var(--t2)', fontSize: 11, padding: '40px 0', textAlign: 'center' }}>
@@ -159,7 +166,6 @@ function DashboardView() {
             {graph && graph.nodes.length > 0 && <TopologyGraph />}
           </div>
 
-          {/* Legend */}
           {proxyCount > 0 && (
             <div style={{ padding: '8px 14px 10px', display: 'flex', gap: 16, fontSize: 10, color: 'var(--t2)', borderTop: '1px solid var(--gb)' }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
