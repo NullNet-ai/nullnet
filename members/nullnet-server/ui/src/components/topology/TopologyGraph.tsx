@@ -28,6 +28,7 @@ export default function TopologyGraph() {
         onEdgeClick={(fromId, toId, edgeIndices) =>
           dispatch({ type: 'EDGE_CLICKED', fromId, toId, edgeIndices })
         }
+        onBgClick={() => dispatch({ type: 'PANEL_CLOSED' })}
       />
     </ZoomFrame>
   );

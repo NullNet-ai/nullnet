@@ -11,6 +11,7 @@ interface Props {
   nodeIps?: Map<string, string>;
   onNodeClick?: (id: string) => void;
   onEdgeClick?: (fromId: string, toId: string, edgeIndices: number[]) => void;
+  onBgClick?: () => void;
 }
 
 export default function TopologyGraphSvg({
@@ -22,6 +23,7 @@ export default function TopologyGraphSvg({
   nodeIps = new Map(),
   onNodeClick,
   onEdgeClick,
+  onBgClick,
 }: Props) {
   const { nodes, edges } = buildTopoGraph(graph);
 
@@ -73,6 +75,8 @@ export default function TopologyGraphSvg({
           <path d="M0,0 L0,6 L8,3 z" fill="rgba(91,156,246,.35)" />
         </marker>
       </defs>
+
+      {onBgClick && <rect x={0} y={0} width={w} height={h} fill="transparent" onClick={onBgClick} />}
 
       {/* Internet → Proxy edges */}
       {edges.filter(e => e.isInternetEdge).map((e, i) => {
@@ -129,7 +133,7 @@ export default function TopologyGraphSvg({
         return (
           <g
             key={i}
-            onClick={onEdgeClick ? () => onEdgeClick(e.from, e.to, e.originalIndices) : undefined}
+            onClick={onEdgeClick ? (ev) => { ev.stopPropagation(); onEdgeClick(e.from, e.to, e.originalIndices); } : undefined}
             style={{ cursor: onEdgeClick ? 'pointer' : 'default', opacity: dimmed ? 0.1 : 1 }}
           >
             {onEdgeClick && <path d={edgePath(fp, tp)} fill="none" stroke="transparent" strokeWidth="14" />}
@@ -210,7 +214,7 @@ export default function TopologyGraphSvg({
         if (!p) return null;
         const isSel = n.id === selectedNodeId;
         const nodeDimmed = focusedNetIds != null && !focusedNodeIds.has(n.id);
-        const clickHandler = onNodeClick ? () => onNodeClick(n.id) : undefined;
+        const clickHandler = onNodeClick ? (ev: { stopPropagation(): void }) => { ev.stopPropagation(); onNodeClick(n.id); } : undefined;
         const clipId = `nc-${ni}`;
 
         if (n.kind === 'internet') {
