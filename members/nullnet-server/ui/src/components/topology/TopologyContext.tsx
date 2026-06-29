@@ -32,6 +32,7 @@ export type UIAction =
   | { type: 'EDGE_CLICKED'; fromId: string; toId: string; edgeIndices: number[] }
   | { type: 'PANEL_CLOSED' }
   | { type: 'CLIENT_FOCUSED'; ip: string }
+  | { type: 'FOCUS_CLEARED' }
   | { type: 'STACK_CHANGED' };
 
 const initialUIState: UIState = {
@@ -73,6 +74,8 @@ function uiReducer(state: UIState, action: UIAction): UIState {
         ...state,
         focusedClientIp: state.focusedClientIp === action.ip ? null : action.ip,
       };
+    case 'FOCUS_CLEARED':
+      return { ...state, focusedClientIp: null };
     case 'STACK_CHANGED':
       return { ...state, panel: null, focusedClientIp: null };
   }
@@ -111,7 +114,7 @@ export function TopologyProvider({
 }) {
   const { data: graph, refetch } = useApi<GraphJson>(`/api/graph/${stack}`);
   const { data: services } = useApi<ServiceJson[]>(`/api/services/${stack}`, 5000);
-  const { data: sessions } = useApi<SessionJson[]>('/api/sessions', 5000);
+  const { data: sessions, refetch: refetchSessions } = useApi<SessionJson[]>(`/api/sessions/${stack}`, 5000);
   const { data: chains, refetch: refetchChains } = useApi<ChainJson[]>(`/api/chains/${stack}`);
 
   const [uiState, dispatch] = useReducer(uiReducer, initialUIState);
@@ -126,10 +129,15 @@ export function TopologyProvider({
   }, [stack]);
 
   // SSE: re-fetch graph and chains whenever a session is created or torn down.
+  // Also clears client focus immediately when the focused client's session tears down.
   const refetchRef = useRef(refetch);
   refetchRef.current = refetch;
   const refetchChainsRef = useRef(refetchChains);
   refetchChainsRef.current = refetchChains;
+  const refetchSessionsRef = useRef(refetchSessions);
+  refetchSessionsRef.current = refetchSessions;
+  const focusedClientIpRef = useRef(uiState.focusedClientIp);
+  focusedClientIpRef.current = uiState.focusedClientIp;
   useEffect(() => {
     const es = new EventSource('/api/events/stream');
     es.onmessage = (ev) => {
@@ -138,11 +146,22 @@ export function TopologyProvider({
         if (event.type === 'session_created' || event.type === 'session_torn_down') {
           refetchRef.current();
           refetchChainsRef.current();
+          refetchSessionsRef.current();
+        }
+        if (event.type === 'session_torn_down' && event.client_ip === focusedClientIpRef.current) {
+          dispatch({ type: 'FOCUS_CLEARED' });
         }
       } catch { /* ignore */ }
     };
     return () => es.close();
   }, []);
+
+  useEffect(() => {
+    if (!uiState.focusedClientIp || !sessions) return;
+    if (!sessions.some(s => s.client_ip === uiState.focusedClientIp)) {
+      dispatch({ type: 'FOCUS_CLEARED' });
+    }
+  }, [sessions, uiState.focusedClientIp]);
 
   const nodeIps = useMemo(() => {
     const m = new Map<string, string>();

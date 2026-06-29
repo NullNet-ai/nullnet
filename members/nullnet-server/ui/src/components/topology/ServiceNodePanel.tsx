@@ -31,7 +31,22 @@ export default function ServiceNodePanel({ node, service, onDepClick }: Props) {
 
       <div style={spRow}>
         <div style={spKey}>Replicas</div>
-        <div style={spVal}>{node.active_replica_count} active / {node.paused_replica_count} paused / {node.replica_count} total</div>
+        <table style={{ borderCollapse: 'collapse', fontSize: 11, fontFamily: "'JetBrains Mono',monospace" }}>
+          <thead>
+            <tr>
+              {(['active', 'paused', 'total'] as const).map(h => (
+                <th key={h} style={{ fontSize: 9, color: 'var(--t2)', paddingBottom: 3, paddingRight: 14, textAlign: 'right', letterSpacing: '.05em', fontWeight: 500, textTransform: 'uppercase', fontFamily: 'inherit' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style={{ paddingRight: 14, textAlign: 'right', color: 'var(--green)' }}>{node.active_replica_count}</td>
+              <td style={{ paddingRight: 14, textAlign: 'right', color: node.paused_replica_count > 0 ? '#fbbf24' : 'var(--t2)' }}>{node.paused_replica_count}</td>
+              <td style={{ textAlign: 'right', color: 'var(--t1)' }}>{node.replica_count}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
       {service?.timeout_secs != null && (

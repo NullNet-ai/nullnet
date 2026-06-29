@@ -17,7 +17,7 @@ const NAV = [
     group: 'Overview',
     items: [
       { id: 'dashboard', icon: '⊞', label: 'Dashboard', to: '/' },
-      { id: 'topology', icon: '⬡', label: 'Topology', to: '/topology' },
+      { id: 'topology', icon: '◎', label: 'Topology', to: '/topology' },
     ],
   },
   {
@@ -41,7 +41,7 @@ const NAV = [
 
 export default function Layout({ page, topbarRight, children }: Props) {
   const { stack, setStack, editing, setEditing } = useStack();
-  const { data: sessions } = useApi<SessionJson[]>('/api/sessions', 5000);
+  const { data: sessions } = useApi<SessionJson[]>(`/api/sessions/${stack}`, 5000);
   const { data: availableStacks } = useApi<string[]>('/api/stacks', 10000);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);

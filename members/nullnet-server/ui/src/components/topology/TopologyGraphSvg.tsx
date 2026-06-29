@@ -11,6 +11,7 @@ interface Props {
   nodeIps?: Map<string, string>;
   onNodeClick?: (id: string) => void;
   onEdgeClick?: (fromId: string, toId: string, edgeIndices: number[]) => void;
+  onBgClick?: () => void;
 }
 
 export default function TopologyGraphSvg({
@@ -22,6 +23,7 @@ export default function TopologyGraphSvg({
   nodeIps = new Map(),
   onNodeClick,
   onEdgeClick,
+  onBgClick,
 }: Props) {
   const { nodes, edges } = buildTopoGraph(graph);
 
@@ -74,6 +76,8 @@ export default function TopologyGraphSvg({
         </marker>
       </defs>
 
+      {onBgClick && <rect x={0} y={0} width={w} height={h} fill="transparent" onClick={onBgClick} />}
+
       {/* Internet → Proxy edges */}
       {edges.filter(e => e.isInternetEdge).map((e, i) => {
         const fp = pos.get(e.from);
@@ -115,6 +119,13 @@ export default function TopologyGraphSvg({
         const session: SessionJson | null = isFocusedEdge
           ? (focusedSessions?.find(s => e.originalIndices.some(idx => graph.edges[idx]?.net_id === s.network_id)) ?? null)
           : null;
+        // For chain hops the session is null (chain sessions don't carry the client IP),
+        // but we can still display the VNI by pulling it directly from the graph edge.
+        const focusedNetId: number | null = isFocusedEdge
+          ? (session?.network_id ??
+             e.originalIndices.map(idx => graph.edges[idx]?.net_id).find(id => id !== undefined && focusedNetIds!.has(id)) ??
+             null)
+          : null;
         const lp = isFocusedEdge ? edgeLabelPoints(fp, tp) : null;
         const srcIp = isFocusedEdge ? getNodeIp(e.from) : null;
         const dstIp = isFocusedEdge ? getNodeIp(e.to) : null;
@@ -122,7 +133,7 @@ export default function TopologyGraphSvg({
         return (
           <g
             key={i}
-            onClick={onEdgeClick ? () => onEdgeClick(e.from, e.to, e.originalIndices) : undefined}
+            onClick={onEdgeClick ? (ev) => { ev.stopPropagation(); onEdgeClick(e.from, e.to, e.originalIndices); } : undefined}
             style={{ cursor: onEdgeClick ? 'pointer' : 'default', opacity: dimmed ? 0.1 : 1 }}
           >
             {onEdgeClick && <path d={edgePath(fp, tp)} fill="none" stroke="transparent" strokeWidth="14" />}
@@ -169,22 +180,26 @@ export default function TopologyGraphSvg({
                     </text>
                   </g>
                 )}
-                {session && (
+                {focusedNetId !== null && (
                   <g>
-                    <rect x={lp.mid.x - 60} y={lp.mid.y - 15} width={120} height={32} rx="4"
+                    <rect x={lp.mid.x - 60} y={lp.mid.y - 15} width={120} height={session ? 32 : 16} rx="4"
                       fill="rgba(3,5,8,.88)" stroke="rgba(255,255,255,.07)" />
                     <text x={lp.mid.x} y={lp.mid.y - 6} textAnchor="middle"
                       fill="rgba(91,156,246,.9)" fontSize="8" fontWeight="600">
-                      VNI {session.network_id}
+                      VNI {focusedNetId}
                     </text>
-                    <text x={lp.mid.x} y={lp.mid.y + 4} textAnchor="middle"
-                      fill="rgba(255,255,255,.5)" fontSize="7" fontFamily="'JetBrains Mono',monospace">
-                      <tspan fill="rgba(255,255,255,.3)">src  </tspan>{session.client_net}
-                    </text>
-                    <text x={lp.mid.x} y={lp.mid.y + 13} textAnchor="middle"
-                      fill="rgba(255,255,255,.5)" fontSize="7" fontFamily="'JetBrains Mono',monospace">
-                      <tspan fill="rgba(255,255,255,.3)">dst  </tspan>{session.server_net}
-                    </text>
+                    {session && (
+                      <>
+                        <text x={lp.mid.x} y={lp.mid.y + 4} textAnchor="middle"
+                          fill="rgba(255,255,255,.5)" fontSize="7" fontFamily="'JetBrains Mono',monospace">
+                          <tspan fill="rgba(255,255,255,.3)">src  </tspan>{session.client_net}
+                        </text>
+                        <text x={lp.mid.x} y={lp.mid.y + 13} textAnchor="middle"
+                          fill="rgba(255,255,255,.5)" fontSize="7" fontFamily="'JetBrains Mono',monospace">
+                          <tspan fill="rgba(255,255,255,.3)">dst  </tspan>{session.server_net}
+                        </text>
+                      </>
+                    )}
                   </g>
                 )}
               </g>
@@ -199,7 +214,7 @@ export default function TopologyGraphSvg({
         if (!p) return null;
         const isSel = n.id === selectedNodeId;
         const nodeDimmed = focusedNetIds != null && !focusedNodeIds.has(n.id);
-        const clickHandler = onNodeClick ? () => onNodeClick(n.id) : undefined;
+        const clickHandler = onNodeClick ? (ev: { stopPropagation(): void }) => { ev.stopPropagation(); onNodeClick(n.id); } : undefined;
         const clipId = `nc-${ni}`;
 
         if (n.kind === 'internet') {

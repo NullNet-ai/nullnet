@@ -1,17 +1,19 @@
 import { useState } from 'react';
 import Layout from '../components/Layout';
 import { useApi } from '../hooks/useApi';
+import { useStack } from '../StackContext';
 import type { SessionJson } from '../types';
 
 export default function Sessions() {
-  const { data: sessions, loading, refetch } = useApi<SessionJson[]>('/api/sessions', 5000);
+  const { stack } = useStack();
+  const { data: sessions, loading, refetch } = useApi<SessionJson[]>(`/api/sessions/${stack}`, 5000);
   const [tearing, setTearing] = useState<Set<number>>(new Set());
 
   async function teardown(id: number) {
     if (!confirm(`Force teardown session ${id}?`)) return;
     setTearing(prev => new Set(prev).add(id));
     try {
-      await fetch(`/api/sessions/${id}`, { method: 'DELETE' });
+      await fetch(`/api/sessions/${stack}/${id}`, { method: 'DELETE' });
       refetch();
     } finally {
       setTearing(prev => { const next = new Set(prev); next.delete(id); return next; });

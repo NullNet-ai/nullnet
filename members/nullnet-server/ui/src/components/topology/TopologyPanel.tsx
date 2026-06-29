@@ -3,10 +3,12 @@ import ServiceNodePanel from './ServiceNodePanel';
 import ProxyNodePanel from './ProxyNodePanel';
 import EdgePanel from './EdgePanel';
 import InternetPanel from './InternetPanel';
+import { useDragResize } from '../../hooks/useDragResize';
 
 export default function TopologyPanel() {
   const { graph, services } = useTopologyData();
   const { panel, dispatch } = useTopologyUI();
+  const { width, onResizeStart } = useDragResize(268, 200, 560);
 
   if (!graph) return null;
 
@@ -48,7 +50,7 @@ export default function TopologyPanel() {
 
   return (
     <div style={{
-      position: 'fixed', top: 48, right: 0, bottom: 0, width: 268,
+      position: 'fixed', top: 48, right: 0, bottom: 0, width,
       background: 'rgba(3,5,8,.95)',
       backdropFilter: 'blur(28px)', WebkitBackdropFilter: 'blur(28px)',
       borderLeft: '1px solid var(--gb)',
@@ -57,11 +59,12 @@ export default function TopologyPanel() {
       transition: 'transform .22s cubic-bezier(.4,0,.2,1)',
       zIndex: 50,
     }}>
+      <div className="drag-handle" onMouseDown={onResizeStart} />
       <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--t3)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
-        <span style={{
+        <span title={getTitle()} style={{
           fontSize: 13, fontWeight: 600, color: 'var(--t0)',
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          maxWidth: 210, fontFamily: "'JetBrains Mono',monospace",
+          maxWidth: width - 58, fontFamily: "'JetBrains Mono',monospace",
         }}>
           {getTitle()}
         </span>
