@@ -1,5 +1,4 @@
 use etherparse::{EtherType, LaxPacketHeaders, NetHeaders};
-use nullnet_firewall::{Firewall, FirewallAction, FirewallDirection};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -10,14 +9,9 @@ use tun_rs::AsyncDevice;
 use crate::forward::frame::Frame;
 use crate::peers::peer::{Peers, VethKey};
 
-/// Handles outgoing network packets (receives packets from the TAP interface and sends them to the socket),
-/// ensuring the firewall rules are correctly observed.
-pub async fn send(
-    device: &Arc<AsyncDevice>,
-    socket: &Arc<UdpSocket>,
-    firewall: &Arc<RwLock<Firewall>>,
-    peers: Arc<RwLock<Peers>>,
-) {
+/// Handles outgoing network packets (receives packets from the TAP interface
+/// and sends them to the socket).
+pub async fn send(device: &Arc<AsyncDevice>, socket: &Arc<UdpSocket>, peers: Arc<RwLock<Peers>>) {
     let mut frame = Frame::new();
     loop {
         // wait until there is a packet outgoing from kernel
@@ -29,16 +23,7 @@ pub async fn send(
             let Ok(dst_socket) = get_dst_socket(pkt_data, &peers).await else {
                 continue;
             };
-            match firewall
-                .read()
-                .await
-                .resolve_packet(pkt_data, FirewallDirection::OUT)
-            {
-                FirewallAction::ACCEPT => {
-                    socket.send_to(pkt_data, dst_socket).await.unwrap_or(0);
-                }
-                FirewallAction::DENY | FirewallAction::REJECT => {}
-            }
+            socket.send_to(pkt_data, dst_socket).await.unwrap_or(0);
         }
     }
 }
