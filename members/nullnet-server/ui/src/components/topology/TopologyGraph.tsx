@@ -2,7 +2,14 @@ import { useTopologyData, useTopologyUI } from './TopologyContext';
 import TopologyGraphSvg from './TopologyGraphSvg';
 import ZoomFrame from './ZoomFrame';
 
-export default function TopologyGraph() {
+interface Props {
+  height?: number | string;
+  fill?: boolean;
+  anchor?: 'center' | 'top-left';
+  grow?: boolean;
+}
+
+export default function TopologyGraph({ height = 520, fill, anchor, grow }: Props) {
   const { graph } = useTopologyData();
   const {
     selectedNodeId,
@@ -16,7 +23,7 @@ export default function TopologyGraph() {
   if (!graph) return null;
 
   return (
-    <ZoomFrame height={520}>
+    <ZoomFrame height={height} fill={fill} anchor={anchor} grow={grow}>
       <TopologyGraphSvg
         graph={graph}
         selectedNodeId={selectedNodeId}

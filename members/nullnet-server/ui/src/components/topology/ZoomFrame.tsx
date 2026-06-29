@@ -10,23 +10,28 @@ interface ZoomState {
 }
 
 interface Props {
-  height: number;
+  height: number | string;
+  fill?: boolean;
+  anchor?: 'center' | 'top-left';
+  grow?: boolean;
   children: React.ReactNode;
 }
 
-function computeHome(cw: number, ch: number, contentH: number): ZoomState {
+function computeHome(cw: number, ch: number, contentH: number, anchor: 'center' | 'top-left'): ZoomState {
   let scale = 1, tx = 0, ty = 0;
   if (contentH > ch) {
     scale = (ch / contentH) * 0.9;
-    tx = (cw * (1 - scale)) / 2;
-    ty = (ch - contentH * scale) / 2;
-  } else {
+    if (anchor === 'center') {
+      tx = (cw * (1 - scale)) / 2;
+      ty = (ch - contentH * scale) / 2;
+    }
+  } else if (anchor === 'center') {
     ty = (ch - contentH) / 2;
   }
   return { scale, tx, ty };
 }
 
-export default function ZoomFrame({ height, children }: Props) {
+export default function ZoomFrame({ height, fill, anchor = 'center', grow, children }: Props) {
   const [zoom, setZoom] = useState<ZoomState>({ scale: 1, tx: 0, ty: 0 });
   const dragging = useRef<{ startX: number; startY: number; startTx: number; startTy: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -34,9 +39,9 @@ export default function ZoomFrame({ height, children }: Props) {
   const homeZoom = useRef<ZoomState>({ scale: 1, tx: 0, ty: 0 });
   const prevContentH = useRef(0);
 
-  // Initial centering before first paint — sets prevContentH so the ResizeObserver
-  // below skips its first fire (same size) and only re-fits on actual graph changes.
+  // Initial fit — skipped in grow mode (container sizes to content, no transform needed).
   useLayoutEffect(() => {
+    if (grow) return;
     const container = containerRef.current;
     const content = contentRef.current;
     if (!container || !content) return;
@@ -45,13 +50,14 @@ export default function ZoomFrame({ height, children }: Props) {
     const contentH = content.clientHeight;
     if (!contentH) return;
     prevContentH.current = contentH;
-    const home = computeHome(cw, ch, contentH);
+    const home = computeHome(cw, ch, contentH, anchor);
     homeZoom.current = home;
     setZoom(home);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Re-fit when the SVG grows or shrinks (new nodes added/removed, window resize).
+  // Re-fit when the SVG grows or shrinks — skipped in grow mode.
   useEffect(() => {
+    if (grow) return;
     const container = containerRef.current;
     const content = contentRef.current;
     if (!container || !content) return;
@@ -61,7 +67,7 @@ export default function ZoomFrame({ height, children }: Props) {
       prevContentH.current = contentH;
       const cw = container.clientWidth;
       const ch = container.clientHeight;
-      const home = computeHome(cw, ch, contentH);
+      const home = computeHome(cw, ch, contentH, anchor);
       homeZoom.current = home;
       setZoom(home);
     });
@@ -113,12 +119,12 @@ export default function ZoomFrame({ height, children }: Props) {
     Math.abs(zoom.ty - h.ty) < 0.5;
 
   return (
-    <div style={{ position: 'relative' }}>
+    <div style={{ position: 'relative', ...((fill && !grow) ? { height: '100%' } : {}) }}>
       <div
         ref={containerRef}
         style={{
-          height,
-          overflow: 'hidden',
+          height: grow ? 'auto' : height,
+          overflow: grow ? 'visible' : 'hidden',
           position: 'relative',
           cursor: dragging.current ? 'grabbing' : 'grab',
           userSelect: 'none',
