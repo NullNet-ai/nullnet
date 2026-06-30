@@ -4,7 +4,8 @@ use ipnetwork::Ipv4Network;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use rtnetlink::packet_route::address::AddressAttribute;
 use rtnetlink::packet_route::link::{LinkAttribute, LinkMessage};
-use rtnetlink::{Handle, LinkUnspec, LinkVeth};
+use rtnetlink::packet_route::route::{RouteAttribute, RouteHeader};
+use rtnetlink::{Handle, LinkUnspec, LinkVeth, RouteMessageBuilder};
 use std::net::{IpAddr, Ipv4Addr};
 
 #[derive(Debug)]
@@ -127,22 +128,58 @@ async fn set_interface_up(handle: &Handle, interface: &str) {
     }
 }
 
+/// IPv4 of the host's uplink: the interface carrying the default route. More
+/// robust than scanning for the first private IP, since nullnet's own
+/// br0/tap/veth/vxlan interfaces never own the default route.
 pub(super) async fn find_ethernet_ip(handle: &Handle) -> Option<Ipv4Addr> {
-    let mut links = handle.address().get().execute();
-    while let Some(msg_res) = links.next().await {
-        if let Ok(msg) = msg_res
-            && let Some(addr) = msg.attributes.iter().find_map(|attr| {
-                if let AddressAttribute::Local(ip) = attr
-                    && let IpAddr::V4(ipv4) = ip
-                    && ipv4.is_private()
-                {
-                    Some(*ipv4)
-                } else {
-                    None
-                }
-            })
+    let oif = default_route_oif(handle).await?;
+    ipv4_on_link(handle, oif).await
+}
+
+/// Output-interface index of the lowest-metric IPv4 default route (main table).
+async fn default_route_oif(handle: &Handle) -> Option<u32> {
+    let route_msg = RouteMessageBuilder::<Ipv4Addr>::new().build();
+    let mut routes = handle.route().get(route_msg).execute();
+    let mut best: Option<(u32, u32)> = None; // (oif, metric)
+    while let Some(route) = routes.next().await {
+        let Ok(route) = route else { continue };
+        // default route: zero-length destination prefix in the main table
+        if route.header.destination_prefix_length != 0
+            || route.header.table != RouteHeader::RT_TABLE_MAIN
         {
-            return Some(addr);
+            continue;
+        }
+        let mut oif = None;
+        let mut metric = 0;
+        for attr in &route.attributes {
+            match attr {
+                RouteAttribute::Oif(index) => oif = Some(*index),
+                RouteAttribute::Priority(p) => metric = *p,
+                _ => {}
+            }
+        }
+        if let Some(oif) = oif
+            && best.is_none_or(|(_, best_metric)| metric < best_metric)
+        {
+            best = Some((oif, metric));
+        }
+    }
+    best.map(|(oif, _)| oif)
+}
+
+/// First IPv4 address assigned to the interface with index `oif`.
+async fn ipv4_on_link(handle: &Handle, oif: u32) -> Option<Ipv4Addr> {
+    let mut addrs = handle.address().get().execute();
+    while let Some(msg) = addrs.next().await {
+        let Ok(msg) = msg else { continue };
+        if msg.header.index != oif {
+            continue;
+        }
+        if let Some(ipv4) = msg.attributes.iter().find_map(|attr| match attr {
+            AddressAttribute::Local(IpAddr::V4(ipv4)) => Some(*ipv4),
+            _ => None,
+        }) {
+            return Some(ipv4);
         }
     }
     None

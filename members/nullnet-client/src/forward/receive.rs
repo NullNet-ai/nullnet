@@ -1,45 +1,24 @@
 use std::sync::Arc;
 
-use nullnet_firewall::{Firewall, FirewallAction, FirewallDirection};
 use tokio::net::UdpSocket;
-use tokio::sync::RwLock;
 use tun_rs::AsyncDevice;
 
-use crate::craft::reject_payloads::send_termination_message;
 use crate::forward::frame::Frame;
 
-/// Handles incoming network packets (receives packets from the socket and sends them to the TAP interface),
-/// ensuring the firewall rules are correctly observed.
-pub async fn receive(
-    device: &Arc<AsyncDevice>,
-    socket: &Arc<UdpSocket>,
-    firewall: &Arc<RwLock<Firewall>>,
-) {
+/// Handles incoming network packets (receives packets from the socket and
+/// writes them to the TAP interface).
+pub async fn receive(device: &Arc<AsyncDevice>, socket: &Arc<UdpSocket>) {
     let mut frame = Frame::new();
-    let mut remote_socket;
     loop {
         // wait until there is an incoming packet on the socket (packets on the socket are raw IP)
-        let Ok((s, r)) = socket.recv_from(&mut frame.frame).await else {
+        let Ok((s, _)) = socket.recv_from(&mut frame.frame).await else {
             continue;
         };
-        (frame.size, remote_socket) = (s, r);
+        frame.size = s;
 
         if frame.size > 0 {
-            let pkt_data = frame.pkt_data();
-            match firewall
-                .read()
-                .await
-                .resolve_packet(pkt_data, FirewallDirection::IN)
-            {
-                FirewallAction::ACCEPT => {
-                    // write packet to the kernel
-                    device.send(pkt_data).await.unwrap_or(0);
-                }
-                FirewallAction::REJECT => {
-                    send_termination_message(pkt_data, socket, remote_socket).await;
-                }
-                FirewallAction::DENY => {}
-            }
+            // write packet to the kernel
+            device.send(frame.pkt_data()).await.unwrap_or(0);
         }
     }
 }

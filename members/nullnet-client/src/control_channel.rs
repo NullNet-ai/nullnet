@@ -1,4 +1,5 @@
 use crate::commands::{RtNetLinkHandle, configure_access_port, dnat, remove_vlan};
+use crate::ebpf::{FirewallPeers, NetId};
 use crate::host_mappings::HostMappingsState;
 use crate::peers::peer::{Peers, VethKey};
 use crate::triggers::TriggersState;
@@ -36,6 +37,7 @@ pub(crate) async fn control_channel(
     rtnetlink_handle: RtNetLinkHandle,
     triggers_state: Arc<TriggersState>,
     host_mappings_state: Arc<HostMappingsState>,
+    firewall_peers: Arc<FirewallPeers>,
 ) -> Result<(), Error> {
     let (outbound, grpc_rx) = mpsc::channel(64);
     let mut inbound = server
@@ -54,6 +56,7 @@ pub(crate) async fn control_channel(
         let outbound = outbound.clone();
         let host_mappings_state = host_mappings_state.clone();
         let server = server.clone();
+        let firewall_peers = firewall_peers.clone();
         match message.message {
             Some(net_message::Message::VlanSetup(vlan_setup)) => {
                 tokio::spawn(async move {
@@ -64,6 +67,7 @@ pub(crate) async fn control_channel(
                         outbound,
                         host_mappings_state,
                         server,
+                        firewall_peers,
                     )
                     .await;
                 });
@@ -76,6 +80,7 @@ pub(crate) async fn control_channel(
                         peers,
                         host_mappings_state,
                         server,
+                        firewall_peers,
                     )
                     .await;
                 });
@@ -89,6 +94,7 @@ pub(crate) async fn control_channel(
                         triggers_state,
                         host_mappings_state,
                         server,
+                        firewall_peers,
                     )
                     .await;
                 });
@@ -101,6 +107,7 @@ pub(crate) async fn control_channel(
                         triggers_state,
                         host_mappings_state,
                         server,
+                        firewall_peers,
                     );
                 });
             }
@@ -133,6 +140,7 @@ async fn handle_vlan_setup(
     outbound: Sender<MsgId>,
     host_mappings_state: Arc<HostMappingsState>,
     grpc: NullnetGrpcInterface,
+    firewall_peers: Arc<FirewallPeers>,
 ) -> Result<(), Error> {
     let msg_id = &message
         .msg_id
@@ -182,6 +190,9 @@ async fn handle_vlan_setup(
         .await
         .insert(VethKey::new(remote_veth, vlan_id), remote_ip);
 
+    // allow this peer's data-plane traffic through the host firewall
+    firewall_peers.add(NetId::Vlan(vlan_id), remote_ip);
+
     // add host mapping if needed
     if let Some(host_mapping) = &message.host_mapping {
         if add_host_mapping(host_mapping, None).is_err() {
@@ -224,6 +235,7 @@ async fn handle_vlan_teardown(
     peers: Arc<RwLock<Peers>>,
     host_mappings_state: Arc<HostMappingsState>,
     grpc: NullnetGrpcInterface,
+    firewall_peers: Arc<FirewallPeers>,
 ) -> Result<(), Error> {
     let vlan_id = u16::try_from(message.vlan_id)
         .handle_err(location!())
@@ -250,6 +262,9 @@ async fn handle_vlan_teardown(
     // remove peer
     peers.write().await.remove(vlan_id);
 
+    // drop this peer's firewall allowance (refcounted; only removed if unused)
+    firewall_peers.remove(NetId::Vlan(vlan_id));
+
     // remove host mapping if one was installed at setup
     if let Some(host_mapping) = host_mappings_state.take_vlan(vlan_id) {
         let _ = remove_host_mapping(&host_mapping, None);
@@ -264,6 +279,7 @@ async fn handle_vxlan_setup(
     triggers_state: Arc<TriggersState>,
     host_mappings_state: Arc<HostMappingsState>,
     grpc: NullnetGrpcInterface,
+    firewall_peers: Arc<FirewallPeers>,
 ) -> Result<(), Error> {
     let msg_id = &message
         .msg_id
@@ -288,6 +304,10 @@ async fn handle_vxlan_setup(
         .remote_ip
         .parse::<Ipv4Addr>()
         .handle_err(location!())?;
+
+    // allow this peer's data-plane (VXLAN underlay) traffic through the host
+    // firewall before the tunnel comes up, so the first packets aren't dropped.
+    firewall_peers.add(NetId::Vxlan(vxlan_id), remote_ip);
 
     // setup VXLAN on this machine (optionally attaching a Docker container)
     let init_t = std::time::Instant::now();
@@ -429,7 +449,11 @@ fn handle_vxlan_teardown(
     triggers_state: Arc<TriggersState>,
     host_mappings_state: Arc<HostMappingsState>,
     grpc: NullnetGrpcInterface,
+    firewall_peers: Arc<FirewallPeers>,
 ) {
+    // drop this peer's firewall allowance (refcounted; only removed if unused)
+    firewall_peers.remove(NetId::Vxlan(message.vxlan_id));
+
     // remove DNAT before tearing the tunnel down so existing flows reset
     // cleanly. The `container_ip` matches the `-s` we used at install time.
     if let Some((_container, port, overlay_ip, container_ip)) =
