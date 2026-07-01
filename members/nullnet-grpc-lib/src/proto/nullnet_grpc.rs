@@ -167,6 +167,27 @@ pub struct Upstream {
     #[prost(uint32, tag = "2")]
     pub port: u32,
 }
+/// One entry in the live port→service table. Only services with a non-HTTP
+/// protocol need an entry — HTTP stays on the existing Host-header routing.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PortMapping {
+    #[prost(string, tag = "1")]
+    pub service_name: ::prost::alloc::string::String,
+    #[prost(enumeration = "ServiceProtocol", tag = "2")]
+    pub protocol: i32,
+    #[prost(uint32, tag = "3")]
+    pub listen_port: u32,
+    /// Mirrors the service's configured per-client idle timeout (0 disables
+    /// it), so the proxy can expire UDP sessions without a second timeout
+    /// mechanism.
+    #[prost(uint64, tag = "4")]
+    pub idle_timeout_secs: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PortMappingBundle {
+    #[prost(message, repeated, tag = "1")]
+    pub mappings: ::prost::alloc::vec::Vec<PortMapping>,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BackendTriggerRequest {
     #[prost(string, tag = "1")]
@@ -212,7 +233,7 @@ pub struct Empty {}
 pub struct AgentEvent {
     #[prost(
         oneof = "agent_event::Event",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 25, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 22"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 25, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 26, 27, 28, 29, 22"
     )]
     pub event: ::core::option::Option<agent_event::Event>,
 }
@@ -271,6 +292,14 @@ pub mod agent_event {
         ProxyClientNotInet(super::AgentProxyClientNotInet),
         #[prost(message, tag = "23")]
         TlsCertificateInvalid(super::AgentTlsCertificateInvalid),
+        #[prost(message, tag = "26")]
+        TcpListenerBindFailed(super::AgentTcpListenerBindFailed),
+        #[prost(message, tag = "27")]
+        UdpListenerBindFailed(super::AgentUdpListenerBindFailed),
+        #[prost(message, tag = "28")]
+        TcpUpstreamConnectFailed(super::AgentTcpUpstreamConnectFailed),
+        #[prost(message, tag = "29")]
+        UdpUpstreamConnectFailed(super::AgentUdpUpstreamConnectFailed),
         /// Proxy info events
         #[prost(message, tag = "22")]
         ProxyRequestRouted(super::AgentProxyRequestRouted),
@@ -447,6 +476,42 @@ pub struct AgentProxyRequestRouted {
     #[prost(uint64, tag = "4")]
     pub latency_ms: u64,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentTcpListenerBindFailed {
+    #[prost(uint32, tag = "1")]
+    pub listen_port: u32,
+    #[prost(string, tag = "2")]
+    pub service_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub error_message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentUdpListenerBindFailed {
+    #[prost(uint32, tag = "1")]
+    pub listen_port: u32,
+    #[prost(string, tag = "2")]
+    pub service_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub error_message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentTcpUpstreamConnectFailed {
+    #[prost(string, tag = "1")]
+    pub service_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub client_ip: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub error_message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentUdpUpstreamConnectFailed {
+    #[prost(string, tag = "1")]
+    pub service_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub client_ip: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub error_message: ::prost::alloc::string::String,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum Net {
@@ -469,6 +534,38 @@ impl Net {
         match value {
             "VXLAN" => Some(Self::Vxlan),
             "VLAN" => Some(Self::Vlan),
+            _ => None,
+        }
+    }
+}
+/// Protocol a proxy-reachable service is exposed over. HTTP is routed by Host
+/// header on the shared 80/443 listeners; TCP/UDP each get a dedicated
+/// listen_port the proxy binds directly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ServiceProtocol {
+    Http = 0,
+    Tcp = 1,
+    Udp = 2,
+}
+impl ServiceProtocol {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Http => "HTTP",
+            Self::Tcp => "TCP",
+            Self::Udp => "UDP",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "HTTP" => Some(Self::Http),
+            "TCP" => Some(Self::Tcp),
+            "UDP" => Some(Self::Udp),
             _ => None,
         }
     }
@@ -732,6 +829,35 @@ pub mod nullnet_grpc_client {
                 );
             self.inner.server_streaming(req, path, codec).await
         }
+        /// Long-lived stream: the server pushes the full TCP/UDP port→service mapping
+        /// table immediately on subscribe and again whenever services.toml changes,
+        /// so the proxy opens/closes raw TCP/UDP listeners without a restart.
+        pub async fn watch_port_mappings(
+            &mut self,
+            request: impl tonic::IntoRequest<super::Empty>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::PortMappingBundle>>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/nullnet_grpc.NullnetGrpc/WatchPortMappings",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("nullnet_grpc.NullnetGrpc", "WatchPortMappings"),
+                );
+            self.inner.server_streaming(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -804,6 +930,22 @@ pub mod nullnet_grpc_server {
             request: tonic::Request<super::Empty>,
         ) -> std::result::Result<
             tonic::Response<Self::WatchCertificatesStream>,
+            tonic::Status,
+        >;
+        /// Server streaming response type for the WatchPortMappings method.
+        type WatchPortMappingsStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::PortMappingBundle, tonic::Status>,
+            >
+            + std::marker::Send
+            + 'static;
+        /// Long-lived stream: the server pushes the full TCP/UDP port→service mapping
+        /// table immediately on subscribe and again whenever services.toml changes,
+        /// so the proxy opens/closes raw TCP/UDP listeners without a restart.
+        async fn watch_port_mappings(
+            &self,
+            request: tonic::Request<super::Empty>,
+        ) -> std::result::Result<
+            tonic::Response<Self::WatchPortMappingsStream>,
             tonic::Status,
         >;
     }
@@ -1176,6 +1318,53 @@ pub mod nullnet_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = WatchCertificatesSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.server_streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/nullnet_grpc.NullnetGrpc/WatchPortMappings" => {
+                    #[allow(non_camel_case_types)]
+                    struct WatchPortMappingsSvc<T: NullnetGrpc>(pub Arc<T>);
+                    impl<
+                        T: NullnetGrpc,
+                    > tonic::server::ServerStreamingService<super::Empty>
+                    for WatchPortMappingsSvc<T> {
+                        type Response = super::PortMappingBundle;
+                        type ResponseStream = T::WatchPortMappingsStream;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::Empty>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as NullnetGrpc>::watch_port_mappings(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = WatchPortMappingsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

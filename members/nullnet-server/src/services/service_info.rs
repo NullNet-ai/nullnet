@@ -1,7 +1,7 @@
 use crate::orchestrator::Orchestrator;
 use crate::services::clients::{Client, ClientInfo, Clients};
 use crate::services::edge::Edge;
-use nullnet_grpc_lib::nullnet_grpc::Upstream;
+use nullnet_grpc_lib::nullnet_grpc::{ServiceProtocol, Upstream};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, Instant};
@@ -35,17 +35,22 @@ pub(crate) enum ServiceInfo {
 }
 
 impl ServiceInfo {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         proxy_deps: Vec<Vec<String>>,
         triggers: HashMap<u16, Vec<String>>,
         timeout: Option<u64>,
         max_networks: Option<u32>,
+        protocol: ServiceProtocol,
+        listen_port: Option<u16>,
     ) -> Self {
         ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
             proxy_deps,
             triggers,
             timeout,
             max_networks,
+            protocol,
+            listen_port,
         ))
     }
 
@@ -57,6 +62,8 @@ impl ServiceInfo {
                     triggers: unreg.triggers.clone(),
                     timeout: unreg.timeout,
                     max_networks: unreg.max_networks,
+                    protocol: unreg.protocol,
+                    listen_port: unreg.listen_port,
                     replicas: vec![Replica::new(ip, port, docker_container)],
                 });
             }
@@ -95,6 +102,8 @@ impl ServiceInfo {
                     reg.triggers.clone(),
                     reg.timeout,
                     reg.max_networks,
+                    reg.protocol,
+                    reg.listen_port,
                 ));
             }
         }
@@ -112,6 +121,8 @@ impl ServiceInfo {
                     reg.triggers.clone(),
                     reg.timeout,
                     reg.max_networks,
+                    reg.protocol,
+                    reg.listen_port,
                 ));
             }
         }
@@ -127,18 +138,24 @@ impl ServiceInfo {
     pub(crate) fn update_from_file(&mut self, loaded: &Self) {
         let loaded_timeout = loaded.timeout();
         let loaded_max_networks = loaded.max_networks();
+        let loaded_protocol = loaded.protocol();
+        let loaded_listen_port = loaded.listen_port();
         match self {
             ServiceInfo::Unregistered(unreg) => {
                 unreg.proxy_deps = loaded.proxy_deps().to_vec();
                 unreg.triggers.clone_from(loaded.triggers());
                 unreg.timeout = loaded_timeout;
                 unreg.max_networks = loaded_max_networks;
+                unreg.protocol = loaded_protocol;
+                unreg.listen_port = loaded_listen_port;
             }
             ServiceInfo::Registered(reg) => {
                 reg.proxy_deps = loaded.proxy_deps().to_vec();
                 reg.triggers.clone_from(loaded.triggers());
                 reg.timeout = loaded_timeout;
                 reg.max_networks = loaded_max_networks;
+                reg.protocol = loaded_protocol;
+                reg.listen_port = loaded_listen_port;
             }
         }
     }
@@ -147,6 +164,25 @@ impl ServiceInfo {
         match self {
             ServiceInfo::Unregistered(unreg) => unreg.max_networks,
             ServiceInfo::Registered(reg) => reg.max_networks,
+        }
+    }
+
+    /// Protocol this service is reachable over via the proxy. `Http` is the
+    /// default — routed by Host header on the shared 80/443 listeners. `Tcp`/
+    /// `Udp` services are reached on their own `listen_port`.
+    pub(crate) fn protocol(&self) -> ServiceProtocol {
+        match self {
+            ServiceInfo::Unregistered(unreg) => unreg.protocol,
+            ServiceInfo::Registered(reg) => reg.protocol,
+        }
+    }
+
+    /// The external port the proxy binds to for `Tcp`/`Udp` services.
+    /// Always `None` for `Http` services (routed by Host header instead).
+    pub(crate) fn listen_port(&self) -> Option<u16> {
+        match self {
+            ServiceInfo::Unregistered(unreg) => unreg.listen_port,
+            ServiceInfo::Registered(reg) => reg.listen_port,
         }
     }
 
@@ -183,20 +219,29 @@ pub(crate) struct UnregisteredServiceInfo {
     timeout: Option<u64>,
     /// Maximum number of networks for this service.
     max_networks: Option<u32>,
+    /// Protocol this service is reachable over via the proxy (default `Http`).
+    protocol: ServiceProtocol,
+    /// External port the proxy binds to for `Tcp`/`Udp` services.
+    listen_port: Option<u16>,
 }
 
 impl UnregisteredServiceInfo {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         proxy_deps: Vec<Vec<String>>,
         triggers: HashMap<u16, Vec<String>>,
         timeout: Option<u64>,
         max_networks: Option<u32>,
+        protocol: ServiceProtocol,
+        listen_port: Option<u16>,
     ) -> Self {
         Self {
             proxy_deps,
             triggers,
             timeout,
             max_networks,
+            protocol,
+            listen_port,
         }
     }
 }
@@ -280,6 +325,10 @@ pub(crate) struct RegisteredServiceInfo {
     timeout: Option<u64>,
     /// Maximum number of networks for this service.
     max_networks: Option<u32>,
+    /// Protocol this service is reachable over via the proxy (default `Http`).
+    protocol: ServiceProtocol,
+    /// External port the proxy binds to for `Tcp`/`Udp` services.
+    listen_port: Option<u16>,
     /// Replicas of this service.
     replicas: Vec<Replica>,
 }

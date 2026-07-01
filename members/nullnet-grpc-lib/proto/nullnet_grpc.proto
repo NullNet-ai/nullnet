@@ -34,6 +34,13 @@ service NullnetGrpc {
   // subscribe (proxy startup load) and again whenever it changes, so every proxy
   // hot-reloads without a restart.
   rpc WatchCertificates(Empty) returns (stream CertBundle);
+
+  // Port mapping distribution APIs ---------------------------------------------------------------------------------
+
+  // Long-lived stream: the server pushes the full TCP/UDP port→service mapping
+  // table immediately on subscribe and again whenever services.toml changes,
+  // so the proxy opens/closes raw TCP/UDP listeners without a restart.
+  rpc WatchPortMappings(Empty) returns (stream PortMappingBundle);
 }
 
 // TAP-based clients ---------------------------------------------------------------------------------------------------
@@ -157,6 +164,31 @@ message Upstream {
   uint32 port = 2;
 }
 
+// Protocol a proxy-reachable service is exposed over. HTTP is routed by Host
+// header on the shared 80/443 listeners; TCP/UDP each get a dedicated
+// listen_port the proxy binds directly.
+enum ServiceProtocol {
+  HTTP = 0;
+  TCP = 1;
+  UDP = 2;
+}
+
+// One entry in the live port→service table. Only services with a non-HTTP
+// protocol need an entry — HTTP stays on the existing Host-header routing.
+message PortMapping {
+  string service_name = 1;
+  ServiceProtocol protocol = 2;
+  uint32 listen_port = 3;
+  // Mirrors the service's configured per-client idle timeout (0 disables
+  // it), so the proxy can expire UDP sessions without a second timeout
+  // mechanism.
+  uint64 idle_timeout_secs = 4;
+}
+
+message PortMappingBundle {
+  repeated PortMapping mappings = 1;
+}
+
 // Backend-triggered chains --------------------------------------------------------------------------------------------
 
 message BackendTriggerRequest {
@@ -226,6 +258,10 @@ message AgentEvent {
     AgentUpstreamIpParseFailed    upstream_ip_parse_failed   = 20;
     AgentProxyClientNotInet       proxy_client_not_inet      = 21;
     AgentTlsCertificateInvalid    tls_certificate_invalid    = 23;
+    AgentTcpListenerBindFailed    tcp_listener_bind_failed   = 26;
+    AgentUdpListenerBindFailed    udp_listener_bind_failed   = 27;
+    AgentTcpUpstreamConnectFailed tcp_upstream_connect_failed = 28;
+    AgentUdpUpstreamConnectFailed udp_upstream_connect_failed = 29;
     // Proxy info events
     AgentProxyRequestRouted       proxy_request_routed       = 22;
   }
@@ -256,3 +292,7 @@ message AgentUpstreamIpParseFailed  { string raw_ip = 1; string service_name = 2
 message AgentProxyClientNotInet     { string address_family = 1; }
 message AgentTlsCertificateInvalid  { string domain = 1; string reason = 2; }
 message AgentProxyRequestRouted     { string service_name = 1; string client_ip = 2; string upstream_ip = 3; uint64 latency_ms = 4; }
+message AgentTcpListenerBindFailed  { uint32 listen_port = 1; string service_name = 2; string error_message = 3; }
+message AgentUdpListenerBindFailed  { uint32 listen_port = 1; string service_name = 2; string error_message = 3; }
+message AgentTcpUpstreamConnectFailed { string service_name = 1; string client_ip = 2; string error_message = 3; }
+message AgentUdpUpstreamConnectFailed { string service_name = 1; string client_ip = 2; string error_message = 3; }

@@ -82,6 +82,24 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   chain per port)
 - service names are unique within a stack; dependency chains stay intra-stack. Service names may
   be reused across different stacks
+- `protocol` selects how a proxy-reachable service is exposed: `http` (the default — routed by
+  `Host` header on the shared 80/443 listeners) or `tcp`/`udp`, which each require `listen_port` —
+  the external port nullnet-proxy binds directly and forwards raw traffic from. `listen_port` must
+  be globally unique per protocol across every stack (the server refuses to start, or rejects a
+  hot-reload, if two services claim the same `protocol`/`listen_port` pair):
+  ```
+  [[services]]
+  name = "redis.internal"
+  timeout = 0
+  protocol = "tcp"
+  listen_port = 6379
+
+  [[services]]
+  name = "dns.internal"
+  timeout = 0
+  protocol = "udp"
+  listen_port = 53
+  ```
 
 - run the project as a daemon (from the repo root)
   ```
@@ -109,6 +127,10 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
 
 - the proxy listens on port 80 (requests in the form `service_name:80`) and, for hosts that have a
   TLS certificate, on port 443 — HTTP requests to those hosts get a 301 redirect to HTTPS
+- for services declared with `protocol = "tcp"` or `"udp"` in the server's stack config, the proxy
+  also opens a raw listener on each `listen_port` and forwards traffic to the matching service —
+  no `Host` header involved. This table is pushed live by the server, so listeners open and close
+  as `services/<stack>.toml` changes, without a proxy restart
 
 ***
 

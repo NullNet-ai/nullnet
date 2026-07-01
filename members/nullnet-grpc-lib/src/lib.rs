@@ -2,8 +2,8 @@ mod proto;
 
 use crate::nullnet_grpc::nullnet_grpc_client::NullnetGrpcClient;
 use crate::nullnet_grpc::{
-    AgentEvent, BackendTriggerRequest, CertBundle, Empty, MsgId, NetMessage, NetType, ProxyRequest,
-    Services, ServicesListResponse, Upstream,
+    AgentEvent, BackendTriggerRequest, CertBundle, Empty, MsgId, NetMessage, NetType,
+    PortMappingBundle, ProxyRequest, Services, ServicesListResponse, Upstream,
 };
 pub use proto::*;
 use tokio::sync::mpsc;
@@ -136,6 +136,20 @@ impl NullnetGrpcInterface {
             .client
             .clone()
             .watch_certificates(Request::new(Empty {}))
+            .await
+            .map_err(|e| e.to_string())?
+            .into_inner())
+    }
+
+    /// Subscribe to port-mapping changes: the returned stream yields the full
+    /// TCP/UDP port→service table immediately on subscribe and again whenever
+    /// it changes.
+    #[allow(clippy::missing_errors_doc)]
+    pub async fn watch_port_mappings(&self) -> Result<Streaming<PortMappingBundle>, String> {
+        Ok(self
+            .client
+            .clone()
+            .watch_port_mappings(Request::new(Empty {}))
             .await
             .map_err(|e| e.to_string())?
             .into_inner())

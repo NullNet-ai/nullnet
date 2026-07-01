@@ -1,6 +1,9 @@
 mod env;
 mod nullnet_proxy;
+mod port_mappings;
+mod tcp_relay;
 mod tls;
+mod udp_relay;
 
 use crate::nullnet_proxy::NullnetProxy;
 use crate::tls::{CertStore, TlsResolver};
@@ -254,6 +257,10 @@ async fn main() -> Result<(), nullnet_liberror::Error> {
         let store = cert_store.clone();
         tokio::spawn(async move { watch_certificates(server, store).await });
     }
+
+    // subscribe to the live TCP/UDP port→service table and keep raw listeners
+    // in sync with it for the lifetime of the process
+    tokio::spawn(port_mappings::watch_and_serve(nullnet_proxy.clone()));
 
     // HTTP listener: redirects to HTTPS for hosts that have a cert
     let mut http_proxy =

@@ -5,7 +5,7 @@ use crate::nullnet_grpc_impl::NullnetGrpcImpl;
 use crate::services::input::{ServicesToml, StackMap, apply_config_update};
 use crate::services::service_info::ServiceInfo;
 use crate::timeout::apply_timeouts;
-use nullnet_grpc_lib::nullnet_grpc::{NetMessage, net_message};
+use nullnet_grpc_lib::nullnet_grpc::{NetMessage, ServiceProtocol, net_message};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -2760,11 +2760,25 @@ fn suspend_test_server() -> NullnetGrpcImpl {
     // both are proxy entry points (timeout = Some); one Docker-backed, one host
     inner.insert(
         "svc".to_string(),
-        ServiceInfo::new(vec![], HashMap::new(), Some(30), None),
+        ServiceInfo::new(
+            vec![],
+            HashMap::new(),
+            Some(30),
+            None,
+            ServiceProtocol::Http,
+            None,
+        ),
     );
     inner.insert(
         "host_svc".to_string(),
-        ServiceInfo::new(vec![], HashMap::new(), Some(30), None),
+        ServiceInfo::new(
+            vec![],
+            HashMap::new(),
+            Some(30),
+            None,
+            ServiceProtocol::Http,
+            None,
+        ),
     );
     NullnetGrpcImpl::new_for_test(into_stack_map(inner))
 }
@@ -2832,17 +2846,33 @@ async fn backend_involved_replicas_never_suspended() {
             HashMap::from([(8080u16, vec!["dep".to_string()])]),
             Some(30),
             None,
+            ServiceProtocol::Http,
+            None,
         ),
     );
     // dep is named in the trigger chain (so it "is a backend dep")
     inner.insert(
         "dep".to_string(),
-        ServiceInfo::new(vec![], HashMap::new(), None, None),
+        ServiceInfo::new(
+            vec![],
+            HashMap::new(),
+            None,
+            None,
+            ServiceProtocol::Http,
+            None,
+        ),
     );
     // a plain entry-point service with no backend involvement (control)
     inner.insert(
         "plain".to_string(),
-        ServiceInfo::new(vec![], HashMap::new(), Some(30), None),
+        ServiceInfo::new(
+            vec![],
+            HashMap::new(),
+            Some(30),
+            None,
+            ServiceProtocol::Http,
+            None,
+        ),
     );
     let server = NullnetGrpcImpl::new_for_test(into_stack_map(inner));
 

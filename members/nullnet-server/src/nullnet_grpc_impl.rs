@@ -12,8 +12,9 @@ use crate::services::service_info::{ServiceInfo, backend_involved_services};
 use crate::timeout::check_timeouts;
 use nullnet_grpc_lib::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentEvent, BackendTriggerRequest, CertBundle, Empty, MsgId, NetMessage, NetType, ProxyRequest,
-    ServiceTrigger, Services, ServicesListResponse, Upstream, agent_event::Event as AgentEventKind,
+    AgentEvent, BackendTriggerRequest, CertBundle, Empty, MsgId, NetMessage, NetType, PortMapping,
+    PortMappingBundle, ProxyRequest, ServiceTrigger, Services, ServicesListResponse, Upstream,
+    agent_event::Event as AgentEventKind,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::{HashMap, HashSet};
@@ -32,6 +33,37 @@ pub(crate) struct NullnetGrpcImpl {
     /// Latest TLS certificate set, kept in sync with `./certs` by a watcher.
     /// Proxies fetch the current value and subscribe for updates.
     certs: watch::Receiver<CertBundle>,
+    /// Live TCP/UDP port→service table, derived from `services` and refreshed
+    /// on every services.toml change. Proxies subscribe for updates.
+    port_mappings: watch::Receiver<PortMappingBundle>,
+}
+
+/// Build the live TCP/UDP port→service table from the current `StackMap`.
+/// `Http` services are excluded — they stay on Host-header routing.
+fn build_port_mapping_bundle(stacks: &StackMap) -> PortMappingBundle {
+    let mappings: Vec<PortMapping> = stacks
+        .values()
+        .flat_map(HashMap::iter)
+        .filter_map(|(name, info)| {
+            let listen_port = u32::from(info.listen_port()?);
+            Some(PortMapping {
+                service_name: name.clone(),
+                protocol: info.protocol() as i32,
+                listen_port,
+                idle_timeout_secs: info.timeout().unwrap_or(0),
+            })
+        })
+        .collect();
+    println!(
+        "[port-mappings] bundle built: {} mapping(s): [{}]",
+        mappings.len(),
+        mappings
+            .iter()
+            .map(|m| format!("{}/{}", m.listen_port, m.service_name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    PortMappingBundle { mappings }
 }
 
 /// Return the stack name that holds `service_name`, if any. Service names
@@ -46,7 +78,7 @@ fn find_service_stack<'a>(services: &'a StackMap, service_name: &str) -> Option<
 
 impl NullnetGrpcImpl {
     pub async fn new() -> Result<Self, Error> {
-        let services = Arc::new(RwLock::new(ServicesToml::load().await?));
+        let services = Arc::new(RwLock::new(ServicesToml::load_validated().await?));
 
         // regenerate the service graphviz periodically for debugging
         let services_2 = services.clone();
@@ -56,15 +88,40 @@ impl NullnetGrpcImpl {
 
         let orchestrator = Orchestrator::new();
         let config_changed = Arc::new(Notify::new());
+        // Separate from `config_changed`: `Notify::notify_one` wakes at most
+        // one waiter, so each consumer needs its own `Notify` rather than
+        // racing `check_timeouts` for the same wake-up.
+        let port_mappings_changed = Arc::new(Notify::new());
 
         // keep services up to date with the services.toml file
         let services_2 = services.clone();
         let orchestrator_2 = orchestrator.clone();
         let config_changed_2 = config_changed.clone();
+        let port_mappings_changed_2 = port_mappings_changed.clone();
         tokio::spawn(async move {
-            if let Err(e) = ServicesToml::watch(&services_2, orchestrator_2, config_changed_2).await
+            if let Err(e) = ServicesToml::watch(
+                &services_2,
+                orchestrator_2,
+                config_changed_2,
+                port_mappings_changed_2,
+            )
+            .await
             {
                 eprintln!("failed to watch services.toml for changes: {e:?}");
+            }
+        });
+
+        // live TCP/UDP port→service table, refreshed whenever services.toml changes
+        let initial_mappings = build_port_mapping_bundle(&*services.read().await);
+        let (port_mappings_tx, port_mappings_rx) = watch::channel(initial_mappings);
+        let services_2 = services.clone();
+        tokio::spawn(async move {
+            loop {
+                port_mappings_changed.notified().await;
+                let bundle = build_port_mapping_bundle(&*services_2.read().await);
+                if port_mappings_tx.send(bundle).is_err() {
+                    break;
+                }
             }
         });
 
@@ -87,6 +144,7 @@ impl NullnetGrpcImpl {
             services,
             orchestrator,
             certs: certs_rx,
+            port_mappings: port_mappings_rx,
         })
     }
 
@@ -1007,10 +1065,12 @@ struct SuccessfulEdge {
 impl NullnetGrpcImpl {
     pub(crate) fn new_for_test(services: StackMap) -> Self {
         let (_, certs) = watch::channel(CertBundle::default());
+        let (_, port_mappings) = watch::channel(PortMappingBundle::default());
         NullnetGrpcImpl {
             services: Arc::new(RwLock::new(services)),
             orchestrator: Orchestrator::new(),
             certs,
+            port_mappings,
         }
     }
 
@@ -1100,6 +1160,30 @@ impl NullnetGrpc for NullnetGrpcImpl {
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
+    type WatchPortMappingsStream = ReceiverStream<Result<PortMappingBundle, Status>>;
+
+    async fn watch_port_mappings(
+        &self,
+        _: Request<Empty>,
+    ) -> Result<Response<Self::WatchPortMappingsStream>, Status> {
+        let mut mappings = self.port_mappings.clone();
+        let (tx, rx) = mpsc::channel(4);
+        tokio::spawn(async move {
+            // send the current table immediately, then one snapshot per change
+            let initial = mappings.borrow_and_update().clone();
+            if tx.send(Ok(initial)).await.is_err() {
+                return;
+            }
+            while mappings.changed().await.is_ok() {
+                let snapshot = mappings.borrow_and_update().clone();
+                if tx.send(Ok(snapshot)).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
     async fn report_event(&self, req: Request<AgentEvent>) -> Result<Response<Empty>, Status> {
         let Some(kind) = req.into_inner().event else {
             return Ok(Response::new(Empty {}));
@@ -1166,6 +1250,22 @@ impl NullnetGrpc for NullnetGrpcImpl {
             AgentEventKind::ProxyClientNotInet(e) => Event::proxy_client_not_inet(e.address_family),
             AgentEventKind::TlsCertificateInvalid(e) => {
                 Event::tls_certificate_invalid(e.domain, e.reason)
+            }
+            AgentEventKind::TcpListenerBindFailed(e) => Event::tcp_listener_bind_failed(
+                e.listen_port as u16,
+                e.service_name,
+                e.error_message,
+            ),
+            AgentEventKind::UdpListenerBindFailed(e) => Event::udp_listener_bind_failed(
+                e.listen_port as u16,
+                e.service_name,
+                e.error_message,
+            ),
+            AgentEventKind::TcpUpstreamConnectFailed(e) => {
+                Event::tcp_upstream_connect_failed(e.service_name, e.client_ip, e.error_message)
+            }
+            AgentEventKind::UdpUpstreamConnectFailed(e) => {
+                Event::udp_upstream_connect_failed(e.service_name, e.client_ip, e.error_message)
             }
             AgentEventKind::ProxyRequestRouted(e) => Event::proxy_request_routed(
                 e.service_name,

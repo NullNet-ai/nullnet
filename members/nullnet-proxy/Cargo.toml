@@ -15,7 +15,7 @@ openssl = "0.10"
 arc-swap = "1"
 nullnet-grpc-lib.workspace = true
 nullnet-liberror.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "time", "sync", "io-util", "macros"] }
 ctrlc = { version = "3.5.2", features = ["termination"] }
 gag.workspace = true
 chrono.workspace = true

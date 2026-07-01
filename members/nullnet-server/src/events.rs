@@ -87,6 +87,15 @@ pub(crate) enum Event {
         stack: String,
         timestamp: u64,
     },
+    PortMappingConflict {
+        stack_a: String,
+        service_a: String,
+        stack_b: String,
+        service_b: String,
+        protocol: String,
+        listen_port: u16,
+        timestamp: u64,
+    },
     AllReplicasRemoved {
         service: String,
         stack: String,
@@ -255,6 +264,30 @@ pub(crate) enum Event {
         reason: String,
         timestamp: u64,
     },
+    TcpListenerBindFailed {
+        listen_port: u16,
+        service_name: String,
+        error_message: String,
+        timestamp: u64,
+    },
+    UdpListenerBindFailed {
+        listen_port: u16,
+        service_name: String,
+        error_message: String,
+        timestamp: u64,
+    },
+    TcpUpstreamConnectFailed {
+        service_name: String,
+        client_ip: String,
+        error_message: String,
+        timestamp: u64,
+    },
+    UdpUpstreamConnectFailed {
+        service_name: String,
+        client_ip: String,
+        error_message: String,
+        timestamp: u64,
+    },
 
     // --- Proxy info events ---
     ProxyRequestRouted {
@@ -294,6 +327,7 @@ impl Event {
             Self::SessionTornDown { .. } => "session_torn_down",
             Self::ConfigReloaded { .. } => "config_reloaded",
             Self::ConfigStackRemoved { .. } => "config_stack_removed",
+            Self::PortMappingConflict { .. } => "port_mapping_conflict",
             Self::AllReplicasRemoved { .. } => "all_replicas_removed",
             Self::ServiceReachabilityToggled { .. } => "service_reachability_toggled",
             Self::ProxyClientTimedOut { .. } => "proxy_client_timed_out",
@@ -326,6 +360,10 @@ impl Event {
             Self::UpstreamIpParseFailed { .. } => "upstream_ip_parse_failed",
             Self::ProxyClientNotInet { .. } => "proxy_client_not_inet",
             Self::TlsCertificateInvalid { .. } => "tls_certificate_invalid",
+            Self::TcpListenerBindFailed { .. } => "tcp_listener_bind_failed",
+            Self::UdpListenerBindFailed { .. } => "udp_listener_bind_failed",
+            Self::TcpUpstreamConnectFailed { .. } => "tcp_upstream_connect_failed",
+            Self::UdpUpstreamConnectFailed { .. } => "udp_upstream_connect_failed",
             Self::ProxyRequestRouted { .. } => "proxy_request_routed",
             Self::CertificateInstalled { .. } => "certificate_installed",
             Self::CertificateRenewed { .. } => "certificate_renewed",
@@ -383,7 +421,12 @@ impl Event {
             | Self::ProxyRequestInvalidHost { .. }
             | Self::UpstreamIpParseFailed { .. }
             | Self::ProxyClientNotInet { .. }
-            | Self::TlsCertificateInvalid { .. } => Severity::Error,
+            | Self::TlsCertificateInvalid { .. }
+            | Self::PortMappingConflict { .. }
+            | Self::TcpListenerBindFailed { .. }
+            | Self::UdpListenerBindFailed { .. }
+            | Self::TcpUpstreamConnectFailed { .. }
+            | Self::UdpUpstreamConnectFailed { .. } => Severity::Error,
         }
     }
 
@@ -471,6 +514,26 @@ impl Event {
     pub(crate) fn config_stack_removed(stack: String) -> Self {
         Self::ConfigStackRemoved {
             stack,
+            timestamp: now_secs(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn port_mapping_conflict(
+        stack_a: String,
+        service_a: String,
+        stack_b: String,
+        service_b: String,
+        protocol: String,
+        listen_port: u16,
+    ) -> Self {
+        Self::PortMappingConflict {
+            stack_a,
+            service_a,
+            stack_b,
+            service_b,
+            protocol,
+            listen_port,
             timestamp: now_secs(),
         }
     }
@@ -761,6 +824,58 @@ impl Event {
         Self::TlsCertificateInvalid {
             domain,
             reason,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn tcp_listener_bind_failed(
+        listen_port: u16,
+        service_name: String,
+        error_message: String,
+    ) -> Self {
+        Self::TcpListenerBindFailed {
+            listen_port,
+            service_name,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn udp_listener_bind_failed(
+        listen_port: u16,
+        service_name: String,
+        error_message: String,
+    ) -> Self {
+        Self::UdpListenerBindFailed {
+            listen_port,
+            service_name,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn tcp_upstream_connect_failed(
+        service_name: String,
+        client_ip: String,
+        error_message: String,
+    ) -> Self {
+        Self::TcpUpstreamConnectFailed {
+            service_name,
+            client_ip,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn udp_upstream_connect_failed(
+        service_name: String,
+        client_ip: String,
+        error_message: String,
+    ) -> Self {
+        Self::UdpUpstreamConnectFailed {
+            service_name,
+            client_ip,
+            error_message,
             timestamp: now_secs(),
         }
     }

@@ -226,9 +226,18 @@ async fn teardown_invalidated_service(
         let triggers = si.triggers().clone();
         let timeout = si.timeout();
         let max_nets = si.max_networks();
+        let protocol = si.protocol();
+        let listen_port = si.listen_port();
         services.insert(
             invalidated_service.to_string(),
-            ServiceInfo::new(proxy_deps, triggers, timeout, max_nets),
+            ServiceInfo::new(
+                proxy_deps,
+                triggers,
+                timeout,
+                max_nets,
+                protocol,
+                listen_port,
+            ),
         );
     }
 }
