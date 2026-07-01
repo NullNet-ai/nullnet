@@ -200,7 +200,9 @@ impl ServicesToml {
         // proxy-reachable entry point, `None` (omitted) leaves it backend-only.
         // A declared service can thus host triggers without being reachable.
         for s in self.services {
-            let protocol = s.protocol.map_or(ServiceProtocol::Http, ServiceProtocol::from);
+            let protocol = s
+                .protocol
+                .map_or(ServiceProtocol::Http, ServiceProtocol::from);
             match (protocol, s.listen_port) {
                 (ServiceProtocol::Http, Some(_)) => {
                     return Err(format!(
@@ -611,7 +613,8 @@ listen_port = 6379
                 Some(6379),
             ),
         );
-        let stacks: StackMap = HashMap::from([("alpha".to_string(), alpha), ("bravo".to_string(), bravo)]);
+        let stacks: StackMap =
+            HashMap::from([("alpha".to_string(), alpha), ("bravo".to_string(), bravo)]);
 
         let conflicts = detect_port_conflicts(&stacks);
         assert_eq!(conflicts.len(), 1);

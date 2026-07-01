@@ -1,8 +1,8 @@
 use crate::nullnet_proxy::NullnetProxy;
 use crate::port_mappings::MappingEntry;
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentEvent, AgentTcpListenerBindFailed, AgentTcpUpstreamConnectFailed, AgentUpstreamLookupFailed,
-    ProxyRequest, agent_event::Event as AgentEventKind,
+    AgentEvent, AgentTcpListenerBindFailed, AgentTcpUpstreamConnectFailed,
+    AgentUpstreamLookupFailed, ProxyRequest, agent_event::Event as AgentEventKind,
 };
 use tokio::io::copy_bidirectional;
 use tokio::net::{TcpListener, TcpStream};
@@ -13,7 +13,11 @@ use tokio::sync::watch;
 /// same way the HTTP path does (`Proxy` RPC → on-demand VXLAN → local
 /// upstream). Exits if the bind fails — the supervisor logs nothing further,
 /// the failure event is the record of what happened.
-pub(crate) async fn run(proxy: NullnetProxy, listen_port: u16, mapping: watch::Receiver<MappingEntry>) {
+pub(crate) async fn run(
+    proxy: NullnetProxy,
+    listen_port: u16,
+    mapping: watch::Receiver<MappingEntry>,
+) {
     let listener = match TcpListener::bind(("0.0.0.0", listen_port)).await {
         Ok(l) => l,
         Err(e) => {
@@ -41,7 +45,10 @@ pub(crate) async fn run(proxy: NullnetProxy, listen_port: u16, mapping: watch::R
             Ok((stream, peer)) => {
                 let proxy = proxy.clone();
                 let entry = mapping.borrow().clone();
-                println!("[tcp/{listen_port}] accepted connection from {peer} → '{}'", entry.service_name);
+                println!(
+                    "[tcp/{listen_port}] accepted connection from {peer} → '{}'",
+                    entry.service_name
+                );
                 tokio::spawn(async move {
                     handle_connection(proxy, stream, peer.to_string(), entry).await;
                 });
@@ -68,7 +75,10 @@ async fn handle_connection(
     };
     let upstream = match proxy.get_or_add_upstream(proxy_req).await {
         Ok(u) => {
-            println!("[tcp] {client_addr} → '{}' resolved upstream {u}", entry.service_name);
+            println!(
+                "[tcp] {client_addr} → '{}' resolved upstream {u}",
+                entry.service_name
+            );
             u
         }
         Err(e) => {
@@ -117,7 +127,9 @@ async fn handle_connection(
 
     match copy_bidirectional(&mut inbound, &mut outbound).await {
         Ok((to_upstream, to_client)) => {
-            println!("[tcp] {client_addr} ↔ {upstream} relay closed (↑{to_upstream}B ↓{to_client}B)");
+            println!(
+                "[tcp] {client_addr} ↔ {upstream} relay closed (↑{to_upstream}B ↓{to_client}B)"
+            );
         }
         Err(e) => {
             eprintln!("[tcp] {client_addr} ↔ {upstream} relay error: {e}");

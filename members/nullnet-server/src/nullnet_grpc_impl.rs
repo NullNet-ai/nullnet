@@ -1251,12 +1251,16 @@ impl NullnetGrpc for NullnetGrpcImpl {
             AgentEventKind::TlsCertificateInvalid(e) => {
                 Event::tls_certificate_invalid(e.domain, e.reason)
             }
-            AgentEventKind::TcpListenerBindFailed(e) => {
-                Event::tcp_listener_bind_failed(e.listen_port as u16, e.service_name, e.error_message)
-            }
-            AgentEventKind::UdpListenerBindFailed(e) => {
-                Event::udp_listener_bind_failed(e.listen_port as u16, e.service_name, e.error_message)
-            }
+            AgentEventKind::TcpListenerBindFailed(e) => Event::tcp_listener_bind_failed(
+                e.listen_port as u16,
+                e.service_name,
+                e.error_message,
+            ),
+            AgentEventKind::UdpListenerBindFailed(e) => Event::udp_listener_bind_failed(
+                e.listen_port as u16,
+                e.service_name,
+                e.error_message,
+            ),
             AgentEventKind::TcpUpstreamConnectFailed(e) => {
                 Event::tcp_upstream_connect_failed(e.service_name, e.client_ip, e.error_message)
             }

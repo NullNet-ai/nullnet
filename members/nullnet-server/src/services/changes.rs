@@ -230,7 +230,14 @@ async fn teardown_invalidated_service(
         let listen_port = si.listen_port();
         services.insert(
             invalidated_service.to_string(),
-            ServiceInfo::new(proxy_deps, triggers, timeout, max_nets, protocol, listen_port),
+            ServiceInfo::new(
+                proxy_deps,
+                triggers,
+                timeout,
+                max_nets,
+                protocol,
+                listen_port,
+            ),
         );
     }
 }

@@ -33,7 +33,11 @@ struct Session {
 /// subsequent datagrams from that address reuse the session until it goes
 /// idle for `mapping.idle_timeout_secs` (0 disables the timeout, same as
 /// everywhere else in the config).
-pub(crate) async fn run(proxy: NullnetProxy, listen_port: u16, mapping: watch::Receiver<MappingEntry>) {
+pub(crate) async fn run(
+    proxy: NullnetProxy,
+    listen_port: u16,
+    mapping: watch::Receiver<MappingEntry>,
+) {
     let socket = match UdpSocket::bind(("0.0.0.0", listen_port)).await {
         Ok(s) => s,
         Err(e) => {
@@ -101,7 +105,10 @@ async fn handle_datagram(
     };
     let upstream_addr = match proxy.get_or_add_upstream(proxy_req).await {
         Ok(u) => {
-            println!("[udp] new session from {src} → '{}' resolved upstream {u}", entry.service_name);
+            println!(
+                "[udp] new session from {src} → '{}' resolved upstream {u}",
+                entry.service_name
+            );
             u
         }
         Err(e) => {
