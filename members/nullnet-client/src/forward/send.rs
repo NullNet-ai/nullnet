@@ -7,6 +7,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tun_rs::AsyncDevice;
 
+use crate::crypto;
 use crate::forward::frame::Frame;
 use crate::peers::peer::{Peers, VethKey};
 
@@ -26,7 +27,7 @@ pub async fn send(
         if frame.size > 0 {
             // send the packet to the socket
             let pkt_data = frame.pkt_data();
-            let Ok(dst_socket) = get_dst_socket(pkt_data, &peers).await else {
+            let Ok((dst_socket, vlan_id)) = get_dst_socket(pkt_data, &peers).await else {
                 continue;
             };
             match firewall
@@ -35,7 +36,15 @@ pub async fn send(
                 .resolve_packet(pkt_data, FirewallDirection::OUT)
             {
                 FirewallAction::ACCEPT => {
-                    socket.send_to(pkt_data, dst_socket).await.unwrap_or(0);
+                    // encrypt as the packet enters the tunnel: without a key
+                    // for this vlan_id (tunnel torn down mid-flight, or
+                    // setup never landed) there is nothing safe to send.
+                    let Some(cipher) = peers.read().await.get_key(vlan_id) else {
+                        continue;
+                    };
+                    if let Some(datagram) = crypto::seal(vlan_id, &cipher, pkt_data) {
+                        socket.send_to(&datagram, dst_socket).await.unwrap_or(0);
+                    }
                 }
                 FirewallAction::DENY | FirewallAction::REJECT => {}
             }
@@ -43,7 +52,10 @@ pub async fn send(
     }
 }
 
-async fn get_dst_socket(pkt_data: &[u8], peers: &Arc<RwLock<Peers>>) -> Result<SocketAddr, Error> {
+async fn get_dst_socket(
+    pkt_data: &[u8],
+    peers: &Arc<RwLock<Peers>>,
+) -> Result<(SocketAddr, u16), Error> {
     let headers = LaxPacketHeaders::from_ethernet(pkt_data).handle_err(location!())?;
     let vlan_id = headers
         .vlan_ids()
@@ -63,10 +75,11 @@ async fn get_dst_socket(pkt_data: &[u8], peers: &Arc<RwLock<Peers>>) -> Result<S
     let dest_ip = Ipv4Addr::from(dest_ip_slice);
     let veth_key = VethKey::new(dest_ip, vlan_id);
 
-    peers
+    let dst_socket = peers
         .read()
         .await
         .get_socket_by_veth(veth_key)
         .ok_or(format!("No peer found for destination {veth_key:?}"))
-        .handle_err(location!())
+        .handle_err(location!())?;
+    Ok((dst_socket, vlan_id))
 }

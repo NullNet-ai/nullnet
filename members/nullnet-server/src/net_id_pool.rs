@@ -1,3 +1,5 @@
+use aes_gcm::aead::OsRng;
+use aes_gcm::aead::rand_core::RngCore;
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
@@ -66,6 +68,61 @@ impl NetIdPool {
         let in_use = (self.next_fresh - MIN_NET_ID) - self.freed.len() as u32;
         (capacity, in_use)
     }
+}
+
+/// Minimum/maximum allocatable UDP port for per-tunnel VXLAN dstports.
+/// Kept out of the IANA ephemeral range (32768-60999) and away from 4789
+/// (the VXLAN default) to avoid colliding with unrelated local sockets.
+const MIN_VXLAN_PORT: u16 = 20000;
+const MAX_VXLAN_PORT: u16 = 60000;
+
+/// Pool of per-tunnel UDP destination ports, used so concurrent VXLAN
+/// tunnels between the same physical host pair each get a distinct dstport.
+/// This is what lets an XFRM policy (which selects by IP + port, not VNI)
+/// tell those tunnels apart. Same allocate/free-with-reuse shape as `NetIdPool`.
+#[derive(Debug)]
+pub(crate) struct UdpPortPool {
+    next_fresh: u16,
+    freed: BTreeSet<u16>,
+}
+
+impl UdpPortPool {
+    pub(crate) fn new() -> Self {
+        Self {
+            next_fresh: MIN_VXLAN_PORT,
+            freed: BTreeSet::new(),
+        }
+    }
+
+    pub(crate) fn allocate(&mut self) -> Option<u16> {
+        if let Some(&port) = self.freed.iter().next() {
+            self.freed.remove(&port);
+            return Some(port);
+        }
+
+        if self.next_fresh <= MAX_VXLAN_PORT {
+            let port = self.next_fresh;
+            self.next_fresh += 1;
+            Some(port)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn free(&mut self, port: u16) {
+        if (MIN_VXLAN_PORT..=MAX_VXLAN_PORT).contains(&port) {
+            self.freed.insert(port);
+        }
+    }
+}
+
+/// Generate a fresh random 32-byte AES-256 key for one tunnel. Called once
+/// per net_id allocation; the same bytes are sent to both endpoints so they
+/// share a single symmetric key for that tunnel only.
+pub(crate) fn generate_key() -> [u8; 32] {
+    let mut key = [0u8; 32];
+    OsRng.fill_bytes(&mut key);
+    key
 }
 
 #[cfg(test)]
@@ -186,5 +243,57 @@ mod tests {
         let (total, in_use) = pool.stats();
         let free = total - in_use;
         assert_eq!(total, in_use + free);
+    }
+
+    #[test]
+    fn test_udp_port_pool_allocate_sequential() {
+        let mut pool = UdpPortPool::new();
+        assert_eq!(pool.allocate(), Some(MIN_VXLAN_PORT));
+        assert_eq!(pool.allocate(), Some(MIN_VXLAN_PORT + 1));
+        assert_eq!(pool.allocate(), Some(MIN_VXLAN_PORT + 2));
+    }
+
+    #[test]
+    fn test_udp_port_pool_reuse_freed() {
+        let mut pool = UdpPortPool::new();
+        let p1 = pool.allocate().unwrap();
+        let p2 = pool.allocate().unwrap();
+        pool.allocate();
+
+        pool.free(p2);
+        pool.free(p1);
+
+        assert_eq!(pool.allocate(), Some(p1));
+        assert_eq!(pool.allocate(), Some(p2));
+    }
+
+    #[test]
+    fn test_udp_port_pool_exhaustion() {
+        let mut pool = UdpPortPool::new();
+        pool.next_fresh = MAX_VXLAN_PORT;
+
+        assert_eq!(pool.allocate(), Some(MAX_VXLAN_PORT));
+        assert_eq!(pool.allocate(), None);
+
+        pool.free(MAX_VXLAN_PORT);
+        assert_eq!(pool.allocate(), Some(MAX_VXLAN_PORT));
+        assert_eq!(pool.allocate(), None);
+    }
+
+    #[test]
+    fn test_udp_port_pool_free_ignores_out_of_range() {
+        let mut pool = UdpPortPool::new();
+        pool.free(0);
+        pool.free(MIN_VXLAN_PORT - 1);
+        pool.free(MAX_VXLAN_PORT + 1);
+        assert!(pool.freed.is_empty());
+    }
+
+    #[test]
+    fn test_generate_key_is_random_and_full_length() {
+        let k1 = generate_key();
+        let k2 = generate_key();
+        assert_eq!(k1.len(), 32);
+        assert_ne!(k1, k2);
     }
 }

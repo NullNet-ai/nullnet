@@ -2769,6 +2769,7 @@ dependencies = [
 name = "nullnet-client"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "chrono",
  "clap",
  "etherparse",

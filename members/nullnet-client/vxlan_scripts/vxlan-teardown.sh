@@ -1,17 +1,30 @@
 #!/bin/bash
 
 # Read CLI arguments:
-if [ "$#" -lt 3 ] || [ "$#" -gt 4 ]; then
-    echo "Usage: $0 <vxlan_id> <ns_name> <br_name> [docker_container]"
-    echo "Example (standalone): $0 100 ns_100_s br_100_s"
-    echo "Example (docker):     $0 100 ns_100_s br_100_s my_container"
+if [ "$#" -lt 6 ] || [ "$#" -gt 7 ]; then
+    echo "Usage: $0 <vxlan_id> <ns_name> <br_name> <local_ip> <remote_ip> <dstport> [docker_container]"
+    echo "Example (standalone): $0 100 ns_100_s br_100_s 192.168.1.102 192.168.1.104 20100"
+    echo "Example (docker):     $0 100 ns_100_s br_100_s 192.168.1.102 192.168.1.104 20100 my_container"
     exit 1
 fi
 
 VXLAN_ID=$1
 NS_NAME=$2
 BR_NAME=$3
-DOCKER_CONTAINER=$4
+LOCAL_IP=$4
+REMOTE_IP=$5
+DSTPORT=$6
+DOCKER_CONTAINER=$7
+
+# Remove this tunnel's XFRM state + policy pair, if any was installed (the
+# same-host branch of vxlan-setup.sh never creates one).
+if [ "$LOCAL_IP" != "$REMOTE_IP" ]; then
+    SPI=$(printf '0x%08x' "$VXLAN_ID")
+    sudo ip xfrm policy delete src $LOCAL_IP dst $REMOTE_IP dir out proto udp dport $DSTPORT 2>/dev/null
+    sudo ip xfrm state delete src $LOCAL_IP dst $REMOTE_IP proto esp spi $SPI 2>/dev/null
+    sudo ip xfrm policy delete src $REMOTE_IP dst $LOCAL_IP dir in proto udp dport $DSTPORT 2>/dev/null
+    sudo ip xfrm state delete src $REMOTE_IP dst $LOCAL_IP proto esp spi $SPI 2>/dev/null
+fi
 
 # Remove the VXLAN tunnel or same-host veth pair:
 sudo ip link set vxlan-$NS_NAME down && sudo ip link del vxlan-$NS_NAME

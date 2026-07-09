@@ -33,6 +33,7 @@ mod cli;
 mod commands;
 mod control_channel;
 mod craft;
+mod crypto;
 mod env;
 mod forward;
 mod host_mappings;
@@ -466,11 +467,12 @@ async fn setup_tap(
         let socket_2 = socket_1.clone();
         let firewall_1 = firewall_shared.clone();
         let firewall_2 = firewall_shared.clone();
+        let peers_1 = peers.clone();
         let peers_2 = peers.clone();
 
         // handle incoming traffic
         tokio::spawn(async move {
-            Box::pin(receive(&writer, &socket_1, &firewall_1)).await;
+            Box::pin(receive(&writer, &socket_1, &firewall_1, &peers_1)).await;
         });
 
         // handle outgoing traffic

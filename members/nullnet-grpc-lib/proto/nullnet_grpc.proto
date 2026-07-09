@@ -90,6 +90,10 @@ message VlanSetup {
   string local_ip = 5;
   string remote_ip = 6;
   optional HostMapping host_mapping = 7;
+  // Per-tunnel AES-256 key (32 raw bytes), generated once by the server and
+  // sent identically to both endpoints. Used to encrypt/decrypt traffic in
+  // the client's userspace VLAN forwarder (see forward/send.rs, forward/receive.rs).
+  bytes encryption_key = 8;
 }
 
 message VlanTeardown {
@@ -111,6 +115,15 @@ message VxlanSetup {
   // The receiving client installs DNAT(dnat_port -> overlay_ip) so the
   // initiator's traffic on that local port is steered into the new VXLAN.
   optional uint32 dnat_port = 11;
+  // Per-tunnel AES-256 key (32 raw bytes), generated once by the server and
+  // sent identically to both endpoints. Used as the XFRM/ESP SA key that
+  // encrypts this tunnel's traffic at the kernel level.
+  bytes encryption_key = 12;
+  // Per-tunnel VXLAN UDP destination port (replaces the IANA-standard 4789
+  // default). Each tunnel gets a distinct port so an XFRM policy — which
+  // selects by src/dst IP and port, not by VNI — can tell concurrent
+  // tunnels between the same host pair apart.
+  uint32 dstport = 13;
 }
 
 message VxlanTeardown {
@@ -118,6 +131,11 @@ message VxlanTeardown {
   string ns_name = 2;
   string br_name = 3;
   optional string docker_container = 4;
+  // local_ip/remote_ip/dstport: needed to remove this tunnel's XFRM SA +
+  // policy pair (same values used to install them in VxlanSetup).
+  string local_ip = 5;
+  string remote_ip = 6;
+  uint32 dstport = 7;
 }
 
 message MsgId {

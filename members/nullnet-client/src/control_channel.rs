@@ -162,6 +162,24 @@ async fn handle_vlan_setup(
                 }),
             );
         })?;
+    // Fail before touching the network if the key is malformed — running
+    // this tunnel without a valid key would mean forwarding traffic in the
+    // clear instead of encrypted.
+    let encryption_key: [u8; 32] = message
+        .encryption_key
+        .try_into()
+        .map_err(|_| "VLAN setup message carried a malformed encryption key")
+        .handle_err(location!())
+        .inspect_err(|e| {
+            fire_event(
+                &grpc,
+                AgentEventKind::VlanSetupFailed(AgentVlanSetupFailed {
+                    vlan_id: message.vlan_id,
+                    local_veth: local_veth.to_string(),
+                    error_reason: e.to_str().to_string(),
+                }),
+            );
+        })?;
 
     // setup VLAN on this machine
     let init_t = std::time::Instant::now();
@@ -176,11 +194,12 @@ async fn handle_vlan_setup(
         init_t.elapsed().as_millis()
     );
 
-    // register peer
-    peers
-        .write()
-        .await
-        .insert(VethKey::new(remote_veth, vlan_id), remote_ip);
+    // register peer + this tunnel's encryption key
+    {
+        let mut peers = peers.write().await;
+        peers.insert(VethKey::new(remote_veth, vlan_id), remote_ip);
+        peers.insert_key(vlan_id, &encryption_key);
+    }
 
     // add host mapping if needed
     if let Some(host_mapping) = &message.host_mapping {
@@ -288,6 +307,25 @@ async fn handle_vxlan_setup(
         .remote_ip
         .parse::<Ipv4Addr>()
         .handle_err(location!())?;
+    // Fail before touching the network if the key is malformed — running
+    // this tunnel without a valid key would mean forwarding traffic in the
+    // clear instead of encrypted.
+    let encryption_key: [u8; 32] = message
+        .encryption_key
+        .try_into()
+        .map_err(|_| "VXLAN setup message carried a malformed encryption key")
+        .handle_err(location!())
+        .inspect_err(|e| {
+            fire_event(
+                &grpc,
+                AgentEventKind::VxlanSetupFailed(AgentVxlanSetupFailed {
+                    vxlan_id,
+                    ns_name: ns_name.clone(),
+                    error_code: -1,
+                }),
+            );
+            eprintln!("[vxlan_setup] {}", e.to_str());
+        })?;
 
     // setup VXLAN on this machine (optionally attaching a Docker container)
     let init_t = std::time::Instant::now();
@@ -298,7 +336,9 @@ async fn handle_vxlan_setup(
         .arg(br_name)
         .arg(br_net.to_string())
         .arg(local_ip.to_string())
-        .arg(remote_ip.to_string());
+        .arg(remote_ip.to_string())
+        .arg(hex_encode(&encryption_key))
+        .arg(message.dstport.to_string());
     if let Some(container) = &message.docker_container {
         cmd.arg(container);
     }
@@ -459,7 +499,12 @@ fn handle_vxlan_teardown(
     let br_name = message.br_name;
 
     let mut cmd = std::process::Command::new("./vxlan_scripts/vxlan-teardown.sh");
-    cmd.arg(vxlan_id.to_string()).arg(&ns_name).arg(&br_name);
+    cmd.arg(vxlan_id.to_string())
+        .arg(&ns_name)
+        .arg(&br_name)
+        .arg(&message.local_ip)
+        .arg(&message.remote_ip)
+        .arg(message.dstport.to_string());
     if let Some(container) = &message.docker_container {
         cmd.arg(container);
     }
@@ -709,4 +754,10 @@ fn remove_hosts_entry(content: &str, name: &str) -> String {
         .map(ToString::to_string)
         .collect();
     lines.join("\n") + "\n"
+}
+
+/// Lowercase hex encoding, used to pass the tunnel's AES key to
+/// `vxlan-setup.sh`/`vxlan-teardown.sh` as a shell argument.
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

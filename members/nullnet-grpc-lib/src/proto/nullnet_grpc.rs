@@ -63,6 +63,11 @@ pub struct VlanSetup {
     pub remote_ip: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "7")]
     pub host_mapping: ::core::option::Option<HostMapping>,
+    /// Per-tunnel AES-256 key (32 raw bytes), generated once by the server and
+    /// sent identically to both endpoints. Used to encrypt/decrypt traffic in
+    /// the client's userspace VLAN forwarder (see forward/send.rs, forward/receive.rs).
+    #[prost(bytes = "vec", tag = "8")]
+    pub encryption_key: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VlanTeardown {
@@ -96,6 +101,17 @@ pub struct VxlanSetup {
     /// initiator's traffic on that local port is steered into the new VXLAN.
     #[prost(uint32, optional, tag = "11")]
     pub dnat_port: ::core::option::Option<u32>,
+    /// Per-tunnel AES-256 key (32 raw bytes), generated once by the server and
+    /// sent identically to both endpoints. Used as the XFRM/ESP SA key that
+    /// encrypts this tunnel's traffic at the kernel level.
+    #[prost(bytes = "vec", tag = "12")]
+    pub encryption_key: ::prost::alloc::vec::Vec<u8>,
+    /// Per-tunnel VXLAN UDP destination port (replaces the IANA-standard 4789
+    /// default). Each tunnel gets a distinct port so an XFRM policy — which
+    /// selects by src/dst IP and port, not by VNI — can tell concurrent
+    /// tunnels between the same host pair apart.
+    #[prost(uint32, tag = "13")]
+    pub dstport: u32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VxlanTeardown {
@@ -107,6 +123,14 @@ pub struct VxlanTeardown {
     pub br_name: ::prost::alloc::string::String,
     #[prost(string, optional, tag = "4")]
     pub docker_container: ::core::option::Option<::prost::alloc::string::String>,
+    /// local_ip/remote_ip/dstport: needed to remove this tunnel's XFRM SA +
+    /// policy pair (same values used to install them in VxlanSetup).
+    #[prost(string, tag = "5")]
+    pub local_ip: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub remote_ip: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "7")]
+    pub dstport: u32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MsgId {

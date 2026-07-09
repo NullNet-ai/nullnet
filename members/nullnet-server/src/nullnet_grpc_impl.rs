@@ -1,6 +1,7 @@
 use crate::env::NET_TYPE;
 use crate::events::Event;
 use crate::graphviz::generate_graphviz;
+use crate::net_id_pool::generate_key;
 use crate::orchestrator::Orchestrator;
 use crate::services::changes::{
     apply_changes, collect_dep_chain_edges, detect_services_list_changes,
@@ -12,9 +13,9 @@ use crate::services::service_info::{ServiceInfo, backend_involved_services};
 use crate::timeout::check_timeouts;
 use nullnet_grpc_lib::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentEvent, BackendTriggerRequest, CertBundle, Empty, MsgId, NetMessage, NetType, PortMapping,
-    PortMappingBundle, ProxyRequest, ServiceTrigger, Services, ServicesListResponse, Upstream,
-    agent_event::Event as AgentEventKind,
+    AgentEvent, BackendTriggerRequest, CertBundle, Empty, MsgId, Net, NetMessage, NetType,
+    PortMapping, PortMappingBundle, ProxyRequest, ServiceTrigger, Services, ServicesListResponse,
+    Upstream, agent_event::Event as AgentEventKind,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::{HashMap, HashSet};
@@ -868,6 +869,31 @@ impl NullnetGrpcImpl {
                         .await;
                 }
 
+                // One AES-256 key per tunnel, handed identically to both
+                // endpoints below. For VXLAN, also reserve a per-tunnel UDP
+                // dstport so the two hosts' XFRM policies can tell this
+                // tunnel apart from any other concurrent tunnel between the
+                // same physical host pair.
+                let encryption_key = generate_key();
+                let dstport = if *NET_TYPE == Net::Vxlan {
+                    match orchestrator.allocate_vxlan_port(net_id).await {
+                        Some(port) => Some(u32::from(port)),
+                        None => {
+                            eprintln!("UDP port pool exhausted");
+                            orchestrator.free_net_id(net_id).await;
+                            if let Some(stack_map) = services.write().await.get_mut(&stack)
+                                && let Some(ServiceInfo::Registered(reg)) =
+                                    stack_map.get_mut(server.name())
+                            {
+                                reg.remove_client(&client);
+                            }
+                            return EdgeOutcome::Failed;
+                        }
+                    }
+                } else {
+                    None
+                };
+
                 let orch = orchestrator.clone();
                 let cd = client_docker.clone();
                 let sd = server_docker.clone();
@@ -878,6 +904,8 @@ impl NullnetGrpcImpl {
                     client_ethernet,
                     (cd, sd),
                     None,
+                    encryption_key,
+                    dstport,
                 );
                 let orch2 = orchestrator.clone();
                 let cd = client_docker.clone();
@@ -889,6 +917,8 @@ impl NullnetGrpcImpl {
                     server_ethernet,
                     (cd, sd),
                     backend_entry_port,
+                    encryption_key,
+                    dstport,
                 );
 
                 let (server_ok, client_ok) = tokio::join!(server_res, client_res);

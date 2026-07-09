@@ -2,8 +2,10 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 
 use crate::FORWARD_PORT;
+use crate::crypto::TunnelCipher;
 use serde::{Deserialize, Serialize};
 
 /// Struct containing all peers information.
@@ -11,6 +13,12 @@ use serde::{Deserialize, Serialize};
 pub struct Peers {
     /// Mapping from veth addresses to Ethernet IPs.
     ips: HashMap<VethKey, Ipv4Addr>,
+    /// Per-tunnel AES-256-GCM cipher, keyed by `vlan_id`. Populated from the
+    /// key the server hands out in `VlanSetup` and used by the userspace
+    /// forwarder (`forward/send.rs`, `forward/receive.rs`) to encrypt/decrypt
+    /// this tunnel's traffic. `Arc`-wrapped so callers can clone a handle out
+    /// without holding the `Peers` lock across the actual crypto work.
+    keys: HashMap<u16, Arc<TunnelCipher>>,
 }
 
 impl Peers {
@@ -24,8 +32,17 @@ impl Peers {
         self.ips.insert(veth_key, eth_ip);
     }
 
+    pub fn insert_key(&mut self, vlan_id: u16, key: &[u8; 32]) {
+        self.keys.insert(vlan_id, Arc::new(TunnelCipher::new(key)));
+    }
+
+    pub fn get_key(&self, vlan_id: u16) -> Option<Arc<TunnelCipher>> {
+        self.keys.get(&vlan_id).cloned()
+    }
+
     pub fn remove(&mut self, vlan_id: u16) {
         self.ips.retain(|key, _| key.vlan_id != vlan_id);
+        self.keys.remove(&vlan_id);
     }
 }
 

@@ -3,66 +3,45 @@ use etherparse::{
     Icmpv4Header, Icmpv4Type, IpFragOffset, IpNumber, LaxPacketHeaders, LinkExtHeader, LinkHeader,
     NetHeaders, TcpOptions, TransportHeader,
 };
-use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::net::UdpSocket;
 
-/// Sends a proper message to gracefully acknowledge a peer that a packet was rejected,
+/// Builds a proper message to gracefully acknowledge a peer that a packet was rejected,
 /// based on the observed protocol:
 /// - in case of TCP, a packet with RST and ACK flag is sent
 /// - in case of UDP, an ICMP port unreachable message is sent
 /// - in case of other protocols, an ICMP host unreachable message is sent
-pub async fn send_termination_message(
-    packet: &[u8],
-    socket: &Arc<UdpSocket>,
-    remote_socket: SocketAddr,
-) {
-    let Ok(headers) = LaxPacketHeaders::from_ethernet(packet) else {
-        return;
-    };
+///
+/// Returns the plaintext Ethernet frame to send; the caller (`forward/receive.rs`)
+/// is responsible for encrypting and framing it before it hits the wire, same as
+/// any other outbound frame on the VLAN forwarder.
+pub fn build_termination_message(packet: &[u8]) -> Option<Vec<u8>> {
+    let headers = LaxPacketHeaders::from_ethernet(packet).ok()?;
     let Some(NetHeaders::Ipv4(ip_header, _)) = &headers.net else {
-        return;
+        return None;
     };
     let IpNumber(proto) = ip_header.protocol;
 
     match proto {
-        6 => Box::pin(send_tcp_rst(headers, socket, remote_socket)).await,
+        6 => send_tcp_rst(headers),
         17 => {
             // port unreachable
             let icmp_type = Icmpv4Type::DestinationUnreachable(DestUnreachableHeader::Port);
-            Box::pin(send_destination_unreachable(
-                packet,
-                headers,
-                socket,
-                icmp_type,
-                remote_socket,
-            ))
-            .await;
+            send_destination_unreachable(packet, headers, icmp_type)
         }
         _ => {
             // host unreachable
             let icmp_type = Icmpv4Type::DestinationUnreachable(DestUnreachableHeader::Host);
-            Box::pin(send_destination_unreachable(
-                packet,
-                headers,
-                socket,
-                icmp_type,
-                remote_socket,
-            ))
-            .await;
+            send_destination_unreachable(packet, headers, icmp_type)
         }
     }
 }
 
-async fn send_destination_unreachable(
+fn send_destination_unreachable(
     packet: &[u8],
     headers: LaxPacketHeaders<'_>,
-    socket: &Arc<UdpSocket>,
     icmp_type: Icmpv4Type,
-    remote_socket: SocketAddr,
-) {
+) -> Option<Vec<u8>> {
     let Some(LinkHeader::Ethernet2(mut ethernet_header)) = headers.link else {
-        return;
+        return None;
     };
     std::mem::swap(
         &mut ethernet_header.source,
@@ -80,7 +59,7 @@ async fn send_destination_unreachable(
         .collect();
 
     let Some(NetHeaders::Ipv4(mut ip_header, _)) = headers.net else {
-        return;
+        return None;
     };
     let original_ip_header_bytes = ip_header.to_bytes();
     let size_up_to_ip_header =
@@ -112,19 +91,12 @@ async fn send_destination_unreachable(
         &icmp_payload[..],
     ].concat();
 
-    socket
-        .send_to(&pkt_response, remote_socket)
-        .await
-        .unwrap_or(0);
+    Some(pkt_response)
 }
 
-async fn send_tcp_rst(
-    headers: LaxPacketHeaders<'_>,
-    socket: &Arc<UdpSocket>,
-    remote_socket: SocketAddr,
-) {
+fn send_tcp_rst(headers: LaxPacketHeaders<'_>) -> Option<Vec<u8>> {
     let Some(LinkHeader::Ethernet2(mut ethernet_header)) = headers.link else {
-        return;
+        return None;
     };
     std::mem::swap(
         &mut ethernet_header.source,
@@ -142,7 +114,7 @@ async fn send_tcp_rst(
         .collect();
 
     let Some(NetHeaders::Ipv4(mut ip_header, _)) = headers.net else {
-        return;
+        return None;
     };
     ip_header.identification = 0;
     ip_header.fragment_offset = IpFragOffset::ZERO;
@@ -152,7 +124,7 @@ async fn send_tcp_rst(
     let ip_header_bytes = ip_header.to_bytes();
 
     let Some(TransportHeader::Tcp(mut tcp_header)) = headers.transport else {
-        return;
+        return None;
     };
     let src_port_orig = tcp_header.source_port;
     let seq_num_orig = tcp_header.sequence_number;
@@ -187,8 +159,5 @@ async fn send_tcp_rst(
         &tcp_header_bytes[..],
     ].concat();
 
-    socket
-        .send_to(&pkt_response, remote_socket)
-        .await
-        .unwrap_or(0);
+    Some(pkt_response)
 }

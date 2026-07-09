@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Read CLI arguments:
-if [ "$#" -lt 7 ] || [ "$#" -gt 8 ]; then
-    echo "Usage: $0 <vxlan_id> <ns_name> <ns_net> <br_name> <br_net> <local_ip> <remote_ip> [docker_container]"
-    echo "Example (standalone): $0 100 ns_100_s 10.0.0.1/29 br_100_s 10.0.0.2/29 192.168.1.102 192.168.1.104"
-    echo "Example (docker):     $0 100 ns_100_s 10.0.0.1/29 br_100_s 10.0.0.2/29 192.168.1.102 192.168.1.104 my_container"
+if [ "$#" -lt 9 ] || [ "$#" -gt 10 ]; then
+    echo "Usage: $0 <vxlan_id> <ns_name> <ns_net> <br_name> <br_net> <local_ip> <remote_ip> <key_hex> <dstport> [docker_container]"
+    echo "Example (standalone): $0 100 ns_100_s 10.0.0.1/29 br_100_s 10.0.0.2/29 192.168.1.102 192.168.1.104 <64 hex chars> 20100"
+    echo "Example (docker):     $0 100 ns_100_s 10.0.0.1/29 br_100_s 10.0.0.2/29 192.168.1.102 192.168.1.104 <64 hex chars> 20100 my_container"
     exit 1
 fi
 
@@ -15,7 +15,9 @@ BR_NAME=$4
 BR_NET=$5
 LOCAL_IP=$6
 REMOTE_IP=$7
-DOCKER_CONTAINER=$8
+KEY_HEX=$8
+DSTPORT=$9
+DOCKER_CONTAINER=${10}
 
 BR_IP=$(echo $BR_NET | cut -d'/' -f1)
 
@@ -56,7 +58,9 @@ if [ -z "$DOCKER_CONTAINER" ]; then
 fi
 
 if [ "$LOCAL_IP" == "$REMOTE_IP" ]; then
-      # Same host: connect bridges with a veth pair instead of a VXLAN tunnel
+      # Same host: connect bridges with a veth pair instead of a VXLAN tunnel.
+      # Traffic never leaves the host, so there's nothing to encrypt here —
+      # no XFRM setup on this branch.
       VETH_S="veth-${VXLAN_ID}-s"
       VETH_C="veth-${VXLAN_ID}-c"
       # Both ends are created atomically; the losing task's EEXIST is harmless
@@ -70,11 +74,40 @@ if [ "$LOCAL_IP" == "$REMOTE_IP" ]; then
       sudo ip link set "$LOCAL_VETH" master "$BR_NAME"
       sudo ip link set "$LOCAL_VETH" mtu $OVERLAY_MTU up
   else
-      # Create the VXLAN tunnel using your physical IP and interface:
-      sudo ip link add vxlan-$NS_NAME type vxlan id $VXLAN_ID local $LOCAL_IP remote $REMOTE_IP dstport 4789 # dev ens18
+      # Create the VXLAN tunnel using your physical IP and interface. Each
+      # tunnel gets its own dstport (instead of the IANA-standard 4789) so
+      # the XFRM policies below can tell concurrent tunnels between the same
+      # host pair apart.
+      sudo ip link add vxlan-$NS_NAME type vxlan id $VXLAN_ID local $LOCAL_IP remote $REMOTE_IP dstport $DSTPORT # dev ens18
       # Attach the VXLAN to the bridge:
       sudo ip link set vxlan-$NS_NAME master $BR_NAME
       sudo ip link set vxlan-$NS_NAME mtu $OVERLAY_MTU up
+
+      # Encrypt this tunnel's traffic at the kernel level (AES-256-GCM via
+      # IPsec/ESP, transport mode) between the two hosts' physical IPs,
+      # scoped to this tunnel's dstport so it doesn't collide with any other
+      # concurrent VXLAN tunnel between the same host pair.
+      #
+      # RFC4106 GCM keys are "AES key || 4-byte salt". The server only hands
+      # out a 32-byte AES key (shared verbatim by both VLAN's software AEAD
+      # and this XFRM SA), so the salt is derived here, identically on both
+      # ends, from that same key — it doesn't need to be secret on its own,
+      # only reproducible from the shared secret both sides already have.
+      SALT_HEX=$(printf '%s' "$KEY_HEX" | sha256sum | cut -c1-8)
+      AEAD_KEY_HEX="${KEY_HEX}${SALT_HEX}"
+      SPI=$(printf '0x%08x' "$VXLAN_ID")
+
+      # Outbound: this host -> remote.
+      sudo ip xfrm state add src $LOCAL_IP dst $REMOTE_IP proto esp spi $SPI \
+          mode transport aead 'rfc4106(gcm(aes))' $AEAD_KEY_HEX 128
+      sudo ip xfrm policy add src $LOCAL_IP dst $REMOTE_IP dir out proto udp dport $DSTPORT \
+          tmpl src $LOCAL_IP dst $REMOTE_IP proto esp spi $SPI mode transport
+
+      # Inbound: remote -> this host.
+      sudo ip xfrm state add src $REMOTE_IP dst $LOCAL_IP proto esp spi $SPI \
+          mode transport aead 'rfc4106(gcm(aes))' $AEAD_KEY_HEX 128
+      sudo ip xfrm policy add src $REMOTE_IP dst $LOCAL_IP dir in proto udp dport $DSTPORT \
+          tmpl src $REMOTE_IP dst $LOCAL_IP proto esp spi $SPI mode transport
   fi
 
 # Enable IP forwarding:

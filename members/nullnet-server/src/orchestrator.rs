@@ -1,7 +1,7 @@
 use crate::env::NET_TYPE;
 use crate::events::{Event, EventStore};
 use crate::net::NetExt;
-use crate::net_id_pool::NetIdPool;
+use crate::net_id_pool::{NetIdPool, UdpPortPool};
 use crate::services::changes::{apply_changes, detect_node_disconnect_changes};
 use crate::services::input::StackMap;
 use nullnet_grpc_lib::nullnet_grpc::{
@@ -23,6 +23,12 @@ pub struct Orchestrator {
     clients: Arc<RwLock<HashMap<IpAddr, OutboundStream>>>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
     net_id_pool: Arc<Mutex<NetIdPool>>,
+    /// Per-tunnel VXLAN UDP dstport pool. Unused in VLAN mode.
+    udp_port_pool: Arc<Mutex<UdpPortPool>>,
+    /// net_id -> allocated dstport, for VXLAN tunnels only. Lets
+    /// `send_net_teardown` free the port without every call site having to
+    /// thread it through.
+    net_id_ports: Arc<Mutex<HashMap<u32, u16>>>,
     pub(crate) events: EventStore,
 }
 
@@ -32,6 +38,8 @@ impl Orchestrator {
             clients: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
             net_id_pool: Arc::new(Mutex::new(NetIdPool::new())),
+            udp_port_pool: Arc::new(Mutex::new(UdpPortPool::new())),
+            net_id_ports: Arc::new(Mutex::new(HashMap::new())),
             events: EventStore::new(),
         }
     }
@@ -99,6 +107,7 @@ impl Orchestrator {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn send_net_setup(
         &self,
         dest: IpAddr,
@@ -107,6 +116,8 @@ impl Orchestrator {
         remote: IpAddr,
         docker_containers: (Option<String>, Option<String>),
         dnat_port: Option<u32>,
+        encryption_key: [u8; 32],
+        dstport: Option<u32>,
     ) -> Option<Ipv4Addr> {
         let outbound = self.clients.read().await.get(&dest).cloned();
         if let Some(outbound) = outbound {
@@ -122,6 +133,8 @@ impl Orchestrator {
                 remote,
                 docker_containers,
                 dnat_port,
+                encryption_key,
+                dstport,
             )?;
 
             if outbound.send(Ok(message)).await.is_err() {
@@ -197,6 +210,22 @@ impl Orchestrator {
         self.net_id_pool.lock().await.allocate()
     }
 
+    /// Release a `net_id` that was allocated but never dispatched to either
+    /// endpoint (e.g. a follow-up allocation failed). No teardown messages
+    /// are sent — nothing was ever set up on either client.
+    pub(crate) async fn free_net_id(&self, net_id: u32) {
+        self.net_id_pool.lock().await.free(net_id);
+    }
+
+    /// Allocate a per-tunnel VXLAN dstport and remember it against `net_id`
+    /// so `send_net_teardown` can free it later without the caller having to
+    /// carry it around. Only meaningful when `NET_TYPE == Net::Vxlan`.
+    pub(crate) async fn allocate_vxlan_port(&self, net_id: u32) -> Option<u16> {
+        let port = self.udp_port_pool.lock().await.allocate()?;
+        self.net_id_ports.lock().await.insert(net_id, port);
+        Some(port)
+    }
+
     pub(crate) async fn connected_node_ips(&self) -> Vec<IpAddr> {
         self.clients.read().await.keys().copied().collect()
     }
@@ -213,17 +242,27 @@ impl Orchestrator {
         server_docker: Option<String>,
         net_id: u32,
     ) {
-        for (dest, side, docker) in [(client, "c", client_docker), (server, "s", server_docker)] {
+        // Peeked (not removed yet) so both teardown messages can carry the
+        // same dstport that was used to install this tunnel's XFRM state;
+        // the pool slot itself is freed below, after both sides are notified.
+        let dstport = self.net_id_ports.lock().await.get(&net_id).copied();
+        for (dest, remote, side, docker) in [
+            (client, server, "c", client_docker),
+            (server, client, "s", server_docker),
+        ] {
             let outbound = self.clients.read().await.get(&dest).cloned();
             if let Some(outbound) = outbound {
                 println!("Sending network {net_id} teardown to client {dest}");
 
-                let message = NET_TYPE.teardown(net_id, side, docker);
+                let message = NET_TYPE.teardown(net_id, side, docker, dest, remote, dstport);
 
                 let _ = outbound.send(Ok(message)).await.handle_err(location!());
             }
         }
         self.net_id_pool.lock().await.free(net_id);
+        if let Some(port) = self.net_id_ports.lock().await.remove(&net_id) {
+            self.udp_port_pool.lock().await.free(port);
+        }
     }
 }
 
