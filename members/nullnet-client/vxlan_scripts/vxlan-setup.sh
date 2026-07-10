@@ -94,10 +94,19 @@ if [ "$LOCAL_IP" == "$REMOTE_IP" ]; then
       # top of it can still carry a full OVERLAY_MTU-sized frame.
       sudo ip link set "$LOCAL_VETH" mtu $((OVERLAY_MTU + 32)) up
 
-      sudo ip link add link "$LOCAL_VETH" "$MACSEC_IF" type macsec cipher gcm-aes-256 port 1 encrypt on 2>/dev/null
-      sudo ip macsec add "$MACSEC_IF" tx sa 0 pn 1 on key "$KEY_ID" "$KEY_HEX" 2>/dev/null
-      sudo ip macsec add "$MACSEC_IF" rx port 1 address "$PEER_MAC" on 2>/dev/null
-      sudo ip macsec add "$MACSEC_IF" rx port 1 address "$PEER_MAC" sa 0 pn 1 on key "$KEY_ID" "$KEY_HEX" 2>/dev/null
+      # Note the argument order: `port` (part of this device's own SCI) has
+      # to come before `cipher` — iproute2's macsec option parser is
+      # positional here, not a free-order keyword scanner, and silently
+      # rejects `port` if it comes after `cipher` ("unknown command
+      # \"port\"?"). Unlike the veth-pair creation above, none of these four
+      # commands race against the sibling script invocation (each side only
+      # ever touches its own uniquely-named macsec interface), so their
+      # stderr is deliberately left unsuppressed — a real failure here
+      # should be loud, not silently swallowed.
+      sudo ip link add link "$LOCAL_VETH" "$MACSEC_IF" type macsec port 1 cipher gcm-aes-256 encrypt on
+      sudo ip macsec add "$MACSEC_IF" tx sa 0 pn 1 on key "$KEY_ID" "$KEY_HEX"
+      sudo ip macsec add "$MACSEC_IF" rx port 1 address "$PEER_MAC" on
+      sudo ip macsec add "$MACSEC_IF" rx port 1 address "$PEER_MAC" sa 0 pn 1 on key "$KEY_ID" "$KEY_HEX"
 
       sudo ip link set "$MACSEC_IF" master "$BR_NAME"
       sudo ip link set "$MACSEC_IF" mtu $OVERLAY_MTU up
