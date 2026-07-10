@@ -79,7 +79,13 @@ async fn get_dst_socket(
                 .handle_err(location!()),
             _ => Err("ARP packet with non-IPv4 protocol address type").handle_err(location!()),
         },
-        _ => Err("Unsupported network layer protocol").handle_err(location!()),
+        _ => {
+            eprintln!(
+                "[DEBUG send] vlan_id={vlan_id} unsupported network layer, net={:?}",
+                headers.net
+            );
+            Err("Unsupported network layer protocol").handle_err(location!())
+        }
     }?;
     let dest_ip = Ipv4Addr::from(dest_ip_slice);
     let veth_key = VethKey::new(dest_ip, vlan_id);
