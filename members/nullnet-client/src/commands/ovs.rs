@@ -7,7 +7,16 @@ pub(super) enum OvsCommand<'a> {
     DeleteBridge,
     AddBridge,
     DeleteFlows,
-    AddFlow,
+    /// Traffic arriving from the trunk (already decrypted by nullnet-client's
+    /// userspace forwarder) gets delivered by normal VLAN-aware L2 switching.
+    AddTrunkDeliveryFlow,
+    /// Traffic arriving from any access port always goes out the trunk,
+    /// never directly to another access port. Without this, two access
+    /// ports for the same vlan_id that happen to live on the same host's
+    /// bridge (i.e. the tunnel's two endpoints are colocated) would be
+    /// switched directly by OVS, bypassing the TAP and the encrypting
+    /// userspace forwarder entirely.
+    AddAccessRedirectFlow,
     AddTrunkPort,
     AddAccessPort(&'a str, u16),
 }
@@ -33,7 +42,9 @@ impl OvsCommand<'_> {
             | OvsCommand::DeleteBridge
             | OvsCommand::AddAccessPort(_, _)
             | OvsCommand::AddTrunkPort => "ovs-vsctl",
-            OvsCommand::DeleteFlows | OvsCommand::AddFlow => "ovs-ofctl",
+            OvsCommand::DeleteFlows
+            | OvsCommand::AddTrunkDeliveryFlow
+            | OvsCommand::AddAccessRedirectFlow => "ovs-ofctl",
         }
     }
 
@@ -45,10 +56,22 @@ impl OvsCommand<'_> {
                 .iter()
                 .map(ToString::to_string)
                 .collect(),
-            OvsCommand::AddFlow => ["add-flow", "br0", "priority=0,actions=normal"]
-                .iter()
-                .map(ToString::to_string)
-                .collect(),
+            OvsCommand::AddTrunkDeliveryFlow => [
+                "add-flow",
+                "br0",
+                &format!("priority=200,in_port={TAP_NAME},actions=normal"),
+            ]
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+            OvsCommand::AddAccessRedirectFlow => [
+                "add-flow",
+                "br0",
+                &format!("priority=100,actions=output:{TAP_NAME}"),
+            ]
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
             OvsCommand::AddTrunkPort => ["add-port", "br0", TAP_NAME]
                 .iter()
                 .map(ToString::to_string)

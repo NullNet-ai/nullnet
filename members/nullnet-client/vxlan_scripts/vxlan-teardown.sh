@@ -26,7 +26,13 @@ if [ "$LOCAL_IP" != "$REMOTE_IP" ]; then
     sudo ip xfrm state delete src $REMOTE_IP dst $LOCAL_IP proto esp spi $SPI 2>/dev/null
 fi
 
-# Remove the VXLAN tunnel or same-host veth pair:
+# Remove the VXLAN tunnel or same-host veth pair. Deleting a veth end also
+# destroys its peer and cascades to remove any macsec interface stacked on
+# either end (the same-host branch of vxlan-setup.sh wraps each end in one),
+# but delete both macsec names explicitly too rather than depend solely on
+# that cascade.
+sudo ip link del macsec-${VXLAN_ID}-s 2>/dev/null
+sudo ip link del macsec-${VXLAN_ID}-c 2>/dev/null
 sudo ip link set vxlan-$NS_NAME down && sudo ip link del vxlan-$NS_NAME
 sudo ip link set veth-${VXLAN_ID}-s down && sudo ip link del veth-${VXLAN_ID}-s
 

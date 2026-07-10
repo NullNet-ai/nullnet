@@ -25,11 +25,18 @@ pub(crate) async fn setup_br0(rtnetlink_handle: &RtNetLinkHandle) {
     // delete existing OpenFlow rules
     OvsCommand::DeleteFlows.execute();
 
-    // use the built-in switching logic
-    OvsCommand::AddFlow.execute();
-
-    // add our TAP to the bridge as a trunk port
+    // add our TAP to the bridge as a trunk port first, so the flow rules
+    // below can reference it by name
     OvsCommand::AddTrunkPort.execute();
+
+    // Route every packet through the TAP (and therefore through
+    // nullnet-client's encrypting userspace forwarder), instead of letting
+    // OVS switch same-vlan access ports directly when a tunnel's two
+    // endpoints happen to be colocated on this same host. Traffic already
+    // arriving from the trunk (i.e. already decrypted) still gets delivered
+    // by normal VLAN-aware switching.
+    OvsCommand::AddTrunkDeliveryFlow.execute();
+    OvsCommand::AddAccessRedirectFlow.execute();
 }
 
 pub(crate) async fn configure_access_port(

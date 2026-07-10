@@ -59,8 +59,14 @@ fi
 
 if [ "$LOCAL_IP" == "$REMOTE_IP" ]; then
       # Same host: connect bridges with a veth pair instead of a VXLAN tunnel.
-      # Traffic never leaves the host, so there's nothing to encrypt here —
-      # no XFRM setup on this branch.
+      # This traffic never leaves the host, so there's no physical-network
+      # sniffer to defend against — but it's still worth encrypting for
+      # defense-in-depth against another, differently-privileged
+      # container/process on the SAME host that could otherwise read this
+      # veth's or bridge's plaintext traffic directly. MACsec (802.1AE) wraps
+      # the veth link itself in AES-256-GCM, keyed with this tunnel's key —
+      # no IP addressing involved, so it works regardless of what the
+      # containers on either side are doing.
       VETH_S="veth-${VXLAN_ID}-s"
       VETH_C="veth-${VXLAN_ID}-c"
       # Both ends are created atomically; the losing task's EEXIST is harmless
@@ -68,11 +74,33 @@ if [ "$LOCAL_IP" == "$REMOTE_IP" ]; then
       # Attach our end to our bridge
       if [[ "$BR_NAME" == *_s ]]; then
           LOCAL_VETH="$VETH_S"
+          PEER_VETH="$VETH_C"
+          MACSEC_IF="macsec-${VXLAN_ID}-s"
       else
           LOCAL_VETH="$VETH_C"
+          PEER_VETH="$VETH_S"
+          MACSEC_IF="macsec-${VXLAN_ID}-c"
       fi
-      sudo ip link set "$LOCAL_VETH" master "$BR_NAME"
-      sudo ip link set "$LOCAL_VETH" mtu $OVERLAY_MTU up
+
+      # The peer's MAC is available immediately: `ip link add ... peer name
+      # ...` creates both ends atomically in one kernel call, whether this
+      # invocation won the race above or lost it to the sibling script.
+      PEER_MAC=$(cat /sys/class/net/$PEER_VETH/address)
+      KEY_ID=$(printf '%032x' $VXLAN_ID)
+
+      # MACsec adds up to 32 bytes of overhead (SecTAG + ICV for GCM-AES-256).
+      # Give the underlying veth the extra room — it's a virtual, host-only
+      # link with no physical MTU constraint — so the macsec interface on
+      # top of it can still carry a full OVERLAY_MTU-sized frame.
+      sudo ip link set "$LOCAL_VETH" mtu $((OVERLAY_MTU + 32)) up
+
+      sudo ip link add link "$LOCAL_VETH" "$MACSEC_IF" type macsec cipher gcm-aes-256 port 1 encrypt on 2>/dev/null
+      sudo ip macsec add "$MACSEC_IF" tx sa 0 pn 1 on key "$KEY_ID" "$KEY_HEX" 2>/dev/null
+      sudo ip macsec add "$MACSEC_IF" rx port 1 address "$PEER_MAC" on 2>/dev/null
+      sudo ip macsec add "$MACSEC_IF" rx port 1 address "$PEER_MAC" sa 0 pn 1 on key "$KEY_ID" "$KEY_HEX" 2>/dev/null
+
+      sudo ip link set "$MACSEC_IF" master "$BR_NAME"
+      sudo ip link set "$MACSEC_IF" mtu $OVERLAY_MTU up
   else
       # Create the VXLAN tunnel using your physical IP and interface. Each
       # tunnel gets its own dstport (instead of the IANA-standard 4789) so
