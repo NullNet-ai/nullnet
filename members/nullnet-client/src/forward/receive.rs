@@ -32,27 +32,41 @@ pub async fn receive(
             // the vlan_id has to be readable before decryption so we know
             // which tunnel's key to decrypt with
             let Some((vlan_id, sealed)) = crypto::open_vlan_id(datagram) else {
+                eprintln!(
+                    "[DEBUG receive] datagram too short to contain a vlan_id (len={}) from {remote_socket} — dropping",
+                    frame.size
+                );
                 continue;
             };
             let Some(cipher) = peers.read().await.get_key(vlan_id) else {
+                eprintln!(
+                    "[DEBUG receive] vlan_id={vlan_id} from {remote_socket}: no key in Peers — dropping"
+                );
                 continue;
             };
             // decrypt as the packet exits the tunnel; auth failure (wrong
             // key, corrupted/spoofed datagram) drops it here
             let Some(pkt_data) = cipher.decrypt(sealed) else {
+                eprintln!(
+                    "[DEBUG receive] vlan_id={vlan_id} from {remote_socket}: decrypt/auth FAILED (len={}) — dropping",
+                    sealed.len()
+                );
                 continue;
             };
 
-            match firewall
+            let verdict = firewall
                 .read()
                 .await
-                .resolve_packet(&pkt_data, FirewallDirection::IN)
-            {
+                .resolve_packet(&pkt_data, FirewallDirection::IN);
+            match verdict {
                 FirewallAction::ACCEPT => {
                     // write packet to the kernel
                     device.send(&pkt_data).await.unwrap_or(0);
                 }
                 FirewallAction::REJECT => {
+                    eprintln!(
+                        "[DEBUG receive] vlan_id={vlan_id} from {remote_socket}: firewall REJECT — crafting reply"
+                    );
                     if let Some(reply) = build_termination_message(&pkt_data)
                         && let Some(reply_datagram) = crypto::seal(vlan_id, &cipher, &reply)
                     {
@@ -60,9 +74,17 @@ pub async fn receive(
                             .send_to(&reply_datagram, remote_socket)
                             .await
                             .unwrap_or(0);
+                    } else {
+                        eprintln!(
+                            "[DEBUG receive] vlan_id={vlan_id}: REJECT verdict but couldn't build/seal a reply"
+                        );
                     }
                 }
-                FirewallAction::DENY => {}
+                FirewallAction::DENY => {
+                    eprintln!(
+                        "[DEBUG receive] vlan_id={vlan_id} from {remote_socket}: firewall DENY — dropping silently"
+                    );
+                }
             }
         }
     }
