@@ -29,14 +29,16 @@ pub(crate) async fn setup_br0(rtnetlink_handle: &RtNetLinkHandle) {
     // below can reference it by name
     OvsCommand::AddTrunkPort.execute();
 
-    // Route every packet through the TAP (and therefore through
-    // nullnet-client's encrypting userspace forwarder), instead of letting
-    // OVS switch same-vlan access ports directly when a tunnel's two
-    // endpoints happen to be colocated on this same host. Traffic already
-    // arriving from the trunk (i.e. already decrypted) still gets delivered
-    // by normal VLAN-aware switching.
+    // Safe fallback (same as OVS's original single default rule) for
+    // anything not covered by a more specific rule — mainly the brief
+    // window between an access port being created and its own redirect
+    // rule (installed in `configure_access_port`) landing.
+    OvsCommand::AddDefaultFlow.execute();
+
+    // Traffic arriving from the trunk (i.e. already decrypted by
+    // nullnet-client's userspace forwarder) is delivered by normal
+    // VLAN-aware switching.
     OvsCommand::AddTrunkDeliveryFlow.execute();
-    OvsCommand::AddAccessRedirectFlow.execute();
 }
 
 pub(crate) async fn configure_access_port(
@@ -58,9 +60,22 @@ pub(crate) async fn configure_access_port(
 
     // add the peer interface to the bridge as an access port
     OvsCommand::AddAccessPort(&veth_peer_name, vlan_id).execute();
+
+    // Redirect this port's traffic to the trunk instead of letting OVS
+    // switch it directly to another local access port — and re-add the
+    // 802.1Q tag that gets stripped along the way, since the raw `output`
+    // action used to reach the trunk doesn't do that automatically the way
+    // `actions=normal` would.
+    OvsCommand::AddAccessRedirectFlow(&veth_peer_name, vlan_id).execute();
 }
 
 pub(crate) async fn remove_vlan(rtnetlink_handle: &RtNetLinkHandle, vlan_id: u16) {
+    // remove this port's redirect flow before the port itself disappears,
+    // so no stale rule is left behind that could later match a different,
+    // unrelated port reusing the same OVS port number
+    let veth_peer_name = format!("veth-{vlan_id}p");
+    OvsCommand::DeleteAccessRedirectFlow(&veth_peer_name).execute();
+
     // delete the veth pair
     rtnetlink_handle
         .execute(NetLinkCommand::DeleteVeth(vlan_id))
