@@ -19,7 +19,9 @@ DOCKER_CONTAINER=$7
 # Remove this tunnel's XFRM state + policy pair, if any was installed (the
 # same-host branch of vxlan-setup.sh never creates one).
 if [ "$LOCAL_IP" != "$REMOTE_IP" ]; then
-    SPI=$(printf '0x%08x' "$VXLAN_ID")
+    # Must match the same offset vxlan-setup.sh uses, to delete the actual
+    # installed SPI rather than the raw (and IANA-reserved) vxlan_id.
+    SPI=$(printf '0x%08x' $((VXLAN_ID + 1000)))
     # Same argument-order requirement as vxlan-setup.sh: selector fields
     # (src/dst/proto/dport) must stay contiguous, with `dir` only after.
     sudo ip xfrm policy delete src $LOCAL_IP dst $REMOTE_IP proto udp dport $DSTPORT dir out 2>/dev/null

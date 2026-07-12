@@ -141,7 +141,11 @@ if [ "$LOCAL_IP" == "$REMOTE_IP" ]; then
       # only reproducible from the shared secret both sides already have.
       SALT_HEX=$(printf '%s' "$KEY_HEX" | sha256sum | cut -c1-8)
       AEAD_KEY_HEX="${KEY_HEX}${SALT_HEX}"
-      SPI=$(printf '0x%08x' "$VXLAN_ID")
+      # SPI values 1-255 are IANA-reserved (RFC 4301) and the kernel's XFRM
+      # code rejects them outright ("Invalid argument"). vxlan_id starts at
+      # 101 (see net_id_pool.rs), which falls straight into that reserved
+      # range — offset it well clear of 255 rather than using the raw ID.
+      SPI=$(printf '0x%08x' $((VXLAN_ID + 1000)))
 
       # Outbound: this host -> remote.
       # Note the argument order in both commands below — same lesson as
