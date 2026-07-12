@@ -135,21 +135,27 @@ if [ "$LOCAL_IP" == "$REMOTE_IP" ]; then
       SPI=$(printf '0x%08x' "$VXLAN_ID")
 
       # Outbound: this host -> remote.
-      # Note the argument order: the selector (src/dst/proto/dport) has to
-      # stay contiguous, with `dir` appearing only after it's complete —
-      # same lesson as the macsec argument-order bug. Splitting the
-      # selector by putting `dir` in the middle of it confuses the parser
-      # into thinking `proto` was given twice ("duplicate \"unknown\":
-      # \"proto\" is the second value"), and the policy silently never
-      # gets installed.
+      # Note the argument order in both commands below — same lesson as
+      # the macsec argument-order bug, `ip xfrm` is positional, not a
+      # free-order keyword scanner:
+      #   - `state add`: the ALGO-LIST (`aead ...`) must come before
+      #     `mode`, not after — "ID [ALGO-LIST] [mode MODE] ..." per
+      #     `ip xfrm state help`. Reversed, it fails with a bare
+      #     "RTNETLINK answers: Invalid argument".
+      #   - `policy add`: the selector (src/dst/proto/dport) must stay
+      #     contiguous, with `dir` only appearing after it's complete —
+      #     "SELECTOR dir DIR ..." per `ip xfrm policy help`. Splitting it
+      #     by putting `dir` in the middle confuses the parser into
+      #     thinking `proto` was given twice ("duplicate \"unknown\":
+      #     \"proto\" is the second value").
       sudo ip xfrm state add src $LOCAL_IP dst $REMOTE_IP proto esp spi $SPI \
-          mode transport aead 'rfc4106(gcm(aes))' $AEAD_KEY_HEX 128
+          aead 'rfc4106(gcm(aes))' $AEAD_KEY_HEX 128 mode transport
       sudo ip xfrm policy add src $LOCAL_IP dst $REMOTE_IP proto udp dport $DSTPORT dir out \
           tmpl src $LOCAL_IP dst $REMOTE_IP proto esp spi $SPI mode transport
 
       # Inbound: remote -> this host.
       sudo ip xfrm state add src $REMOTE_IP dst $LOCAL_IP proto esp spi $SPI \
-          mode transport aead 'rfc4106(gcm(aes))' $AEAD_KEY_HEX 128
+          aead 'rfc4106(gcm(aes))' $AEAD_KEY_HEX 128 mode transport
       sudo ip xfrm policy add src $REMOTE_IP dst $LOCAL_IP proto udp dport $DSTPORT dir in \
           tmpl src $REMOTE_IP dst $LOCAL_IP proto esp spi $SPI mode transport
   fi
