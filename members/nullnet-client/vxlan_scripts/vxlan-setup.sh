@@ -1,5 +1,14 @@
 #!/bin/bash
 
+# TEMP DEBUG: print every command with its actual substituted values to
+# stderr right before running it, so a failure shows the exact real command
+# next to its exact error instead of us guessing from documentation.
+# NOTE: this will print the AEAD key material (derived from the tunnel's
+# AES-256 key) into whatever captures nullnet-client's stderr — treat those
+# logs as sensitive while this is enabled, and remove this line once the
+# xfrm argument-order issue is found.
+set -x
+
 # Read CLI arguments:
 if [ "$#" -lt 9 ] || [ "$#" -gt 10 ]; then
     echo "Usage: $0 <vxlan_id> <ns_name> <ns_net> <br_name> <br_net> <local_ip> <remote_ip> <key_hex> <dstport> [docker_container]"
