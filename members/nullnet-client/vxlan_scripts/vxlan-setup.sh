@@ -135,15 +135,22 @@ if [ "$LOCAL_IP" == "$REMOTE_IP" ]; then
       SPI=$(printf '0x%08x' "$VXLAN_ID")
 
       # Outbound: this host -> remote.
+      # Note the argument order: the selector (src/dst/proto/dport) has to
+      # stay contiguous, with `dir` appearing only after it's complete —
+      # same lesson as the macsec argument-order bug. Splitting the
+      # selector by putting `dir` in the middle of it confuses the parser
+      # into thinking `proto` was given twice ("duplicate \"unknown\":
+      # \"proto\" is the second value"), and the policy silently never
+      # gets installed.
       sudo ip xfrm state add src $LOCAL_IP dst $REMOTE_IP proto esp spi $SPI \
           mode transport aead 'rfc4106(gcm(aes))' $AEAD_KEY_HEX 128
-      sudo ip xfrm policy add src $LOCAL_IP dst $REMOTE_IP dir out proto udp dport $DSTPORT \
+      sudo ip xfrm policy add src $LOCAL_IP dst $REMOTE_IP proto udp dport $DSTPORT dir out \
           tmpl src $LOCAL_IP dst $REMOTE_IP proto esp spi $SPI mode transport
 
       # Inbound: remote -> this host.
       sudo ip xfrm state add src $REMOTE_IP dst $LOCAL_IP proto esp spi $SPI \
           mode transport aead 'rfc4106(gcm(aes))' $AEAD_KEY_HEX 128
-      sudo ip xfrm policy add src $REMOTE_IP dst $LOCAL_IP dir in proto udp dport $DSTPORT \
+      sudo ip xfrm policy add src $REMOTE_IP dst $LOCAL_IP proto udp dport $DSTPORT dir in \
           tmpl src $REMOTE_IP dst $LOCAL_IP proto esp spi $SPI mode transport
   fi
 

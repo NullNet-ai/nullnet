@@ -20,9 +20,11 @@ DOCKER_CONTAINER=$7
 # same-host branch of vxlan-setup.sh never creates one).
 if [ "$LOCAL_IP" != "$REMOTE_IP" ]; then
     SPI=$(printf '0x%08x' "$VXLAN_ID")
-    sudo ip xfrm policy delete src $LOCAL_IP dst $REMOTE_IP dir out proto udp dport $DSTPORT 2>/dev/null
+    # Same argument-order requirement as vxlan-setup.sh: selector fields
+    # (src/dst/proto/dport) must stay contiguous, with `dir` only after.
+    sudo ip xfrm policy delete src $LOCAL_IP dst $REMOTE_IP proto udp dport $DSTPORT dir out 2>/dev/null
     sudo ip xfrm state delete src $LOCAL_IP dst $REMOTE_IP proto esp spi $SPI 2>/dev/null
-    sudo ip xfrm policy delete src $REMOTE_IP dst $LOCAL_IP dir in proto udp dport $DSTPORT 2>/dev/null
+    sudo ip xfrm policy delete src $REMOTE_IP dst $LOCAL_IP proto udp dport $DSTPORT dir in 2>/dev/null
     sudo ip xfrm state delete src $REMOTE_IP dst $LOCAL_IP proto esp spi $SPI 2>/dev/null
 fi
 
