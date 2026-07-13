@@ -140,7 +140,10 @@ if [ "$LOCAL_IP" == "$REMOTE_IP" ]; then
       # ends, from that same key — it doesn't need to be secret on its own,
       # only reproducible from the shared secret both sides already have.
       SALT_HEX=$(printf '%s' "$KEY_HEX" | sha256sum | cut -c1-8)
-      AEAD_KEY_HEX="${KEY_HEX}${SALT_HEX}"
+      # `ip xfrm state add`'s ALGO-KEYMAT requires a "0x" prefix — a bare hex
+      # string is rejected outright with a bare "RTNETLINK answers: Invalid
+      # argument", confirmed by extensive live testing (see commit history).
+      AEAD_KEY_HEX="0x${KEY_HEX}${SALT_HEX}"
       # SPI values 1-255 are IANA-reserved (RFC 4301) and the kernel's XFRM
       # code rejects them outright ("Invalid argument"). vxlan_id starts at
       # 101 (see net_id_pool.rs), which falls straight into that reserved
