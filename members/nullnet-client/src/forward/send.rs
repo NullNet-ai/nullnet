@@ -30,32 +30,23 @@ pub async fn send(
             let Ok((dst_socket, vlan_id)) = get_dst_socket(pkt_data, &peers).await else {
                 continue;
             };
-            let verdict = firewall
+            match firewall
                 .read()
                 .await
-                .resolve_packet(pkt_data, FirewallDirection::OUT);
-            match verdict {
+                .resolve_packet(pkt_data, FirewallDirection::OUT)
+            {
                 FirewallAction::ACCEPT => {
                     // encrypt as the packet enters the tunnel: without a key
                     // for this vlan_id (tunnel torn down mid-flight, or
                     // setup never landed) there is nothing safe to send.
                     let Some(cipher) = peers.read().await.get_key(vlan_id) else {
-                        eprintln!(
-                            "[DEBUG send] vlan_id={vlan_id} ACCEPT but no key in Peers — dropping"
-                        );
                         continue;
                     };
                     if let Some(datagram) = crypto::seal(vlan_id, &cipher, pkt_data) {
                         socket.send_to(&datagram, dst_socket).await.unwrap_or(0);
-                    } else {
-                        eprintln!("[DEBUG send] vlan_id={vlan_id} seal() failed — dropping");
                     }
                 }
-                FirewallAction::DENY | FirewallAction::REJECT => {
-                    eprintln!(
-                        "[DEBUG send] vlan_id={vlan_id} OUT verdict={verdict:?} — dropping (no reply sent on OUT)"
-                    );
-                }
+                FirewallAction::DENY | FirewallAction::REJECT => {}
             }
         }
     }
@@ -79,13 +70,7 @@ async fn get_dst_socket(
                 .handle_err(location!()),
             _ => Err("ARP packet with non-IPv4 protocol address type").handle_err(location!()),
         },
-        _ => {
-            eprintln!(
-                "[DEBUG send] vlan_id={vlan_id} unsupported network layer, net={:?}",
-                headers.net
-            );
-            Err("Unsupported network layer protocol").handle_err(location!())
-        }
+        _ => Err("Unsupported network layer protocol").handle_err(location!()),
     }?;
     let dest_ip = Ipv4Addr::from(dest_ip_slice);
     let veth_key = VethKey::new(dest_ip, vlan_id);
