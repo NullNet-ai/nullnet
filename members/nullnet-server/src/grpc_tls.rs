@@ -24,17 +24,35 @@ const CA_KEY_FILE: &str = "ca-key.pem";
 
 /// Load the persisted cert/key, generating and persisting a CA-signed one
 /// on first boot (see module docs).
+///
+/// Only reuses what's on disk if it actually verifies: the leaf must parse,
+/// its issuer must match the CA's subject, and its signature must check out
+/// against the CA's public key (see `verify_leaf_signed_by_ca`). Anything
+/// short of that — a leaf without a matching CA (e.g. left over from a
+/// pre-CA build of this feature), a mismatched pair, or plain corruption —
+/// is treated as absent and regenerated, rather than silently served as the
+/// server's TLS identity.
 pub(crate) async fn load_or_generate() -> Result<(String, String), Error> {
     let dir = PathBuf::from(GRPC_TLS_DIR);
     let cert_path = dir.join(CERT_FILE);
     let key_path = dir.join(KEY_FILE);
+    let ca_cert_path = dir.join(CA_CERT_FILE);
 
-    if let (Ok(cert_pem), Ok(key_pem)) = (
+    if let (Ok(cert_pem), Ok(key_pem), Ok(ca_cert_pem)) = (
         tokio::fs::read_to_string(&cert_path).await,
         tokio::fs::read_to_string(&key_path).await,
+        tokio::fs::read_to_string(&ca_cert_path).await,
     ) {
-        println!("Loaded gRPC control channel TLS certificate from '{GRPC_TLS_DIR}'");
-        return Ok((cert_pem, key_pem));
+        match verify_leaf_signed_by_ca(&cert_pem, &ca_cert_pem) {
+            Ok(()) => {
+                println!("Loaded gRPC control channel TLS certificate from '{GRPC_TLS_DIR}'");
+                return Ok((cert_pem, key_pem));
+            }
+            Err(e) => println!(
+                "Persisted leaf cert under '{GRPC_TLS_DIR}' failed verification against the \
+                 persisted CA ({e}) — regenerating the leaf"
+            ),
+        }
     }
 
     tokio::fs::create_dir_all(&dir)
@@ -52,6 +70,41 @@ pub(crate) async fn load_or_generate() -> Result<(String, String), Error> {
     restrict_key_permissions(&key_path).await?;
 
     Ok((cert_pem, key_pem))
+}
+
+/// Verify `cert_pem` parses, is issued by `ca_cert_pem`'s subject, and its
+/// signature checks out against the CA's public key — i.e. that this is
+/// genuinely a leaf signed by this specific CA, not just two unrelated
+/// files that happen to sit next to each other on disk.
+fn verify_leaf_signed_by_ca(cert_pem: &str, ca_cert_pem: &str) -> Result<(), String> {
+    let (_, leaf_pem) = x509_parser::pem::parse_x509_pem(cert_pem.as_bytes())
+        .map_err(|e| format!("failed to parse leaf cert: {e}"))?;
+    let leaf = leaf_pem
+        .parse_x509()
+        .map_err(|e| format!("failed to parse leaf cert: {e}"))?;
+
+    let (_, ca_pem) = x509_parser::pem::parse_x509_pem(ca_cert_pem.as_bytes())
+        .map_err(|e| format!("failed to parse CA cert: {e}"))?;
+    let ca = ca_pem
+        .parse_x509()
+        .map_err(|e| format!("failed to parse CA cert: {e}"))?;
+
+    if leaf.tbs_certificate.issuer != ca.tbs_certificate.subject {
+        return Err("leaf cert's issuer does not match the CA's subject".to_string());
+    }
+    leaf.verify_signature(Some(ca.public_key()))
+        .map_err(|e| format!("leaf cert signature does not verify against the CA: {e}"))?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let validity = leaf.validity();
+    if now < validity.not_before.timestamp() || now > validity.not_after.timestamp() {
+        return Err("leaf cert is not currently valid (expired or not yet valid)".to_string());
+    }
+
+    Ok(())
 }
 
 /// The CA's distinguished name must differ from the leaf's, or a validator
