@@ -5,7 +5,7 @@ use crate::commands::{
     RtNetLinkHandle, cleanup_network, find_ethernet_interface, find_ethernet_ip, setup_br0,
 };
 use crate::control_channel::control_channel;
-use crate::env::{CONTROL_SERVICE_ADDR, CONTROL_SERVICE_PORT};
+use crate::env::{CONTROL_SERVICE_ADDR, CONTROL_SERVICE_CA_CERT, CONTROL_SERVICE_PORT};
 use crate::forward::receive::receive;
 use crate::forward::send::send;
 use crate::host_mappings::HostMappingsState;
@@ -20,6 +20,7 @@ use nullnet_grpc_lib::nullnet_grpc::{
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{panic, process};
@@ -280,8 +281,12 @@ fn resolve_server_ip() -> Option<std::net::Ipv4Addr> {
 async fn grpc_init() -> Result<NullnetGrpcInterface, Error> {
     let host = CONTROL_SERVICE_ADDR.to_string();
     let port = *CONTROL_SERVICE_PORT;
+    let ca_cert = CONTROL_SERVICE_CA_CERT
+        .as_deref()
+        .ok_or("'CONTROL_SERVICE_CA_CERT' environment variable must be set")
+        .handle_err(location!())?;
 
-    let server = NullnetGrpcInterface::new(&host, port, false)
+    let server = NullnetGrpcInterface::new(&host, port, Path::new(ca_cert))
         .await
         .handle_err(location!())?;
 

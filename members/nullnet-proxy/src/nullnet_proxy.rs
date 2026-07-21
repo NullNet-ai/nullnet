@@ -1,4 +1,4 @@
-use crate::env::{CONTROL_SERVICE_ADDR, CONTROL_SERVICE_PORT};
+use crate::env::{CONTROL_SERVICE_ADDR, CONTROL_SERVICE_CA_CERT, CONTROL_SERVICE_PORT};
 use crate::tls::CertStore;
 use arc_swap::ArcSwap;
 use nullnet_grpc_lib::NullnetGrpcInterface;
@@ -7,6 +7,7 @@ use nullnet_grpc_lib::nullnet_grpc::{
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::net::{IpAddr, SocketAddr};
+use std::path::Path;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -20,12 +21,12 @@ impl NullnetProxy {
     pub async fn new(certs: Arc<ArcSwap<CertStore>>) -> Result<Self, Error> {
         let host = CONTROL_SERVICE_ADDR.to_string();
         let port = *CONTROL_SERVICE_PORT;
+        let ca_cert = CONTROL_SERVICE_CA_CERT
+            .as_deref()
+            .ok_or("'CONTROL_SERVICE_CA_CERT' environment variable must be set")
+            .handle_err(location!())?;
 
-        // TODO(grpc-tls): connecting with tls = false. Cert private keys are
-        // delivered over this channel via WatchCertificates, so enable TLS
-        // (tls = true) once the control service serves gRPC over TLS, so keys
-        // never travel in the clear.
-        let server = NullnetGrpcInterface::new(&host, port, false)
+        let server = NullnetGrpcInterface::new(&host, port, Path::new(ca_cert))
             .await
             .handle_err(location!())?;
 

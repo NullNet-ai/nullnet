@@ -77,6 +77,21 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   CERT_RENEWAL_DNS_PROPAGATION_SECS=30     # wait after writing the TXT record
   ```
 
+- the gRPC control channel itself (nullnet-client/nullnet-proxy ↔ nullnet-server) is TLS-only,
+  authenticated by a private CA. On first boot the server generates its own CA
+  (`members/nullnet-server/grpc-tls/ca-cert.pem` + `ca-key.pem`, created once and never
+  regenerated) and signs its leaf cert with it. Copy `ca-cert.pem` to every client/proxy host and
+  set `CONTROL_SERVICE_CA_CERT` there (see below) — it's **required**: clients pin the channel to
+  that CA and do full standard chain validation, so only a leaf actually signed by it is accepted.
+  Because clients trust the stable CA root rather than the leaf, rotating the leaf later needs no
+  client-side changes. Client authentication (mTLS) remains a further follow-up.
+
+  Validation includes hostname matching, so the leaf's SAN must cover whatever host/IP clients use
+  as `CONTROL_SERVICE_ADDR`. It's derived in this order: `CONTROL_SERVICE_TLS_SAN`
+  (comma-separated, if set) → the server's own `CONTROL_SERVICE_ADDR` (if set — often already the
+  same address clients are told to connect to) → `localhost`. Set `CONTROL_SERVICE_TLS_SAN`
+  explicitly if the server's address isn't in its own `.env` or differs from what clients use.
+
 - service configuration is split per **stack** — one TOML file per stack under
   `members/nullnet-server/services/`. The filename (minus `.toml`) is the stack name.
   For example, to define a stack called `my-app`, create `services/my-app.toml`:
@@ -182,7 +197,10 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   ```
   CONTROL_SERVICE_ADDR=192.168.1.100
   CONTROL_SERVICE_PORT=50051
+  CONTROL_SERVICE_CA_CERT=./ca-cert.pem
   ```
+  `CONTROL_SERVICE_CA_CERT` is **required** — point it at a copy of the server's own
+  `grpc-tls/ca-cert.pem` (see the server section above) to pin and authenticate the control channel.
 
 - run the project as a daemon (from the repo root)
   ```
@@ -205,7 +223,10 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   ```
   CONTROL_SERVICE_ADDR=192.168.1.100
   CONTROL_SERVICE_PORT=50051
+  CONTROL_SERVICE_CA_CERT=./ca-cert.pem
   ```
+  `CONTROL_SERVICE_CA_CERT` is **required** — point it at a copy of the server's own
+  `grpc-tls/ca-cert.pem` (see the server section above) to pin and authenticate the control channel.
 
   > **⚠️ The client attaches a default-deny eBPF firewall to the uplink NIC on startup.** It permits
   > only the nullnet control plane (gRPC to the server), data plane (VXLAN to peers), established

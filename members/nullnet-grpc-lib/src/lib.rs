@@ -1,5 +1,7 @@
+mod control_tls_verifier;
 mod proto;
 
+use crate::control_tls_verifier::PinnedCa;
 use crate::nullnet_grpc::nullnet_grpc_client::NullnetGrpcClient;
 use crate::nullnet_grpc::{
     AgentEvent, BackendTriggerRequest, CertBundle, EgressDestinationEntry, EgressDestinationReport,
@@ -7,6 +9,7 @@ use crate::nullnet_grpc::{
     PortMappingBundle, ProxyRequest, ServiceReport, ServicesListResponse, Upstream,
 };
 pub use proto::*;
+use std::path::Path;
 use tokio::sync::mpsc;
 use tonic::Request;
 pub use tonic::Streaming;
@@ -19,25 +22,25 @@ pub struct NullnetGrpcInterface {
 }
 
 impl NullnetGrpcInterface {
+    /// Connects over TLS, trusting *only* `ca_cert` (PEM) — the server's
+    /// private CA root — for full standard chain validation, including
+    /// hostname matching (see `control_tls_verifier::PinnedCa`).
     #[allow(clippy::missing_errors_doc)]
-    pub async fn new(host: &str, port: u16, tls: bool) -> Result<Self, String> {
-        let protocol = if tls { "https" } else { "http" };
+    pub async fn new(host: &str, port: u16, ca_cert: &Path) -> Result<Self, String> {
+        let ca_cert_pem = tokio::fs::read(ca_cert).await.map_err(|e| e.to_string())?;
+        let verifier = PinnedCa::verifier(&ca_cert_pem)?;
 
         // Keepalive so a dead/unreachable server breaks open streams within
         // ~30s (PING every 10s, drop if unacked for 20s) instead of hanging.
         // Consumers rely on the stream erroring out to exit and be restarted.
-        let mut endpoint = Channel::from_shared(format!("{protocol}://{host}:{port}"))
+        let endpoint = Channel::from_shared(format!("https://{host}:{port}"))
             .map_err(|e| e.to_string())?
             .connect_timeout(std::time::Duration::from_secs(10))
             .http2_keep_alive_interval(std::time::Duration::from_secs(10))
             .keep_alive_timeout(std::time::Duration::from_secs(20))
-            .keep_alive_while_idle(true);
-
-        if tls {
-            endpoint = endpoint
-                .tls_config(ClientTlsConfig::new().with_native_roots())
-                .map_err(|e| e.to_string())?;
-        }
+            .keep_alive_while_idle(true)
+            .tls_config_with_verifier(ClientTlsConfig::new(), verifier)
+            .map_err(|e| e.to_string())?;
 
         loop {
             if let Ok(channel) = endpoint.connect().await {
