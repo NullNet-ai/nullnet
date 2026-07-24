@@ -9,10 +9,11 @@ keywords = ["firewall", "network", "application", "centralized", "monitor"]
 categories = ["network-programming"]
 
 [dependencies]
-tonic = { workspace = true, features = ["_tls-any", "tls-native-roots"] }
+tonic = { workspace = true, features = ["_tls-any"] }
 prost.workspace = true
 tonic-prost.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["fs"] }
+tokio-rustls = "0.26"
 serde = { workspace = true, features = ["derive"] }
 
 [build-dependencies]

@@ -6,6 +6,7 @@ mod env;
 mod events;
 mod geo;
 mod graphviz;
+mod grpc_tls;
 mod http_server;
 mod net;
 mod net_id_pool;
@@ -21,7 +22,7 @@ use nullnet_grpc_lib::nullnet_grpc::nullnet_grpc_server::NullnetGrpcServer;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::{panic, process};
-use tonic::transport::Server;
+use tonic::transport::{Identity, Server, ServerTlsConfig};
 
 const PORT: u16 = 50051;
 
@@ -52,11 +53,14 @@ async fn main() -> Result<(), Error> {
         );
     }
 
-    // TODO(grpc-tls): the gRPC server is plaintext, but WatchCertificates
-    // streams private keys. Enable TLS here (Server::builder().tls_config(..)),
-    // ideally mTLS, so keys never travel in clear; until then keep the control
-    // plane on a trusted network. Proxy side: NullnetGrpcInterface::new(.., true).
-    let mut server = Server::builder();
+    // Server-only TLS: encrypts the channel (WatchCertificates streams
+    // customer private keys) but doesn't yet authenticate clients — mTLS is
+    // a separate, still-open follow-up for that.
+    let (cert_pem, key_pem) = grpc_tls::load_or_generate().await?;
+    let tls_config = ServerTlsConfig::new().identity(Identity::from_pem(cert_pem, key_pem));
+    let mut server = Server::builder()
+        .tls_config(tls_config)
+        .handle_err(location!())?;
 
     let nullnet = init_nullnet().await?;
     let app_state = http_server::AppState {
