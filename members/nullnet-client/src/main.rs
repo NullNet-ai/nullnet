@@ -281,14 +281,10 @@ fn resolve_server_ip() -> Option<std::net::Ipv4Addr> {
 async fn grpc_init() -> Result<NullnetGrpcInterface, Error> {
     let host = CONTROL_SERVICE_ADDR.to_string();
     let port = *CONTROL_SERVICE_PORT;
-    let ca_cert = CONTROL_SERVICE_CA_CERT
-        .as_deref()
-        .ok_or("'CONTROL_SERVICE_CA_CERT' environment variable must be set")
-        .handle_err(location!())?;
-
-    let server = NullnetGrpcInterface::new(&host, port, Path::new(ca_cert))
-        .await
-        .handle_err(location!())?;
+    let server =
+        NullnetGrpcInterface::new(&host, port, Path::new(CONTROL_SERVICE_CA_CERT.as_str()))
+            .await
+            .handle_err(location!())?;
 
     Ok(server)
 }

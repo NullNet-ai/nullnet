@@ -27,7 +27,9 @@ impl NullnetGrpcInterface {
     /// hostname matching (see `control_tls_verifier::PinnedCa`).
     #[allow(clippy::missing_errors_doc)]
     pub async fn new(host: &str, port: u16, ca_cert: &Path) -> Result<Self, String> {
-        let ca_cert_pem = tokio::fs::read(ca_cert).await.map_err(|e| e.to_string())?;
+        let ca_cert_pem = tokio::fs::read(ca_cert)
+            .await
+            .map_err(|e| format!("failed to read CA cert at {}: {e}", ca_cert.display()))?;
         let verifier = PinnedCa::verifier(&ca_cert_pem)?;
 
         // Keepalive so a dead/unreachable server breaks open streams within
