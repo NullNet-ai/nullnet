@@ -26,7 +26,7 @@ use tonic::transport::Server;
 
 const PORT: u16 = 50051;
 /// Default path for the SQLite database; override with `DATABASE_URL`.
-const DEFAULT_DATABASE_URL: &str = "./data/nullnet.db";
+const DEFAULT_DATABASE_URL: &str = "/var/nullnet/data/nullnet.db";
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
