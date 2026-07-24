@@ -2,6 +2,7 @@ mod cert;
 mod cert_renewal;
 mod certs;
 mod crypto;
+mod db;
 mod env;
 mod events;
 mod geo;
@@ -24,6 +25,8 @@ use std::{panic, process};
 use tonic::transport::Server;
 
 const PORT: u16 = 50051;
+/// Default path for the SQLite database; override with `DATABASE_URL`.
+const DEFAULT_DATABASE_URL: &str = "./data/nullnet.db";
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -40,6 +43,12 @@ async fn main() -> Result<(), Error> {
 
     // cert private keys are encrypted at rest with this key; fail fast if absent
     crypto::init_from_env()?;
+
+    // SQLite-backed storage for server data (certs/services, going forward):
+    // pending schema migrations run automatically before anything else starts.
+    let database_url =
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string());
+    db::Db::open(&database_url).await?;
 
     // The firewall allowlist is now global (single point of decision). An empty
     // ingress-TCP list means every client's host firewall drops ALL inbound TCP —

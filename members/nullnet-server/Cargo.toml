@@ -41,6 +41,10 @@ openssl = "0.10"
 quick-xml = "0.39"
 aws-sdk-route53 = "1"
 aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
+diesel = { workspace = true, features = ["sqlite", "returning_clauses_for_sqlite_3_35"] }
+diesel-async = { workspace = true, features = ["sync-connection-wrapper", "tokio"] }
+diesel_migrations = { workspace = true, features = ["sqlite"] }
+libsqlite3-sys = { workspace = true, features = ["bundled"] }
 
 [build-dependencies]
 
