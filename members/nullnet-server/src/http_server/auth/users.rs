@@ -214,6 +214,21 @@ pub(crate) async fn update_handler(
         Some(Err(_)) => return rejected(StatusCode::BAD_REQUEST, "invalid role"),
         None => None,
     };
+    // Mirrors `delete_handler`'s guard: a role change that demotes the last
+    // remaining admin would lock the deployment out just as surely as
+    // deleting that account would.
+    if target_user.role == Role::Admin.as_str() && role.is_some_and(|r| r != Role::Admin) {
+        match state.db.users().count_admins().await {
+            Ok(n) if n <= 1 => {
+                return rejected(
+                    StatusCode::BAD_REQUEST,
+                    "cannot demote the last remaining admin",
+                );
+            }
+            Err(_) => return internal_error("failed to check admin count"),
+            _ => {}
+        }
+    }
     let password_hash = match req.password.as_deref().filter(|p| !p.is_empty()) {
         Some(p) => {
             if let Err(resp) = validate_password(p) {
