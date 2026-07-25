@@ -160,6 +160,11 @@ pub(crate) async fn create_handler(
 pub(crate) struct UpdateUserReq {
     username: Option<String>,
     password: Option<String>,
+    /// Required (and checked against the account's own current hash) only
+    /// when the caller is changing *their own* password — see `is_self`
+    /// below. An admin resetting someone else's password needs no proof,
+    /// same as `reset_mfa` for someone else.
+    current_password: Option<String>,
     role: Option<String>,
     scopes: Option<Vec<String>>,
     #[serde(default)]
@@ -178,11 +183,17 @@ pub(crate) async fn update_handler(
     if let Err(resp) = require_admin(&ctx) {
         return resp;
     }
-    match state.db.users().by_id(&id).await {
-        Ok(Some(_)) => {}
+    let target_user = match state.db.users().by_id(&id).await {
+        Ok(Some(u)) => u,
         Ok(None) => return rejected(StatusCode::NOT_FOUND, "user not found"),
         Err(_) => return internal_error("user lookup failed"),
-    }
+    };
+    // An admin acting on someone else's account needs no extra proof — that's
+    // the legitimate "admin reset" path. Acting on their *own* account via
+    // this same admin-only endpoint must not be weaker than the dedicated
+    // self-service endpoints (e.g. `disable_handler`), or a hijacked admin
+    // session could durably take over the account with no proof at all.
+    let is_self = id == ctx.user_id;
 
     // A blank password means "keep the current one" (the edit form's
     // placeholder says as much); a *provided* username, though, must be a
@@ -203,6 +214,17 @@ pub(crate) async fn update_handler(
         Some(p) => {
             if let Err(resp) = validate_password(p) {
                 return resp;
+            }
+            if is_self {
+                let current_ok = req.current_password.as_deref().is_some_and(|cur| {
+                    password::verify(cur, &target_user.password_hash).unwrap_or(false)
+                });
+                if !current_ok {
+                    return rejected(
+                        StatusCode::UNAUTHORIZED,
+                        "current password required to change your own password",
+                    );
+                }
             }
             match password::hash(p) {
                 Ok(h) => Some(h),

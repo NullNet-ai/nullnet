@@ -3,21 +3,24 @@ import Layout from '../components/Layout';
 import Modal from '../components/Modal';
 import { useApi } from '../hooks/useApi';
 import { apiFetch } from '../lib/apiFetch';
+import { useAuth } from '../AuthContext';
 import { ALL_SCOPES } from '../types';
 import type { Scope, UserJson } from '../types';
 
 interface FormState {
   username: string;
   password: string;
+  currentPassword: string;
   role: 'admin' | 'user';
   scopes: Scope[];
 }
 
-const EMPTY_FORM: FormState = { username: '', password: '', role: 'user', scopes: [] };
+const EMPTY_FORM: FormState = { username: '', password: '', currentPassword: '', role: 'user', scopes: [] };
 // Matches the server's minimum in http_server/auth/users.rs — kept in sync by hand.
 const MIN_PASSWORD_LEN = 8;
 
 export default function Users() {
+  const { user: currentUser } = useAuth();
   const { data: users, loading, refetch } = useApi<UserJson[]>('/api/auth/users', 10000);
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<UserJson | null>(null);
@@ -38,7 +41,7 @@ export default function Users() {
   function openEdit(u: UserJson) {
     setCreateOpen(false);
     setEditing(u);
-    setForm({ username: u.username, password: '', role: u.role, scopes: u.scopes as Scope[] });
+    setForm({ username: u.username, password: '', currentPassword: '', role: u.role, scopes: u.scopes as Scope[] });
     setError(null);
   }
 
@@ -84,7 +87,10 @@ export default function Users() {
         role: form.role,
         scopes: form.scopes,
       };
-      if (form.password) body.password = form.password;
+      if (form.password) {
+        body.password = form.password;
+        if (editing.id === currentUser?.id) body.current_password = form.currentPassword;
+      }
       const res = await apiFetch(`/api/auth/users/${editing.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -149,7 +155,9 @@ export default function Users() {
   // A blank password when editing means "keep the current one"; otherwise it
   // must meet the same minimum length the server enforces.
   const passwordOk = editing !== null && form.password === '' ? true : form.password.length >= MIN_PASSWORD_LEN;
-  const formValid = form.username.trim() !== '' && passwordOk;
+  const selfPasswordChangeOk =
+    editing === null || editing.id !== currentUser?.id || form.password === '' || form.currentPassword !== '';
+  const formValid = form.username.trim() !== '' && passwordOk && selfPasswordChangeOk;
 
   const formFields = (
     <>
@@ -168,6 +176,17 @@ export default function Users() {
           autoComplete="new-password"
         />
       </label>
+      {editing !== null && editing.id === currentUser?.id && form.password !== '' && (
+        <label className="modal-field">
+          <span>Current password (required to change your own password)</span>
+          <input
+            type="password"
+            value={form.currentPassword}
+            onChange={e => setForm(f => ({ ...f, currentPassword: e.target.value }))}
+            autoComplete="current-password"
+          />
+        </label>
+      )}
       <label className="modal-field">
         <span>Role</span>
         <select value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value as 'admin' | 'user' }))}>
