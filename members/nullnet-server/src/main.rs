@@ -1,3 +1,4 @@
+mod auth;
 mod cert;
 mod cert_renewal;
 mod certs;
@@ -43,12 +44,38 @@ async fn main() -> Result<(), Error> {
 
     // cert private keys are encrypted at rest with this key; fail fast if absent
     crypto::init_from_env()?;
+    // JWT signing key + MFA-secret encryption key: same fail-fast pattern,
+    // distinct keys/env vars so neither shares blast radius with the other
+    // or with CERT_ENCRYPTION_KEY.
+    auth::jwt::init_from_env()?;
+    auth::mfa_crypto::init_from_env()?;
 
     // SQLite-backed storage for server data (certs/services, going forward):
     // pending schema migrations run automatically before anything else starts.
     let database_url =
         std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string());
-    db::Db::open(&database_url).await?;
+    let db = db::Db::open(&database_url).await?;
+    // Create the first admin account if none exists yet. Defaults to
+    // 'admin'/'admin' when the bootstrap env vars aren't set, so a fresh
+    // deployment is never locked out of its own admin UI — but that's a
+    // well-known credential pair, so warn loudly every time it's used.
+    let bootstrap_username_env = std::env::var("ADMIN_BOOTSTRAP_USERNAME")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let bootstrap_password_env = std::env::var("ADMIN_BOOTSTRAP_PASSWORD")
+        .ok()
+        .filter(|s| !s.is_empty());
+    if bootstrap_username_env.is_none() || bootstrap_password_env.is_none() {
+        println!(
+            "WARNING: ADMIN_BOOTSTRAP_USERNAME/ADMIN_BOOTSTRAP_PASSWORD not set — defaulting the \
+             initial admin account to 'admin'/'admin'. Change this password immediately after \
+             first login (this only affects a brand-new deployment with no existing users)."
+        );
+    }
+    let bootstrap_username = bootstrap_username_env.unwrap_or_else(|| "admin".to_string());
+    let bootstrap_password = bootstrap_password_env.unwrap_or_else(|| "admin".to_string());
+    auth::bootstrap::ensure_admin_exists(&db, Some(&bootstrap_username), Some(&bootstrap_password))
+        .await?;
 
     // The firewall allowlist is now global (single point of decision). An empty
     // ingress-TCP list means every client's host firewall drops ALL inbound TCP —
@@ -72,6 +99,7 @@ async fn main() -> Result<(), Error> {
         services: nullnet.services().clone(),
         events: nullnet.orchestrator().events.clone(),
         orchestrator: nullnet.orchestrator().clone(),
+        db,
     };
 
     // auto-renew ACME certs nearing expiry (those with stored DNS credentials)

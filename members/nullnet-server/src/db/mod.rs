@@ -3,17 +3,27 @@
 //! [`Db`] and the repository types it hands out.
 //!
 //! `certs.rs`/`services/input.rs` still own the on-disk file storage they
-//! always have; nothing calls into these repositories yet, so most of this
-//! module's API surface is unused until that migration happens.
+//! always have; nothing calls into those two repositories yet, so that part
+//! of this module's API surface is unused until that migration happens. The
+//! auth repositories (`users`/`user_scopes`/`refresh_tokens`/`login_attempts`)
+//! back the server's JWT auth system and are fully wired up.
 #![allow(dead_code)]
 
 mod certs;
+mod login_attempts;
 mod models;
+mod refresh_tokens;
 mod schema;
 mod services;
+mod user_scopes;
+mod users;
 
 pub(crate) use certs::CertRepository;
+pub(crate) use login_attempts::LoginAttemptRepository;
+pub(crate) use refresh_tokens::RefreshTokenRepository;
 pub(crate) use services::ServiceRepository;
+pub(crate) use user_scopes::ScopeRepository;
+pub(crate) use users::UserRepository;
 
 use diesel::Connection;
 use diesel::sqlite::SqliteConnection;
@@ -68,6 +78,13 @@ impl Db {
             .execute(&mut conn)
             .await
             .handle_err(location!())?;
+        // SQLite ignores FK constraints per-connection unless told otherwise;
+        // the auth tables' ON DELETE CASCADE (and dns_credentials' existing
+        // one) depend on this being set.
+        diesel::sql_query("PRAGMA foreign_keys = ON;")
+            .execute(&mut conn)
+            .await
+            .handle_err(location!())?;
 
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -80,6 +97,22 @@ impl Db {
 
     pub(crate) fn services(&self) -> ServiceRepository {
         ServiceRepository::new(self.conn.clone())
+    }
+
+    pub(crate) fn users(&self) -> UserRepository {
+        UserRepository::new(self.conn.clone())
+    }
+
+    pub(crate) fn scopes(&self) -> ScopeRepository {
+        ScopeRepository::new(self.conn.clone())
+    }
+
+    pub(crate) fn refresh_tokens(&self) -> RefreshTokenRepository {
+        RefreshTokenRepository::new(self.conn.clone())
+    }
+
+    pub(crate) fn login_attempts(&self) -> LoginAttemptRepository {
+        LoginAttemptRepository::new(self.conn.clone())
     }
 }
 

@@ -49,6 +49,27 @@ export interface CertJson {
   expires_at: number | null;
 }
 
+export const ALL_SCOPES = [
+  'certificates:read',
+  'certificates:write',
+  'config:read',
+  'config:write',
+  'sessions:read',
+  'sessions:write',
+  'nodes:read',
+  'events:read',
+] as const;
+
+export type Scope = (typeof ALL_SCOPES)[number];
+
+export interface UserJson {
+  id: string;
+  username: string;
+  role: 'admin' | 'user';
+  scopes: string[];
+  mfa_enabled: boolean;
+}
+
 export type Severity = 'info' | 'warning' | 'error';
 
 type WithSeverity = { severity: Severity; timestamp: number };

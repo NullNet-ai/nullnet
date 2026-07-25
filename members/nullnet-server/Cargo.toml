@@ -45,6 +45,13 @@ diesel = { workspace = true, features = ["sqlite", "returning_clauses_for_sqlite
 diesel-async = { workspace = true, features = ["sync-connection-wrapper", "tokio"] }
 diesel_migrations = { workspace = true, features = ["sqlite"] }
 libsqlite3-sys = { workspace = true, features = ["bundled"] }
+# auth: JWT + password hashing + TOTP MFA
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto", "use_pem"] }
+argon2 = "0.5"
+totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
+sha2 = "0.11"
+axum-extra = { version = "0.12", features = ["cookie"] }
+time = { version = "0.3", default-features = false }
 
 [build-dependencies]
 

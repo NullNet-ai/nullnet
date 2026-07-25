@@ -1,7 +1,9 @@
 use super::AppState;
+use super::auth::{AuthContext, require_scope};
+use crate::auth::Scope;
 use crate::services::clients::Client;
 use crate::services::service_info::ServiceInfo;
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
@@ -15,9 +17,13 @@ struct ChainJson {
 }
 
 pub(super) async fn chains_handler(
+    Extension(ctx): Extension<AuthContext>,
     Path(stack): Path<String>,
     State(state): State<AppState>,
 ) -> Response {
+    if let Err(resp) = require_scope(&ctx, Scope::NodesRead) {
+        return resp;
+    }
     let services = state.services.read().await;
     let Some(stack_map) = services.get(&stack) else {
         return StatusCode::NOT_FOUND.into_response();
