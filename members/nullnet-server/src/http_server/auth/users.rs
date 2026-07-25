@@ -33,6 +33,33 @@ fn parse_scopes(raw: &[String]) -> Result<Vec<String>, Response> {
     Ok(parsed)
 }
 
+const MIN_PASSWORD_LEN: usize = 8;
+
+/// Trim and reject an empty username — shared by create and update so a
+/// username can never be blanked out through either path.
+#[allow(clippy::result_large_err)]
+fn validate_username(raw: &str) -> Result<&str, Response> {
+    let username = raw.trim();
+    if username.is_empty() {
+        return Err(rejected(StatusCode::BAD_REQUEST, "username is required"));
+    }
+    Ok(username)
+}
+
+/// Reject a new/changed password shorter than [`MIN_PASSWORD_LEN`]. Only
+/// applied when a password is actually being set — login verifies an
+/// existing hash and never re-checks length.
+#[allow(clippy::result_large_err)]
+fn validate_password(password: &str) -> Result<(), Response> {
+    if password.chars().count() < MIN_PASSWORD_LEN {
+        return Err(rejected(
+            StatusCode::BAD_REQUEST,
+            format!("password must be at least {MIN_PASSWORD_LEN} characters"),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) async fn list_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -85,11 +112,12 @@ pub(crate) async fn create_handler(
     if let Err(resp) = require_admin(&ctx) {
         return resp;
     }
-    if req.username.trim().is_empty() || req.password.is_empty() {
-        return rejected(
-            StatusCode::BAD_REQUEST,
-            "username and password are required",
-        );
+    let username = match validate_username(&req.username) {
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = validate_password(&req.password) {
+        return resp;
     }
     let Ok(role) = req.role.parse::<Role>() else {
         return rejected(StatusCode::BAD_REQUEST, "invalid role");
@@ -99,7 +127,7 @@ pub(crate) async fn create_handler(
         Err(resp) => return resp,
     };
 
-    match state.db.users().by_username(&req.username).await {
+    match state.db.users().by_username(username).await {
         Ok(Some(_)) => return rejected(StatusCode::CONFLICT, "username already taken"),
         Ok(None) => {}
         Err(_) => return internal_error("failed to check existing users"),
@@ -113,7 +141,7 @@ pub(crate) async fn create_handler(
     if state
         .db
         .users()
-        .create(&id, &req.username, &password_hash, role.as_str())
+        .create(&id, username, &password_hash, role.as_str())
         .await
         .is_err()
     {
@@ -156,16 +184,31 @@ pub(crate) async fn update_handler(
         Err(_) => return internal_error("user lookup failed"),
     }
 
+    // A blank password means "keep the current one" (the edit form's
+    // placeholder says as much); a *provided* username, though, must be a
+    // real, non-empty value — same rule `create_handler` enforces.
+    let username = match req.username.as_deref() {
+        Some(raw) => match validate_username(raw) {
+            Ok(u) => Some(u),
+            Err(resp) => return resp,
+        },
+        None => None,
+    };
     let role = match req.role.as_deref().map(str::parse::<Role>) {
         Some(Ok(role)) => Some(role),
         Some(Err(_)) => return rejected(StatusCode::BAD_REQUEST, "invalid role"),
         None => None,
     };
     let password_hash = match req.password.as_deref().filter(|p| !p.is_empty()) {
-        Some(p) => match password::hash(p) {
-            Ok(h) => Some(h),
-            Err(_) => return internal_error("failed to hash password"),
-        },
+        Some(p) => {
+            if let Err(resp) = validate_password(p) {
+                return resp;
+            }
+            match password::hash(p) {
+                Ok(h) => Some(h),
+                Err(_) => return internal_error("failed to hash password"),
+            }
+        }
         None => None,
     };
 
@@ -174,7 +217,7 @@ pub(crate) async fn update_handler(
         .users()
         .update(
             &id,
-            req.username.as_deref(),
+            username,
             role.map(Role::as_str),
             password_hash.as_deref(),
         )

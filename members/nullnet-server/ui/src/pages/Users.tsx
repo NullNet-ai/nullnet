@@ -14,6 +14,8 @@ interface FormState {
 }
 
 const EMPTY_FORM: FormState = { username: '', password: '', role: 'user', scopes: [] };
+// Matches the server's minimum in http_server/auth/users.rs — kept in sync by hand.
+const MIN_PASSWORD_LEN = 8;
 
 export default function Users() {
   const { data: users, loading, refetch } = useApi<UserJson[]>('/api/auth/users', 10000);
@@ -144,7 +146,10 @@ export default function Users() {
     }
   }
 
-  const formValid = form.username.trim() !== '' && (editing !== null || form.password.length > 0);
+  // A blank password when editing means "keep the current one"; otherwise it
+  // must meet the same minimum length the server enforces.
+  const passwordOk = editing !== null && form.password === '' ? true : form.password.length >= MIN_PASSWORD_LEN;
+  const formValid = form.username.trim() !== '' && passwordOk;
 
   const formFields = (
     <>
@@ -153,7 +158,9 @@ export default function Users() {
         <input value={form.username} onChange={e => setForm(f => ({ ...f, username: e.target.value }))} autoComplete="off" />
       </label>
       <label className="modal-field">
-        <span>{editing ? 'New password (leave blank to keep current)' : 'Password'}</span>
+        <span>
+          {editing ? 'New password (leave blank to keep current)' : 'Password'} — at least {MIN_PASSWORD_LEN} characters
+        </span>
         <input
           type="password"
           value={form.password}
