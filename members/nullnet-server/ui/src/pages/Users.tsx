@@ -7,134 +7,220 @@ import { useAuth } from '../AuthContext';
 import { ALL_SCOPES } from '../types';
 import type { Scope, UserJson } from '../types';
 
-interface FormState {
+// Matches the server's minimum in http_server/auth/users.rs — kept in sync by hand.
+const MIN_PASSWORD_LEN = 8;
+
+interface IdentityFieldsProps {
+  username: string;
+  role: 'admin' | 'user';
+  scopes: Scope[];
+  onUsernameChange: (v: string) => void;
+  onRoleChange: (v: 'admin' | 'user') => void;
+  onToggleScope: (s: Scope) => void;
+}
+
+/// Username/role/scopes — the fields shared by the create and edit dialogs.
+/// Password and MFA reset live in their own single-purpose dialogs instead of
+/// being crammed into this same form, so each dialog stays a single task.
+function IdentityFields({ username, role, scopes, onUsernameChange, onRoleChange, onToggleScope }: IdentityFieldsProps) {
+  return (
+    <>
+      <label className="modal-field">
+        <span>Username</span>
+        <input value={username} onChange={e => onUsernameChange(e.target.value)} autoComplete="off" />
+      </label>
+      <label className="modal-field">
+        <span>Role</span>
+        <select value={role} onChange={e => onRoleChange(e.target.value as 'admin' | 'user')}>
+          <option value="user">user</option>
+          <option value="admin">admin</option>
+        </select>
+      </label>
+      {role === 'user' ? (
+        <div className="modal-field">
+          <span>Scopes</span>
+          <div className="scope-grid">
+            {ALL_SCOPES.map(s => (
+              <label key={s} className="scope-check">
+                <input type="checkbox" checked={scopes.includes(s)} onChange={() => onToggleScope(s)} />
+                {s}
+              </label>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div style={{ fontSize: 11, color: 'var(--t2)' }}>Admins implicitly have every scope.</div>
+      )}
+    </>
+  );
+}
+
+interface CreateFormState {
   username: string;
   password: string;
-  currentPassword: string;
   role: 'admin' | 'user';
   scopes: Scope[];
 }
 
-const EMPTY_FORM: FormState = { username: '', password: '', currentPassword: '', role: 'user', scopes: [] };
-// Matches the server's minimum in http_server/auth/users.rs — kept in sync by hand.
-const MIN_PASSWORD_LEN = 8;
+const EMPTY_CREATE_FORM: CreateFormState = { username: '', password: '', role: 'user', scopes: [] };
+
+interface EditFormState {
+  username: string;
+  role: 'admin' | 'user';
+  scopes: Scope[];
+}
 
 export default function Users() {
   const { user: currentUser } = useAuth();
   const { data: users, loading, refetch } = useApi<UserJson[]>('/api/auth/users', 10000);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [editing, setEditing] = useState<UserJson | null>(null);
-  const [form, setForm] = useState<FormState>(EMPTY_FORM);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<Set<string>>(new Set());
+
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createForm, setCreateForm] = useState<CreateFormState>(EMPTY_CREATE_FORM);
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  const [editing, setEditing] = useState<UserJson | null>(null);
+  const [editForm, setEditForm] = useState<EditFormState>({ username: '', role: 'user', scopes: [] });
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  const [pwUser, setPwUser] = useState<UserJson | null>(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [pwBusy, setPwBusy] = useState(false);
+  const [pwError, setPwError] = useState<string | null>(null);
+
+  const [mfaUser, setMfaUser] = useState<UserJson | null>(null);
   const [mfaCode, setMfaCode] = useState('');
+  const [mfaBusy, setMfaBusy] = useState(false);
+  const [mfaError, setMfaError] = useState<string | null>(null);
 
   const list = users ?? [];
 
   function openCreate() {
-    setEditing(null);
-    setForm(EMPTY_FORM);
-    setError(null);
+    setCreateForm(EMPTY_CREATE_FORM);
+    setCreateError(null);
     setCreateOpen(true);
   }
 
   function openEdit(u: UserJson) {
-    setCreateOpen(false);
     setEditing(u);
-    setForm({ username: u.username, password: '', currentPassword: '', role: u.role, scopes: u.scopes as Scope[] });
-    setMfaCode('');
-    setError(null);
+    setEditForm({ username: u.username, role: u.role, scopes: u.scopes as Scope[] });
+    setEditError(null);
   }
 
-  function toggleScope(s: Scope) {
-    setForm(f => ({
-      ...f,
-      scopes: f.scopes.includes(s) ? f.scopes.filter(x => x !== s) : [...f.scopes, s],
-    }));
+  function openPasswordDialog(u: UserJson) {
+    setPwUser(u);
+    setNewPassword('');
+    setCurrentPassword('');
+    setPwError(null);
+  }
+
+  function openMfaReset(u: UserJson) {
+    setMfaUser(u);
+    setMfaCode('');
+    setMfaError(null);
   }
 
   async function submitCreate(e: React.FormEvent) {
     e.preventDefault();
-    setBusy(true);
-    setError(null);
+    setCreateBusy(true);
+    setCreateError(null);
     try {
       const res = await apiFetch('/api/auth/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
+        body: JSON.stringify(createForm),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(data.error ?? `HTTP ${res.status}`);
+        setCreateError(data.error ?? `HTTP ${res.status}`);
         return;
       }
       setCreateOpen(false);
       refetch();
     } catch (e) {
-      setError(String(e));
+      setCreateError(String(e));
     } finally {
-      setBusy(false);
+      setCreateBusy(false);
     }
   }
 
   async function submitEdit(e: React.FormEvent) {
     e.preventDefault();
     if (!editing) return;
-    setBusy(true);
-    setError(null);
+    setEditBusy(true);
+    setEditError(null);
     try {
-      const body: Record<string, unknown> = {
-        username: form.username,
-        role: form.role,
-        scopes: form.scopes,
-      };
-      if (form.password) {
-        body.password = form.password;
-        if (editing.id === currentUser?.id) body.current_password = form.currentPassword;
-      }
       const res = await apiFetch(`/api/auth/users/${editing.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify(editForm),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(data.error ?? `HTTP ${res.status}`);
+        setEditError(data.error ?? `HTTP ${res.status}`);
         return;
       }
       setEditing(null);
       refetch();
     } catch (e) {
-      setError(String(e));
+      setEditError(String(e));
     } finally {
-      setBusy(false);
+      setEditBusy(false);
     }
   }
 
-  const resetMfaIsSelf = editing !== null && editing.id === currentUser?.id;
-
-  async function resetMfa() {
-    if (!editing) return;
-    setBusy(true);
-    setError(null);
+  async function submitPasswordChange(e: React.FormEvent) {
+    e.preventDefault();
+    if (!pwUser) return;
+    setPwBusy(true);
+    setPwError(null);
     try {
-      const body: Record<string, unknown> = { reset_mfa: true };
-      if (resetMfaIsSelf) body.mfa_code = mfaCode;
-      const res = await apiFetch(`/api/auth/users/${editing.id}`, {
+      const body: Record<string, unknown> = { password: newPassword };
+      if (pwUser.id === currentUser?.id) body.current_password = currentPassword;
+      const res = await apiFetch(`/api/auth/users/${pwUser.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(data.error ?? `HTTP ${res.status}`);
+        setPwError(data.error ?? `HTTP ${res.status}`);
         return;
       }
+      setPwUser(null);
       refetch();
-      setEditing(null);
+    } catch (e) {
+      setPwError(String(e));
     } finally {
-      setBusy(false);
+      setPwBusy(false);
+    }
+  }
+
+  async function confirmMfaReset() {
+    if (!mfaUser) return;
+    setMfaBusy(true);
+    setMfaError(null);
+    try {
+      const isSelf = mfaUser.id === currentUser?.id;
+      const body: Record<string, unknown> = { reset_mfa: true };
+      if (isSelf) body.mfa_code = mfaCode;
+      const res = await apiFetch(`/api/auth/users/${mfaUser.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setMfaError(data.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      setMfaUser(null);
+      refetch();
+    } finally {
+      setMfaBusy(false);
     }
   }
 
@@ -158,66 +244,14 @@ export default function Users() {
     }
   }
 
-  // A blank password when editing means "keep the current one"; otherwise it
-  // must meet the same minimum length the server enforces.
-  const passwordOk = editing !== null && form.password === '' ? true : form.password.length >= MIN_PASSWORD_LEN;
-  const selfPasswordChangeOk =
-    editing === null || editing.id !== currentUser?.id || form.password === '' || form.currentPassword !== '';
-  const formValid = form.username.trim() !== '' && passwordOk && selfPasswordChangeOk;
+  const createValid = createForm.username.trim() !== '' && createForm.password.length >= MIN_PASSWORD_LEN;
+  const editValid = editForm.username.trim() !== '';
 
-  const formFields = (
-    <>
-      <label className="modal-field">
-        <span>Username</span>
-        <input value={form.username} onChange={e => setForm(f => ({ ...f, username: e.target.value }))} autoComplete="off" />
-      </label>
-      <label className="modal-field">
-        <span>
-          {editing ? 'New password (leave blank to keep current)' : 'Password'} — at least {MIN_PASSWORD_LEN} characters
-        </span>
-        <input
-          type="password"
-          value={form.password}
-          onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
-          autoComplete="new-password"
-        />
-      </label>
-      {editing !== null && editing.id === currentUser?.id && form.password !== '' && (
-        <label className="modal-field">
-          <span>Current password (required to change your own password)</span>
-          <input
-            type="password"
-            value={form.currentPassword}
-            onChange={e => setForm(f => ({ ...f, currentPassword: e.target.value }))}
-            autoComplete="current-password"
-          />
-        </label>
-      )}
-      <label className="modal-field">
-        <span>Role</span>
-        <select value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value as 'admin' | 'user' }))}>
-          <option value="user">user</option>
-          <option value="admin">admin</option>
-        </select>
-      </label>
-      {form.role === 'user' ? (
-        <div className="modal-field">
-          <span>Scopes</span>
-          <div className="scope-grid">
-            {ALL_SCOPES.map(s => (
-              <label key={s} className="scope-check">
-                <input type="checkbox" checked={form.scopes.includes(s)} onChange={() => toggleScope(s)} />
-                {s}
-              </label>
-            ))}
-          </div>
-        </div>
-      ) : (
-        <div style={{ fontSize: 11, color: 'var(--t2)' }}>Admins implicitly have every scope.</div>
-      )}
-      {error && <div className="modal-err">{error}</div>}
-    </>
-  );
+  const pwIsSelf = pwUser !== null && pwUser.id === currentUser?.id;
+  const pwValid = newPassword.length >= MIN_PASSWORD_LEN && (!pwIsSelf || currentPassword !== '');
+
+  const mfaIsSelf = mfaUser !== null && mfaUser.id === currentUser?.id;
+  const mfaValid = !mfaIsSelf || mfaCode.length === 6;
 
   return (
     <Layout page="users">
@@ -270,7 +304,7 @@ export default function Users() {
                       {u.mfa_enabled ? 'enabled' : 'off'}
                     </span>
                   </td>
-                  <td style={{ display: 'flex', gap: 8 }}>
+                  <td style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <button className="save-btn" onClick={() => openEdit(u)}>
                       Edit
                     </button>
@@ -294,10 +328,32 @@ export default function Users() {
 
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="Add user">
         <form onSubmit={submitCreate} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {formFields}
+          <IdentityFields
+            username={createForm.username}
+            role={createForm.role}
+            scopes={createForm.scopes}
+            onUsernameChange={v => setCreateForm(f => ({ ...f, username: v }))}
+            onRoleChange={v => setCreateForm(f => ({ ...f, role: v }))}
+            onToggleScope={s =>
+              setCreateForm(f => ({
+                ...f,
+                scopes: f.scopes.includes(s) ? f.scopes.filter(x => x !== s) : [...f.scopes, s],
+              }))
+            }
+          />
+          <label className="modal-field">
+            <span>Password — at least {MIN_PASSWORD_LEN} characters</span>
+            <input
+              type="password"
+              value={createForm.password}
+              onChange={e => setCreateForm(f => ({ ...f, password: e.target.value }))}
+              autoComplete="new-password"
+            />
+          </label>
+          {createError && <div className="modal-err">{createError}</div>}
           <div className="modal-actions">
-            <button className="save-btn" disabled={busy || !formValid}>
-              {busy ? 'Creating…' : 'Create'}
+            <button className="save-btn" disabled={createBusy || !createValid}>
+              {createBusy ? 'Creating…' : 'Create'}
             </button>
           </div>
         </form>
@@ -305,34 +361,110 @@ export default function Users() {
 
       <Modal open={editing !== null} onClose={() => setEditing(null)} title={`Edit ${editing?.username ?? ''}`}>
         <form onSubmit={submitEdit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {formFields}
-          {editing?.mfa_enabled && resetMfaIsSelf && (
-            <label className="modal-field">
-              <span>Current MFA code (required to reset your own MFA)</span>
-              <input
-                value={mfaCode}
-                onChange={e => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                inputMode="numeric"
-                maxLength={6}
-              />
-            </label>
-          )}
+          <IdentityFields
+            username={editForm.username}
+            role={editForm.role}
+            scopes={editForm.scopes}
+            onUsernameChange={v => setEditForm(f => ({ ...f, username: v }))}
+            onRoleChange={v => setEditForm(f => ({ ...f, role: v }))}
+            onToggleScope={s =>
+              setEditForm(f => ({
+                ...f,
+                scopes: f.scopes.includes(s) ? f.scopes.filter(x => x !== s) : [...f.scopes, s],
+              }))
+            }
+          />
+          {editError && <div className="modal-err">{editError}</div>}
           <div className="modal-actions">
-            <button className="save-btn" disabled={busy || !formValid}>
-              {busy ? 'Saving…' : 'Save'}
+            <button className="save-btn" disabled={editBusy || !editValid}>
+              {editBusy ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              type="button"
+              className="card-action"
+              style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+              onClick={() => {
+                if (!editing) return;
+                setEditing(null);
+                openPasswordDialog(editing);
+              }}
+            >
+              Change password
             </button>
             {editing?.mfa_enabled && (
               <button
                 type="button"
-                className="teardown-btn"
-                onClick={resetMfa}
-                disabled={busy || (resetMfaIsSelf && mfaCode.length !== 6)}
+                className="card-action"
+                style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+                onClick={() => {
+                  if (!editing) return;
+                  setEditing(null);
+                  openMfaReset(editing);
+                }}
               >
                 Reset MFA
               </button>
             )}
           </div>
         </form>
+      </Modal>
+
+      <Modal open={pwUser !== null} onClose={() => setPwUser(null)} title={`Change password — ${pwUser?.username ?? ''}`}>
+        <form onSubmit={submitPasswordChange} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <label className="modal-field">
+            <span>New password — at least {MIN_PASSWORD_LEN} characters</span>
+            <input
+              type="password"
+              value={newPassword}
+              onChange={e => setNewPassword(e.target.value)}
+              autoComplete="new-password"
+              autoFocus
+            />
+          </label>
+          {pwIsSelf && (
+            <label className="modal-field">
+              <span>Current password</span>
+              <input
+                type="password"
+                value={currentPassword}
+                onChange={e => setCurrentPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+            </label>
+          )}
+          {pwError && <div className="modal-err">{pwError}</div>}
+          <div className="modal-actions">
+            <button className="save-btn" disabled={pwBusy || !pwValid}>
+              {pwBusy ? 'Saving…' : 'Change password'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={mfaUser !== null} onClose={() => setMfaUser(null)} title={`Reset MFA — ${mfaUser?.username ?? ''}`}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ fontSize: 12, color: 'var(--t2)' }}>
+            This will disable MFA for this account. They'll need to set it up again from scratch.
+          </div>
+          {mfaIsSelf && (
+            <label className="modal-field">
+              <span>Current MFA code</span>
+              <input
+                value={mfaCode}
+                onChange={e => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                inputMode="numeric"
+                maxLength={6}
+                autoFocus
+              />
+            </label>
+          )}
+          {mfaError && <div className="modal-err">{mfaError}</div>}
+          <div className="modal-actions">
+            <button className="teardown-btn" onClick={confirmMfaReset} disabled={mfaBusy || !mfaValid}>
+              {mfaBusy ? 'Resetting…' : 'Reset MFA'}
+            </button>
+          </div>
+        </div>
       </Modal>
     </Layout>
   );
