@@ -104,6 +104,10 @@ pub(crate) struct MfaVerifyReq {
 
 /// Step 2 (only reached when step 1 reported `mfa_required`): verify the
 /// TOTP code against the user's confirmed secret, then issue a real session.
+/// Shares the same per-username lockout as the password step — otherwise the
+/// password check's brute-force protection would be moot, since MFA codes
+/// are only 6 digits (1 in a million per guess, easily brute-forceable
+/// without a lockout).
 pub(crate) async fn mfa_verify_handler(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -118,6 +122,22 @@ pub(crate) async fn mfa_verify_handler(
         Ok(None) => return (jar, unauthorized("user not found")),
         Err(_) => return (jar, internal_error("user lookup failed")),
     };
+
+    let attempts = state.db.login_attempts();
+    match attempts.is_locked(&user.username).await {
+        Ok(true) => {
+            return (
+                jar,
+                rejected(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "too many failed attempts — try again later",
+                ),
+            );
+        }
+        Ok(false) => {}
+        Err(_) => return (jar, internal_error("lockout check failed")),
+    }
+
     let Some(secret_enc) = user.mfa_secret_enc.as_deref() else {
         return (jar, internal_error("mfa not configured"));
     };
@@ -127,8 +147,10 @@ pub(crate) async fn mfa_verify_handler(
     };
     let code_ok = totp::verify_code(&secret, &req.code).unwrap_or(false);
     if !code_ok {
+        let _ = attempts.record_failure(&user.username).await;
         return (jar, unauthorized("invalid code"));
     }
+    let _ = attempts.clear(&user.username).await;
 
     let (role, scopes) = match role_and_scopes(&state.db, &user.id, &user.role).await {
         Ok(v) => v,
