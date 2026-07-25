@@ -12,18 +12,54 @@ struct SetupResp {
     otpauth_uri: String,
 }
 
+#[derive(Deserialize, Default)]
+pub(crate) struct SetupReq {
+    /// Required (and checked against the *current* secret) only when
+    /// re-enrolling an already-confirmed account; ignored for a first-time
+    /// setup, where there's no existing secret to prove possession of.
+    #[serde(default)]
+    code: Option<String>,
+}
+
 /// Generate a fresh (unconfirmed) TOTP secret for the current user and store
-/// it encrypted. Calling this again before confirming just replaces the
-/// pending secret, so the UI always shows a fresh QR code on retry.
+/// it encrypted. Calling this again before the pending secret is confirmed
+/// just replaces it, so the UI always shows a fresh QR code on retry — but
+/// re-enrolling an *already-confirmed* account requires the current TOTP
+/// code first, the same proof-of-possession `disable_handler` requires.
+/// Without this, a hijacked session (stolen cookie, unattended device, etc.)
+/// could silently strip a confirmed account's MFA with no code at all,
+/// turning a transient session compromise into a durable one.
 pub(crate) async fn setup_handler(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
+    axum::Json(req): axum::Json<SetupReq>,
 ) -> Response {
     let user = match state.db.users().by_id(&ctx.user_id).await {
         Ok(Some(u)) => u,
         Ok(None) => return rejected(StatusCode::NOT_FOUND, "user not found"),
         Err(_) => return internal_error("user lookup failed"),
     };
+
+    if user.mfa_confirmed_at.is_some() {
+        let Some(secret_enc) = user.mfa_secret_enc.as_deref() else {
+            return internal_error("mfa marked confirmed but no secret stored");
+        };
+        let current_secret = match mfa_crypto::cipher().decrypt(secret_enc) {
+            Ok(s) => s,
+            Err(_) => return internal_error("failed to decrypt mfa secret"),
+        };
+        let code_ok = req
+            .code
+            .as_deref()
+            .is_some_and(|c| totp::verify_code(&current_secret, c).unwrap_or(false));
+        if !code_ok {
+            return rejected(
+                StatusCode::UNAUTHORIZED,
+                "mfa is already enabled — enter your current code to re-enroll",
+            );
+        }
+    }
+
     let secret = totp::generate_secret();
     let otpauth_uri = match totp::provisioning_uri(&secret, &user.username) {
         Ok(uri) => uri,

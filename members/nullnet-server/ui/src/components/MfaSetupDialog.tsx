@@ -28,7 +28,14 @@ export default function MfaSetupDialog({ open, onClose }: Props) {
       setCode('');
       setConfirmError(null);
       try {
-        const res = await apiFetch('/api/auth/mfa/setup', { method: 'POST' });
+        // The dialog is only ever opened when MFA isn't enabled yet (see the
+        // Layout banner), so no current code is needed here — an empty body
+        // is still required since the server now expects valid JSON.
+        const res = await apiFetch('/api/auth/mfa/setup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           setStep({ kind: 'error', message: data.error ?? `HTTP ${res.status}` });
