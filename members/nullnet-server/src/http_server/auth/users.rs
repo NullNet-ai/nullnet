@@ -1,5 +1,5 @@
 use super::{AuthContext, internal_error, rejected, require_admin, role_and_scopes};
-use crate::auth::{Role, Scope, password};
+use crate::auth::{Role, Scope, mfa_crypto, password, totp};
 use crate::http_server::AppState;
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
@@ -169,6 +169,10 @@ pub(crate) struct UpdateUserReq {
     scopes: Option<Vec<String>>,
     #[serde(default)]
     reset_mfa: bool,
+    /// Required (and checked against the account's own current secret) only
+    /// when the caller is resetting their *own* MFA — see `is_self` below.
+    /// An admin resetting someone else's MFA needs no proof.
+    mfa_code: Option<String>,
 }
 
 /// Partial update. Changing `role`/`password` revokes the user's existing
@@ -259,8 +263,29 @@ pub(crate) async fn update_handler(
         }
     }
 
-    if req.reset_mfa && state.db.users().clear_mfa(&id).await.is_err() {
-        return internal_error("user updated, but failed to reset mfa");
+    if req.reset_mfa {
+        if is_self {
+            let Some(secret_enc) = target_user.mfa_secret_enc.as_deref() else {
+                return rejected(StatusCode::BAD_REQUEST, "mfa is not enabled");
+            };
+            let current_secret = match mfa_crypto::cipher().decrypt(secret_enc) {
+                Ok(s) => s,
+                Err(_) => return internal_error("failed to decrypt mfa secret"),
+            };
+            let code_ok = req
+                .mfa_code
+                .as_deref()
+                .is_some_and(|c| totp::verify_code(&current_secret, c).unwrap_or(false));
+            if !code_ok {
+                return rejected(
+                    StatusCode::UNAUTHORIZED,
+                    "current mfa code required to reset your own mfa",
+                );
+            }
+        }
+        if state.db.users().clear_mfa(&id).await.is_err() {
+            return internal_error("user updated, but failed to reset mfa");
+        }
     }
 
     if role.is_some() || password_hash.is_some() {

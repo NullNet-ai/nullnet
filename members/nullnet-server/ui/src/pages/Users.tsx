@@ -28,6 +28,7 @@ export default function Users() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<Set<string>>(new Set());
+  const [mfaCode, setMfaCode] = useState('');
 
   const list = users ?? [];
 
@@ -42,6 +43,7 @@ export default function Users() {
     setCreateOpen(false);
     setEditing(u);
     setForm({ username: u.username, password: '', currentPassword: '', role: u.role, scopes: u.scopes as Scope[] });
+    setMfaCode('');
     setError(null);
   }
 
@@ -110,15 +112,19 @@ export default function Users() {
     }
   }
 
+  const resetMfaIsSelf = editing !== null && editing.id === currentUser?.id;
+
   async function resetMfa() {
     if (!editing) return;
     setBusy(true);
     setError(null);
     try {
+      const body: Record<string, unknown> = { reset_mfa: true };
+      if (resetMfaIsSelf) body.mfa_code = mfaCode;
       const res = await apiFetch(`/api/auth/users/${editing.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reset_mfa: true }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -300,12 +306,28 @@ export default function Users() {
       <Modal open={editing !== null} onClose={() => setEditing(null)} title={`Edit ${editing?.username ?? ''}`}>
         <form onSubmit={submitEdit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {formFields}
+          {editing?.mfa_enabled && resetMfaIsSelf && (
+            <label className="modal-field">
+              <span>Current MFA code (required to reset your own MFA)</span>
+              <input
+                value={mfaCode}
+                onChange={e => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                inputMode="numeric"
+                maxLength={6}
+              />
+            </label>
+          )}
           <div className="modal-actions">
             <button className="save-btn" disabled={busy || !formValid}>
               {busy ? 'Saving…' : 'Save'}
             </button>
             {editing?.mfa_enabled && (
-              <button type="button" className="teardown-btn" onClick={resetMfa} disabled={busy}>
+              <button
+                type="button"
+                className="teardown-btn"
+                onClick={resetMfa}
+                disabled={busy || (resetMfaIsSelf && mfaCode.length !== 6)}
+              >
                 Reset MFA
               </button>
             )}
