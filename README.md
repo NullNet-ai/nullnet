@@ -38,6 +38,11 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   ```
   NET_TYPE=VXLAN
   CERT_ENCRYPTION_KEY=<32 raw bytes or 64 hex chars>
+  JWT_SIGNING_KEY=<32 raw bytes or 64 hex chars>
+  MFA_ENCRYPTION_KEY=<32 raw bytes or 64 hex chars>
+  DATABASE_URL=/var/nullnet/data/nullnet.db   # SQLite db path; default shown
+  ADMIN_BOOTSTRAP_USERNAME=admin              # only used the first time the users table is empty
+  ADMIN_BOOTSTRAP_PASSWORD=<a real password>  # ditto — defaults to admin/admin if either is unset
   PROXY_IP=192.168.1.100
   ENCRYPTION_ENABLED=true
   INGRESS_ALLOW_TCP_PORTS=22,8080   # inbound TCP listeners every node accepts
@@ -49,6 +54,21 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   TLS certificate private keys (and the DNS-provider credentials of ACME-issued certs) at rest;
   keep it stable, since rotating it makes existing encrypted data undecryptable. Generate one with
   `openssl rand -hex 32`.
+
+  `JWT_SIGNING_KEY` and `MFA_ENCRYPTION_KEY` are also **required** — the server refuses to start
+  without them. `JWT_SIGNING_KEY` signs the admin UI's session access tokens; `MFA_ENCRYPTION_KEY`
+  encrypts TOTP secrets at rest. Each is deliberately a separate key from `CERT_ENCRYPTION_KEY` (no
+  shared blast radius between secret classes) — generate each independently with `openssl rand -hex 32`
+  and keep them stable, for the same reason as `CERT_ENCRYPTION_KEY`.
+
+  `DATABASE_URL` is the path to the server's SQLite database (users, sessions, service config, etc.),
+  created on first start along with any parent directories. Defaults to `/var/nullnet/data/nullnet.db`
+  if unset.
+
+  `ADMIN_BOOTSTRAP_USERNAME`/`ADMIN_BOOTSTRAP_PASSWORD` create the first admin account the one time
+  the `users` table is empty — irrelevant on every subsequent start. If either is unset, the server
+  falls back to `admin`/`admin` and prints a loud warning; change that password immediately after
+  first login if the admin UI is reachable by anyone else.
 
   `PROXY_IP` is the IP of the host running `nullnet-proxy` (the egress gateway). It is **required to
   enable egress brokering**: when a registered service reaches out to the internet the server builds
@@ -67,6 +87,12 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   DHCP renewal needs `67` (and inbound `68` for broadcast replies). The gateway node (the one whose
   IP equals `PROXY_IP`) is switched to gateway posture automatically — all outbound allowed and
   tracked — so no per-node flag is needed; inbound there still obeys these lists, so include `80,443`.
+
+- the admin web UI now requires login (JWT-based, cookie sessions). Roles are `admin` (all
+  permissions) and `user` (explicit per-resource scopes, assigned from the *Users* page). MFA
+  (TOTP) is optional per-account — an account without it configured sees a persistent banner
+  prompting setup (QR code + confirm step), until it's done. See `ADMIN_BOOTSTRAP_USERNAME` above
+  for how the first admin account is created.
 
 - TLS certificates are issued from Let's Encrypt via a DNS-01 challenge (UI: *Certificates* page).
   Each cert stores its DNS-provider credentials encrypted at rest and is **renewed automatically**
