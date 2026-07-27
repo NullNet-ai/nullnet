@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import Layout from '../components/Layout';
 import { useApi, useApiText } from '../hooks/useApi';
+import { apiFetch } from '../lib/apiFetch';
 import { useStack } from '../StackContext';
 
 type Status =
@@ -62,7 +63,7 @@ export default function Config() {
 
   async function postConfig(name: string, body: string): Promise<{ ok: boolean; error?: string }> {
     try {
-      const res = await fetch(`/api/config/${name}`, {
+      const res = await apiFetch(`/api/config/${name}`, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain' },
         body,
@@ -101,7 +102,7 @@ export default function Config() {
 
   async function removeStack() {
     if (!confirm(`Delete stack "${stack}"? Its services are torn down immediately.`)) return;
-    const res = await fetch(`/api/config/${stack}`, { method: 'DELETE' });
+    const res = await apiFetch(`/api/config/${stack}`, { method: 'DELETE' });
     if (res.ok) {
       const others = (stacks ?? []).filter(s => s !== stack);
       refetchStacks();

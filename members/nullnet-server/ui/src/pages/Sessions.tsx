@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import Layout from '../components/Layout';
 import { useApi } from '../hooks/useApi';
+import { apiFetch } from '../lib/apiFetch';
 import { useStack } from '../StackContext';
 import type { SessionJson } from '../types';
 import { flagEmoji, countryName } from '../geo';
@@ -14,7 +15,7 @@ export default function Sessions() {
     if (!confirm(`Force teardown session ${id}?`)) return;
     setTearing(prev => new Set(prev).add(id));
     try {
-      await fetch(`/api/sessions/${stack}/${id}`, { method: 'DELETE' });
+      await apiFetch(`/api/sessions/${stack}/${id}`, { method: 'DELETE' });
       refetch();
     } finally {
       setTearing(prev => { const next = new Set(prev); next.delete(id); return next; });

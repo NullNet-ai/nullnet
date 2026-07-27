@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { apiFetch } from '../lib/apiFetch';
 
 interface ApiState<T> {
   data: T | null;
@@ -11,7 +12,7 @@ export function useApi<T>(url: string, refreshMs?: number): ApiState<T> & { refe
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(url);
+      const res = await apiFetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: T = await res.json();
       setState({ data, loading: false, error: null });
@@ -35,7 +36,7 @@ export function useApiText(url: string, refreshMs?: number): { text: string | nu
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(url);
+      const res = await apiFetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
       setState({ text, loading: false, error: null });

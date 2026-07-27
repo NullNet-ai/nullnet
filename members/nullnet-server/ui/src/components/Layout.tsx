@@ -1,10 +1,13 @@
 import { NavLink } from 'react-router-dom';
 import { useStack } from '../StackContext';
+import { useAuth } from '../AuthContext';
 import { useApi } from '../hooks/useApi';
+import { apiFetch } from '../lib/apiFetch';
+import MfaSetupDialog from './MfaSetupDialog';
 import type { SessionJson } from '../types';
 import { useRef, useState, useEffect } from 'react';
 
-type Page = 'dashboard' | 'topology' | 'services' | 'nodes' | 'sessions' | 'config' | 'certificates' | 'events';
+type Page = 'dashboard' | 'topology' | 'services' | 'nodes' | 'sessions' | 'config' | 'certificates' | 'events' | 'users';
 
 interface Props {
   page: Page;
@@ -34,16 +37,26 @@ const NAV = [
       { id: 'events', icon: '≡', label: 'Events', to: '/events' },
       { id: 'certificates', icon: '⛨', label: 'Certificates', to: '/certificates' },
       { id: 'config', icon: '⚙', label: 'Config', to: '/config' },
+      { id: 'users', icon: '⚉', label: 'Users', to: '/users', adminOnly: true },
     ],
   },
 ];
 
 export default function Layout({ page, topbarRight, children }: Props) {
   const { stack, setStack, editing, setEditing } = useStack();
+  const { user } = useAuth();
   const { data: sessions } = useApi<SessionJson[]>(`/api/sessions/${stack}`, 5000);
   const { data: availableStacks } = useApi<string[]>('/api/stacks', 10000);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const [mfaDialogOpen, setMfaDialogOpen] = useState(false);
+
+  async function logout() {
+    await apiFetch('/api/auth/logout', { method: 'POST' });
+    // Full reload (not a SPA navigate): guarantees AuthContext re-checks
+    // /api/auth/me from scratch rather than needing its own invalidation path.
+    window.location.href = '/login';
+  }
 
   useEffect(() => {
     if (!dropdownOpen) return;
@@ -71,6 +84,9 @@ export default function Layout({ page, topbarRight, children }: Props) {
             <div key={group.group} className="nav-group">
               <div className="nav-group-label">{group.group}</div>
               {group.items.map(item => {
+                if ('adminOnly' in item && item.adminOnly && user?.role !== 'admin') {
+                  return null;
+                }
                 if (!item.to) {
                   return (
                     <span key={item.id} className="nav-a disabled">
@@ -99,6 +115,18 @@ export default function Layout({ page, topbarRight, children }: Props) {
         </div>
 
         <div className="foot">
+          {user && (
+            <div className="foot-row" style={{ justifyContent: 'space-between' }}>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.username}</span>
+              <span
+                onClick={logout}
+                style={{ cursor: 'pointer', color: 'var(--t2)', fontSize: 10 }}
+                title="Log out"
+              >
+                logout
+              </span>
+            </div>
+          )}
           <div className="foot-row"><span className="dot dot-g"></span>HTTP · 8080</div>
           <div className="foot-stack" ref={dropdownRef} style={{ position: 'relative' }}>
             <span>stack:</span>
@@ -189,8 +217,20 @@ export default function Layout({ page, topbarRight, children }: Props) {
             <span className="pill">{stack}</span>
           </div>
         </div>
+        {user && !user.mfaEnabled && (
+          <div className="mfa-banner">
+            <span>
+              <span className="badge b-amber">MFA not set up</span>
+              Your account has no multi-factor authentication configured.
+            </span>
+            <button className="save-btn" onClick={() => setMfaDialogOpen(true)}>
+              Set up now
+            </button>
+          </div>
+        )}
         {children}
       </div>
+      <MfaSetupDialog open={mfaDialogOpen} onClose={() => setMfaDialogOpen(false)} />
     </>
   );
 }
