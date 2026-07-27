@@ -1,7 +1,9 @@
 use super::AppState;
+use super::auth::{AuthContext, require_scope};
+use crate::auth::Scope;
 use crate::services::service_info::ServiceInfo;
-use axum::extract::{Path, State};
-use axum::response::IntoResponse;
+use axum::extract::{Extension, Path, State};
+use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -19,9 +21,13 @@ struct NodeJson {
 }
 
 pub(super) async fn nodes_handler(
+    Extension(ctx): Extension<AuthContext>,
     Path(stack): Path<String>,
     State(state): State<AppState>,
-) -> impl IntoResponse {
+) -> Response {
+    if let Err(resp) = require_scope(&ctx, Scope::NodesRead) {
+        return resp;
+    }
     let connected_ips = state.orchestrator.connected_node_ips().await;
     let services = state.services.read().await;
 
@@ -55,5 +61,5 @@ pub(super) async fn nodes_handler(
         .collect();
     nodes.sort_by(|a, b| a.ip.cmp(&b.ip));
 
-    axum::Json(nodes)
+    axum::Json(nodes).into_response()
 }

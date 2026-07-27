@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import Layout from '../components/Layout';
 import { useApi } from '../hooks/useApi';
+import { apiFetch } from '../lib/apiFetch';
 import type { CertJson } from '../types';
 
 type CredField = { key: string; label: string; optional?: boolean; textarea?: boolean };
@@ -91,7 +92,7 @@ export default function Certificates() {
       const secs = parseInt(propagation, 10);
       if (!Number.isNaN(secs)) body.dns_propagation_secs = secs;
 
-      const res = await fetch('/api/certificates/request', {
+      const res = await apiFetch('/api/certificates/request', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -113,7 +114,7 @@ export default function Certificates() {
     if (!confirm(`Delete certificate for ${d}?`)) return;
     setDeleting(prev => new Set(prev).add(d));
     try {
-      await fetch(`/api/certificates/${encodeURIComponent(d)}`, { method: 'DELETE' });
+      await apiFetch(`/api/certificates/${encodeURIComponent(d)}`, { method: 'DELETE' });
       refetch();
     } finally {
       setDeleting(prev => { const next = new Set(prev); next.delete(d); return next; });

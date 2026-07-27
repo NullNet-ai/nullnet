@@ -38,6 +38,11 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   ```
   NET_TYPE=VXLAN
   CERT_ENCRYPTION_KEY=<32 raw bytes or 64 hex chars>
+  JWT_SIGNING_KEY=<32 raw bytes or 64 hex chars>
+  MFA_ENCRYPTION_KEY=<32 raw bytes or 64 hex chars>
+  DATABASE_URL=/var/nullnet/data/nullnet.db   # SQLite db path; default shown
+  ADMIN_BOOTSTRAP_USERNAME=admin              # only used the first time the users table is empty
+  ADMIN_BOOTSTRAP_PASSWORD=<a real password>  # ditto — defaults to admin/admin if either is unset
   PROXY_IP=192.168.1.100
   ENCRYPTION_ENABLED=true
   INGRESS_ALLOW_TCP_PORTS=22,8080   # inbound TCP listeners every node accepts
@@ -49,6 +54,21 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   TLS certificate private keys (and the DNS-provider credentials of ACME-issued certs) at rest;
   keep it stable, since rotating it makes existing encrypted data undecryptable. Generate one with
   `openssl rand -hex 32`.
+
+  `JWT_SIGNING_KEY` and `MFA_ENCRYPTION_KEY` are also **required** — the server refuses to start
+  without them. `JWT_SIGNING_KEY` signs the admin UI's session access tokens; `MFA_ENCRYPTION_KEY`
+  encrypts TOTP secrets at rest. Each is deliberately a separate key from `CERT_ENCRYPTION_KEY` (no
+  shared blast radius between secret classes) — generate each independently with `openssl rand -hex 32`
+  and keep them stable, for the same reason as `CERT_ENCRYPTION_KEY`.
+
+  `DATABASE_URL` is the path to the server's SQLite database (users, sessions, service config, etc.),
+  created on first start along with any parent directories. Defaults to `/var/nullnet/data/nullnet.db`
+  if unset.
+
+  `ADMIN_BOOTSTRAP_USERNAME`/`ADMIN_BOOTSTRAP_PASSWORD` create the first admin account the one time
+  the `users` table is empty — irrelevant on every subsequent start. If either is unset, the server
+  falls back to `admin`/`admin` and prints a loud warning; change that password immediately after
+  first login if the admin UI is reachable by anyone else.
 
   `PROXY_IP` is the IP of the host running `nullnet-proxy` (the egress gateway). It is **required to
   enable egress brokering**: when a registered service reaches out to the internet the server builds
@@ -68,6 +88,12 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   IP equals `PROXY_IP`) is switched to gateway posture automatically — all outbound allowed and
   tracked — so no per-node flag is needed; inbound there still obeys these lists, so include `80,443`.
 
+- the admin web UI now requires login (JWT-based, cookie sessions). Roles are `admin` (all
+  permissions) and `user` (explicit per-resource scopes, assigned from the *Users* page). MFA
+  (TOTP) is optional per-account — an account without it configured sees a persistent banner
+  prompting setup (QR code + confirm step), until it's done. See `ADMIN_BOOTSTRAP_USERNAME` above
+  for how the first admin account is created.
+
 - TLS certificates are issued from Let's Encrypt via a DNS-01 challenge (UI: *Certificates* page).
   Each cert stores its DNS-provider credentials encrypted at rest and is **renewed automatically**
   before expiry. The renewal scan is tunable via optional env vars (defaults shown):
@@ -81,7 +107,8 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   authenticated by a private CA. On first boot the server generates its own CA
   (`members/nullnet-server/grpc-tls/ca-cert.pem` + `ca-key.pem`, created once and never
   regenerated) and signs its leaf cert with it. Copy `ca-cert.pem` to every client/proxy host and
-  set `CONTROL_SERVICE_CA_CERT` there (see below) if it isn't at the default path — clients pin the
+  set `CONTROL_SERVICE_CA_CERT` there (see below) if it isn't at the default path (the repo root,
+  i.e. `nullnet/ca-cert.pem`) — clients pin the
   channel to that CA and do full standard chain validation, so only a leaf actually signed by it is
   accepted. Because clients trust the stable CA root rather than the leaf, rotating the leaf later
   needs no client-side changes. Client authentication (mTLS) remains a further follow-up.
@@ -197,12 +224,13 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   ```
   CONTROL_SERVICE_ADDR=192.168.1.100
   CONTROL_SERVICE_PORT=50051
-  CONTROL_SERVICE_CA_CERT=./ca-cert.pem     # optional, defaults to ./ca-cert.pem
+  CONTROL_SERVICE_CA_CERT=../../ca-cert.pem   # optional, defaults to the repo root's ca-cert.pem
   ```
   `CONTROL_SERVICE_CA_CERT` points at a copy of the server's own `grpc-tls/ca-cert.pem` (see the
   server section above), used to pin and authenticate the control channel. If unset it defaults to
-  `ca-cert.pem` in the working directory; either way, startup fails if the file is missing or isn't
-  a valid cert.
+  `../../ca-cert.pem` — the repo root's `ca-cert.pem`, relative to the service's
+  `members/nullnet-<component>` working directory; either way, startup fails if the file is missing
+  or isn't a valid cert.
 
 - run the project as a daemon (from the repo root)
   ```
@@ -225,12 +253,13 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   ```
   CONTROL_SERVICE_ADDR=192.168.1.100
   CONTROL_SERVICE_PORT=50051
-  CONTROL_SERVICE_CA_CERT=./ca-cert.pem     # optional, defaults to ./ca-cert.pem
+  CONTROL_SERVICE_CA_CERT=../../ca-cert.pem   # optional, defaults to the repo root's ca-cert.pem
   ```
   `CONTROL_SERVICE_CA_CERT` points at a copy of the server's own `grpc-tls/ca-cert.pem` (see the
   server section above), used to pin and authenticate the control channel. If unset it defaults to
-  `ca-cert.pem` in the working directory; either way, startup fails if the file is missing or isn't
-  a valid cert.
+  `../../ca-cert.pem` — the repo root's `ca-cert.pem`, relative to the service's
+  `members/nullnet-<component>` working directory; either way, startup fails if the file is missing
+  or isn't a valid cert.
 
   > **⚠️ The client attaches a default-deny eBPF firewall to the uplink NIC on startup.** It permits
   > only the nullnet control plane (gRPC to the server), data plane (VXLAN to peers), established

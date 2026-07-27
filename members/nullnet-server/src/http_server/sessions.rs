@@ -1,9 +1,11 @@
 use super::AppState;
+use super::auth::{AuthContext, require_scope};
+use crate::auth::Scope;
 use crate::services::changes::{ServiceChange, apply_changes};
 use crate::services::service_info::ServiceInfo;
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use std::net::Ipv4Addr;
 use std::time::UNIX_EPOCH;
@@ -33,9 +35,13 @@ struct ErrorJson {
 }
 
 pub(super) async fn list_handler(
+    Extension(ctx): Extension<AuthContext>,
     Path(stack): Path<String>,
     State(state): State<AppState>,
-) -> impl IntoResponse {
+) -> Response {
+    if let Err(resp) = require_scope(&ctx, Scope::SessionsRead) {
+        return resp;
+    }
     let services = state.services.read().await;
     let Some(stack_map) = services.get(&stack) else {
         return axum::Json(Vec::<SessionJson>::new()).into_response();
@@ -87,9 +93,13 @@ pub(super) async fn list_handler(
 }
 
 pub(super) async fn teardown_handler(
+    Extension(ctx): Extension<AuthContext>,
     State(state): State<AppState>,
     Path((stack, id)): Path<(String, u32)>,
-) -> impl IntoResponse {
+) -> Response {
+    if let Err(resp) = require_scope(&ctx, Scope::SessionsWrite) {
+        return resp;
+    }
     let mut services = state.services.write().await;
 
     let found = {

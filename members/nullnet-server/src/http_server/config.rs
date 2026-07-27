@@ -1,6 +1,8 @@
 use super::AppState;
+use super::auth::{AuthContext, require_scope};
+use crate::auth::Scope;
 use crate::services::input::{detect_port_conflicts, validate_stack_toml};
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
@@ -18,7 +20,13 @@ fn valid_stack_name(stack: &str) -> bool {
 }
 
 /// GET the raw TOML of a stack's service configuration.
-pub(super) async fn config_handler(Path(stack): Path<String>) -> Response {
+pub(super) async fn config_handler(
+    Extension(ctx): Extension<AuthContext>,
+    Path(stack): Path<String>,
+) -> Response {
+    if let Err(resp) = require_scope(&ctx, Scope::ConfigRead) {
+        return resp;
+    }
     if !valid_stack_name(&stack) {
         return Response::builder()
             .status(StatusCode::BAD_REQUEST)
@@ -63,10 +71,14 @@ fn rejected(status: StatusCode, error: impl Into<String>) -> Response {
 /// it live; on failure nothing is written, so the last valid config keeps running
 /// and the response carries the parse error for the UI's status indicator.
 pub(super) async fn save_handler(
+    Extension(ctx): Extension<AuthContext>,
     Path(stack): Path<String>,
     State(state): State<AppState>,
     body: String,
 ) -> Response {
+    if let Err(resp) = require_scope(&ctx, Scope::ConfigWrite) {
+        return resp;
+    }
     if !valid_stack_name(&stack) {
         return rejected(StatusCode::BAD_REQUEST, "invalid stack name");
     }
@@ -117,7 +129,13 @@ pub(super) async fn save_handler(
 /// DELETE a stack's config file. The `./services` watcher sees the removal and
 /// tears the stack's services down (`apply_config_update`). Creating a stack is
 /// just a `save_handler` POST to a name that has no file yet.
-pub(super) async fn delete_handler(Path(stack): Path<String>) -> Response {
+pub(super) async fn delete_handler(
+    Extension(ctx): Extension<AuthContext>,
+    Path(stack): Path<String>,
+) -> Response {
+    if let Err(resp) = require_scope(&ctx, Scope::ConfigWrite) {
+        return resp;
+    }
     if !valid_stack_name(&stack) {
         return rejected(StatusCode::BAD_REQUEST, "invalid stack name");
     }

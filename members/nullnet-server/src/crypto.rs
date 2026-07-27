@@ -14,7 +14,7 @@ pub(crate) struct Encryptor {
 }
 
 impl Encryptor {
-    fn new(key: &[u8; 32]) -> Self {
+    pub(crate) fn new(key: &[u8; 32]) -> Self {
         Self {
             cipher: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key)),
         }
@@ -50,30 +50,37 @@ impl Encryptor {
 /// Initialize the global cipher from `CERT_ENCRYPTION_KEY` (32 raw bytes or 64
 /// hex chars). Call once at startup; fails fast if the key is missing/invalid.
 pub(crate) fn init_from_env() -> Result<(), Error> {
-    let raw = std::env::var("CERT_ENCRYPTION_KEY")
-        .map_err(|_| "CERT_ENCRYPTION_KEY not set")
+    let key = parse_key_from_env("CERT_ENCRYPTION_KEY")?;
+    let _ = CIPHER.set(Encryptor::new(&key));
+    Ok(())
+}
+
+/// Read a 32-byte key from the env var `name` (32 raw bytes or 64 hex chars).
+/// Shared by every secret-key env var this process loads at startup (cert
+/// encryption, MFA-secret encryption, JWT signing) so they all get the same
+/// fail-fast validation and accepted formats.
+pub(crate) fn parse_key_from_env(name: &str) -> Result<[u8; 32], Error> {
+    let raw = std::env::var(name)
+        .map_err(|_| format!("{name} not set"))
         .handle_err(location!())?;
 
-    let key: [u8; 32] = if raw.len() == 64 {
+    if raw.len() == 64 {
         decode_hex(&raw)?
             .try_into()
-            .map_err(|_| "CERT_ENCRYPTION_KEY: hex must decode to exactly 32 bytes")
-            .handle_err(location!())?
+            .map_err(|_| format!("{name}: hex must decode to exactly 32 bytes"))
+            .handle_err(location!())
     } else if raw.len() == 32 {
         raw.as_bytes()
             .try_into()
-            .map_err(|_| "CERT_ENCRYPTION_KEY: failed to read as 32-byte key")
-            .handle_err(location!())?
+            .map_err(|_| format!("{name}: failed to read as 32-byte key"))
+            .handle_err(location!())
     } else {
-        return Err::<(), _>(format!(
-            "CERT_ENCRYPTION_KEY: expected 32 raw chars or 64 hex chars, got {}",
+        Err::<[u8; 32], _>(format!(
+            "{name}: expected 32 raw chars or 64 hex chars, got {}",
             raw.len()
         ))
-        .handle_err(location!());
-    };
-
-    let _ = CIPHER.set(Encryptor::new(&key));
-    Ok(())
+        .handle_err(location!())
+    }
 }
 
 /// The global cipher. Panics if [`init_from_env`] was not called first.

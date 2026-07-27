@@ -1,10 +1,12 @@
 use super::AppState;
+use super::auth::{AuthContext, require_scope};
+use crate::auth::Scope;
 use crate::cert::{self, CertificateAuthority, DnsProviderCredentials};
 use crate::certs::CERTS_DIR;
 use crate::events::Event;
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{Extension, Path as AxumPath, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -32,14 +34,17 @@ fn bad_request(error: &str) -> axum::response::Response {
 
 /// List installed certs (domain + best-effort expiry). Never returns keys or
 /// credentials.
-pub(super) async fn list_handler() -> impl IntoResponse {
+pub(super) async fn list_handler(Extension(ctx): Extension<AuthContext>) -> Response {
+    if let Err(resp) = require_scope(&ctx, Scope::CertificatesRead) {
+        return resp;
+    }
     let mut certs: Vec<CertJson> = Vec::new();
     for domain in crate::certs::cert_domains().await {
         let expires_at = crate::certs::read_expiry(&domain).await;
         certs.push(CertJson { domain, expires_at });
     }
     certs.sort_by(|a, b| a.domain.cmp(&b.domain));
-    axum::Json(certs)
+    axum::Json(certs).into_response()
 }
 
 /// Write `fullchain.pem` + the encrypted key into `./certs/<domain>/` and emit an
@@ -89,8 +94,12 @@ pub(super) struct RequestReq {
 /// watcher pushes the new cert to the proxies.
 pub(super) async fn request_handler(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     axum::Json(req): axum::Json<RequestReq>,
 ) -> impl IntoResponse {
+    if let Err(resp) = require_scope(&ctx, Scope::CertificatesWrite) {
+        return resp;
+    }
     let Some(domain) = sanitize_domain(&req.domain) else {
         return bad_request("invalid domain");
     };
@@ -149,18 +158,22 @@ pub(super) async fn request_handler(
 /// other; removing the last cert clears the set everywhere.
 pub(super) async fn delete_handler(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     AxumPath(domain): AxumPath<String>,
-) -> impl IntoResponse {
+) -> Response {
+    if let Err(resp) = require_scope(&ctx, Scope::CertificatesWrite) {
+        return resp;
+    }
     let Some(domain) = sanitize_domain(&domain) else {
-        return StatusCode::BAD_REQUEST;
+        return StatusCode::BAD_REQUEST.into_response();
     };
     let dir = PathBuf::from(CERTS_DIR).join(&domain);
     match tokio::fs::remove_dir_all(&dir).await {
         Ok(()) => {
             state.events.emit(Event::certificate_removed(domain)).await;
-            StatusCode::NO_CONTENT
+            StatusCode::NO_CONTENT.into_response()
         }
-        Err(_) => StatusCode::NOT_FOUND,
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
 

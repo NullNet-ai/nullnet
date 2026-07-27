@@ -1,12 +1,14 @@
+use crate::db::Db;
 use crate::events::EventStore;
 use crate::orchestrator::Orchestrator;
 use crate::services::input::StackMap;
 use axum::Router;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+mod auth;
 mod certificates;
 mod chains;
 mod config;
@@ -27,11 +29,14 @@ pub(crate) struct AppState {
     pub(crate) services: Arc<RwLock<StackMap>>,
     pub(crate) orchestrator: Orchestrator,
     pub(crate) events: EventStore,
+    pub(crate) db: Db,
 }
 
 pub async fn serve(state: AppState) {
-    let app = Router::new()
-        .route("/api/health", get(health::health))
+    // Guarded by `auth::require_auth`: every route here needs a valid
+    // access-token cookie. Individual handlers additionally check their own
+    // required scope (see `http_server::auth::require_scope`).
+    let protected = Router::new()
         .route("/api/stacks", get(stacks::stacks_handler))
         .route("/api/services/{stack}", get(services::services_handler))
         .route("/api/nodes/{stack}", get(nodes::nodes_handler))
@@ -62,8 +67,32 @@ pub async fn serve(state: AppState) {
             "/api/events/stream",
             get(events_stream::events_stream_handler),
         )
-        .fallback(get(static_files::static_handler))
-        .with_state(state);
+        .route("/api/auth/logout", post(auth::logout_handler))
+        .route("/api/auth/me", get(auth::me_handler))
+        .route("/api/auth/mfa/setup", post(auth::setup_handler))
+        .route("/api/auth/mfa/confirm", post(auth::confirm_handler))
+        .route("/api/auth/mfa/disable", post(auth::disable_handler))
+        .route(
+            "/api/auth/users",
+            get(auth::list_handler).post(auth::create_handler),
+        )
+        .route(
+            "/api/auth/users/{id}",
+            patch(auth::update_handler).delete(auth::delete_handler),
+        )
+        .route_layer(axum::middleware::from_fn(auth::require_auth));
+
+    // No auth required — login/refresh have no session yet by definition,
+    // health is a plain liveness check, and the SPA fallback must stay open
+    // so the browser can load the login page itself.
+    let public = Router::new()
+        .route("/api/health", get(health::health))
+        .route("/api/auth/login", post(auth::login_handler))
+        .route("/api/auth/mfa/verify", post(auth::mfa_verify_handler))
+        .route("/api/auth/refresh", post(auth::refresh_handler))
+        .fallback(get(static_files::static_handler));
+
+    let app = protected.merge(public).with_state(state);
 
     // Self-signed cert, regenerated each start. The admin UI is single-origin, so
     // relative /api calls inherit HTTPS; browsers prompt to trust the cert once.

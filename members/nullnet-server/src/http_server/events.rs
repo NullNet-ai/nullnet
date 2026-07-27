@@ -1,7 +1,9 @@
+use super::auth::{AuthContext, require_scope};
+use crate::auth::Scope;
 use crate::events::{EventEnvelope, Severity};
 use crate::http_server::AppState;
-use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::{Extension, Query, State};
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -12,9 +14,13 @@ pub(crate) struct EventsQuery {
 }
 
 pub(crate) async fn events_handler(
+    Extension(ctx): Extension<AuthContext>,
     State(state): State<AppState>,
     Query(params): Query<EventsQuery>,
-) -> Json<serde_json::Value> {
+) -> Response {
+    if let Err(resp) = require_scope(&ctx, Scope::EventsRead) {
+        return resp;
+    }
     let events = state
         .events
         .snapshot(params.limit, params.kind.as_deref(), params.severity)
@@ -26,5 +32,6 @@ pub(crate) async fn events_handler(
             event: e,
         })
         .collect();
-    Json(serde_json::to_value(envelopes).unwrap_or(serde_json::Value::Array(vec![])))
+    axum::Json(serde_json::to_value(envelopes).unwrap_or(serde_json::Value::Array(vec![])))
+        .into_response()
 }
