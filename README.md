@@ -107,7 +107,8 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   authenticated by a private CA. On first boot the server generates its own CA
   (`members/nullnet-server/grpc-tls/ca-cert.pem` + `ca-key.pem`, created once and never
   regenerated) and signs its leaf cert with it. Copy `ca-cert.pem` to every client/proxy host and
-  set `CONTROL_SERVICE_CA_CERT` there (see below) if it isn't at the default path — clients pin the
+  set `CONTROL_SERVICE_CA_CERT` there (see below) if it isn't at the default path (the repo root,
+  i.e. `nullnet/ca-cert.pem`) — clients pin the
   channel to that CA and do full standard chain validation, so only a leaf actually signed by it is
   accepted. Because clients trust the stable CA root rather than the leaf, rotating the leaf later
   needs no client-side changes. Client authentication (mTLS) remains a further follow-up.
@@ -223,12 +224,13 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   ```
   CONTROL_SERVICE_ADDR=192.168.1.100
   CONTROL_SERVICE_PORT=50051
-  CONTROL_SERVICE_CA_CERT=./ca-cert.pem     # optional, defaults to ./ca-cert.pem
+  CONTROL_SERVICE_CA_CERT=../../ca-cert.pem   # optional, defaults to the repo root's ca-cert.pem
   ```
   `CONTROL_SERVICE_CA_CERT` points at a copy of the server's own `grpc-tls/ca-cert.pem` (see the
   server section above), used to pin and authenticate the control channel. If unset it defaults to
-  `ca-cert.pem` in the working directory; either way, startup fails if the file is missing or isn't
-  a valid cert.
+  `../../ca-cert.pem` — the repo root's `ca-cert.pem`, relative to the service's
+  `members/nullnet-<component>` working directory; either way, startup fails if the file is missing
+  or isn't a valid cert.
 
 - run the project as a daemon (from the repo root)
   ```
@@ -251,12 +253,13 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   ```
   CONTROL_SERVICE_ADDR=192.168.1.100
   CONTROL_SERVICE_PORT=50051
-  CONTROL_SERVICE_CA_CERT=./ca-cert.pem     # optional, defaults to ./ca-cert.pem
+  CONTROL_SERVICE_CA_CERT=../../ca-cert.pem   # optional, defaults to the repo root's ca-cert.pem
   ```
   `CONTROL_SERVICE_CA_CERT` points at a copy of the server's own `grpc-tls/ca-cert.pem` (see the
   server section above), used to pin and authenticate the control channel. If unset it defaults to
-  `ca-cert.pem` in the working directory; either way, startup fails if the file is missing or isn't
-  a valid cert.
+  `../../ca-cert.pem` — the repo root's `ca-cert.pem`, relative to the service's
+  `members/nullnet-<component>` working directory; either way, startup fails if the file is missing
+  or isn't a valid cert.
 
   > **⚠️ The client attaches a default-deny eBPF firewall to the uplink NIC on startup.** It permits
   > only the nullnet control plane (gRPC to the server), data plane (VXLAN to peers), established
