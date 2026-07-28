@@ -1,7 +1,8 @@
 #!/bin/bash
 
+apt install sudo
 sudo apt-get update && \
-sudo apt-get install -y iptables conntrack ipset openvswitch-switch unzip && \
+sudo apt-get install -y iptables conntrack ipset openvswitch-switch unzip build-essential && \
 { command -v protoc >/dev/null || { \
   curl -OL https://github.com/google/protobuf/releases/download/v3.20.3/protoc-3.20.3-linux-x86_64.zip && \
   unzip -o protoc-3.20.3-linux-x86_64.zip -d protoc3 && \
