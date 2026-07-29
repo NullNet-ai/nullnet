@@ -91,14 +91,42 @@ export function layoutNodes(nodes: TopoNode[], edges: TopoEdge[]): Map<string, P
     }
   }
 
+  // The dependency graph is legitimately cyclic, so drop DFS back edges first.
+  // On an acyclic graph nothing is dropped and the layering below is unchanged.
+  const dag = new Map<string, Set<string>>();
+  const dagInc = new Map<string, Set<string>>();
+  for (const n of serviceNodes) { dag.set(n.id, new Set()); dagInc.set(n.id, new Set()); }
+  {
+    const state = new Map<string, 'open' | 'done'>();
+    const visit = (id: string) => {
+      state.set(id, 'open');
+      for (const next of out.get(id) ?? []) {
+        if (state.get(next) === 'open') continue; // back edge: closes a cycle
+        dag.get(id)!.add(next);
+        dagInc.get(next)!.add(id);
+        if (!state.has(next)) visit(next);
+      }
+      state.set(id, 'done');
+    };
+    // Seed from real roots first; then from services reached straight off a
+    // proxy, so a session whose entry point sits inside a cycle still lays out
+    // from that entry point; then anything still unvisited.
+    const proxyTargets = edges.filter(e => e.isProxyHop && svcSet.has(e.to)).map(e => e.to);
+    for (const n of serviceNodes) if (!inc.get(n.id)?.size && !state.has(n.id)) visit(n.id);
+    for (const id of proxyTargets) if (!state.has(id)) visit(id);
+    for (const n of serviceNodes) if (!state.has(n.id)) visit(n.id);
+  }
+
   const layer = new Map<string, number>();
-  const q: string[] = serviceNodes.filter(n => !inc.get(n.id)?.size).map(n => n.id);
+  const q: string[] = serviceNodes.filter(n => !dagInc.get(n.id)?.size).map(n => n.id);
   q.forEach(id => layer.set(id, 0));
   for (let i = 0; i < q.length; i++) {
     const id = q[i], l = layer.get(id)!;
-    for (const next of out.get(id) ?? []) {
-      layer.set(next, Math.max(layer.get(next) ?? 0, l + 1));
-      q.push(next);
+    for (const next of dag.get(id) ?? []) {
+      if (l + 1 > (layer.get(next) ?? 0)) {
+        layer.set(next, l + 1);
+        q.push(next);
+      }
     }
   }
   for (const n of serviceNodes) { if (!layer.has(n.id)) layer.set(n.id, 0); }
