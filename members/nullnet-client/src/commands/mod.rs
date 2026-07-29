@@ -142,10 +142,21 @@ pub(crate) async fn cleanup_network(rtnetlink_handle: &RtNetLinkHandle) {
 /// JWT-bearing calls) black-hole. This generic forwarding-path fix applies to
 /// every chain (proxy_dependency or trigger) and must run on every node.
 /// Idempotent via `-C`; one rule covers both directions (SYN and SYN-ACK both
-/// traverse FORWARD with the SYN flag set).
+/// traverse FORWARD with the SYN flag set). Rules written by earlier builds are
+/// removed first — `-C` only matches a rule verbatim, so without that an
+/// upgrade would leave two clamps installed and the older one would win by
+/// position.
 fn install_mss_clamp() {
-    // MSS = overlay MTU (1500 - 50 VXLAN) - 40 (IP+TCP headers) = 1410; 1400 leaves slack.
-    const MSS: &str = "1400";
+    prune_superseded_mss_rules();
+    // Must match OVERLAY_MTU in vxlan_scripts/vxlan-setup.sh (1080) minus the
+    // 40-byte IP+TCP headers. The previous 1400 came from a theoretical
+    // 1500-VXLAN budget and exceeds what the chain interfaces actually carry,
+    // so `--set-mss` could raise an endpoint's advertised MSS above the path.
+    // `--clamp-mss-to-pmtu` is tempting here but is not equivalent: it drops
+    // the packet when the route MTU is unusable, and on non-overlay forwarded
+    // paths it would raise the MSS to the NIC's 1500-derived value — which
+    // this underlay has been measured not to honour.
+    const MSS: &str = "1040";
     let rule = [
         "-p",
         "tcp",
@@ -173,8 +184,70 @@ fn install_mss_clamp() {
     }
 }
 
+/// MSS clamps installed by earlier builds, deleted on startup so an upgrade
+/// converges without hand-editing iptables on every node. Each entry is the
+/// exact rule spec that build appended, so `-D` removes that rule and nothing
+/// else — a hand-added clamp scoped to an interface won't match. Absent rules
+/// simply fail, which is the normal case and not worth logging. Deletion is
+/// repeated because `-D` removes one rule per call and restarts across
+/// versions can leave several stacked up.
+///
+/// When MSS changes, append the previous spec here rather than replacing it:
+/// a node may still be running any older build.
+fn prune_superseded_mss_rules() {
+    const SUPERSEDED: &[&[&str]] = &[
+        // theoretical 1500-VXLAN budget; exceeds the measured overlay MTU
+        &[
+            "-p",
+            "tcp",
+            "--tcp-flags",
+            "SYN,RST",
+            "SYN",
+            "-j",
+            "TCPMSS",
+            "--set-mss",
+            "1400",
+        ],
+        // route-derived variant; drops on unusable route MTU and raises the MSS
+        // on non-overlay forwarded paths
+        &[
+            "-p",
+            "tcp",
+            "--tcp-flags",
+            "SYN,RST",
+            "SYN",
+            "-j",
+            "TCPMSS",
+            "--clamp-mss-to-pmtu",
+        ],
+    ];
+    for spec in SUPERSEDED {
+        // Bounded: one `-D` per stacked duplicate, then the call fails and stops.
+        for _ in 0..8 {
+            let mut del = vec!["iptables", "-t", "mangle", "-D", "FORWARD"];
+            del.extend_from_slice(spec);
+            match sudo_quiet(&del) {
+                Ok(s) if s.success() => {
+                    println!("[mss] removed superseded clamp: {}", spec.join(" "));
+                }
+                _ => break,
+            }
+        }
+    }
+}
+
 fn sudo(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
     std::process::Command::new("sudo").args(args).status()
+}
+
+/// `sudo` with stdout/stderr captured rather than inherited. For calls whose
+/// failure is the expected steady state — deleting a rule that isn't there —
+/// so iptables' "Bad rule" complaint doesn't reach the log on every startup.
+fn sudo_quiet(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
+    std::process::Command::new("sudo")
+        .args(args)
+        .output()
+        .map(|o| o.status)
 }
 
 /// Cleanup existing namespaces, VXLANs and bridges
