@@ -2,6 +2,8 @@
 
 use crate::graphviz::render_graphviz;
 use crate::nullnet_grpc_impl::NullnetGrpcImpl;
+use crate::services::changes::dep_chain_intact;
+use crate::services::clients::Client;
 use crate::services::input::{ServicesToml, StackMap, apply_config_update};
 use crate::services::service_info::{CountryPolicy, ServiceInfo};
 use crate::timeout::apply_timeouts;
@@ -2965,4 +2967,95 @@ async fn proxy_request_resumes_suspended_replica() {
         );
     }
     assert_eq!(count_resumes(&log.lock().await, "svc_c1"), 1);
+}
+
+// ===========================================================================
+// stale_session: A entry-point with proxy_dependencies=[["B","C"]] (reusing the
+// reachability_changed fixture, A's chain only). Covers the sticky-session
+// path: it must reuse an intact chain, and evict + rebuild a broken one rather
+// than serving a replica whose dependency mappings are gone.
+// ===========================================================================
+
+async fn stale_session_setup() -> (NullnetGrpcImpl, IpAddr) {
+    let services = load_fixture(REACHABILITY_CHANGED).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+
+    let ip_map = HashMap::from([
+        ("A", ip(1, 1, 1, 1)),
+        ("B", ip(2, 2, 2, 2)),
+        ("C", ip(3, 3, 3, 3)),
+    ]);
+    let proxy = ip(6, 6, 6, 6);
+    register_services(&server, &ip_map, 8080).await;
+    server.orchestrator().register_fake_client(proxy).await;
+
+    // proxy→A, A→B, B→C
+    setup_proxy_chain(&server, "A", proxy, "10.0.0.1").await;
+    assert_net_ids_in_use(&server, 3).await;
+
+    (server, proxy)
+}
+
+/// Whether A's dependency chain, walked from its only replica, is complete.
+async fn a_chain_intact(server: &NullnetGrpcImpl) -> bool {
+    let guard = server.services().read().await;
+    dep_chain_intact("A", ip(1, 1, 1, 1), None, stack_view(&guard))
+}
+
+/// An intact chain is reused as-is: same upstream, no new networks.
+#[tokio::test]
+async fn stale_session_intact_chain_is_reused() {
+    let (server, proxy) = stale_session_setup().await;
+
+    let first = server
+        .handle_proxy_request("A", proxy, "10.0.0.1")
+        .await
+        .expect("proxy request failed");
+    let second = server
+        .handle_proxy_request("A", proxy, "10.0.0.1")
+        .await
+        .expect("proxy request failed");
+
+    assert_eq!(
+        first.ip, second.ip,
+        "sticky reuse must keep serving the same network"
+    );
+    assert!(a_chain_intact(&server).await);
+    assert_net_ids_in_use(&server, 3).await;
+}
+
+/// A dep edge torn down independently of the entry edge leaves the session
+/// stale. The next request must evict it and rebuild the whole chain instead
+/// of reusing an entry whose dependency mappings no longer exist.
+#[tokio::test]
+async fn stale_session_broken_chain_is_evicted_and_rebuilt() {
+    let (server, proxy) = stale_session_setup().await;
+
+    // Drop B→C the way a real teardown would, leaving proxy→A and A→B up.
+    {
+        let mut guard = server.services().write().await;
+        let b_client = Client::new_service("B".to_string(), ip(2, 2, 2, 2), None);
+        let Some(ServiceInfo::Registered(c_reg)) = stack_view_mut(&mut guard).get_mut("C") else {
+            panic!("C is not registered");
+        };
+        c_reg
+            .decrement_chain(&b_client, server.orchestrator(), false)
+            .await;
+    }
+    assert!(
+        !a_chain_intact(&server).await,
+        "B→C should be gone after the teardown"
+    );
+    assert_net_ids_in_use(&server, 2).await;
+
+    server
+        .handle_proxy_request("A", proxy, "10.0.0.1")
+        .await
+        .expect("proxy request failed");
+
+    assert!(
+        a_chain_intact(&server).await,
+        "the stale session should have been evicted and the chain rebuilt"
+    );
+    assert_net_ids_in_use(&server, 3).await;
 }

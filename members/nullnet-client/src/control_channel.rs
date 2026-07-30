@@ -2,7 +2,7 @@ use crate::commands::{RtNetLinkHandle, configure_access_port, dnat, egress, remo
 use crate::ebpf::{FirewallPeers, FirewallVxlanPorts, NetId};
 use crate::egress_policy::{PolicyVerdicts, flush_container_conntrack};
 use crate::egress_state::{EgressRecord, EgressState};
-use crate::host_mappings::HostMappingsState;
+use crate::host_mappings::{HostMappingsState, hosts_file_lock};
 use crate::nfqueue::BridgeIpCache;
 use crate::peers::peer::{Peers, VethKey};
 use crate::triggers::TriggersState;
@@ -21,7 +21,7 @@ use nullnet_grpc_lib::nullnet_grpc::{
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::net::Ipv4Addr;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{RwLock, mpsc};
 
@@ -845,6 +845,11 @@ fn add_host_mapping(hm: &HostMapping, docker_container: Option<&str>) -> Result<
     let path = "/etc/hosts";
     let entry = format!("{} {}", hm.ip, hm.name);
 
+    // Serialize against every other mapping change on this same file; the
+    // read-modify-write below is only atomic while this is held.
+    let lock = hosts_file_lock(docker_container);
+    let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+
     if let Some(container) = docker_container {
         // container-targeted: the resolver that needs this name lives inside
         // the container, so write only there and leave the host's file alone.
@@ -852,6 +857,17 @@ fn add_host_mapping(hm: &HostMapping, docker_container: Option<&str>) -> Result<
             .args(["exec", container, "cat", path])
             .output()
             .handle_err(location!())?;
+        // Bail rather than write on a failed read: `output()` is Ok even when
+        // the exec itself failed (container gone, docker hiccup), and treating
+        // the empty stdout as the file's contents would truncate a live
+        // `/etc/hosts` down to this one entry.
+        if !cat.status.success() {
+            Err(format!(
+                "reading {path} in '{container}' failed: {}",
+                String::from_utf8_lossy(&cat.stderr).trim()
+            ))
+            .handle_err(location!())?;
+        }
         let content = upsert_hosts_entry(&String::from_utf8_lossy(&cat.stdout), &hm.name, &entry);
         let mut child = std::process::Command::new("docker")
             .args([
@@ -900,6 +916,9 @@ fn upsert_hosts_entry(content: &str, name: &str, entry: &str) -> String {
 fn remove_host_mapping(hm: &HostMapping, docker_container: Option<&str>) -> Result<(), Error> {
     let path = "/etc/hosts";
 
+    let lock = hosts_file_lock(docker_container);
+    let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+
     if let Some(container) = docker_container {
         // container-targeted: setup only wrote inside the container, so the
         // matching removal is container-only too.
@@ -907,7 +926,14 @@ fn remove_host_mapping(hm: &HostMapping, docker_container: Option<&str>) -> Resu
             .args(["exec", container, "cat", path])
             .output()
             .handle_err(location!())?;
-        let content = remove_hosts_entry(&String::from_utf8_lossy(&cat.stdout), &hm.name);
+        if !cat.status.success() {
+            Err(format!(
+                "reading {path} in '{container}' failed: {}",
+                String::from_utf8_lossy(&cat.stderr).trim()
+            ))
+            .handle_err(location!())?;
+        }
+        let content = remove_hosts_entry(&String::from_utf8_lossy(&cat.stdout), &hm.name, &hm.ip);
         let mut child = std::process::Command::new("docker")
             .args([
                 "exec",
@@ -928,18 +954,30 @@ fn remove_host_mapping(hm: &HostMapping, docker_container: Option<&str>) -> Resu
         }
         let _ = child.wait();
     } else {
-        // host-targeted: drop any line in the host file referencing this name
+        // host-targeted: drop this net's line from the host file
         let content = std::fs::read_to_string(path).handle_err(location!())?;
-        std::fs::write(path, remove_hosts_entry(&content, &hm.name)).handle_err(location!())?;
+        std::fs::write(path, remove_hosts_entry(&content, &hm.name, &hm.ip))
+            .handle_err(location!())?;
     }
 
     Ok(())
 }
 
-fn remove_hosts_entry(content: &str, name: &str) -> String {
+/// Drop the line mapping `name`, but only while it still points at `ip`.
+///
+/// NET IDs are recycled, so a teardown can land after a *newer* net has already
+/// re-installed the same name at a different overlay IP (`upsert_hosts_entry`
+/// keys on the name alone, which is what makes the replacement correct).
+/// Matching the IP too makes the late teardown a no-op instead of deleting a
+/// mapping that belongs to a live tunnel.
+fn remove_hosts_entry(content: &str, name: &str, ip: &str) -> String {
     let lines: Vec<String> = content
         .lines()
-        .filter(|line| !line.split_whitespace().skip(1).any(|tok| tok == name))
+        .filter(|line| {
+            let mut tokens = line.split_whitespace();
+            let line_ip = tokens.next();
+            !(line_ip == Some(ip) && tokens.any(|tok| tok == name))
+        })
         .map(ToString::to_string)
         .collect();
     lines.join("\n") + "\n"

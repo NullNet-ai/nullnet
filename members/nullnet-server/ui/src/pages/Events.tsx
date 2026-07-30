@@ -27,6 +27,7 @@ const KIND_LABELS: Record<string, string> = {
   service_reachability_toggled: 'service_reachability_toggled',
   proxy_client_timed_out: 'proxy_client_timed_out',
   sticky_session_reused: 'sticky_session_reused',
+  stale_session_evicted: 'stale_session_evicted',
   max_networks_limit_enforced: 'max_networks_limit_enforced',
   net_id_pool_exhausted: 'net_id_pool_exhausted',
   proxy_chain_setup_failed: 'proxy_chain_setup_failed',
@@ -100,6 +101,7 @@ function eventDetail(e: EventJson): string {
     case 'proxy_client_timed_out':
       return `${e.service} · ${e.client_ip}`;
     case 'sticky_session_reused':
+    case 'stale_session_evicted':
       return `${e.service} · ${e.client_ip} via ${e.proxy_ip}`;
     case 'max_networks_limit_enforced':
       return `${e.service} · proxy ${e.proxy_ip} · net ${e.net_id} · limit ${e.limit}`;

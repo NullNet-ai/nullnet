@@ -8,7 +8,8 @@ use crate::net::EgressRole;
 use crate::net_id_pool::generate_key;
 use crate::orchestrator::Orchestrator;
 use crate::services::changes::{
-    apply_changes, collect_dep_chain_edges, detect_services_list_changes,
+    ServiceChange, apply_changes, collect_dep_chain_edges, dep_chain_intact,
+    detect_services_list_changes,
 };
 use crate::services::clients::{Client, ClientInfo};
 use crate::services::edge::{Edge, RegisteredEdge};
@@ -223,34 +224,90 @@ impl NullnetGrpcImpl {
             Err("Service is not a configured entry point").handle_err(location!())?;
         }
 
-        let ServiceInfo::Registered(registered) = service_info else {
+        let ServiceInfo::Registered(mut registered) = service_info else {
             Err("Service is not registered").handle_err(location!())?
         };
 
         let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
 
-        // Sticky session: check if this client is already connected to a replica
+        // Sticky session: reuse the network this client is already on — but only
+        // while the dependency chain built alongside it is still complete.
+        //
+        // A dep edge can come down independently of the entry edge (its container
+        // restarting, a chain torn down through an unregistered service), and this
+        // path never rebuilds one. Serving the request anyway hands it to a replica
+        // whose `/etc/hosts` no longer maps its dependencies, so the name silently
+        // falls through to public DNS. Evict the session instead and let the setup
+        // path below rebuild entry and chain together: repairing just the missing
+        // edges here would double-count `active_chains` on the edges still up,
+        // since teardown decrements once per branch per proxy client.
         if let Some(upstream) = registered.is_client_setup(&proxy_client) {
-            println!("'{client_ip}' ---> '{service_name}' is already set up");
+            let intact = match registered.client_replica(&proxy_client) {
+                Some((replica_ip, replica_docker)) => {
+                    self.services.read().await.get(&stack).is_some_and(|sm| {
+                        dep_chain_intact(service_name, replica_ip, replica_docker.as_deref(), sm)
+                    })
+                }
+                None => false,
+            };
+
+            if intact {
+                println!("'{client_ip}' ---> '{service_name}' is already set up");
+
+                self.orchestrator
+                    .events
+                    .emit(Event::sticky_session_reused(
+                        service_name.to_string(),
+                        client_ip.to_string(),
+                        proxy_ip.to_string(),
+                    ))
+                    .await;
+
+                // update the latest timestamp for this client since it's being used again
+                let mut services_mut = self.services.write().await;
+                if let Some(stack_map) = services_mut.get_mut(&stack)
+                    && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(service_name)
+                {
+                    reg.set_latest_now(&proxy_client);
+                }
+
+                return Ok(upstream);
+            }
 
             self.orchestrator
                 .events
-                .emit(Event::sticky_session_reused(
+                .emit(Event::stale_session_evicted(
                     service_name.to_string(),
                     client_ip.to_string(),
                     proxy_ip.to_string(),
                 ))
                 .await;
 
-            // update the latest timestamp for this client since it's being used again
             let mut services_mut = self.services.write().await;
-            if let Some(stack_map) = services_mut.get_mut(&stack)
-                && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(service_name)
-            {
-                reg.set_latest_now(&proxy_client);
+            if let Some(stack_map) = services_mut.get_mut(&stack) {
+                apply_changes(
+                    vec![ServiceChange::StaleSessionEvicted {
+                        name: service_name.to_string(),
+                        client: proxy_client.clone(),
+                    }],
+                    stack_map,
+                    None,
+                    &self.orchestrator,
+                    &stack,
+                )
+                .await;
             }
+            drop(services_mut);
 
-            return Ok(upstream);
+            // The eviction dropped this client and may have freed its network, so
+            // the snapshot the max-networks check below reads has to be re-taken.
+            let guard = self.services.read().await;
+            let Some(ServiceInfo::Registered(reg)) =
+                guard.get(&stack).and_then(|sm| sm.get(service_name))
+            else {
+                Err("Service is not registered").handle_err(location!())?
+            };
+            registered = reg.clone();
         }
 
         // Max-networks: if the limit is reached, reuse the least-used existing

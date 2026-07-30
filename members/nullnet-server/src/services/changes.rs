@@ -27,6 +27,9 @@ pub(crate) enum ServiceChange {
     ProxyDisconnected { ip: IpAddr },
     /// A proxy client's timeout expired; tear down its chains.
     ProxyClientTimedOut { name: String, client: Client },
+    /// A proxy session survived but its dependency chain did not; tear it down
+    /// so the next request rebuilds both together.
+    StaleSessionEvicted { name: String, client: Client },
     /// An operator explicitly requested teardown of a proxy session.
     ForceSessionTeardown { name: String, client: Client },
 }
@@ -374,6 +377,27 @@ pub(crate) fn collect_dep_chain_edges(
         }
     }
     edges
+}
+
+/// Whether every edge of `service_name`'s proxy dependency chain, walked from
+/// the given replica, is currently set up.
+///
+/// `collect_dep_chain_edges` truncates a branch at the first hop whose client
+/// isn't registered on the dependency, but still emits that missing edge — so
+/// the chain is complete exactly when every emitted edge resolves to a live
+/// client entry.
+pub(crate) fn dep_chain_intact(
+    service_name: &str,
+    replica_ip: IpAddr,
+    replica_docker: Option<&str>,
+    services: &HashMap<String, ServiceInfo>,
+) -> bool {
+    collect_dep_chain_edges(service_name, replica_ip, replica_docker, services)
+        .into_iter()
+        .all(|(client, dep_name)| match services.get(&dep_name) {
+            Some(ServiceInfo::Registered(dep_reg)) => dep_reg.client_replica(&client).is_some(),
+            _ => false,
+        })
 }
 
 /// Walk the backend trigger chains starting from a specific initiator replica
@@ -732,6 +756,20 @@ pub(crate) async fn apply_changes(
                         client.display_name().to_string(),
                     ))
                     .await;
+                teardown_chain(
+                    &name,
+                    services,
+                    orchestrator,
+                    ProxyFilter::ByClient(&client),
+                )
+                .await;
+            }
+            ServiceChange::StaleSessionEvicted { name, client } => {
+                println!(
+                    "Evicting stale proxy session '{}' on service '{name}': \
+                     dependency chain incomplete",
+                    client.display_name()
+                );
                 teardown_chain(
                     &name,
                     services,

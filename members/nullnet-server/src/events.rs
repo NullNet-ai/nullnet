@@ -125,6 +125,12 @@ pub(crate) enum Event {
         proxy_ip: String,
         timestamp: u64,
     },
+    StaleSessionEvicted {
+        service: String,
+        client_ip: String,
+        proxy_ip: String,
+        timestamp: u64,
+    },
     MaxNetworksLimitEnforced {
         service: String,
         proxy_ip: String,
@@ -351,6 +357,7 @@ impl Event {
             Self::ServiceReachabilityToggled { .. } => "service_reachability_toggled",
             Self::ProxyClientTimedOut { .. } => "proxy_client_timed_out",
             Self::StickySessionReused { .. } => "sticky_session_reused",
+            Self::StaleSessionEvicted { .. } => "stale_session_evicted",
             Self::MaxNetworksLimitEnforced { .. } => "max_networks_limit_enforced",
             Self::NetIdPoolExhausted { .. } => "net_id_pool_exhausted",
             Self::ProxyChainSetupFailed { .. } => "proxy_chain_setup_failed",
@@ -417,6 +424,7 @@ impl Event {
             | Self::AllReplicasRemoved { .. }
             | Self::ServiceReachabilityToggled { .. }
             | Self::ProxyClientTimedOut { .. }
+            | Self::StaleSessionEvicted { .. }
             | Self::MaxNetworksLimitEnforced { .. }
             | Self::BackendTriggerSetupBailed { .. }
             | Self::ControlChannelClosed { .. }
@@ -611,6 +619,19 @@ impl Event {
         proxy_ip: String,
     ) -> Self {
         Self::StickySessionReused {
+            service,
+            client_ip,
+            proxy_ip,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn stale_session_evicted(
+        service: String,
+        client_ip: String,
+        proxy_ip: String,
+    ) -> Self {
+        Self::StaleSessionEvicted {
             service,
             client_ip,
             proxy_ip,

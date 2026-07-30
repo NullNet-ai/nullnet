@@ -92,6 +92,7 @@ export type EventJson =
   | WithSeverity & { type: 'service_reachability_toggled'; service: string; stack: string; reachable: boolean }
   | WithSeverity & { type: 'proxy_client_timed_out'; service: string; client_ip: string }
   | WithSeverity & { type: 'sticky_session_reused'; service: string; client_ip: string; proxy_ip: string }
+  | WithSeverity & { type: 'stale_session_evicted'; service: string; client_ip: string; proxy_ip: string }
   | WithSeverity & { type: 'max_networks_limit_enforced'; service: string; proxy_ip: string; net_id: number; limit: number }
   | WithSeverity & { type: 'net_id_pool_exhausted'; service: string; client_ip: string }
   | WithSeverity & { type: 'proxy_chain_setup_failed'; service: string; client_ip: string }
