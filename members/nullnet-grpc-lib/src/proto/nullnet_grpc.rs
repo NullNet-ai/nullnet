@@ -365,8 +365,7 @@ pub struct TlsCertificate {
     /// Leaf certificate followed by any intermediates, PEM-encoded.
     #[prost(string, tag = "2")]
     pub fullchain_pem: ::prost::alloc::string::String,
-    /// PEM-encoded private key. Plaintext on the wire — protect this channel with
-    /// TLS (see gRPC-TLS TODO). At-rest encryption (CERT_ENCRYPTION_KEY,
+    /// PEM-encoded private key. At-rest encryption (CERT_ENCRYPTION_KEY,
     /// AES-256-GCM) is applied server-side; the key is decrypted before it lands here.
     #[prost(string, tag = "3")]
     pub key_pem: ::prost::alloc::string::String,

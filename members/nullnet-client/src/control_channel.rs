@@ -2,7 +2,7 @@ use crate::commands::{RtNetLinkHandle, configure_access_port, dnat, egress, remo
 use crate::ebpf::{FirewallPeers, FirewallVxlanPorts, NetId};
 use crate::egress_policy::{PolicyVerdicts, flush_container_conntrack};
 use crate::egress_state::{EgressRecord, EgressState};
-use crate::host_mappings::{HostMappingsState, hosts_file_lock};
+use crate::host_mappings::{HOSTS_MARKER, HostMappingsState, hosts_file_lock};
 use crate::nfqueue::BridgeIpCache;
 use crate::peers::peer::{Peers, VethKey};
 use crate::triggers::TriggersState;
@@ -843,7 +843,9 @@ fn container_running(container: &str) -> bool {
 
 fn add_host_mapping(hm: &HostMapping, docker_container: Option<&str>) -> Result<(), Error> {
     let path = "/etc/hosts";
-    let entry = format!("{} {}", hm.ip, hm.name);
+    // Marked so a restarted process can sweep its predecessor's entries without
+    // touching the operator's (see `host_mappings::purge_stale_mappings`).
+    let entry = format!("{} {} {HOSTS_MARKER}", hm.ip, hm.name);
 
     // Serialize against every other mapping change on this same file; the
     // read-modify-write below is only atomic while this is held.

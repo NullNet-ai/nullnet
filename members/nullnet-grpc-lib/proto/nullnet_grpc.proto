@@ -356,8 +356,7 @@ message TlsCertificate {
   string domain = 1;
   // Leaf certificate followed by any intermediates, PEM-encoded.
   string fullchain_pem = 2;
-  // PEM-encoded private key. Plaintext on the wire — protect this channel with
-  // TLS (see gRPC-TLS TODO). At-rest encryption (CERT_ENCRYPTION_KEY,
+  // PEM-encoded private key. At-rest encryption (CERT_ENCRYPTION_KEY,
   // AES-256-GCM) is applied server-side; the key is decrypted before it lands here.
   string key_pem = 3;
 }
