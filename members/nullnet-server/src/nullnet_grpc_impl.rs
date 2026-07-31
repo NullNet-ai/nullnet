@@ -26,7 +26,7 @@ use nullnet_grpc_lib::nullnet_grpc::{
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{Notify, RwLock, mpsc, watch};
 use tokio::task::JoinSet;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
@@ -46,7 +46,15 @@ pub(crate) struct NullnetGrpcImpl {
     /// Live TCP/UDP port→service table, derived from `services` and refreshed
     /// on every services.toml change. Proxies subscribe for updates.
     port_mappings: watch::Receiver<PortMappingBundle>,
+    /// One lock per in-flight proxy request identity, so concurrent duplicates
+    /// are serialized rather than each building the same chain. See
+    /// [`NullnetGrpcImpl::handle_proxy_request`].
+    inflight_proxy: Arc<StdMutex<HashMap<ProxyKey, Arc<tokio::sync::Mutex<()>>>>>,
 }
+
+/// Identity of a proxy request: the same `(service, client, proxy)` triple that
+/// keys the resulting `Client` entry, so one key ⇔ one proxy session.
+type ProxyKey = (String, String, IpAddr);
 
 /// Build the live TCP/UDP port→service table from the current `StackMap`.
 /// `Http` services are excluded — they stay on Host-header routing.
@@ -160,6 +168,7 @@ impl NullnetGrpcImpl {
             orchestrator,
             certs: certs_rx,
             port_mappings: port_mappings_rx,
+            inflight_proxy: Arc::new(StdMutex::new(HashMap::new())),
         })
     }
 
@@ -202,7 +211,57 @@ impl NullnetGrpcImpl {
         Ok(Response::new(upstream))
     }
 
+    /// Serialize concurrent requests that share a proxy session identity.
+    ///
+    /// A browser opens several connections to the same host at once and the
+    /// proxy issues one `proxy` RPC per request, so duplicates routinely arrive
+    /// before the first chain is built. Without this they each miss the sticky
+    /// check, each build the full chain — incrementing every dependency edge
+    /// once per branch — and then collapse into a single `Client` entry that
+    /// teardown decrements only once. The surplus never comes off and the whole
+    /// dependency mesh stays connected after the session expires.
+    ///
+    /// Followers re-enter [`Self::proxy_request_locked`] rather than reusing the
+    /// leader's answer, so a leader that failed (or whose session was evicted
+    /// meanwhile) can't hand back a stale upstream.
     pub(crate) async fn handle_proxy_request(
+        &self,
+        service_name: &str,
+        proxy_ip: IpAddr,
+        client_ip: &str,
+    ) -> Result<Upstream, Error> {
+        let key: ProxyKey = (service_name.to_string(), client_ip.to_string(), proxy_ip);
+        let entry = {
+            let mut inflight = self
+                .inflight_proxy
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inflight.entry(key.clone()).or_default().clone()
+        };
+        let guard = entry.lock().await;
+
+        let result = self
+            .proxy_request_locked(service_name, proxy_ip, client_ip)
+            .await;
+
+        drop(guard);
+        // Drop the map entry once nobody else holds it. Taken under the map
+        // lock, so a request arriving now either already cloned the Arc (count
+        // > 2, kept) or blocks until we're done and inserts a fresh one.
+        let mut inflight = self
+            .inflight_proxy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if inflight
+            .get(&key)
+            .is_some_and(|e| Arc::strong_count(e) <= 2)
+        {
+            inflight.remove(&key);
+        }
+        result
+    }
+
+    async fn proxy_request_locked(
         &self,
         service_name: &str,
         proxy_ip: IpAddr,
@@ -1479,6 +1538,7 @@ impl NullnetGrpcImpl {
             orchestrator: Orchestrator::new(),
             certs,
             port_mappings,
+            inflight_proxy: Arc::new(StdMutex::new(HashMap::new())),
         }
     }
 

@@ -1,0 +1,25 @@
+# A is the entry point. Its branches reach B by four different routes, close
+# two cycles (A→B→A and B→D→B) and share B between three sources, so the
+# dependency edges carry a multiplicity greater than one.
+[[services]]
+name = "A"
+timeout = 1
+proxy_dependencies = [
+  ["B"],
+  ["C"],
+  ["B", "A"],
+  ["B", "C"],
+  ["B", "D", "B"],
+  ["C", "B"],
+]
+
+# Not an entry point: these deps stay inert until A's chain reaches it.
+[[services]]
+name = "B"
+proxy_dependencies = [["C"]]
+
+[[services]]
+name = "C"
+
+[[services]]
+name = "D"

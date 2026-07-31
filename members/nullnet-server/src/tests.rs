@@ -3059,3 +3059,93 @@ async fn stale_session_broken_chain_is_evicted_and_rebuilt() {
     );
     assert_net_ids_in_use(&server, 3).await;
 }
+
+// ===========================================================================
+// concurrent_setup: A→B reached by four routes, cycles A→B→A and B→D→B, B
+// shared between three sources. Covers concurrent first-time setup: a browser
+// opens several connections to the same host at once, so the proxy issues
+// concurrent `proxy` RPCs for one (client_ip, service) before the first chain
+// finishes.
+// ===========================================================================
+
+const CONCURRENT_SETUP: &str = "concurrent_setup";
+
+/// Every surviving client entry as `service <- client (chains=N)`, sorted.
+fn live_edges(guard: &StackMap) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (name, si) in stack_view(guard) {
+        if let ServiceInfo::Registered(reg) = si {
+            for (client, ci, _, _) in reg.all_clients_owned() {
+                out.push(format!(
+                    "{name} <- {} (chains={})",
+                    client.display_name(),
+                    ci.active_chains()
+                ));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Concurrent requests for the same client collapse into ONE proxy client
+/// entry, so they must also leave the dependency edges at a count teardown can
+/// fully unwind — otherwise the whole dependency mesh stays connected after
+/// the session expires.
+#[tokio::test]
+async fn concurrent_requests_same_client_tear_down_cleanly() {
+    let services = load_fixture(CONCURRENT_SETUP).await;
+    let server = std::sync::Arc::new(NullnetGrpcImpl::new_for_test(services));
+
+    let ip_map = HashMap::from([
+        ("A", ip(1, 1, 1, 1)),
+        ("B", ip(2, 2, 2, 2)),
+        ("C", ip(3, 3, 3, 3)),
+        ("D", ip(4, 4, 4, 4)),
+    ]);
+    let proxy = ip(5, 5, 5, 5);
+    register_services(&server, &ip_map, 8080).await;
+    server.orchestrator().register_fake_client(proxy).await;
+
+    let mut set = tokio::task::JoinSet::new();
+    for _ in 0..6 {
+        let server = server.clone();
+        set.spawn(async move {
+            server
+                .handle_proxy_request("A", proxy, "10.0.0.1")
+                .await
+                .expect("proxy request failed");
+        });
+    }
+    while set.join_next().await.is_some() {}
+
+    // proxy→A, A→B, A→C, B→A, B→C, B→D, D→B, C→B — one network each, however
+    // many requests raced to build them.
+    assert_net_ids_in_use(&server, 8).await;
+    {
+        let guard = server.services().read().await;
+        assert_eq!(
+            stack_view(&guard)["A"]
+                .proxy_deps()
+                .iter()
+                .filter(|b| b.first().is_some_and(|d| d == "B"))
+                .count(),
+            4,
+            "fixture should reach B by four routes"
+        );
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    let mut guard = server.services().write().await;
+    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator(), "default").await;
+    let residual = live_edges(&guard);
+    drop(guard);
+
+    let in_use = server.orchestrator().net_ids_in_use().await;
+    assert!(
+        residual.is_empty() && in_use == 0,
+        "still connected after the session expired: {in_use} NET ID(s), {} edge(s):\n{}",
+        residual.len(),
+        residual.join("\n")
+    );
+}
