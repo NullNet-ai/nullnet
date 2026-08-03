@@ -238,18 +238,62 @@ impl ProxyHttp for NullnetProxy {
 
         Ok(Box::new(HttpPeer::new(upstream, false, String::new())))
     }
+
+    async fn upstream_request_filter(
+        &self,
+        session: &mut Session,
+        upstream_request: &mut RequestHeader,
+        _ctx: &mut Self::CTX,
+    ) -> Result<()> {
+        // TLS terminates at this proxy, so it is the sole source of truth for
+        // client IP, scheme, and requested host; any X-Forwarded-* the client
+        // itself sent is untrusted and must be overwritten, not appended to.
+        set_forwarded_headers(
+            upstream_request,
+            ingress_client_ip(session),
+            self.tls,
+            ingress_raw_host(session),
+        )
+    }
+}
+
+/// Overwrite the X-Forwarded-{For,Proto,Host} headers on the upstream request
+/// with the ingress connection's real client IP, scheme, and requested host.
+fn set_forwarded_headers(
+    upstream_request: &mut RequestHeader,
+    client_ip: Option<String>,
+    tls: bool,
+    host: Option<String>,
+) -> Result<()> {
+    if let Some(client_ip) = client_ip {
+        upstream_request.insert_header("X-Forwarded-For", client_ip)?;
+    }
+
+    let proto = if tls { "https" } else { "http" };
+    upstream_request.insert_header("X-Forwarded-Proto", proto)?;
+
+    if let Some(host) = host {
+        upstream_request.insert_header("X-Forwarded-Host", host)?;
+    }
+
+    Ok(())
+}
+
+/// The original Host header (or HTTP/2 `:authority` via the URI) verbatim, port
+/// included if present. `None` if neither carries a host.
+fn ingress_raw_host(session: &Session) -> Option<String> {
+    let req = session.req_header();
+    req.headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .or_else(|| req.uri.host().map(str::to_string))
 }
 
 /// The requested service name (Host header, or HTTP/2 `:authority` via the URI),
 /// with any port stripped. `None` if neither carries a host.
 fn ingress_host(session: &Session) -> Option<String> {
-    let req = session.req_header();
-    let raw = req
-        .headers
-        .get("host")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string)
-        .or_else(|| req.uri.host().map(str::to_string))?;
+    let raw = ingress_raw_host(session)?;
     Some(raw.split(':').next().unwrap_or(&raw).to_string())
 }
 
@@ -415,6 +459,51 @@ mod tests {
         let mut r = RequestHeader::build("GET", b"/", None).unwrap();
         r.remove_header("host");
         assert_eq!(https_redirect_url(&r, 443), "https:///");
+    }
+
+    #[test]
+    fn forwarded_headers_are_set_from_ingress_connection() {
+        let mut r = req("color.com", "/");
+        set_forwarded_headers(
+            &mut r,
+            Some("203.0.113.7".to_string()),
+            true,
+            Some("color.com".to_string()),
+        )
+        .unwrap();
+        assert_eq!(r.headers.get("x-forwarded-for").unwrap(), "203.0.113.7");
+        assert_eq!(r.headers.get("x-forwarded-proto").unwrap(), "https");
+        assert_eq!(r.headers.get("x-forwarded-host").unwrap(), "color.com");
+    }
+
+    #[test]
+    fn forwarded_proto_is_http_when_not_tls() {
+        let mut r = req("color.com", "/");
+        set_forwarded_headers(&mut r, None, false, None).unwrap();
+        assert_eq!(r.headers.get("x-forwarded-proto").unwrap(), "http");
+    }
+
+    #[test]
+    fn forwarded_headers_overwrite_client_supplied_values() {
+        let mut r = req("color.com", "/");
+        r.insert_header("x-forwarded-for", "1.2.3.4").unwrap();
+        r.insert_header("x-forwarded-proto", "http").unwrap();
+        set_forwarded_headers(
+            &mut r,
+            Some("203.0.113.7".to_string()),
+            true,
+            Some("color.com".to_string()),
+        )
+        .unwrap();
+        assert_eq!(r.headers.get("x-forwarded-for").unwrap(), "203.0.113.7");
+        assert_eq!(r.headers.get("x-forwarded-proto").unwrap(), "https");
+    }
+
+    #[test]
+    fn forwarded_host_absent_when_ingress_host_unknown() {
+        let mut r = req("color.com", "/");
+        set_forwarded_headers(&mut r, None, false, None).unwrap();
+        assert!(r.headers.get("x-forwarded-host").is_none());
     }
 }
 
