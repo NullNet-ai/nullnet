@@ -44,6 +44,8 @@ export default function InternetPanel() {
 
       {sessionList.map(s => {
         const isFocused = focusedClientIp === s.client_ip;
+        const netIds = chainByProxyNetId.get(s.network_id);
+        const netIdsLabel = netIds ? `nets ${netIds.join(', ')}` : `net ${s.network_id}`;
         return (
           <div
             key={s.id}
@@ -54,6 +56,7 @@ export default function InternetPanel() {
               marginBottom: 2,
               borderRadius: 5,
               border: `1px solid ${isFocused ? 'rgba(91,156,246,.45)' : 'transparent'}`,
+              borderBottom: isFocused ? undefined : '1px solid var(--t3)',
               background: isFocused ? 'rgba(91,156,246,.08)' : 'transparent',
               cursor: 'pointer',
               transition: 'background .12s, border-color .12s',
@@ -71,11 +74,15 @@ export default function InternetPanel() {
                 {s.service}{s.org ? ` · ${s.org}` : ''}
               </div>
             </div>
-            <div style={{ flexShrink: 0, textAlign: 'right' }}>
-              <div style={{ fontSize: 9.5, fontFamily: "'JetBrains Mono',monospace", color: 'var(--cyan)' }}>
-                {chainByProxyNetId.has(s.network_id)
-                  ? `nets ${chainByProxyNetId.get(s.network_id)!.join(', ')}`
-                  : `net ${s.network_id}`}
+            <div style={{ flexShrink: 0, textAlign: 'right', maxWidth: 110 }}>
+              <div
+                title={netIdsLabel}
+                style={{
+                  fontSize: 9.5, fontFamily: "'JetBrains Mono',monospace", color: 'var(--cyan)',
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}
+              >
+                {netIdsLabel}
               </div>
               <div style={{ fontSize: 9, color: 'var(--t2)' }}>{formatTime(s.created_at)}</div>
             </div>
