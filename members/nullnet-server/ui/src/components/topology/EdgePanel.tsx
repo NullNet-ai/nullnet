@@ -142,6 +142,9 @@ export default function EdgePanel({ edges }: Props) {
 
       {edges.map((e, i) => {
         const session = sessionByNetId.get(e.net_id);
+        const netIdsLabel = e.via_proxy && chainByProxyNetId.has(e.net_id)
+          ? `nets ${chainByProxyNetId.get(e.net_id)!.join(', ')}`
+          : `net ${e.net_id}`;
         return (
           <div key={i} style={{
             background: 'rgba(255,255,255,.03)',
@@ -150,14 +153,18 @@ export default function EdgePanel({ edges }: Props) {
             padding: '9px 11px',
             marginBottom: 6,
           }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: session || e.via_proxy || e.egress ? 6 : 0 }}>
-              <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: 'var(--cyan)' }}>
-                {e.via_proxy && chainByProxyNetId.has(e.net_id)
-                  ? `nets ${chainByProxyNetId.get(e.net_id)!.join(', ')}`
-                  : `net ${e.net_id}`}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: session || e.via_proxy || e.egress ? 6 : 0 }}>
+              <span
+                title={netIdsLabel}
+                style={{
+                  fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: 'var(--cyan)',
+                  flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}
+              >
+                {netIdsLabel}
               </span>
               {e.setup_ms > 0 && (
-                <span style={{ fontSize: 10, color: 'var(--t2)' }}>{e.setup_ms}ms setup</span>
+                <span style={{ fontSize: 10, color: 'var(--t2)', flexShrink: 0 }}>{e.setup_ms}ms setup</span>
               )}
             </div>
             {e.egress && (
