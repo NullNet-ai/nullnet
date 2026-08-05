@@ -22,6 +22,14 @@ DOCKER_CONTAINER=${11}
 
 BR_IP=$(echo $BR_NET | cut -d'/' -f1)
 
+# Serialize every operation on this net id. Setup runs once per side (_s and
+# _c) and a teardown can fire between them; unserialized, those passes
+# interleave and leave the two halves of the link built on different veth
+# incarnations. vxlan-teardown.sh takes the same lock.
+LOCK_FILE="/var/lock/nullnet-net-${VXLAN_ID}.lock"
+exec 9>"$LOCK_FILE"
+flock -w 30 9 || echo "warning: net $VXLAN_ID lock timed out, proceeding unserialized" >&2
+
 # Overlay MTU: empirically measured via `ping -M do -s <N>` against a live
 # cross-host tunnel — an IP packet of 1104 bytes gets through cleanly, 1105
 # never does, every time (a hard, reproducible ceiling, not a fragmentation
@@ -77,27 +85,46 @@ if [ "$LOCAL_IP" == "$REMOTE_IP" ]; then
       # the veth link itself in AES-256-GCM, keyed with this tunnel's key —
       # no IP addressing involved, so it works regardless of what the
       # containers on either side are doing.
+      # Drop any artifacts left by a previous cross-host incarnation of this
+      # net id — an edge switches branch when its peer relocates onto or off
+      # this host, and the stale tunnel would otherwise outlive the flip.
+      sudo ip link del vxlan-$NS_NAME 2>/dev/null
+      sudo ip xfrm state deleteall proto esp spi $(printf '0x%08x' $((VXLAN_ID + 1000))) 2>/dev/null
+
       VETH_S="veth-${VXLAN_ID}-s"
       VETH_C="veth-${VXLAN_ID}-c"
+      # A macsec interface inherits its parent veth's MAC, so derive both ends
+      # from the net id: each side's SCI — and the peer address the other side
+      # keys its RX SA to — becomes a pure function of $VXLAN_ID. Reading the
+      # peer's MAC instead left the RX SA on a replaced incarnation's SCI after
+      # a rebuild, silently dropping every frame. 0x02 = locally administered.
+      veth_mac() { # $1: 1 = _s end, 2 = _c end
+          printf '02:%02x:%02x:%02x:%02x:%02x' "$1" \
+              $(( (VXLAN_ID >> 24) & 0xff )) $(( (VXLAN_ID >> 16) & 0xff )) \
+              $(( (VXLAN_ID >> 8)  & 0xff )) $((  VXLAN_ID        & 0xff ))
+      }
+      MAC_S=$(veth_mac 1)
+      MAC_C=$(veth_mac 2)
       # Both ends are created atomically; the losing task's EEXIST is harmless
-      sudo ip link add "$VETH_S" type veth peer name "$VETH_C" 2>/dev/null
+      sudo ip link add "$VETH_S" address "$MAC_S" type veth peer name "$VETH_C" address "$MAC_C" 2>/dev/null
       # Attach our end to our bridge
       if [[ "$BR_NAME" == *_s ]]; then
           LOCAL_VETH="$VETH_S"
-          PEER_VETH="$VETH_C"
           MACSEC_IF="macsec-${VXLAN_ID}-s"
+          LOCAL_MAC="$MAC_S"
+          PEER_MAC="$MAC_C"
       else
           LOCAL_VETH="$VETH_C"
-          PEER_VETH="$VETH_S"
           MACSEC_IF="macsec-${VXLAN_ID}-c"
+          LOCAL_MAC="$MAC_C"
+          PEER_MAC="$MAC_S"
       fi
 
       if [ "$ENCRYPTED" == "true" ]; then
-          # The peer's MAC is available immediately: `ip link add ... peer
-          # name ...` creates both ends atomically in one kernel call,
-          # whether this invocation won the race above or lost it to the
-          # sibling script.
-          PEER_MAC=$(cat /sys/class/net/$PEER_VETH/address)
+          # A pair predating deterministic MACs keeps its old random address,
+          # which would desync the SCIs again — force our end to the derived
+          # value before stacking macsec on it.
+          sudo ip link set "$LOCAL_VETH" address "$LOCAL_MAC"
           KEY_ID=$(printf '%032x' $VXLAN_ID)
 
           # MACsec adds up to 32 bytes of overhead (SecTAG + ICV for
@@ -130,6 +157,13 @@ if [ "$LOCAL_IP" == "$REMOTE_IP" ]; then
           sudo ip link set "$LOCAL_VETH" mtu $OVERLAY_MTU up
       fi
   else
+      # Mirror of the same-host purge above: drop veth/macsec artifacts left
+      # by a previous same-host incarnation of this net id. Deleting either
+      # veth end takes its peer and any stacked macsec with it.
+      sudo ip link del macsec-${VXLAN_ID}-s 2>/dev/null
+      sudo ip link del macsec-${VXLAN_ID}-c 2>/dev/null
+      sudo ip link del veth-${VXLAN_ID}-s 2>/dev/null
+
       # Create the VXLAN tunnel using your physical IP and interface. Each
       # tunnel gets its own dstport (instead of the IANA-standard 4789) so
       # the XFRM policies below can tell concurrent tunnels between the same

@@ -16,29 +16,42 @@ REMOTE_IP=$5
 DSTPORT=$6
 DOCKER_CONTAINER=$7
 
-# Remove this tunnel's XFRM state + policy pair, if any was installed (the
-# same-host branch of vxlan-setup.sh never creates one).
-if [ "$LOCAL_IP" != "$REMOTE_IP" ]; then
-    # Must match the same offset vxlan-setup.sh uses, to delete the actual
-    # installed SPI rather than the raw (and IANA-reserved) vxlan_id.
-    SPI=$(printf '0x%08x' $((VXLAN_ID + 1000)))
+# Same lock as vxlan-setup.sh: a teardown landing between the two setup passes
+# is what let the halves of a same-host link diverge in the first place.
+LOCK_FILE="/var/lock/nullnet-net-${VXLAN_ID}.lock"
+exec 9>"$LOCK_FILE"
+flock -w 30 9 || echo "warning: net $VXLAN_ID lock timed out, proceeding unserialized" >&2
+
+# Remove this tunnel's XFRM state + policy pair, if any was installed. Matched
+# on SPI and dstport alone — both unique to this net id — rather than on the
+# endpoints, so state survives neither a peer relocating to a different host
+# nor a flip to the same-host branch, either of which leaves teardown holding
+# endpoints that no longer describe what setup installed.
+SPI=$(printf '0x%08x' $((VXLAN_ID + 1000)))
+# Only tunnels holding a dedicated dstport ever get an XFRM policy; the rest
+# share DEFAULT_VXLAN_DSTPORT (net_id_pool.rs), so matching on 4789 would
+# reach across unrelated tunnels instead of just this one.
+if [ "$DSTPORT" != "4789" ]; then
     # Same argument-order requirement as vxlan-setup.sh: selector fields
-    # (src/dst/proto/dport) must stay contiguous, with `dir` only after.
-    sudo ip xfrm policy delete src $LOCAL_IP dst $REMOTE_IP proto udp dport $DSTPORT dir out 2>/dev/null
-    sudo ip xfrm state delete src $LOCAL_IP dst $REMOTE_IP proto esp spi $SPI 2>/dev/null
-    sudo ip xfrm policy delete src $REMOTE_IP dst $LOCAL_IP proto udp dport $DSTPORT dir in 2>/dev/null
-    sudo ip xfrm state delete src $REMOTE_IP dst $LOCAL_IP proto esp spi $SPI 2>/dev/null
+    # (proto/dport) must stay contiguous, with `dir` only after.
+    sudo ip xfrm policy deleteall proto udp dport $DSTPORT dir out 2>/dev/null
+    sudo ip xfrm policy deleteall proto udp dport $DSTPORT dir in 2>/dev/null
 fi
+sudo ip xfrm state deleteall proto esp spi $SPI 2>/dev/null
 
 # Remove the VXLAN tunnel or same-host veth pair. Deleting a veth end also
 # destroys its peer and cascades to remove any macsec interface stacked on
 # either end (the same-host branch of vxlan-setup.sh wraps each end in one),
 # but delete both macsec names explicitly too rather than depend solely on
 # that cascade.
+# Both modes are swept unconditionally: whichever branch setup took, only one
+# set exists, and the other's absence is expected rather than an error worth
+# logging — the stray "Cannot find device" lines it used to emit made real
+# failures hard to spot in the journal.
 sudo ip link del macsec-${VXLAN_ID}-s 2>/dev/null
 sudo ip link del macsec-${VXLAN_ID}-c 2>/dev/null
-sudo ip link set vxlan-$NS_NAME down && sudo ip link del vxlan-$NS_NAME
-sudo ip link set veth-${VXLAN_ID}-s down && sudo ip link del veth-${VXLAN_ID}-s
+sudo ip link del vxlan-$NS_NAME 2>/dev/null
+sudo ip link del veth-${VXLAN_ID}-s 2>/dev/null
 
 # Remove the namespace veth pair:
 sudo ip link set $NS_NAME-out down && sudo ip link del $NS_NAME-out
