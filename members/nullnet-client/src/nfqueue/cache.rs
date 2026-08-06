@@ -1,3 +1,4 @@
+use crate::triggers::TriggersState;
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::process::Stdio;
@@ -280,15 +281,22 @@ fn strip_cidr_to_ipv4(ip_with_mask: &str) -> Option<Ipv4Addr> {
 }
 
 /// Spawn the long-running `docker events` watcher. Triggers a refresh after
-/// every container start/die and pokes `docker_changed` so the
-/// declare-services loop in `main` re-runs immediately. If docker isn't
-/// installed or the subprocess can't be spawned, the task logs and exits —
-/// listener falls back to the initial cache snapshot. Restarts the
-/// subprocess on unexpected exit.
-pub fn spawn_events_watcher(cache: BridgeIpCache, docker_changed: Arc<Notify>) {
+/// every container start/die, purges any stale trigger state for that
+/// specific container (see `forget_container`'s doc comment — a restart or
+/// recreate keeps the container's name but gets a new sandbox, so a stale
+/// `TriggersState` entry would otherwise wrongly look `Active` forever), and
+/// pokes `docker_changed` so the declare-services loop in `main` re-runs
+/// immediately. If docker isn't installed or the subprocess can't be
+/// spawned, the task logs and exits — listener falls back to the initial
+/// cache snapshot. Restarts the subprocess on unexpected exit.
+pub fn spawn_events_watcher(
+    cache: BridgeIpCache,
+    docker_changed: Arc<Notify>,
+    triggers_state: Arc<TriggersState>,
+) {
     tokio::spawn(async move {
         loop {
-            if let Err(e) = run_events_loop(&cache, &docker_changed).await {
+            if let Err(e) = run_events_loop(&cache, &docker_changed, &triggers_state).await {
                 eprintln!("[nfqueue/cache] events watcher: {e}; restarting in 5s");
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
@@ -296,7 +304,11 @@ pub fn spawn_events_watcher(cache: BridgeIpCache, docker_changed: Arc<Notify>) {
     });
 }
 
-async fn run_events_loop(cache: &BridgeIpCache, docker_changed: &Notify) -> Result<(), String> {
+async fn run_events_loop(
+    cache: &BridgeIpCache,
+    docker_changed: &Notify,
+    triggers_state: &TriggersState,
+) -> Result<(), String> {
     let mut child = tokio::process::Command::new("docker")
         .args([
             "events",
@@ -308,9 +320,12 @@ async fn run_events_loop(cache: &BridgeIpCache, docker_changed: &Notify) -> Resu
             "event=die",
             // `.Action` (start/die) is the modern field; the legacy
             // `.Status` was removed in newer daemons (template eval errors
-            // "can't evaluate field Status in type *events.Message").
+            // "can't evaluate field Status in type *events.Message"). The
+            // container name is needed (not just the action) so a
+            // restart/recreate can purge that one container's stale
+            // TriggersState entries instead of guessing which one changed.
             "--format",
-            "{{.Action}}",
+            "{{.Action}} {{.Actor.Attributes.name}}",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -342,10 +357,16 @@ async fn run_events_loop(cache: &BridgeIpCache, docker_changed: &Notify) -> Resu
         .await
         .map_err(|e| format!("read docker events: {e}"))?
     {
-        // We don't parse the line — any container start/die warrants a
-        // full refresh. Cheap enough: a few processes per event.
+        // Beyond action+name we don't otherwise parse the line — any
+        // container start/die warrants a full cache refresh. Cheap enough:
+        // a few processes per event.
         println!("[nfqueue/cache] docker event: {line} — refreshing");
         cache.refresh().await;
+        if let Some((_, name)) = line.split_once(' ')
+            && !name.is_empty()
+        {
+            triggers_state.forget_container(name);
+        }
         // Cache now reflects the new task; kick the declare-services
         // loop so the ipset catches up before the new task dials.
         docker_changed.notify_one();

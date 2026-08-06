@@ -222,15 +222,33 @@ message Listener {
 }
 
 // Response to ServicesList: per-declared-service, the set of trigger ports
-// the client should observe via eBPF. When traffic is observed on one of
-// these ports, the client fires BackendTrigger(service_name, port).
+// the client should observe via NFQUEUE. When traffic is observed on one of
+// these ports, the client fires BackendTrigger(service_name, port, target_name).
 message ServicesListResponse {
   repeated ServiceTrigger service_triggers = 1;
 }
 
 message ServiceTrigger {
   string service_name = 1;
-  repeated uint32 ports = 2;
+  reserved 2;
+  reserved "ports";
+  repeated TriggerPort trigger_ports = 3;
+  // Real Docker container name of the local replica hosting this service —
+  // the container `target_name` (per TriggerPort) should be pre-seeded into.
+  // Empty when the client couldn't resolve one (host process, no docker
+  // context); the client skips seeding for those.
+  string initiator_container = 4;
+}
+
+// One trigger port this service's initiator container should be observed on.
+message TriggerPort {
+  uint32 port = 1;
+  // chain[0] for this port's dependency chain — the literal name the
+  // initiator resolves (e.g. a bare Docker container name). Lets the client
+  // pre-seed a placeholder `/etc/hosts` entry for it before any packet is
+  // observed, so a bare name (not just a pre-provisioned DNS alias) produces
+  // a real first packet to trigger on.
+  string target_name = 2;
 }
 
 message HostMapping {
@@ -288,6 +306,11 @@ message BackendTriggerRequest {
   // sender_ip. With docker, this disambiguates the replica when multiple
   // replicas of the same service live on the same host.
   string initiator_container = 3;
+  // The target_name (see TriggerPort) the observed packet's destination
+  // placeholder IP resolved back to. Lets the server pick the right chain
+  // when two of this service's triggers share the same port, instead of
+  // relying on port alone.
+  string target_name = 4;
 }
 
 // Egress trigger — fired by the client on the first NEW flow from a registered

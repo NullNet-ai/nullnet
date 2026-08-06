@@ -28,23 +28,38 @@ pub(crate) fn init() {
 
 /// Install a DNAT for `port → overlay_ip:port`. When `container_ip` is a
 /// real address, the rule is scoped to that source via `-s` so co-located
-/// replicas hit independent chains. `Ipv4Addr::UNSPECIFIED` (0.0.0.0) means
-/// "no source filter" — used by legacy callers that don't know the source.
+/// replicas hit independent chains. When `dest_ip` is a real address, the
+/// rule is additionally scoped to that destination via `-d` — so two
+/// backend-trigger dependencies sharing a port from the same initiator (each
+/// with its own placeholder address, see `placeholder.rs`) get independent
+/// rules instead of one clobbering the other. `Ipv4Addr::UNSPECIFIED`
+/// (0.0.0.0) means "no filter" for either — used by legacy callers that
+/// don't know the source/destination.
 /// Returns `false` if any of the per-proto `iptables` rules failed to apply.
-pub(crate) fn install(port: u16, overlay_ip: Ipv4Addr, container_ip: Ipv4Addr) -> bool {
+pub(crate) fn install(
+    port: u16,
+    overlay_ip: Ipv4Addr,
+    container_ip: Ipv4Addr,
+    dest_ip: Ipv4Addr,
+) -> bool {
     let mut ok = true;
     for proto in PROTOS {
-        ok &= run_iptables("-A", proto, port, overlay_ip, container_ip);
+        ok &= run_iptables("-A", proto, port, overlay_ip, container_ip, dest_ip);
     }
     flush_conntrack(port);
     ok
 }
 
 /// Returns `false` if any of the per-proto `iptables` rules failed to delete.
-pub(crate) fn remove(port: u16, overlay_ip: Ipv4Addr, container_ip: Ipv4Addr) -> bool {
+pub(crate) fn remove(
+    port: u16,
+    overlay_ip: Ipv4Addr,
+    container_ip: Ipv4Addr,
+    dest_ip: Ipv4Addr,
+) -> bool {
     let mut ok = true;
     for proto in PROTOS {
-        ok &= run_iptables("-D", proto, port, overlay_ip, container_ip);
+        ok &= run_iptables("-D", proto, port, overlay_ip, container_ip, dest_ip);
     }
     flush_conntrack(port);
     ok
@@ -57,13 +72,18 @@ fn run_iptables(
     port: u16,
     overlay_ip: Ipv4Addr,
     container_ip: Ipv4Addr,
+    dest_ip: Ipv4Addr,
 ) -> bool {
     let port_s = port.to_string();
     let target = format!("{overlay_ip}:{port}");
     let container_ip_s = container_ip.to_string();
+    let dest_ip_s = dest_ip.to_string();
     let mut args: Vec<&str> = vec!["iptables", "-t", "nat", action, CHAIN, "-p", proto];
     if !container_ip.is_unspecified() {
         args.extend_from_slice(&["-s", &container_ip_s]);
+    }
+    if !dest_ip.is_unspecified() {
+        args.extend_from_slice(&["-d", &dest_ip_s]);
     }
     args.extend_from_slice(&[
         "--dport",
@@ -79,19 +99,28 @@ fn run_iptables(
     } else {
         container_ip_s.clone()
     };
+    let dst = if dest_ip.is_unspecified() {
+        "any".to_string()
+    } else {
+        dest_ip_s.clone()
+    };
     match status {
         Ok(s) if s.success() => {
-            println!("[dnat] iptables {action} {CHAIN} {proto}/{port} -s {src} -> {target}");
+            println!(
+                "[dnat] iptables {action} {CHAIN} {proto}/{port} -s {src} -d {dst} -> {target}"
+            );
             true
         }
         Ok(s) => {
             eprintln!(
-                "[dnat] iptables {action} {CHAIN} {proto}/{port} -s {src} -> {target} exited {s}"
+                "[dnat] iptables {action} {CHAIN} {proto}/{port} -s {src} -d {dst} -> {target} exited {s}"
             );
             false
         }
         Err(e) => {
-            eprintln!("[dnat] iptables {action} {CHAIN} {proto}/{port} -s {src} -> {target}: {e}");
+            eprintln!(
+                "[dnat] iptables {action} {CHAIN} {proto}/{port} -s {src} -d {dst} -> {target}: {e}"
+            );
             false
         }
     }

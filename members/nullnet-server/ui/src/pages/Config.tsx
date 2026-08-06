@@ -203,7 +203,7 @@ export default function Config() {
               )}
               {status.kind === 'error' && (
                 <span className="cfg-err">
-                  <span className="badge b-red">Parse error</span>
+                  <span className="badge b-red">Rejected</span>
                   <span className="cfg-err-msg">{status.msg}</span>
                 </span>
               )}

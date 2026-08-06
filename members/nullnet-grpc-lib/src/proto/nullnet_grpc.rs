@@ -210,19 +210,38 @@ pub struct Listener {
     pub path: ::prost::alloc::string::String,
 }
 /// Response to ServicesList: per-declared-service, the set of trigger ports
-/// the client should observe via eBPF. When traffic is observed on one of
-/// these ports, the client fires BackendTrigger(service_name, port).
+/// the client should observe via NFQUEUE. When traffic is observed on one of
+/// these ports, the client fires BackendTrigger(service_name, port, target_name).
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServicesListResponse {
     #[prost(message, repeated, tag = "1")]
     pub service_triggers: ::prost::alloc::vec::Vec<ServiceTrigger>,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServiceTrigger {
     #[prost(string, tag = "1")]
     pub service_name: ::prost::alloc::string::String,
-    #[prost(uint32, repeated, tag = "2")]
-    pub ports: ::prost::alloc::vec::Vec<u32>,
+    #[prost(message, repeated, tag = "3")]
+    pub trigger_ports: ::prost::alloc::vec::Vec<TriggerPort>,
+    /// Real Docker container name of the local replica hosting this service —
+    /// the container `target_name` (per TriggerPort) should be pre-seeded into.
+    /// Empty when the client couldn't resolve one (host process, no docker
+    /// context); the client skips seeding for those.
+    #[prost(string, tag = "4")]
+    pub initiator_container: ::prost::alloc::string::String,
+}
+/// One trigger port this service's initiator container should be observed on.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TriggerPort {
+    #[prost(uint32, tag = "1")]
+    pub port: u32,
+    /// chain\[0\] for this port's dependency chain — the literal name the
+    /// initiator resolves (e.g. a bare Docker container name). Lets the client
+    /// pre-seed a placeholder `/etc/hosts` entry for it before any packet is
+    /// observed, so a bare name (not just a pre-provisioned DNS alias) produces
+    /// a real first packet to trigger on.
+    #[prost(string, tag = "2")]
+    pub target_name: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct HostMapping {
@@ -281,6 +300,12 @@ pub struct BackendTriggerRequest {
     /// replicas of the same service live on the same host.
     #[prost(string, tag = "3")]
     pub initiator_container: ::prost::alloc::string::String,
+    /// The target_name (see TriggerPort) the observed packet's destination
+    /// placeholder IP resolved back to. Lets the server pick the right chain
+    /// when two of this service's triggers share the same port, instead of
+    /// relying on port alone.
+    #[prost(string, tag = "4")]
+    pub target_name: ::prost::alloc::string::String,
 }
 /// Egress trigger — fired by the client on the first NEW flow from a registered
 /// service to an external (non-nullnet) destination. The server builds (or reuses)

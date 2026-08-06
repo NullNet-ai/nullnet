@@ -5,6 +5,7 @@ mod parse;
 mod recv_loop;
 
 pub use cache::BridgeIpCache;
+pub use listener::TriggerTarget;
 
 use crate::commands::nfqueue as rules;
 use crate::egress_policy::PolicyVerdicts;
@@ -23,8 +24,8 @@ use tokio::sync::mpsc::UnboundedReceiver;
 /// - Populates the bridge-IP → container-name cache from `docker inspect`
 ///   and keeps it fresh via a `docker events` watcher.
 /// - Consumes `config_rx` (driven by the services-list refresh in `main`) to
-///   keep the kernel ipset in sync and to maintain a port → service lookup
-///   for the per-packet handler.
+///   keep the kernel ipset in sync and to maintain a port → trigger-target
+///   lookup for the per-packet handler.
 /// - Spawns the recv thread that owns the netfilter queue. Each packet is
 ///   handed off to a tokio task; the recv thread drains verdicts in lockstep
 ///   so packets release back into the netfilter pipeline.
@@ -34,12 +35,13 @@ use tokio::sync::mpsc::UnboundedReceiver;
 pub fn spawn_listener(
     grpc: NullnetGrpcInterface,
     triggers_state: Arc<TriggersState>,
-    config_rx: UnboundedReceiver<HashMap<u16, String>>,
+    config_rx: UnboundedReceiver<HashMap<u16, Vec<TriggerTarget>>>,
     docker_changed: Arc<Notify>,
     cache: BridgeIpCache,
     verdicts: Arc<PolicyVerdicts>,
 ) {
-    let port_to_service: Arc<RwLock<HashMap<u16, String>>> = Arc::new(RwLock::new(HashMap::new()));
+    let port_to_target: Arc<RwLock<HashMap<u16, Vec<TriggerTarget>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
 
     // Initial cache populate + long-running docker-events watcher. The
     // watcher pings `docker_changed` after every refresh so the
@@ -48,20 +50,21 @@ pub fn spawn_listener(
     // might fire a SYN before its trigger port is being watched.
     {
         let bridge_cache = cache.clone();
+        let triggers_state_for_events = triggers_state.clone();
         tokio::spawn(async move {
             bridge_cache.refresh().await;
-            cache::spawn_events_watcher(bridge_cache, docker_changed);
+            cache::spawn_events_watcher(bridge_cache, docker_changed, triggers_state_for_events);
         });
     }
 
-    // Config consumer: each services-list refresh produces a port→service
+    // Config consumer: each services-list refresh produces a port→target
     // map. We diff vs the previous, push the diff to the ipset (so the
     // kernel knows which ports to queue), then atomically replace our
-    // userspace port→service lookup that the handler reads.
+    // userspace port→target lookup that the handler reads.
     {
-        let port_to_service = port_to_service.clone();
+        let port_to_target = port_to_target.clone();
         tokio::spawn(async move {
-            consume_config(config_rx, port_to_service).await;
+            consume_config(config_rx, port_to_target).await;
         });
     }
 
@@ -77,7 +80,7 @@ pub fn spawn_listener(
     let ctx = ListenerCtx {
         grpc,
         cache,
-        port_to_service,
+        port_to_target,
         triggers_state,
         semaphore: Arc::new(Semaphore::new(HANDLER_CONCURRENCY)),
     };
@@ -85,8 +88,8 @@ pub fn spawn_listener(
 }
 
 async fn consume_config(
-    mut config_rx: UnboundedReceiver<HashMap<u16, String>>,
-    port_to_service: Arc<RwLock<HashMap<u16, String>>>,
+    mut config_rx: UnboundedReceiver<HashMap<u16, Vec<TriggerTarget>>>,
+    port_to_target: Arc<RwLock<HashMap<u16, Vec<TriggerTarget>>>>,
 ) {
     let mut current_ports: HashSet<u16> = HashSet::new();
     while let Some(new_map) = config_rx.recv().await {
@@ -94,7 +97,7 @@ async fn consume_config(
         rules::apply_ports_diff(&current_ports, &new_ports);
         // Swap the lookup. Sync RwLock; write is brief, never held across
         // an `.await`.
-        *port_to_service.write().unwrap() = new_map;
+        *port_to_target.write().unwrap() = new_map;
         current_ports = new_ports;
     }
 }

@@ -1,5 +1,5 @@
 use crate::nfqueue::cache::BridgeIpCache;
-use crate::nfqueue::parse::ipv4_src_and_dst_port;
+use crate::nfqueue::parse::ipv4_flow;
 use crate::nfqueue::recv_loop::spawn_queue_loop;
 use crate::triggers::{TriggerState, TriggersState};
 use nfq::{Message, Verdict};
@@ -8,6 +8,7 @@ use nullnet_grpc_lib::nullnet_grpc::{
     AgentBackendTriggerSendFailed, AgentEvent, agent_event::Event as AgentEventKind,
 };
 use std::collections::HashMap;
+use std::net::Ipv4Addr;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -32,14 +33,47 @@ const TRIGGER_TIMEOUT: Duration = Duration::from_secs(5);
 /// giving up on the held packet.
 const ACTIVE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// What a watched trigger port is associated with: the declaring (initiator)
+/// service, for reporting, and the literal name its chain[0] resolves to —
+/// what `placeholder::seed_placeholder` pre-seeds into the initiator
+/// container's `/etc/hosts`, and what disambiguates two dependencies that
+/// happen to share a port (via their distinct placeholder addresses).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TriggerTarget {
+    pub service_name: String,
+    pub target_name: String,
+}
+
 /// State shared by every per-packet handler. Cloned freely across tokio tasks.
 #[derive(Clone)]
 pub struct ListenerCtx {
     pub grpc: NullnetGrpcInterface,
     pub cache: BridgeIpCache,
-    pub port_to_service: Arc<RwLock<HashMap<u16, String>>>,
+    /// More than one target can share a port (two dependencies reached on
+    /// the same real port); `resolve_target` picks the right one by
+    /// matching the packet's observed destination against each candidate's
+    /// deterministic placeholder address.
+    pub port_to_target: Arc<RwLock<HashMap<u16, Vec<TriggerTarget>>>>,
     pub triggers_state: Arc<TriggersState>,
     pub semaphore: Arc<Semaphore>,
+}
+
+/// Pick the target this packet's destination actually belongs to.
+///
+/// A single candidate is used unconditionally — this is the common case,
+/// and also covers a destination that doesn't (yet) match the computed
+/// placeholder (e.g. the very first packet on a freshly re-seeded name, or a
+/// hardcoded IP). With more than one candidate sharing this port, an exact
+/// match against each candidate's own placeholder address is required —
+/// there is no safe default to fall back on, since guessing wrong would
+/// route the packet into the wrong tunnel.
+fn resolve_target(targets: &[TriggerTarget], dst_ip: Ipv4Addr) -> Option<&TriggerTarget> {
+    match targets {
+        [only] => Some(only),
+        many => many
+            .iter()
+            .find(|t| crate::placeholder::ip_for(&t.target_name) == dst_ip),
+    }
 }
 
 /// Spawn the backend-trigger recv loop (queue 0). Each packet is held until
@@ -70,7 +104,7 @@ async fn handle_packet(mut msg: Message, ctx: ListenerCtx, verdict_tx: Sender<Me
         }
     };
 
-    let Some((src_ip, dst_port)) = ipv4_src_and_dst_port(msg.get_payload()) else {
+    let Some((src_ip, dst_ip, dst_port)) = ipv4_flow(msg.get_payload()) else {
         msg.set_verdict(Verdict::Accept);
         let _ = verdict_tx.send(msg);
         return;
@@ -85,16 +119,29 @@ async fn handle_packet(mut msg: Message, ctx: ListenerCtx, verdict_tx: Sender<Me
         return;
     };
 
-    let service = ctx.port_to_service.read().unwrap().get(&dst_port).cloned();
-    let Some(service) = service else {
+    let targets = ctx.port_to_target.read().unwrap().get(&dst_port).cloned();
+    let Some(targets) = targets else {
         // Port left the watched set between rule check and recv — rare but
         // possible during config updates. Pass through.
         msg.set_verdict(Verdict::Accept);
         let _ = verdict_tx.send(msg);
         return;
     };
+    let Some(target) = resolve_target(&targets, dst_ip).cloned() else {
+        // Multiple targets share this port and none matches the observed
+        // destination — can't safely tell which dependency this is. Pass
+        // through rather than guess; this can only happen for genuinely
+        // multi-target ports (see `chain_for` server-side).
+        println!(
+            "[nfqueue] no matching target for dst {dst_ip}:{dst_port} among {} candidates; accept passthrough",
+            targets.len()
+        );
+        msg.set_verdict(Verdict::Accept);
+        let _ = verdict_tx.send(msg);
+        return;
+    };
 
-    let verdict = decide_verdict(&ctx, &container, dst_port, src_ip, &service).await;
+    let verdict = decide_verdict(&ctx, &container, dst_ip, dst_port, src_ip, &target).await;
     msg.set_verdict(verdict);
     let _ = verdict_tx.send(msg);
 }
@@ -102,11 +149,13 @@ async fn handle_packet(mut msg: Message, ctx: ListenerCtx, verdict_tx: Sender<Me
 async fn decide_verdict(
     ctx: &ListenerCtx,
     container: &str,
+    dst_ip: Ipv4Addr,
     dst_port: u16,
-    src_ip: std::net::Ipv4Addr,
-    service: &str,
+    src_ip: Ipv4Addr,
+    target: &TriggerTarget,
 ) -> Verdict {
-    match ctx.triggers_state.state(container, dst_port) {
+    let service = target.service_name.as_str();
+    match ctx.triggers_state.state(container, dst_ip, dst_port) {
         TriggerState::Active => Verdict::Accept,
         TriggerState::Pending(notify) => {
             // `mark_active` wakes us with `Notify::notify_waiters()`, which
@@ -123,7 +172,7 @@ async fn decide_verdict(
             tokio::pin!(notified);
             if notified.as_mut().enable()
                 || matches!(
-                    ctx.triggers_state.state(container, dst_port),
+                    ctx.triggers_state.state(container, dst_ip, dst_port),
                     TriggerState::Active
                 )
             {
@@ -140,7 +189,9 @@ async fn decide_verdict(
             }
         }
         TriggerState::Fresh => {
-            let notify = ctx.triggers_state.mark_pending(container, dst_port, src_ip);
+            let notify = ctx
+                .triggers_state
+                .mark_pending(container, dst_ip, dst_port, src_ip);
             // Register BEFORE the gRPC round-trip: the server can dispatch
             // `VxlanSetup` (→ `mark_active` here) faster than its reply to
             // `backend_trigger` arrives back, especially on multi-edge
@@ -151,7 +202,7 @@ async fn decide_verdict(
             tokio::pin!(notified);
             if notified.as_mut().enable()
                 || matches!(
-                    ctx.triggers_state.state(container, dst_port),
+                    ctx.triggers_state.state(container, dst_ip, dst_port),
                     TriggerState::Active
                 )
             {
@@ -163,6 +214,7 @@ async fn decide_verdict(
                     service.to_string(),
                     u32::from(dst_port),
                     container.to_string(),
+                    target.target_name.clone(),
                 ),
             )
             .await;
@@ -186,7 +238,7 @@ async fn decide_verdict(
                         "[nfqueue] backend_trigger '{service}' port {dst_port} container {container}: {e}"
                     );
                     report_trigger_send_failed(&ctx.grpc, service, dst_port, e);
-                    ctx.triggers_state.forget(container, dst_port);
+                    ctx.triggers_state.forget(container, dst_ip, dst_port);
                     Verdict::Drop
                 }
                 Err(_) => {
@@ -199,7 +251,7 @@ async fn decide_verdict(
                         dst_port,
                         format!("backend_trigger timed out after {TRIGGER_TIMEOUT:?}"),
                     );
-                    ctx.triggers_state.forget(container, dst_port);
+                    ctx.triggers_state.forget(container, dst_ip, dst_port);
                     Verdict::Drop
                 }
             }

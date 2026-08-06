@@ -41,6 +41,7 @@ mod host_mappings;
 mod local_endpoints;
 mod nfqueue;
 mod peers;
+mod placeholder;
 mod triggers;
 
 pub const FORWARD_PORT: u16 = 9999;
@@ -161,7 +162,8 @@ async fn main() -> Result<(), Error> {
     // packet of each new watched-port flow, listener fires backend_trigger
     // with the resolved initiator container, waits for VxlanSetup to install
     // DNAT, then verdicts ACCEPT so the original packet hits the new chain.
-    let (config_tx, config_rx) = tokio::sync::mpsc::unbounded_channel::<HashMap<u16, String>>();
+    let (config_tx, config_rx) =
+        tokio::sync::mpsc::unbounded_channel::<HashMap<u16, Vec<nfqueue::TriggerTarget>>>();
 
     // Poked by the cache's docker-events watcher after every container
     // start/die so `declare_services` re-runs immediately instead of
@@ -181,7 +183,7 @@ async fn main() -> Result<(), Error> {
         policy_verdicts,
     );
 
-    // declare services + push the port→service map to the NFQUEUE listener
+    // declare services + push the port→target map to the NFQUEUE listener
     // on each refresh.
     tokio::spawn(async move {
         declare_services(grpc_server, config_tx, docker_changed)
@@ -291,7 +293,7 @@ async fn grpc_init() -> Result<NullnetGrpcInterface, Error> {
 
 async fn declare_services(
     grpc_server: NullnetGrpcInterface,
-    config_tx: UnboundedSender<HashMap<u16, String>>,
+    config_tx: UnboundedSender<HashMap<u16, Vec<nfqueue::TriggerTarget>>>,
     docker_changed: Arc<Notify>,
 ) -> Result<(), Error> {
     let mut last_snapshot: Vec<String> = Vec::new();
@@ -370,17 +372,45 @@ async fn declare_services(
                     });
                 }
 
-                let mut port_to_service: HashMap<u16, String> = HashMap::new();
+                // More than one target can share a port (two dependencies
+                // reached on the same real port, e.g. two plain-HTTPS deps
+                // both 443) — group by port so the listener can disambiguate
+                // by destination address at trigger time.
+                let mut port_to_target: HashMap<u16, Vec<nfqueue::TriggerTarget>> = HashMap::new();
                 for st in response.service_triggers {
-                    for port in st.ports {
-                        let Ok(port) = u16::try_from(port) else {
-                            eprintln!("server returned invalid trigger port {port}; skipping");
+                    let initiator_container = (!st.initiator_container.is_empty())
+                        .then_some(st.initiator_container.as_str());
+                    for tp in st.trigger_ports {
+                        let Ok(port) = u16::try_from(tp.port) else {
+                            eprintln!("server returned invalid trigger port {}; skipping", tp.port);
                             continue;
                         };
-                        port_to_service.insert(port, st.service_name.clone());
+                        // Pre-seed a placeholder /etc/hosts entry for the
+                        // dependency's literal name *before* any packet is
+                        // observed, so a bare container name (not just a
+                        // pre-provisioned DNS alias) produces a real first
+                        // packet for NFQUEUE to catch. Idempotent — safe on
+                        // every reconcile pass; self-heals across container
+                        // restarts (Docker wipes /etc/hosts on every start).
+                        if let Some(container) = initiator_container
+                            && let Err(e) =
+                                placeholder::seed_placeholder(container, &tp.target_name)
+                        {
+                            eprintln!(
+                                "failed to seed placeholder for '{}' in {container}: {e:?}",
+                                tp.target_name
+                            );
+                        }
+                        port_to_target
+                            .entry(port)
+                            .or_default()
+                            .push(nfqueue::TriggerTarget {
+                                service_name: st.service_name.clone(),
+                                target_name: tp.target_name.clone(),
+                            });
                     }
                 }
-                if config_tx.send(port_to_service).is_err() {
+                if config_tx.send(port_to_target).is_err() {
                     // observer task gone; nothing more to do here
                     return Ok(());
                 }

@@ -138,7 +138,7 @@ async fn trigger_backend_chain(
     port: u16,
 ) {
     server
-        .handle_backend_trigger(initiator_name, port, initiator_ip, None)
+        .handle_backend_trigger(initiator_name, port, initiator_ip, None, "")
         .await
         .expect("backend trigger failed");
 }
@@ -159,6 +159,7 @@ async fn setup_backend_chain_for_replica(
             initiator_ip,
             initiator_docker,
             port,
+            "",
         )
         .await
         .expect("setup_backend_chain failed");
@@ -1978,7 +1979,7 @@ async fn triggers_changed_swap_A_trigger() {
     assert_graphviz(&guard, TRIGGERS_CHANGED, "after_swap_A_trigger.dot");
     assert_eq!(
         stack_view(&guard)["A"].triggers().get(&5555),
-        Some(&vec!["D".to_string()])
+        Some(&vec![vec!["D".to_string()]])
     );
     drop(guard);
 
@@ -2264,7 +2265,7 @@ async fn backend_trigger_disambiguates_colocated_replica_by_container() {
     let server = backend_disambiguation_setup().await;
 
     server
-        .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), Some("a2"))
+        .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), Some("a2"), "")
         .await
         .expect("backend trigger for a2 should succeed");
 
@@ -2305,7 +2306,7 @@ async fn backend_trigger_unknown_container_errors_without_ip_fallback() {
     let server = backend_disambiguation_setup().await;
 
     let result = server
-        .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), Some("ghost"))
+        .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), Some("ghost"), "")
         .await;
 
     assert!(
@@ -2322,7 +2323,7 @@ async fn backend_trigger_without_container_falls_back_to_ip_only() {
     let server = backend_disambiguation_setup().await;
 
     server
-        .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None)
+        .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None, "")
         .await
         .expect("IP-only trigger should succeed");
 
@@ -2855,7 +2856,7 @@ async fn backend_involved_replicas_never_suspended() {
         "initiator".to_string(),
         ServiceInfo::new(
             vec![],
-            HashMap::from([(8080u16, vec!["dep".to_string()])]),
+            HashMap::from([(8080u16, vec![vec!["dep".to_string()]])]),
             Some(30),
             None,
             ServiceProtocol::Http,

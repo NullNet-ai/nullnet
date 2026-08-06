@@ -1,4 +1,5 @@
 use nullnet_grpc_lib::nullnet_grpc::HostMapping;
+use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::process::Command;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
@@ -100,7 +101,7 @@ pub fn purge_stale_mappings() {
             continue;
         };
         let cleaned = strip_marked(&content);
-        if cleaned != content && write_container_hosts(&container, &cleaned) {
+        if cleaned != content && write_container_hosts(&container, &cleaned).is_ok() {
             swept += 1;
         }
     }
@@ -136,7 +137,8 @@ fn running_containers() -> Vec<String> {
 }
 
 /// `None` when the read failed — never an empty string, which would truncate
-/// the file on write-back (the same trap `add_host_mapping` guards against).
+/// the file on write-back (the same trap `upsert_container_host_entry` guards
+/// against).
 fn container_hosts(container: &str) -> Option<String> {
     let out = Command::new("docker")
         .args(["exec", container, "cat", HOSTS_PATH])
@@ -147,9 +149,68 @@ fn container_hosts(container: &str) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn write_container_hosts(container: &str, content: &str) -> bool {
-    use std::io::Write;
-    let Ok(mut child) = Command::new("docker")
+/// Upsert `name -> ip` into `container`'s own `/etc/hosts` via `docker exec`,
+/// tagged with [`HOSTS_MARKER`] so a restarted process can sweep it later.
+/// Shared by two callers: the reactive real-mapping write once a tunnel is up
+/// (`control_channel`'s `add_host_mapping`) and the proactive placeholder seed
+/// written before any packet exists (`placeholder::seed_placeholder`) — both
+/// need identical docker-exec read/upsert/write mechanics, a different `ip`
+/// value, and the same crash-safety (locking, tagging).
+pub(crate) fn upsert_container_host_entry(
+    container: &str,
+    name: &str,
+    ip: &str,
+) -> Result<(), Error> {
+    let lock = hosts_file_lock(Some(container));
+    let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+
+    let entry = format!("{ip} {name} {HOSTS_MARKER}");
+    let cat = Command::new("docker")
+        .args(["exec", container, "cat", HOSTS_PATH])
+        .output()
+        .handle_err(location!())?;
+    // Bail rather than write on a failed read: `output()` is Ok even when the
+    // exec itself failed (container gone, docker hiccup), and treating the
+    // empty stdout as the file's contents would truncate a live `/etc/hosts`
+    // down to this one entry.
+    if !cat.status.success() {
+        return Err(format!(
+            "reading {HOSTS_PATH} in '{container}' failed: {}",
+            String::from_utf8_lossy(&cat.stderr).trim()
+        ))
+        .handle_err(location!());
+    }
+    let content = upsert_hosts_entry(&String::from_utf8_lossy(&cat.stdout), name, &entry);
+    write_container_hosts(container, &content)
+}
+
+/// Remove `name`'s line from `container`'s own `/etc/hosts` via `docker exec`,
+/// but only while it still points at `ip` — see `remove_hosts_entry`.
+pub(crate) fn remove_container_host_entry(
+    container: &str,
+    name: &str,
+    ip: &str,
+) -> Result<(), Error> {
+    let lock = hosts_file_lock(Some(container));
+    let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+
+    let cat = Command::new("docker")
+        .args(["exec", container, "cat", HOSTS_PATH])
+        .output()
+        .handle_err(location!())?;
+    if !cat.status.success() {
+        return Err(format!(
+            "reading {HOSTS_PATH} in '{container}' failed: {}",
+            String::from_utf8_lossy(&cat.stderr).trim()
+        ))
+        .handle_err(location!());
+    }
+    let content = remove_hosts_entry(&String::from_utf8_lossy(&cat.stdout), name, ip);
+    write_container_hosts(container, &content)
+}
+
+fn write_container_hosts(container: &str, content: &str) -> Result<(), Error> {
+    let mut child = Command::new("docker")
         .args([
             "exec",
             "-i",
@@ -160,15 +221,50 @@ fn write_container_hosts(container: &str, content: &str) -> bool {
         ])
         .stdin(std::process::Stdio::piped())
         .spawn()
-    else {
-        return false;
-    };
-    if let Some(mut stdin) = child.stdin.take()
-        && stdin.write_all(content.as_bytes()).is_err()
-    {
-        return false;
+        .handle_err(location!())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        stdin
+            .write_all(content.as_bytes())
+            .handle_err(location!())?;
     }
-    child.wait().map(|s| s.success()).unwrap_or(false)
+    let _ = child.wait();
+    Ok(())
+}
+
+pub(crate) fn upsert_hosts_entry(content: &str, name: &str, entry: &str) -> String {
+    let mut lines: Vec<String> = content.lines().map(ToString::to_string).collect();
+    let mut found = false;
+    for line in &mut lines {
+        if line.split_whitespace().skip(1).any(|tok| tok == name) {
+            *line = entry.to_string();
+            found = true;
+        }
+    }
+    if !found {
+        lines.push(entry.to_string());
+    }
+    lines.join("\n") + "\n"
+}
+
+/// Drop the line mapping `name`, but only while it still points at `ip`.
+///
+/// NET IDs are recycled, so a teardown can land after a *newer* net has
+/// already re-installed the same name at a different overlay IP
+/// (`upsert_hosts_entry` keys on the name alone, which is what makes the
+/// replacement correct). Matching the IP too makes the late teardown a no-op
+/// instead of deleting a mapping that belongs to a live tunnel.
+pub(crate) fn remove_hosts_entry(content: &str, name: &str, ip: &str) -> String {
+    let lines: Vec<String> = content
+        .lines()
+        .filter(|line| {
+            let mut tokens = line.split_whitespace();
+            let line_ip = tokens.next();
+            !(line_ip == Some(ip) && tokens.any(|tok| tok == name))
+        })
+        .map(ToString::to_string)
+        .collect();
+    lines.join("\n") + "\n"
 }
 
 #[cfg(test)]
@@ -194,5 +290,44 @@ mod tests {
     fn leaves_unmarked_content_untouched() {
         let content = "127.0.0.1 localhost\n10.0.0.2 legacy.example.com\n";
         assert_eq!(strip_marked(content), content);
+    }
+}
+
+#[cfg(test)]
+mod hosts_entry_tests {
+    use super::*;
+
+    #[test]
+    fn upsert_appends_when_absent() {
+        let out = upsert_hosts_entry("127.0.0.1 localhost\n", "redis", "203.0.113.7 redis");
+        assert_eq!(out, "127.0.0.1 localhost\n203.0.113.7 redis\n");
+    }
+
+    #[test]
+    fn upsert_replaces_existing_line() {
+        let out = upsert_hosts_entry(
+            "127.0.0.1 localhost\n203.0.113.7 redis\n",
+            "redis",
+            "10.0.0.5 redis",
+        );
+        assert_eq!(out, "127.0.0.1 localhost\n10.0.0.5 redis\n");
+    }
+
+    #[test]
+    fn remove_drops_matching_line_only() {
+        let out = remove_hosts_entry(
+            "127.0.0.1 localhost\n10.0.0.5 redis\n10.0.0.6 billing\n",
+            "redis",
+            "10.0.0.5",
+        );
+        assert_eq!(out, "127.0.0.1 localhost\n10.0.0.6 billing\n");
+    }
+
+    #[test]
+    fn remove_is_a_noop_when_ip_no_longer_matches() {
+        // A late teardown for a torn-down tunnel landing after a newer tunnel
+        // re-mapped the same name at a different IP must not delete it.
+        let out = remove_hosts_entry("127.0.0.1 localhost\n10.0.0.9 redis\n", "redis", "10.0.0.5");
+        assert_eq!(out, "127.0.0.1 localhost\n10.0.0.9 redis\n");
     }
 }

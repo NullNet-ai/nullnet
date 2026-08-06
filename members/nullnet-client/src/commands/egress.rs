@@ -95,6 +95,19 @@ pub(crate) fn init() {
             &["ipset", "add", "-exist", INTERNAL_SET, range],
         );
     }
+    // The backend-trigger placeholder block (see `placeholder::placeholder_cidr`)
+    // is synthetic — never real internet traffic — but isn't one of the
+    // static private/special ranges above. Without this, a trigger dial to
+    // a port `nullnet_watched_ports` hasn't caught up on yet (a startup race
+    // against the gRPC round trip that populates it, see `nfqueue::apply_ports_diff`)
+    // falls through to this rule instead and gets misclassified as an egress
+    // candidate — held for the egress-trigger timeout, then dropped, well
+    // past most callers' own request timeout.
+    let placeholder_cidr = crate::placeholder::placeholder_cidr();
+    sudo_ok(
+        "ipset add internal placeholder",
+        &["ipset", "add", "-exist", INTERNAL_SET, &placeholder_cidr],
+    );
 
     // NFQUEUE trigger rule: NEW flows to non-internal destinations → queue 1.
     // The listener filters by container (registered services only). --queue-bypass
@@ -213,6 +226,27 @@ pub(crate) fn install_steer(
             ],
         );
     }
+    // Same bypass for the backend-trigger placeholder block — see the
+    // matching comment in `init()`. Lands at base+9, still clear of the
+    // catch-all at base+15.
+    let placeholder_cidr = crate::placeholder::placeholder_cidr();
+    let placeholder_prio = (base + INTERNAL_RANGES.len() as u32).to_string();
+    ok &= sudo_ok(
+        "ip rule add placeholder bypass",
+        &[
+            "ip",
+            "rule",
+            "add",
+            "from",
+            &cip,
+            "to",
+            &placeholder_cidr,
+            "lookup",
+            "main",
+            "priority",
+            &placeholder_prio,
+        ],
+    );
     // Catch-all: everything else from this container → the egress table.
     let catch_all = (base + 15).to_string();
     ok &= sudo_ok(

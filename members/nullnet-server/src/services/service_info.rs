@@ -6,6 +6,42 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, Instant};
 
+/// Backend-triggered chains keyed by the trigger port observed on the
+/// initiator's host. More than one chain can share a port — two dependencies
+/// that happen to be reached on the same real port (e.g. two plain-HTTPS
+/// deps, both 443) — disambiguated at trigger time by `target_name`
+/// (chain[0]), which the client already resolves independently from the
+/// packet's destination (its placeholder address — see nullnet-client's
+/// `placeholder.rs`).
+pub(crate) type TriggerMap = HashMap<u16, Vec<Vec<String>>>;
+
+/// First pair of chains sharing a port whose `chain[0]` names hash to the
+/// same placeholder address, if any. Two *distinct* names on the same port
+/// are normally fine — `chain_for` disambiguates by name, not address — but
+/// the client picks which chain a first packet belongs to by matching the
+/// packet's destination against each candidate's placeholder address (see
+/// nullnet-client's `nfqueue/listener.rs::resolve_target` and
+/// `placeholder.rs`). If two names collide under that hash, the client
+/// can't tell them apart either and will silently pick whichever candidate
+/// comes first, wiring the wrong dependency's traffic through. Distinct
+/// `chain[0]` names are already required (see `services_map`'s dup check);
+/// this catches the rarer case where two different names still land on the
+/// same address.
+pub(crate) fn placeholder_collision(triggers: &TriggerMap) -> Option<(u16, String, String)> {
+    for (&port, chains) in triggers {
+        for i in 0..chains.len() {
+            for other in &chains[i + 1..] {
+                let a = chains[i].first().map(String::as_str).unwrap_or("");
+                let b = other.first().map(String::as_str).unwrap_or("");
+                if nullnet_grpc_lib::last_octet_for(a) == nullnet_grpc_lib::last_octet_for(b) {
+                    return Some((port, a.to_string(), b.to_string()));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Service names that participate in backend trigger chains: those that declare
 /// triggers ("have backend deps") and every service named in a trigger chain
 /// ("is a backend dep"). These are never paused — backend-dep networks aren't
@@ -21,7 +57,7 @@ pub(crate) fn backend_involved_services(
             continue;
         }
         pinned.insert(name.clone());
-        for dep in triggers.values().flatten() {
+        for dep in triggers.values().flatten().flatten() {
             pinned.insert(dep.clone());
         }
     }
@@ -62,7 +98,7 @@ impl ServiceInfo {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         proxy_deps: Vec<Vec<String>>,
-        triggers: HashMap<u16, Vec<String>>,
+        triggers: TriggerMap,
         timeout: Option<u64>,
         max_networks: Option<u32>,
         protocol: ServiceProtocol,
@@ -250,7 +286,7 @@ impl ServiceInfo {
         }
     }
 
-    pub(crate) fn triggers(&self) -> &HashMap<u16, Vec<String>> {
+    pub(crate) fn triggers(&self) -> &TriggerMap {
         match self {
             ServiceInfo::Unregistered(unreg) => &unreg.triggers,
             ServiceInfo::Registered(reg) => &reg.triggers,
@@ -260,7 +296,12 @@ impl ServiceInfo {
     /// True iff `other` appears in any of this service's dep lists (proxy or backend).
     pub(crate) fn deps_contain(&self, other: &str) -> bool {
         self.proxy_deps().iter().flatten().any(|d| d == other)
-            || self.triggers().values().flatten().any(|d| d == other)
+            || self
+                .triggers()
+                .values()
+                .flatten()
+                .flatten()
+                .any(|d| d == other)
     }
 }
 
@@ -271,7 +312,7 @@ pub(crate) struct UnregisteredServiceInfo {
     proxy_deps: Vec<Vec<String>>,
     /// Backend-triggered chains keyed by the trigger port observed on the
     /// initiator's host. One linear chain per port; no implicit fan-out.
-    triggers: HashMap<u16, Vec<String>>,
+    triggers: TriggerMap,
     /// Whether the proxy is reachable for this service, with the associated timeout.
     timeout: Option<u64>,
     /// Maximum number of networks for this service.
@@ -290,7 +331,7 @@ impl UnregisteredServiceInfo {
     #[allow(clippy::too_many_arguments)]
     fn new(
         proxy_deps: Vec<Vec<String>>,
-        triggers: HashMap<u16, Vec<String>>,
+        triggers: TriggerMap,
         timeout: Option<u64>,
         max_networks: Option<u32>,
         protocol: ServiceProtocol,
@@ -384,8 +425,10 @@ pub(crate) struct RegisteredServiceInfo {
     /// is one linear branch; all branches are brought up in parallel.
     proxy_deps: Vec<Vec<String>>,
     /// Backend-triggered chains keyed by the trigger port observed on the
-    /// initiator's host. One linear chain per port; no implicit fan-out.
-    triggers: HashMap<u16, Vec<String>>,
+    /// initiator's host. More than one chain may share a port, disambiguated
+    /// at trigger time by `chain_for`'s `target_name` match; no implicit
+    /// fan-out otherwise.
+    triggers: TriggerMap,
     /// Whether the proxy is reachable for this service, with the associated timeout.
     timeout: Option<u64>,
     /// Maximum number of networks for this service.
@@ -427,17 +470,37 @@ impl RegisteredServiceInfo {
             .collect()
     }
 
-    /// Build the chain of edges for the trigger at `port`, if one exists.
-    /// Each chain starts at this service's replica.
+    /// Select the trigger chain for `port` that matches `target_name` — the
+    /// literal name (chain[0]) the initiator resolved via its placeholder.
+    /// When only one chain exists for that port, it's used regardless of
+    /// `target_name` — covers the common case, and callers that don't (yet)
+    /// know a target_name (an older client, or the empty string). With
+    /// multiple chains sharing a port, an exact match is required — an
+    /// empty or unmatched `target_name` is genuinely ambiguous and returns
+    /// `None` rather than guessing which dependency was meant.
+    pub(crate) fn chain_for(&self, port: u16, target_name: &str) -> Option<&Vec<String>> {
+        let chains = self.triggers.get(&port)?;
+        match chains.as_slice() {
+            [only] => Some(only),
+            many => many
+                .iter()
+                .find(|c| c.first().map(String::as_str) == Some(target_name)),
+        }
+    }
+
+    /// Build the chain of edges for the trigger at `port` matching
+    /// `target_name`, if one exists. Each chain starts at this service's
+    /// replica.
     pub(crate) fn backend_dependency_chain(
         &self,
         service_name: &str,
         service_ip: IpAddr,
         service_docker: Option<&str>,
         port: u16,
+        target_name: &str,
         services: &HashMap<String, ServiceInfo>,
     ) -> Option<Vec<Edge>> {
-        let chain = self.triggers.get(&port)?;
+        let chain = self.chain_for(port, target_name)?;
         Some(build_linear_chain(
             chain,
             service_name.to_string(),
@@ -645,7 +708,7 @@ impl RegisteredServiceInfo {
         &self.replicas
     }
 
-    pub(crate) fn triggers(&self) -> &HashMap<u16, Vec<String>> {
+    pub(crate) fn triggers(&self) -> &TriggerMap {
         &self.triggers
     }
 
@@ -797,4 +860,57 @@ fn build_linear_chain(
         current_name.clone_from(dep);
     }
     chain
+}
+
+#[cfg(test)]
+mod chain_selection_tests {
+    use super::*;
+
+    fn registered_with_triggers(triggers: TriggerMap) -> RegisteredServiceInfo {
+        RegisteredServiceInfo {
+            proxy_deps: Vec::new(),
+            triggers,
+            timeout: None,
+            max_networks: None,
+            protocol: ServiceProtocol::Http,
+            listen_port: None,
+            egress_policy: CountryPolicy::None,
+            ingress_policy: CountryPolicy::None,
+            replicas: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn single_chain_ignores_target_name() {
+        let reg = registered_with_triggers(HashMap::from([(443, vec![vec!["auth".to_string()]])]));
+        // Even an empty or unrelated target_name still resolves the only
+        // chain — covers pre-disambiguation clients and the common case.
+        assert_eq!(reg.chain_for(443, ""), Some(&vec!["auth".to_string()]));
+        assert_eq!(
+            reg.chain_for(443, "billing"),
+            Some(&vec!["auth".to_string()])
+        );
+    }
+
+    #[test]
+    fn multiple_chains_require_exact_target_name_match() {
+        let reg = registered_with_triggers(HashMap::from([(
+            443,
+            vec![vec!["auth".to_string()], vec!["billing".to_string()]],
+        )]));
+        assert_eq!(reg.chain_for(443, "auth"), Some(&vec!["auth".to_string()]));
+        assert_eq!(
+            reg.chain_for(443, "billing"),
+            Some(&vec!["billing".to_string()])
+        );
+        // Ambiguous — no guessing.
+        assert_eq!(reg.chain_for(443, ""), None);
+        assert_eq!(reg.chain_for(443, "unknown"), None);
+    }
+
+    #[test]
+    fn unknown_port_returns_none() {
+        let reg = registered_with_triggers(HashMap::new());
+        assert_eq!(reg.chain_for(443, "auth"), None);
+    }
 }

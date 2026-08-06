@@ -15,7 +15,10 @@ export interface ServiceJson {
   registered: boolean;
   replicas: ReplicaJson[];
   proxy_dependencies: string[][];
-  triggers: Record<string, string[]>;
+  // Port -> the chains sharing it. Usually one chain per port; more than one
+  // means two dependencies reached on the same real port, disambiguated at
+  // trigger time by chain[0].
+  triggers: Record<string, string[][]>;
   timeout_secs?: number;
   max_networks?: number;
 }

@@ -2,7 +2,7 @@ use crate::commands::{RtNetLinkHandle, configure_access_port, dnat, egress, remo
 use crate::ebpf::{FirewallPeers, FirewallVxlanPorts, NetId};
 use crate::egress_policy::{PolicyVerdicts, flush_container_conntrack};
 use crate::egress_state::{EgressRecord, EgressState};
-use crate::host_mappings::{HOSTS_MARKER, HostMappingsState, hosts_file_lock};
+use crate::host_mappings::{self, HOSTS_MARKER, HostMappingsState, hosts_file_lock};
 use crate::nfqueue::BridgeIpCache;
 use crate::peers::peer::{Peers, VethKey};
 use crate::triggers::TriggersState;
@@ -493,6 +493,7 @@ async fn handle_vxlan_setup(
                     if let Some(container) = message.docker_container.as_deref() {
                         triggers_state.mark_active(
                             container,
+                            crate::triggers::EGRESS_DST_IP,
                             crate::triggers::EGRESS_TRIGGER_PORT,
                             vxlan_id,
                             gw,
@@ -552,7 +553,7 @@ async fn handle_vxlan_setup(
         // packet traverses `nat PREROUTING`. The DNAT rule MUST already be
         // installed by then, so we:
         //   1. peek the initiator's bridge IP (stashed at `mark_pending`)
-        //   2. install DNAT with `-s <container_ip>`
+        //   2. install DNAT with `-s <container_ip> -d <placeholder_ip>`
         //   3. mark_active → wakes the waiter, packet released into the new
         //      rule
         if let Some(dnat_port) = message.dnat_port
@@ -560,14 +561,21 @@ async fn handle_vxlan_setup(
             && let Ok(overlay_ip) = host_mapping.ip.parse::<Ipv4Addr>()
         {
             let container_key = message.docker_container.as_deref().unwrap_or("");
-            let container_ip = triggers_state.peek_container_ip(container_key, dnat_port);
+            // `host_mapping.name` is chain[0] for this trigger — the same
+            // literal name the NFQUEUE listener read from its port→target
+            // map when it observed the original packet — so recomputing the
+            // placeholder here independently lands on the exact same
+            // address it used, without needing it on the wire separately.
+            let dest_ip = crate::placeholder::ip_for(&host_mapping.name);
+            let container_ip = triggers_state.peek_container_ip(container_key, dest_ip, dnat_port);
             // Only promote to Active if the DNAT rule is actually live. Waking
             // the held packet without it would release the SYN into a missing
             // rule (→ misroute to the original dest); instead leave it Pending
             // so the listener drops at ACTIVE_TIMEOUT.
-            if dnat::install(dnat_port, overlay_ip, container_ip) {
+            if dnat::install(dnat_port, overlay_ip, container_ip, dest_ip) {
                 triggers_state.mark_active(
                     container_key,
+                    dest_ip,
                     dnat_port,
                     vxlan_id,
                     overlay_ip,
@@ -654,30 +662,52 @@ fn handle_vxlan_teardown(
     firewall_vxlan_ports.remove(message.vxlan_id);
 
     // remove DNAT before tearing the tunnel down so existing flows reset
-    // cleanly. The `container_ip` matches the `-s` we used at install time.
-    // `remove_by_vxlan` also matches the egress steer's sentinel-port entry
-    // (EGRESS_TRIGGER_PORT = 0). That path installs a policy-route steer, not a
-    // DNAT — its teardown runs via EgressState below — so skip DNAT removal for
-    // it. Only real backend DNAT ports (>0) go through `dnat::remove`; otherwise
-    // we'd fire a bogus `iptables -D --dport 0` and a false removal-failed event.
-    if let Some((_container, port, overlay_ip, container_ip)) =
+    // cleanly. The `container_ip`/`dst_ip` match the `-s`/`-d` we used at
+    // install time. `remove_by_vxlan` also matches the egress steer's
+    // sentinel-port entry (EGRESS_TRIGGER_PORT = 0). That path installs a
+    // policy-route steer, not a DNAT — its teardown runs via EgressState
+    // below — so skip DNAT removal for it. Only real backend DNAT ports (>0)
+    // go through `dnat::remove`; otherwise we'd fire a bogus
+    // `iptables -D --dport 0` and a false removal-failed event. Whether this
+    // was a backend-trigger entry (vs. an egress steer) also decides how the
+    // host mapping below gets torn down.
+    let mut is_backend_trigger_entry = false;
+    if let Some((_container, dst_ip, port, overlay_ip, container_ip)) =
         triggers_state.remove_by_vxlan(message.vxlan_id)
         && port != crate::triggers::EGRESS_TRIGGER_PORT
-        && !dnat::remove(port, overlay_ip, container_ip)
     {
-        fire_event(
-            &grpc,
-            AgentEventKind::DnatRemovalFailed(AgentDnatRemovalFailed {
-                port: u32::from(port),
-                overlay_ip: overlay_ip.to_string(),
-            }),
-        );
+        is_backend_trigger_entry = true;
+        if !dnat::remove(port, overlay_ip, container_ip, dst_ip) {
+            fire_event(
+                &grpc,
+                AgentEventKind::DnatRemovalFailed(AgentDnatRemovalFailed {
+                    port: u32::from(port),
+                    overlay_ip: overlay_ip.to_string(),
+                }),
+            );
+        }
     }
 
-    // remove host mapping if one was installed at setup
+    // Remove the host mapping installed at setup — except for a
+    // backend-trigger entry, where we re-seed the placeholder instead of
+    // deleting the line outright. Deleting would leave the initiator unable
+    // to resolve the name at all: the next `connect(name, ...)` would
+    // dead-end exactly like an un-seeded bare name does (no packet, no
+    // re-trigger, chain never rebuilds). Proxy-dependency mappings are
+    // unaffected — a fresh proxy request rebuilds the chain (and writes the
+    // real mapping) before forwarding, so there's no gap to cover there.
     if let Some((host_mapping, docker_container)) = host_mappings_state.take_vxlan(message.vxlan_id)
     {
-        let _ = remove_host_mapping(&host_mapping, docker_container.as_deref());
+        if is_backend_trigger_entry && let Some(container) = docker_container.as_deref() {
+            if let Err(e) = crate::placeholder::seed_placeholder(container, &host_mapping.name) {
+                eprintln!(
+                    "[control_channel] failed to re-seed placeholder for '{}' in {container}: {e:?}",
+                    host_mapping.name
+                );
+            }
+        } else {
+            let _ = remove_host_mapping(&host_mapping, docker_container.as_deref());
+        }
     }
 
     // teardown VXLAN on this machine
@@ -842,147 +872,49 @@ fn container_running(container: &str) -> bool {
 }
 
 fn add_host_mapping(hm: &HostMapping, docker_container: Option<&str>) -> Result<(), Error> {
-    let path = "/etc/hosts";
-    // Marked so a restarted process can sweep its predecessor's entries without
-    // touching the operator's (see `host_mappings::purge_stale_mappings`).
-    let entry = format!("{} {} {HOSTS_MARKER}", hm.ip, hm.name);
-
-    // Serialize against every other mapping change on this same file; the
-    // read-modify-write below is only atomic while this is held.
-    let lock = hosts_file_lock(docker_container);
-    let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-
     if let Some(container) = docker_container {
         // container-targeted: the resolver that needs this name lives inside
         // the container, so write only there and leave the host's file alone.
-        let cat = std::process::Command::new("docker")
-            .args(["exec", container, "cat", path])
-            .output()
-            .handle_err(location!())?;
-        // Bail rather than write on a failed read: `output()` is Ok even when
-        // the exec itself failed (container gone, docker hiccup), and treating
-        // the empty stdout as the file's contents would truncate a live
-        // `/etc/hosts` down to this one entry.
-        if !cat.status.success() {
-            Err(format!(
-                "reading {path} in '{container}' failed: {}",
-                String::from_utf8_lossy(&cat.stderr).trim()
-            ))
-            .handle_err(location!())?;
-        }
-        let content = upsert_hosts_entry(&String::from_utf8_lossy(&cat.stdout), &hm.name, &entry);
-        let mut child = std::process::Command::new("docker")
-            .args([
-                "exec",
-                "-i",
-                container,
-                "sh",
-                "-c",
-                &format!("cat > {path}"),
-            ])
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .handle_err(location!())?;
-        if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
-            stdin
-                .write_all(content.as_bytes())
-                .handle_err(location!())?;
-        }
-        let _ = child.wait();
+        // Locking, the crash-recovery marker, and the failed-read guard all
+        // live inside this shared helper now — see `host_mappings.rs`.
+        host_mappings::upsert_container_host_entry(container, &hm.name, &hm.ip)
     } else {
         // host-targeted: upsert into the host's /etc/hosts
+        let path = "/etc/hosts";
+        // Serialize against every other mapping change on this same file;
+        // the read-modify-write below is only atomic while this is held.
+        let lock = hosts_file_lock(None);
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        // Marked so a restarted process can sweep its predecessor's entries
+        // without touching the operator's (see `host_mappings::purge_stale_mappings`).
+        let entry = format!("{} {} {HOSTS_MARKER}", hm.ip, hm.name);
         let content = std::fs::read_to_string(path).handle_err(location!())?;
-        std::fs::write(path, upsert_hosts_entry(&content, &hm.name, &entry))
-            .handle_err(location!())?;
+        std::fs::write(
+            path,
+            host_mappings::upsert_hosts_entry(&content, &hm.name, &entry),
+        )
+        .handle_err(location!())
     }
-
-    Ok(())
-}
-
-fn upsert_hosts_entry(content: &str, name: &str, entry: &str) -> String {
-    let mut lines: Vec<String> = content.lines().map(ToString::to_string).collect();
-    let mut found = false;
-    for line in &mut lines {
-        if line.split_whitespace().skip(1).any(|tok| tok == name) {
-            *line = entry.to_string();
-            found = true;
-        }
-    }
-    if !found {
-        lines.push(entry.to_string());
-    }
-    lines.join("\n") + "\n"
 }
 
 fn remove_host_mapping(hm: &HostMapping, docker_container: Option<&str>) -> Result<(), Error> {
-    let path = "/etc/hosts";
-
-    let lock = hosts_file_lock(docker_container);
-    let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-
     if let Some(container) = docker_container {
         // container-targeted: setup only wrote inside the container, so the
-        // matching removal is container-only too.
-        let cat = std::process::Command::new("docker")
-            .args(["exec", container, "cat", path])
-            .output()
-            .handle_err(location!())?;
-        if !cat.status.success() {
-            Err(format!(
-                "reading {path} in '{container}' failed: {}",
-                String::from_utf8_lossy(&cat.stderr).trim()
-            ))
-            .handle_err(location!())?;
-        }
-        let content = remove_hosts_entry(&String::from_utf8_lossy(&cat.stdout), &hm.name, &hm.ip);
-        let mut child = std::process::Command::new("docker")
-            .args([
-                "exec",
-                "-i",
-                container,
-                "sh",
-                "-c",
-                &format!("cat > {path}"),
-            ])
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .handle_err(location!())?;
-        if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
-            stdin
-                .write_all(content.as_bytes())
-                .handle_err(location!())?;
-        }
-        let _ = child.wait();
+        // matching removal is container-only too. Locking and the IP-scoped
+        // match both live inside this shared helper now — see `host_mappings.rs`.
+        host_mappings::remove_container_host_entry(container, &hm.name, &hm.ip)
     } else {
         // host-targeted: drop this net's line from the host file
+        let path = "/etc/hosts";
+        let lock = hosts_file_lock(None);
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         let content = std::fs::read_to_string(path).handle_err(location!())?;
-        std::fs::write(path, remove_hosts_entry(&content, &hm.name, &hm.ip))
-            .handle_err(location!())?;
+        std::fs::write(
+            path,
+            host_mappings::remove_hosts_entry(&content, &hm.name, &hm.ip),
+        )
+        .handle_err(location!())
     }
-
-    Ok(())
-}
-
-/// Drop the line mapping `name`, but only while it still points at `ip`.
-///
-/// NET IDs are recycled, so a teardown can land after a *newer* net has already
-/// re-installed the same name at a different overlay IP (`upsert_hosts_entry`
-/// keys on the name alone, which is what makes the replacement correct).
-/// Matching the IP too makes the late teardown a no-op instead of deleting a
-/// mapping that belongs to a live tunnel.
-fn remove_hosts_entry(content: &str, name: &str, ip: &str) -> String {
-    let lines: Vec<String> = content
-        .lines()
-        .filter(|line| {
-            let mut tokens = line.split_whitespace();
-            let line_ip = tokens.next();
-            !(line_ip == Some(ip) && tokens.any(|tok| tok == name))
-        })
-        .map(ToString::to_string)
-        .collect();
-    lines.join("\n") + "\n"
 }
 
 /// Lowercase hex encoding, used to pass the tunnel's AES key to

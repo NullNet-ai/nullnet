@@ -1,4 +1,5 @@
 mod control_tls_verifier;
+mod placeholder;
 mod proto;
 
 use crate::control_tls_verifier::PinnedCa;
@@ -8,6 +9,7 @@ use crate::nullnet_grpc::{
     EgressPolicyCheck, EgressTriggerRequest, Empty, IngressPolicyCheck, MsgId, NetMessage, NetType,
     PortMappingBundle, ProxyRequest, ServiceReport, ServicesListResponse, Upstream,
 };
+pub use placeholder::last_octet_for;
 pub use proto::*;
 use std::path::Path;
 use tokio::sync::mpsc;
@@ -114,6 +116,7 @@ impl NullnetGrpcInterface {
         service_name: String,
         port: u32,
         initiator_container: String,
+        target_name: String,
     ) -> Result<(), String> {
         self.client
             .clone()
@@ -121,6 +124,7 @@ impl NullnetGrpcInterface {
                 service_name,
                 port,
                 initiator_container,
+                target_name,
             }))
             .await
             .map(|_| ())
