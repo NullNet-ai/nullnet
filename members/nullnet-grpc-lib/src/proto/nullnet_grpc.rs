@@ -223,6 +223,12 @@ pub struct ServiceTrigger {
     pub service_name: ::prost::alloc::string::String,
     #[prost(uint32, repeated, tag = "2")]
     pub ports: ::prost::alloc::vec::Vec<u32>,
+    /// Real container names hosting this service on the receiving node — the same
+    /// string space as the client's bridge-IP cache and as Container.real_name.
+    /// Scopes the trigger to its own replicas; empty means a server that predates
+    /// this field, and the client then falls back to matching any container.
+    #[prost(string, repeated, tag = "3")]
+    pub containers: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct HostMapping {
