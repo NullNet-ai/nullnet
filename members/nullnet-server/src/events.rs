@@ -85,6 +85,14 @@ pub(crate) enum Event {
         client_ip: String,
         timestamp: u64,
     },
+    /// An endpoint never confirmed a teardown, so the net id went back to the
+    /// pool unverified. Its kernel state may still exist on that node, and a
+    /// later edge reusing the id would collide with it.
+    NetTeardownUnconfirmed {
+        net_id: u32,
+        node_ip: String,
+        timestamp: u64,
+    },
     ConfigReloaded {
         stack: String,
         timestamp: u64,
@@ -350,6 +358,7 @@ impl Event {
             Self::SetupTimeout { .. } => "setup_timeout",
             Self::SessionCreated { .. } => "session_created",
             Self::SessionTornDown { .. } => "session_torn_down",
+            Self::NetTeardownUnconfirmed { .. } => "net_teardown_unconfirmed",
             Self::ConfigReloaded { .. } => "config_reloaded",
             Self::ConfigStackRemoved { .. } => "config_stack_removed",
             Self::PortMappingConflict { .. } => "port_mapping_conflict",
@@ -428,6 +437,7 @@ impl Event {
             | Self::MaxNetworksLimitEnforced { .. }
             | Self::BackendTriggerSetupBailed { .. }
             | Self::ControlChannelClosed { .. }
+            | Self::NetTeardownUnconfirmed { .. }
             | Self::CertificateRemoved { .. } => Severity::Warning,
 
             Self::SetupTimeout { .. }
@@ -545,6 +555,14 @@ impl Event {
             net_id,
             service,
             client_ip,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn net_teardown_unconfirmed(net_id: u32, node_ip: String) -> Self {
+        Self::NetTeardownUnconfirmed {
+            net_id,
+            node_ip,
             timestamp: now_secs(),
         }
     }
