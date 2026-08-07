@@ -1,5 +1,6 @@
 use nullnet_grpc_lib::nullnet_grpc::HostMapping;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
@@ -93,14 +94,10 @@ pub fn purge_stale_mappings() {
     }
     drop(guard);
 
-    for container in running_containers() {
+    for container in all_containers() {
         let lock = hosts_file_lock(Some(&container));
         let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(content) = container_hosts(&container) else {
-            continue;
-        };
-        let cleaned = strip_marked(&content);
-        if cleaned != content && write_container_hosts(&container, &cleaned) {
+        if let Ok(true) = edit_container_hosts(&container, strip_marked) {
             swept += 1;
         }
     }
@@ -117,9 +114,14 @@ fn strip_marked(content: &str) -> String {
     kept.join("\n") + "\n"
 }
 
-fn running_containers() -> Vec<String> {
+/// Every container docker knows about, running or not.
+///
+/// `-a` rather than `-q` alone: a paused container is listed either way, but a
+/// stopped one only with `-a`, and both are reachable now that we edit the
+/// host-side file instead of exec'ing into the container.
+fn all_containers() -> Vec<String> {
     let Ok(out) = Command::new("docker")
-        .args(["ps", "-q", "--no-trunc"])
+        .args(["ps", "-aq", "--no-trunc"])
         .output()
     else {
         return vec![]; // no docker on this node
@@ -135,40 +137,120 @@ fn running_containers() -> Vec<String> {
         .collect()
 }
 
-/// `None` when the read failed — never an empty string, which would truncate
-/// the file on write-back (the same trap `add_host_mapping` guards against).
-fn container_hosts(container: &str) -> Option<String> {
+/// Host-side path of the file docker bind-mounts at the container's
+/// `/etc/hosts`, straight from docker rather than assembled from a hardcoded
+/// data-root (which a custom `data-root` or a snap install would break).
+///
+/// `docker inspect` answers for paused and stopped containers alike — the whole
+/// point of going through the file: `docker exec` refuses on a paused container
+/// ("is paused, unpause the container before exec"), so the exec-based version
+/// of this silently skipped exactly the containers whose entries most needed
+/// removing.
+///
+/// `None` when docker has no path for it (a container sharing the host's
+/// network namespace has no bind-mounted hosts file at all).
+fn container_hosts_path(container: &str) -> Option<PathBuf> {
     let out = Command::new("docker")
-        .args(["exec", container, "cat", HOSTS_PATH])
+        .args(["inspect", "-f", "{{.HostsPath}}", container])
         .output()
         .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    if !out.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!path.is_empty()).then(|| PathBuf::from(path))
 }
 
-fn write_container_hosts(container: &str, content: &str) -> bool {
-    use std::io::Write;
-    let Ok(mut child) = Command::new("docker")
-        .args([
-            "exec",
-            "-i",
-            container,
-            "sh",
-            "-c",
-            &format!("cat > {HOSTS_PATH}"),
-        ])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    else {
-        return false;
-    };
-    if let Some(mut stdin) = child.stdin.take()
-        && stdin.write_all(content.as_bytes()).is_err()
-    {
-        return false;
+/// Read-modify-write a container's hosts file from the host side, reporting
+/// whether the contents actually changed.
+///
+/// One resolved path for both halves, so a container replaced under the same
+/// name mid-operation cannot have us read one file and write another. A failed
+/// read is an error rather than empty contents — treating a missing file as
+/// empty would truncate a live `/etc/hosts` down to whatever `edit` returns.
+///
+/// The write is in place, deliberately: the container sees this file through a
+/// bind mount on the *inode*, so the usual write-temp-then-rename would leave
+/// it looking at the old, now-detached file with every change silently
+/// invisible.
+pub fn edit_container_hosts(
+    container: &str,
+    edit: impl FnOnce(&str) -> String,
+) -> Result<bool, String> {
+    let path = container_hosts_path(container)
+        .ok_or_else(|| format!("no hosts file for container '{container}'"))?;
+    edit_hosts_file(&path, edit)
+}
+
+/// The file half of [`edit_container_hosts`], split out so the read-modify-write
+/// — and in particular its refusal to write anything when the read failed — is
+/// testable without a running docker.
+fn edit_hosts_file(path: &Path, edit: impl FnOnce(&str) -> String) -> Result<bool, String> {
+    let current = std::fs::read_to_string(path)
+        .map_err(|e| format!("reading {} failed: {e}", path.display()))?;
+    let updated = edit(&current);
+    if updated == current {
+        return Ok(false);
     }
-    child.wait().map(|s| s.success()).unwrap_or(false)
+    std::fs::write(path, &updated)
+        .map_err(|e| format!("writing {} failed: {e}", path.display()))?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod edit_tests {
+    use super::{HOSTS_MARKER, edit_hosts_file, strip_marked};
+    use std::path::PathBuf;
+
+    fn temp_file(name: &str, content: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("nullnet-hosts-test-{name}"));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn reports_no_change_and_leaves_the_file_alone() {
+        let original = "127.0.0.1 localhost\n";
+        let path = temp_file("noop", original);
+
+        assert_eq!(edit_hosts_file(&path, ToString::to_string), Ok(false));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn writes_in_place_and_reports_the_change() {
+        let path = temp_file(
+            "change",
+            &format!("127.0.0.1 localhost\n10.0.0.2 api {HOSTS_MARKER}\n"),
+        );
+        // Same inode before and after: the container sees this file through a
+        // bind mount, so replacing it would detach their view.
+        let before = std::fs::metadata(&path).unwrap();
+
+        assert_eq!(edit_hosts_file(&path, strip_marked), Ok(true));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "127.0.0.1 localhost\n"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(before.ino(), std::fs::metadata(&path).unwrap().ino());
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A missing file must be an error, never "empty contents" — treating it as
+    /// empty would write the edit of nothing over a live `/etc/hosts`.
+    #[test]
+    fn a_failed_read_writes_nothing() {
+        let path = std::env::temp_dir().join("nullnet-hosts-test-absent");
+        let _ = std::fs::remove_file(&path);
+
+        assert!(edit_hosts_file(&path, |_| "clobbered\n".to_string()).is_err());
+        assert!(!path.exists(), "must not create the file it failed to read");
+    }
 }
 
 #[cfg(test)]
