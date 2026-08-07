@@ -47,8 +47,23 @@ pub(crate) struct RouteEntry {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum RouteTarget {
-    Service(String),
-    Redirect { to: String, status: u16 },
+    Service {
+        name: String,
+        /// Strip the matched `path_prefix` from the path forwarded to the
+        /// backend (NGINX `proxy_pass http://backend/;` trailing-slash
+        /// equivalent). `false` reproduces the original, only behavior.
+        strip_prefix: bool,
+    },
+    Redirect {
+        to: String,
+        status: u16,
+        /// Append the request path's suffix beyond the matched
+        /// `path_prefix` to `to` (NGINX `rewrite ^/old(.*) /new$1
+        /// permanent;` equivalent).
+        preserve_path: bool,
+        /// Append the original request's query string to the final target.
+        preserve_query: bool,
+    },
 }
 
 /// Stack name → its explicit route entries. Rebuilt on every load/reload,
@@ -62,9 +77,10 @@ pub(crate) type RouteMap = HashMap<String, Vec<RouteEntry>>;
 /// Validate and convert one stack's raw `[[route]]` entries against its
 /// `[[services]]` list: exactly one target (`service`/`redirect_to`) per
 /// route, a `service` target must name an in-stack, http-protocol service,
-/// and `redirect_status` (when present) must be a supported redirect code.
-/// `(host, path)` uniqueness — within this stack or across stacks — is a
-/// separate check; see `detect_route_conflicts`.
+/// `redirect_status` (when present) must be a supported redirect code, and
+/// `strip_prefix`/`preserve_path`/`preserve_query` each only apply to their
+/// own target kind. `(host, path)` uniqueness — within this stack or across
+/// stacks — is a separate check; see `detect_route_conflicts`.
 fn build_route_entries(
     services: &[ServiceToml],
     routes: &[RouteToml],
@@ -87,6 +103,14 @@ fn build_route_entries(
                 .handle_err(location!());
             }
             (Some(service_name), None) => {
+                if r.preserve_path || r.preserve_query {
+                    return Err(format!(
+                        "route '{} {}': 'preserve_path'/'preserve_query' only apply to \
+                         'redirect_to' routes",
+                        r.host, r.path
+                    ))
+                    .handle_err(location!());
+                }
                 let Some(svc) = services.iter().find(|s| &s.name == service_name) else {
                     return Err(format!(
                         "route '{} {}': service '{service_name}' is not declared in this stack",
@@ -113,9 +137,19 @@ fn build_route_entries(
                     ))
                     .handle_err(location!());
                 }
-                RouteTarget::Service(service_name.clone())
+                RouteTarget::Service {
+                    name: service_name.clone(),
+                    strip_prefix: r.strip_prefix,
+                }
             }
             (None, Some(to)) => {
+                if r.strip_prefix {
+                    return Err(format!(
+                        "route '{} {}': 'strip_prefix' only applies to 'service' routes",
+                        r.host, r.path
+                    ))
+                    .handle_err(location!());
+                }
                 let status = r.redirect_status.unwrap_or(301);
                 if !matches!(status, 301 | 302 | 307 | 308) {
                     return Err(format!(
@@ -127,6 +161,8 @@ fn build_route_entries(
                 RouteTarget::Redirect {
                     to: to.clone(),
                     status,
+                    preserve_path: r.preserve_path,
+                    preserve_query: r.preserve_query,
                 }
             }
         };
@@ -842,8 +878,14 @@ struct RouteToml {
     #[serde(default = "default_route_path")]
     path: String,
     service: Option<String>,
+    #[serde(default)]
+    strip_prefix: bool,
     redirect_to: Option<String>,
     redirect_status: Option<u16>,
+    #[serde(default)]
+    preserve_path: bool,
+    #[serde(default)]
+    preserve_query: bool,
 }
 
 fn default_route_path() -> String {
@@ -1156,7 +1198,10 @@ service = "grafana"
             vec![RouteEntry {
                 host: "ops.example.com".to_string(),
                 path: "/grafana".to_string(),
-                target: RouteTarget::Service("grafana".to_string()),
+                target: RouteTarget::Service {
+                    name: "grafana".to_string(),
+                    strip_prefix: false,
+                },
             }]
         );
     }
@@ -1192,6 +1237,8 @@ redirect_to = "https://new.example.com/"
                 target: RouteTarget::Redirect {
                     to: "https://new.example.com/".to_string(),
                     status: 301,
+                    preserve_path: false,
+                    preserve_query: false,
                 },
             }]
         );
@@ -1264,6 +1311,116 @@ service = "redis.internal"
     }
 
     #[test]
+    fn strip_prefix_route_parses_and_forwards_correctly() {
+        let toml_str = r#"
+[[services]]
+name = "api"
+timeout = 0
+
+[[route]]
+host = "ops.example.com"
+path = "/api"
+service = "api"
+strip_prefix = true
+"#;
+        let routes = routes_of(toml_str).unwrap();
+        assert_eq!(
+            routes,
+            vec![RouteEntry {
+                host: "ops.example.com".to_string(),
+                path: "/api".to_string(),
+                target: RouteTarget::Service {
+                    name: "api".to_string(),
+                    strip_prefix: true,
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn strip_prefix_on_a_redirect_route_is_rejected() {
+        let toml_str = r#"
+services = []
+
+[[route]]
+host = "old.example.com"
+redirect_to = "https://new.example.com/"
+strip_prefix = true
+"#;
+        assert!(
+            routes_of(toml_str)
+                .unwrap_err()
+                .contains("'strip_prefix' only applies to 'service' routes")
+        );
+    }
+
+    #[test]
+    fn preserve_path_on_a_service_route_is_rejected() {
+        let toml_str = r#"
+[[services]]
+name = "api"
+timeout = 0
+
+[[route]]
+host = "ops.example.com"
+service = "api"
+preserve_path = true
+"#;
+        assert!(
+            routes_of(toml_str)
+                .unwrap_err()
+                .contains("'preserve_path'/'preserve_query' only apply to 'redirect_to' routes")
+        );
+    }
+
+    #[test]
+    fn preserve_query_on_a_service_route_is_rejected() {
+        let toml_str = r#"
+[[services]]
+name = "api"
+timeout = 0
+
+[[route]]
+host = "ops.example.com"
+service = "api"
+preserve_query = true
+"#;
+        assert!(
+            routes_of(toml_str)
+                .unwrap_err()
+                .contains("'preserve_path'/'preserve_query' only apply to 'redirect_to' routes")
+        );
+    }
+
+    #[test]
+    fn redirect_route_with_preserve_flags_parses() {
+        let toml_str = r#"
+services = []
+
+[[route]]
+host = "old.example.com"
+path = "/old"
+redirect_to = "/new"
+preserve_path = true
+preserve_query = true
+"#;
+        let routes = routes_of(toml_str).unwrap();
+        assert_eq!(
+            routes,
+            vec![RouteEntry {
+                host: "old.example.com".to_string(),
+                path: "/old".to_string(),
+                target: RouteTarget::Redirect {
+                    to: "/new".to_string(),
+                    status: 301,
+                    preserve_path: true,
+                    preserve_query: true,
+                },
+            }]
+        );
+    }
+
+    #[test]
     fn route_targeting_non_entry_point_service_is_rejected() {
         let toml_str = r#"
 [[services]]
@@ -1300,12 +1457,18 @@ redirect_status = 200
         let alpha = vec![RouteEntry {
             host: "ops.example.com".to_string(),
             path: "/".to_string(),
-            target: RouteTarget::Service("a".to_string()),
+            target: RouteTarget::Service {
+                name: "a".to_string(),
+                strip_prefix: false,
+            },
         }];
         let bravo = vec![RouteEntry {
             host: "ops.example.com".to_string(),
             path: "/".to_string(),
-            target: RouteTarget::Service("b".to_string()),
+            target: RouteTarget::Service {
+                name: "b".to_string(),
+                strip_prefix: false,
+            },
         }];
         let routes: RouteMap =
             HashMap::from([("alpha".to_string(), alpha), ("bravo".to_string(), bravo)]);
@@ -1322,12 +1485,18 @@ redirect_status = 200
             RouteEntry {
                 host: "ops.example.com".to_string(),
                 path: "/a".to_string(),
-                target: RouteTarget::Service("a".to_string()),
+                target: RouteTarget::Service {
+                    name: "a".to_string(),
+                    strip_prefix: false,
+                },
             },
             RouteEntry {
                 host: "ops.example.com".to_string(),
                 path: "/b".to_string(),
-                target: RouteTarget::Service("b".to_string()),
+                target: RouteTarget::Service {
+                    name: "b".to_string(),
+                    strip_prefix: false,
+                },
             },
         ];
         let routes: RouteMap = HashMap::from([("alpha".to_string(), alpha)]);

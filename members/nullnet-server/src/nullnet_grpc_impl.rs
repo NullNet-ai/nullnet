@@ -112,16 +112,32 @@ fn build_http_route_bundle(stacks: &StackMap, routes: &RouteMap) -> HttpRouteBun
     let mut wire_routes: Vec<HttpRoute> = routes
         .values()
         .flat_map(|entries| entries.iter())
-        .map(|r| HttpRoute {
-            host: r.host.clone(),
-            path_prefix: r.path.clone(),
-            target: Some(match &r.target {
-                RouteTarget::Service(name) => HttpRouteTarget::ServiceName(name.clone()),
-                RouteTarget::Redirect { to, status } => HttpRouteTarget::Redirect(HttpRedirect {
-                    to: to.clone(),
-                    status_code: u32::from(*status),
-                }),
-            }),
+        .map(|r| {
+            let (target, strip_prefix) = match &r.target {
+                RouteTarget::Service { name, strip_prefix } => {
+                    (HttpRouteTarget::ServiceName(name.clone()), *strip_prefix)
+                }
+                RouteTarget::Redirect {
+                    to,
+                    status,
+                    preserve_path,
+                    preserve_query,
+                } => (
+                    HttpRouteTarget::Redirect(HttpRedirect {
+                        to: to.clone(),
+                        status_code: u32::from(*status),
+                        preserve_path: *preserve_path,
+                        preserve_query: *preserve_query,
+                    }),
+                    false,
+                ),
+            };
+            HttpRoute {
+                host: r.host.clone(),
+                path_prefix: r.path.clone(),
+                target: Some(target),
+                strip_prefix,
+            }
         })
         .collect();
 
@@ -136,6 +152,7 @@ fn build_http_route_bundle(stacks: &StackMap, routes: &RouteMap) -> HttpRouteBun
             host: name.clone(),
             path_prefix: "/".to_string(),
             target: Some(HttpRouteTarget::ServiceName(name.clone())),
+            strip_prefix: false,
         });
     }
 
@@ -2060,7 +2077,10 @@ proxy_dependencies = [["color.com"]]
             vec![RouteEntry {
                 host: "grafana".to_string(),
                 path: "/dashboards".to_string(),
-                target: RouteTarget::Service("grafana".to_string()),
+                target: RouteTarget::Service {
+                    name: "grafana".to_string(),
+                    strip_prefix: false,
+                },
             }],
         )]);
         let bundle = build_http_route_bundle(&stacks, &routes);
@@ -2112,6 +2132,8 @@ proxy_dependencies = [["color.com"]]
                 target: RouteTarget::Redirect {
                     to: "https://new.example.com/".to_string(),
                     status: 301,
+                    preserve_path: true,
+                    preserve_query: true,
                 },
             }],
         )]);
@@ -2123,6 +2145,8 @@ proxy_dependencies = [["color.com"]]
             Some(HttpRouteTarget::Redirect(HttpRedirect {
                 to: "https://new.example.com/".to_string(),
                 status_code: 301,
+                preserve_path: true,
+                preserve_query: true,
             }))
         );
     }

@@ -18,8 +18,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub(super) enum RouteTargetJson {
-    Service { service: String },
-    Redirect { to: String, status: u16 },
+    Service {
+        service: String,
+        #[serde(default)]
+        strip_prefix: bool,
+    },
+    Redirect {
+        to: String,
+        status: u16,
+        #[serde(default)]
+        preserve_path: bool,
+        #[serde(default)]
+        preserve_query: bool,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -35,12 +46,20 @@ impl From<&RouteEntry> for RouteJson {
             host: r.host.clone(),
             path: r.path.clone(),
             target: match &r.target {
-                RouteTarget::Service(service) => RouteTargetJson::Service {
-                    service: service.clone(),
+                RouteTarget::Service { name, strip_prefix } => RouteTargetJson::Service {
+                    service: name.clone(),
+                    strip_prefix: *strip_prefix,
                 },
-                RouteTarget::Redirect { to, status } => RouteTargetJson::Redirect {
+                RouteTarget::Redirect {
+                    to,
+                    status,
+                    preserve_path,
+                    preserve_query,
+                } => RouteTargetJson::Redirect {
                     to: to.clone(),
                     status: *status,
+                    preserve_path: *preserve_path,
+                    preserve_query: *preserve_query,
                 },
             },
         }
@@ -121,7 +140,10 @@ pub(super) async fn save_handler(
     let mut entries = Vec::with_capacity(body.len());
     for r in &body {
         match &r.target {
-            RouteTargetJson::Service { service } => {
+            RouteTargetJson::Service {
+                service,
+                strip_prefix,
+            } => {
                 let Some(info) = stack_map.get(service) else {
                     return rejected(
                         StatusCode::UNPROCESSABLE_ENTITY,
@@ -153,10 +175,18 @@ pub(super) async fn save_handler(
                 entries.push(RouteEntry {
                     host: r.host.clone(),
                     path: r.path.clone(),
-                    target: RouteTarget::Service(service.clone()),
+                    target: RouteTarget::Service {
+                        name: service.clone(),
+                        strip_prefix: *strip_prefix,
+                    },
                 });
             }
-            RouteTargetJson::Redirect { to, status } => {
+            RouteTargetJson::Redirect {
+                to,
+                status,
+                preserve_path,
+                preserve_query,
+            } => {
                 if !matches!(status, 301 | 302 | 307 | 308) {
                     return rejected(
                         StatusCode::UNPROCESSABLE_ENTITY,
@@ -172,6 +202,8 @@ pub(super) async fn save_handler(
                     target: RouteTarget::Redirect {
                         to: to.clone(),
                         status: *status,
+                        preserve_path: *preserve_path,
+                        preserve_query: *preserve_query,
                     },
                 });
             }
@@ -234,12 +266,29 @@ fn merge_routes_into_toml(content: &str, routes: &[RouteJson]) -> Result<String,
         table.insert("host", toml_edit::value(r.host.clone()));
         table.insert("path", toml_edit::value(r.path.clone()));
         match &r.target {
-            RouteTargetJson::Service { service } => {
+            RouteTargetJson::Service {
+                service,
+                strip_prefix,
+            } => {
                 table.insert("service", toml_edit::value(service.clone()));
+                if *strip_prefix {
+                    table.insert("strip_prefix", toml_edit::value(true));
+                }
             }
-            RouteTargetJson::Redirect { to, status } => {
+            RouteTargetJson::Redirect {
+                to,
+                status,
+                preserve_path,
+                preserve_query,
+            } => {
                 table.insert("redirect_to", toml_edit::value(to.clone()));
                 table.insert("redirect_status", toml_edit::value(i64::from(*status)));
+                if *preserve_path {
+                    table.insert("preserve_path", toml_edit::value(true));
+                }
+                if *preserve_query {
+                    table.insert("preserve_query", toml_edit::value(true));
+                }
             }
         }
         array.push(table);
