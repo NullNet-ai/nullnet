@@ -1,11 +1,13 @@
 mod env;
 mod nullnet_proxy;
 mod port_mappings;
+mod routes;
 mod tcp_relay;
 mod tls;
 mod udp_relay;
 
 use crate::nullnet_proxy::NullnetProxy;
+use crate::routes::{Resolution, RouteMatch, RouteTable};
 use crate::tls::{CertStore, TlsResolver};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -30,19 +32,64 @@ use std::time::Instant;
 const PROXY_PORT: u16 = 80;
 const HTTPS_PROXY_PORT: u16 = 443;
 
+/// Per-request state threaded from `request_filter` to `upstream_peer`.
+#[derive(Default)]
+pub struct ProxyCtx {
+    /// The backend service name the HTTP route table resolved for this
+    /// request, if any. Set in `request_filter` (either an explicit route
+    /// match or the [`Resolution::Fallback`] Host-header default) and read
+    /// by `upstream_peer` in place of recomputing it from scratch. `None`
+    /// only when `request_filter` had no Host at all to resolve —
+    /// `upstream_peer`'s own header derivation is the fallback for that case,
+    /// exactly as it was before path-based routing existed.
+    service_name: Option<String>,
+}
+
 #[async_trait]
 impl ProxyHttp for NullnetProxy {
-    type CTX = ();
-    fn new_ctx(&self) -> Self::CTX {}
+    type CTX = ProxyCtx;
+    fn new_ctx(&self) -> Self::CTX {
+        ProxyCtx::default()
+    }
 
-    async fn request_filter(&self, session: &mut Session, _ctx: &mut ()) -> Result<bool> {
+    async fn request_filter(&self, session: &mut Session, ctx: &mut ProxyCtx) -> Result<bool> {
+        // Resolve HTTP path-based routing/redirects first — a redirect or an
+        // explicitly-uncovered path short-circuits right here, on both the
+        // HTTP and HTTPS listeners. A resolved backend feeds both the
+        // ingress-country check below and `upstream_peer`. See
+        // docs/http-path-routing-design.md.
+        if let Some(host) = ingress_host(session) {
+            let path = session.req_header().uri.path().to_string();
+            match self.routes.load().resolve(&host, &path) {
+                Resolution::Matched(RouteMatch::Backend(name)) => ctx.service_name = Some(name),
+                Resolution::Matched(RouteMatch::Redirect { to, status }) => {
+                    let location = resolve_redirect_target(&to, session.req_header(), self.tls);
+                    let mut resp = ResponseHeader::build(status, None)?;
+                    resp.insert_header("location", location.as_str())?;
+                    resp.insert_header("content-length", "0")?;
+                    session.write_response_header(Box::new(resp), true).await?;
+                    return Ok(true);
+                }
+                Resolution::NotFound => {
+                    let mut resp = ResponseHeader::build(404, None)?;
+                    resp.insert_header("content-length", "0")?;
+                    session.write_response_header(Box::new(resp), true).await?;
+                    return Ok(true);
+                }
+                Resolution::Fallback => ctx.service_name = Some(host),
+            }
+        }
+
         // Ingress country policy (both HTTP and HTTPS listeners), enforced before
-        // we touch the backend. Best-effort: if host or client IP can't be read
-        // we let upstream_peer handle it; only an explicit server deny 403s, and a
-        // check RPC error is logged and allowed through (upstream lookup will fail
-        // anyway if the control plane is down).
+        // we touch the backend. Keyed on the *resolved* backend — path routing
+        // may send this host to a different service than its own name — not
+        // the raw Host header. Best-effort: if host/client IP/resolution
+        // can't be read we let upstream_peer handle it; only an explicit
+        // server deny 403s, and a check RPC error is logged and allowed
+        // through (upstream lookup will fail anyway if the control plane is
+        // down).
         if let (Some(service), Some(client_ip)) =
-            (ingress_host(session), ingress_client_ip(session))
+            (ctx.service_name.clone(), ingress_client_ip(session))
         {
             match self.server.check_ingress(service.clone(), client_ip).await {
                 Ok(false) => {
@@ -79,7 +126,11 @@ impl ProxyHttp for NullnetProxy {
         Ok(true)
     }
 
-    async fn upstream_peer(&self, session: &mut Session, _ctx: &mut ()) -> Result<Box<HttpPeer>> {
+    async fn upstream_peer(
+        &self,
+        session: &mut Session,
+        ctx: &mut ProxyCtx,
+    ) -> Result<Box<HttpPeer>> {
         println!(
             "Received new proxy request from client: {:?}\n",
             session.client_addr()
@@ -181,7 +232,12 @@ impl ProxyHttp for NullnetProxy {
             },
         };
 
-        let service_name = url.to_string();
+        // Prefer the route table's resolution (`request_filter` already ran)
+        // over the raw Host header — path-based routing may send this host to
+        // a different backend than its own name. Falls back to the Host
+        // header itself when `request_filter` had nothing to resolve (no
+        // Host at all), matching pre-routing behavior.
+        let service_name = ctx.service_name.clone().unwrap_or_else(|| url.to_string());
         let proxy_req = ProxyRequest {
             client_ip: client_ip.clone(),
             service_name: service_name.clone(),
@@ -329,13 +385,25 @@ async fn main() -> Result<(), nullnet_liberror::Error> {
     // Certificates come from the control service over gRPC. Start empty; the
     // watch task fills this and hot-reloads it on every change.
     let cert_store: Arc<ArcSwap<CertStore>> = Arc::new(ArcSwap::from_pointee(CertStore::default()));
-    let nullnet_proxy = NullnetProxy::new(cert_store.clone()).await?;
+    // HTTP route table, same story: starts empty (Resolution::Fallback keeps
+    // Host-header routing until the first push arrives), hot-reloaded from
+    // then on. See docs/http-path-routing-design.md.
+    let route_table: Arc<ArcSwap<RouteTable>> =
+        Arc::new(ArcSwap::from_pointee(RouteTable::default()));
+    let nullnet_proxy = NullnetProxy::new(cert_store.clone(), route_table.clone()).await?;
 
     // subscribe to certificate updates (initial set + every subsequent change)
     {
         let server = nullnet_proxy.server.clone();
         let store = cert_store.clone();
         tokio::spawn(async move { watch_certificates(server, store).await });
+    }
+
+    // subscribe to HTTP route-table updates (initial set + every subsequent change)
+    {
+        let server = nullnet_proxy.server.clone();
+        let store = route_table.clone();
+        tokio::spawn(async move { routes::watch_and_serve(server, store).await });
     }
 
     // Egress is handled by the co-located nullnet-client's kernel forwarding
@@ -385,6 +453,24 @@ fn https_redirect_url(req: &RequestHeader, https_port: u16) -> String {
     } else {
         format!("https://{hostname}:{https_port}{}", req.uri)
     }
+}
+
+/// Build the `Location` value for a matched redirect route: `to` verbatim if
+/// it already names a scheme, otherwise (a bare `/...` path) the same
+/// scheme/host as the incoming request with `to` substituted as the path. No
+/// variable interpolation (e.g. no matched-suffix preservation) — see
+/// docs/http-path-routing-design.md.
+fn resolve_redirect_target(to: &str, req: &RequestHeader, tls: bool) -> String {
+    if to.contains("://") {
+        return to.to_string();
+    }
+    let host_header = req
+        .headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let scheme = if tls { "https" } else { "http" };
+    format!("{scheme}://{host_header}{to}")
 }
 
 /// Subscribe to the control service's certificate stream and atomically swap the
