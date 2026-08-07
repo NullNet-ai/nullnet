@@ -146,6 +146,11 @@ message VlanSetup {
 
 message VlanTeardown {
   uint32 vlan_id = 1;
+  // Acked once the teardown has actually run, so the server can hold the net id
+  // out of the pool until this edge is really gone. Optional: a client that
+  // predates this field simply never acks, and the server frees on its grace
+  // timer instead.
+  optional MsgId msg_id = 2;
 }
 
 message VxlanSetup {
@@ -199,6 +204,11 @@ message VxlanTeardown {
   string local_ip = 5;
   string remote_ip = 6;
   uint32 dstport = 7;
+  // Acked once the teardown has actually run, so the server can hold the net id
+  // out of the pool until this edge is really gone. Optional: a client that
+  // predates this field simply never acks, and the server frees on its grace
+  // timer instead.
+  optional MsgId msg_id = 8;
 }
 
 message MsgId {

@@ -48,6 +48,7 @@ pub(crate) trait NetExt {
         local_ip: IpAddr,
         remote_ip: IpAddr,
         dstport: Option<u16>,
+        msg_id: String,
     ) -> NetMessage;
 }
 
@@ -100,11 +101,14 @@ impl NetExt for Net {
         local_ip: IpAddr,
         remote_ip: IpAddr,
         dstport: Option<u16>,
+        msg_id: String,
     ) -> NetMessage {
+        let msg_id = Some(MsgId { id: msg_id });
         match self {
             Net::Vlan => NetMessage {
                 message: Some(net_message::Message::VlanTeardown(VlanTeardown {
                     vlan_id: net_id,
+                    msg_id,
                 })),
             },
             Net::Vxlan => NetMessage {
@@ -116,6 +120,7 @@ impl NetExt for Net {
                     local_ip: local_ip.to_string(),
                     remote_ip: remote_ip.to_string(),
                     dstport: u32::from(dstport.unwrap_or(DEFAULT_VXLAN_DSTPORT)),
+                    msg_id,
                 })),
             },
         }

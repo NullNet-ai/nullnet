@@ -32,6 +32,9 @@ fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
 }
 
 async fn assert_net_ids_in_use(server: &NullnetGrpcImpl, expected: u32) {
+    // A net id is returned to the pool only once both endpoints confirm the
+    // teardown, so let any in-flight teardown finish before sampling.
+    server.orchestrator().settle_teardowns().await;
     let in_use = server.orchestrator().net_ids_in_use().await;
     assert_eq!(
         in_use, expected,
@@ -3141,6 +3144,7 @@ async fn concurrent_requests_same_client_tear_down_cleanly() {
     let residual = live_edges(&guard);
     drop(guard);
 
+    server.orchestrator().settle_teardowns().await;
     let in_use = server.orchestrator().net_ids_in_use().await;
     assert!(
         residual.is_empty() && in_use == 0,
