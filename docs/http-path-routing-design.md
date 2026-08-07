@@ -441,13 +441,10 @@ lightweight transitive dependency of the `toml` ecosystem) to splice the
   `location` — no wildcards/regex in v1. If a follow-up needs `location ~`
   parity, that's a separate `path_regex` field on `HttpRoute`, additive.
 - **Resolved**: matched-suffix and query-string preservation in redirects
-  (`preserve_path`/`preserve_query`) and backend path rewriting
-  (`strip_prefix`) — see "Path rewrite additions" above.
-- **The admin UI form doesn't expose `strip_prefix`/`preserve_path`/
-  `preserve_query` yet** — `pages/Routes.tsx`'s Add/Edit modal only has
-  Host/Path/Service-or-Redirect/Status fields. They're fully settable via
-  TOML or a direct `POST /api/routes/{stack}` call (the API layer accepts
-  them), just not from the form. Follow-up UI work, not a backend gap.
+  (`preserve_path`/`preserve_query`), backend path rewriting
+  (`strip_prefix`) — see "Path rewrite additions" above — and admin UI form
+  support for all three (checkboxes on the Add/Edit modal, `RouteTargetJson`
+  updated in `types.ts`).
 - **Ingress country policy is keyed by service name today** — a redirect
   route has no backend service, so there's no ingress policy to check before
   issuing it. This is consistent with NGINX (a `return` in a `location`
@@ -483,19 +480,21 @@ Implemented on `feature/proxy-redirects-137`:
    `toml_edit` workspace dependency).
 5. **UI**: `pages/Routes.tsx` (table + add/edit `Modal`, following the
    `Users.tsx` CRUD pattern), nav entry, `RouteJson`/`RoutesResponseJson`
-   types. ✅ `tsc -b` + `vite build` + `eslint` clean. Does **not** yet expose
-   `strip_prefix`/`preserve_path`/`preserve_query` in the form (see Open
-   wrinkles) — added to the wire/API/TOML layers only so far.
+   types. Add/Edit modal has checkboxes for `strip_prefix`/`preserve_path`/
+   `preserve_query`, each with a one-line explainer; the routes table's
+   target label shows which are set (e.g. `→ api (strip prefix)`). ✅
+   `tsc -b` + `vite build` + `eslint` clean.
 6. **Docs**: not yet updated — `docs/architecture.md` doesn't currently
    enumerate individual watch streams, so no change was needed there.
 7. **Path rewrite additions** (`strip_prefix`, `preserve_path`,
    `preserve_query`): proto fields, server validation (each rejected on the
    wrong target kind), `RouteTable::resolve`'s `forward_path`/
    `matched_suffix` computation, `main.rs`'s `rewrite_uri_path` +
-   `resolve_redirect_target` rewrite. ✅ 161 server tests, 36 proxy tests pass
-   (found and fixed a genuine bug in the process — the original
-   `resolve_redirect_target` never touched the request's path/query at all,
-   contrary to what an earlier version of this doc claimed).
+   `resolve_redirect_target` rewrite, and the UI form fields above. ✅ 161
+   server tests, 36 proxy tests pass (found and fixed a genuine bug in the
+   process — the original `resolve_redirect_target` never touched the
+   request's path/query at all, contrary to what an earlier version of this
+   doc claimed).
 
 Manually verified end-to-end by the repo owner against a real deployment
 (`nullnet-server` + `nullnet-proxy` + `nullnet-client`, real backend
@@ -509,7 +508,5 @@ it), not a code bug.
 
 ## Follow-ups (out of scope for this issue)
 
-- Admin UI form support for `strip_prefix`/`preserve_path`/`preserve_query`
-  (backend/API already support them; see Open wrinkles).
 - Regex/wildcard path matching.
 - Header-based routing (beyond Host), if ever needed.
