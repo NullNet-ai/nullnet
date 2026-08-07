@@ -103,6 +103,83 @@ mirroring how `*_blocked_countries`/`*_allowed_countries` are already
 validated as mutually exclusive in `input.rs`. `redirect_status` is
 restricted to `301 | 302 | 307 | 308`.
 
+### Example: the issue's own scenario
+
+One host fronting three apps by path (`/api`, `/grafana`, `/gitlab`, as named
+in the issue), plus a legacy-domain redirect:
+
+```toml
+# services/ops.toml
+
+# --- Backends (unchanged from today — these are just services) ---
+
+[[services]]
+name = "api"
+docker_container = "api-backend"
+port = 8080
+timeout = 30
+
+[[services]]
+name = "grafana"
+docker_container = "grafana"
+port = 3000
+timeout = 30
+
+[[services]]
+name = "gitlab"
+docker_container = "gitlab"
+port = 80
+timeout = 60
+
+# --- Routes: NGINX location-block equivalent for ops.example.com ---
+
+[[route]]
+host = "ops.example.com"
+path = "/api"
+service = "api"
+
+[[route]]
+host = "ops.example.com"
+path = "/grafana"
+service = "grafana"
+
+[[route]]
+host = "ops.example.com"
+path = "/gitlab"
+service = "gitlab"
+
+# Catch-all for this host — anything not matching a more specific prefix
+# above falls here. Without this, unmatched paths on ops.example.com 404.
+[[route]]
+host = "ops.example.com"
+path = "/"
+service = "grafana"
+
+# --- A literal redirect: legacy domain -> the new one, no backend needed ---
+
+[[route]]
+host = "old-ops.example.com"
+path = "/"
+redirect_to = "https://ops.example.com/"
+redirect_status = 301
+```
+
+Resulting behavior:
+
+| Request | Result |
+|---|---|
+| `https://ops.example.com/api/users` | proxied to `api` (port 8080) — longest matching prefix is `/api` |
+| `https://ops.example.com/grafana/d/xyz` | proxied to `grafana` (port 3000) |
+| `https://ops.example.com/gitlab/` | proxied to `gitlab` (port 80) |
+| `https://ops.example.com/anything-else` | proxied to `grafana` — the catch-all `path = "/"` |
+| `https://old-ops.example.com/whatever` | `301 https://ops.example.com/` |
+
+A single-service host with **no** `[[route]]` block at all keeps working
+exactly as it does today (the implicit `{host = name, path = "/"} →
+service(name)` fallback from the backward-compatibility section above) — you
+only add `[[route]]` entries for hosts that actually need path-based fan-out
+or a redirect.
+
 ### Proto
 
 ```proto
