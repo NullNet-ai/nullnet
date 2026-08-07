@@ -46,7 +46,7 @@ pub(crate) fn install(
     for proto in PROTOS {
         ok &= run_iptables("-A", proto, port, overlay_ip, container_ip, dest_ip);
     }
-    flush_conntrack(port);
+    flush_conntrack(port, container_ip);
     ok
 }
 
@@ -61,7 +61,7 @@ pub(crate) fn remove(
     for proto in PROTOS {
         ok &= run_iptables("-D", proto, port, overlay_ip, container_ip, dest_ip);
     }
-    flush_conntrack(port);
+    flush_conntrack(port, container_ip);
     ok
 }
 
@@ -126,10 +126,74 @@ fn run_iptables(
     }
 }
 
-fn flush_conntrack(port: u16) {
-    let port_s = port.to_string();
+/// Drop the conntrack entries the rule just added/removed governs, so live
+/// flows re-evaluate against it instead of keeping their old NAT binding.
+///
+/// Scoped by `-s` exactly like the rule itself (see `run_iptables`). Matching on
+/// the port alone reached every flow on the host using it, and a trigger port is
+/// typically the callee's ordinary backend port — so a single edge coming up or
+/// down evicted every co-located container's conversations with that service.
+/// They survive (the entry is rebuilt on the next packet) but each one bounces
+/// back through NFQUEUE, since losing the entry costs them the
+/// `ESTABLISHED,RELATED` bypass at the top of `mangle PREROUTING`.
+///
+/// An unspecified `container_ip` means the rule itself carries no `-s`, so the
+/// flush stays correspondingly broad.
+fn flush_conntrack(port: u16, container_ip: Ipv4Addr) {
     for proto in PROTOS {
-        let _ = sudo(&["conntrack", "-D", "-p", proto, "--dport", &port_s]);
+        let args = flush_conntrack_args(proto, port, container_ip);
+        let _ = sudo(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    }
+}
+
+/// Selectors for one proto's flush. Kept separate so the invariant that matters
+/// — that they mirror `run_iptables`'s — is testable.
+fn flush_conntrack_args(proto: &str, port: u16, container_ip: Ipv4Addr) -> Vec<String> {
+    let mut args: Vec<String> = ["conntrack", "-D", "-p", proto]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    if !container_ip.is_unspecified() {
+        args.push("-s".to_string());
+        args.push(container_ip.to_string());
+    }
+    args.push("--dport".to_string());
+    args.push(port.to_string());
+    args
+}
+
+#[cfg(test)]
+mod tests {
+    use super::flush_conntrack_args;
+    use std::net::Ipv4Addr;
+
+    /// The flush has to select exactly what the DNAT rule selects — same proto,
+    /// same source, same dport — or it either strands flows the rule now
+    /// governs, or evicts flows it never did.
+    #[test]
+    fn scoped_by_source_like_the_rule() {
+        assert_eq!(
+            flush_conntrack_args("tcp", 8932, Ipv4Addr::new(172, 17, 0, 4)),
+            vec![
+                "conntrack",
+                "-D",
+                "-p",
+                "tcp",
+                "-s",
+                "172.17.0.4",
+                "--dport",
+                "8932"
+            ]
+        );
+    }
+
+    /// No `-s` on the rule means no `-s` on the flush.
+    #[test]
+    fn unspecified_source_stays_unscoped() {
+        assert_eq!(
+            flush_conntrack_args("udp", 8932, Ipv4Addr::UNSPECIFIED),
+            vec!["conntrack", "-D", "-p", "udp", "--dport", "8932"]
+        );
     }
 }
 

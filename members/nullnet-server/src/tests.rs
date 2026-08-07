@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 
 use crate::graphviz::render_graphviz;
-use crate::nullnet_grpc_impl::NullnetGrpcImpl;
+use crate::nullnet_grpc_impl::{NullnetGrpcImpl, build_service_triggers};
 use crate::services::changes::dep_chain_intact;
 use crate::services::clients::Client;
 use crate::services::input::{ServicesToml, StackMap, apply_config_update};
@@ -32,6 +32,9 @@ fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
 }
 
 async fn assert_net_ids_in_use(server: &NullnetGrpcImpl, expected: u32) {
+    // A net id is returned to the pool only once both endpoints confirm the
+    // teardown, so let any in-flight teardown finish before sampling.
+    server.orchestrator().settle_teardowns().await;
     let in_use = server.orchestrator().net_ids_in_use().await;
     assert_eq!(
         in_use, expected,
@@ -3142,6 +3145,7 @@ async fn concurrent_requests_same_client_tear_down_cleanly() {
     let residual = live_edges(&guard);
     drop(guard);
 
+    server.orchestrator().settle_teardowns().await;
     let in_use = server.orchestrator().net_ids_in_use().await;
     assert!(
         residual.is_empty() && in_use == 0,
@@ -3149,4 +3153,94 @@ async fn concurrent_requests_same_client_tear_down_cleanly() {
         residual.len(),
         residual.join("\n")
     );
+}
+
+// ===========================================================================
+// trigger_scoping: a trigger port is watched host-wide, so the trigger config
+// has to say which containers actually own it. Without that, every co-located
+// container dialing the port is attributed to the declaring service, rejected
+// by `handle_backend_trigger`, and its SYN dropped by the client.
+// ===========================================================================
+
+const TRIGGER_SCOPING: &str = "trigger_scoping";
+
+fn declared_by_stack(
+    entries: Vec<(&str, u16, Option<&str>)>,
+) -> HashMap<String, Vec<(String, u16, Option<String>)>> {
+    HashMap::from([(
+        TEST_STACK.to_string(),
+        entries
+            .into_iter()
+            .map(|(n, p, d)| (n.to_string(), p, d.map(ToString::to_string)))
+            .collect(),
+    )])
+}
+
+#[tokio::test]
+async fn trigger_carries_the_containers_that_own_it() {
+    let services = load_fixture(TRIGGER_SCOPING).await;
+    let declared = declared_by_stack(vec![
+        ("S", 3000, Some("stack_s.1.abc")),
+        ("P", 8932, Some("stack_p.1.xyz")),
+    ]);
+
+    let triggers = build_service_triggers(&services, &declared);
+
+    assert_eq!(triggers.len(), 1, "only S declares a trigger");
+    assert_eq!(triggers[0].service_name, "S");
+    assert_eq!(
+        triggers[0]
+            .trigger_ports
+            .iter()
+            .map(|tp| (tp.port, tp.target_name.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(8932, "P")]
+    );
+    assert_eq!(
+        triggers[0].containers,
+        vec!["stack_s.1.abc"],
+        "P's container hosts the callee, not the trigger — it must not be listed, \
+         or P's own traffic on 8932 would be attributed to S's trigger"
+    );
+}
+
+/// Swarm: every replica of the declaring service on this node owns the trigger.
+#[tokio::test]
+async fn trigger_lists_every_colocated_replica() {
+    let services = load_fixture(TRIGGER_SCOPING).await;
+    let declared = declared_by_stack(vec![
+        ("S", 3000, Some("stack_s.2.def")),
+        ("S", 3000, Some("stack_s.1.abc")),
+        ("S", 3000, Some("stack_s.1.abc")),
+    ]);
+
+    let triggers = build_service_triggers(&services, &declared);
+
+    assert_eq!(triggers.len(), 1);
+    assert_eq!(
+        triggers[0].containers,
+        vec!["stack_s.1.abc", "stack_s.2.def"],
+        "sorted and de-duplicated"
+    );
+}
+
+/// A bare-process service's trigger can never fire — the NFQUEUE path resolves
+/// an initiator container and passes host traffic straight through. Shipping it
+/// would claim the port with an owner matching every container instead of none,
+/// which is exactly the bug being fixed.
+#[tokio::test]
+async fn bare_process_service_ships_no_trigger() {
+    let services = load_fixture(TRIGGER_SCOPING).await;
+    let declared = declared_by_stack(vec![("HostSvc", 4000, None)]);
+
+    assert!(build_service_triggers(&services, &declared).is_empty());
+}
+
+/// A node hosting neither declares nothing.
+#[tokio::test]
+async fn node_hosting_no_trigger_service_gets_nothing() {
+    let services = load_fixture(TRIGGER_SCOPING).await;
+    let declared = declared_by_stack(vec![("P", 8932, Some("stack_p.1.xyz"))]);
+
+    assert!(build_service_triggers(&services, &declared).is_empty());
 }

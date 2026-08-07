@@ -99,10 +99,16 @@ pub struct VlanSetup {
     #[prost(bool, tag = "9")]
     pub encrypted: bool,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VlanTeardown {
     #[prost(uint32, tag = "1")]
     pub vlan_id: u32,
+    /// Acked once the teardown has actually run, so the server can hold the net id
+    /// out of the pool until this edge is really gone. Optional: a client that
+    /// predates this field simply never acks, and the server frees on its grace
+    /// timer instead.
+    #[prost(message, optional, tag = "2")]
+    pub msg_id: ::core::option::Option<MsgId>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VxlanSetup {
@@ -179,6 +185,12 @@ pub struct VxlanTeardown {
     pub remote_ip: ::prost::alloc::string::String,
     #[prost(uint32, tag = "7")]
     pub dstport: u32,
+    /// Acked once the teardown has actually run, so the server can hold the net id
+    /// out of the pool until this edge is really gone. Optional: a client that
+    /// predates this field simply never acks, and the server frees on its grace
+    /// timer instead.
+    #[prost(message, optional, tag = "8")]
+    pub msg_id: ::core::option::Option<MsgId>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MsgId {
@@ -223,12 +235,15 @@ pub struct ServiceTrigger {
     pub service_name: ::prost::alloc::string::String,
     #[prost(message, repeated, tag = "3")]
     pub trigger_ports: ::prost::alloc::vec::Vec<TriggerPort>,
-    /// Real Docker container name of the local replica hosting this service —
-    /// the container `target_name` (per TriggerPort) should be pre-seeded into.
-    /// Empty when the client couldn't resolve one (host process, no docker
-    /// context); the client skips seeding for those.
-    #[prost(string, tag = "4")]
-    pub initiator_container: ::prost::alloc::string::String,
+    /// Real container names hosting this service on the receiving node — the same
+    /// string space as the client's bridge-IP cache and as Container.real_name.
+    /// Scopes both the port and the target-chain lookups to this service's own
+    /// replicas: `target_name` (per TriggerPort) should be pre-seeded into each
+    /// one, and a container not in this list never gets attributed to this
+    /// trigger even if it happens to share the port. Empty means a server that
+    /// predates this field, and the client falls back to matching any container.
+    #[prost(string, repeated, tag = "4")]
+    pub containers: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// One trigger port this service's initiator container should be observed on.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

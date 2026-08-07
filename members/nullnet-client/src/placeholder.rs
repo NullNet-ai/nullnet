@@ -1,5 +1,5 @@
 use crate::host_mappings;
-use nullnet_liberror::Error;
+use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::net::Ipv4Addr;
 
 /// Default placeholder range: 203.0.113.0/24 (RFC 5737 TEST-NET-3) —
@@ -63,11 +63,18 @@ fn parse_cidr_base(cidr: &str) -> Option<[u8; 3]> {
 
 /// Write `name -> ip_for(name)` into `container`'s own `/etc/hosts`, before
 /// any packet has been observed on the trigger port it's associated with.
-/// Idempotent — safe to call on every declare-services reconcile pass.
+/// Idempotent — safe to call on every declare-services reconcile pass. Edited
+/// from the host side (see `host_mappings::edit_container_hosts`) so a paused
+/// container is seeded just as well as a running one.
 pub(crate) fn seed_placeholder(container: &str, name: &str) -> Result<(), Error> {
     warn_if_no_default_route(container);
     let ip = ip_for(name);
-    host_mappings::upsert_container_host_entry(container, name, &ip.to_string())
+    let entry = format!("{ip} {name} {}", host_mappings::HOSTS_MARKER);
+    host_mappings::edit_container_hosts(container, |current| {
+        host_mappings::upsert_hosts_entry(current, name, &entry)
+    })
+    .handle_err(location!())?;
+    Ok(())
 }
 
 /// Containers already warned about missing a default route, so the warning

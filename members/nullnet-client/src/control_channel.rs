@@ -34,6 +34,33 @@ fn fire_event(grpc: &NullnetGrpcInterface, kind: AgentEventKind) {
     });
 }
 
+/// Confirm a completed teardown so the server can return the net id to its
+/// pool. Must be called only once the teardown has actually run — the whole
+/// point of the ack is that the id stays out of circulation until this edge's
+/// kernel state is gone.
+///
+/// `msg_id` is absent when the server predates the ack field; there is then
+/// nothing to confirm and the server falls back to its grace timer.
+async fn ack_teardown(
+    outbound: &Sender<MsgId>,
+    msg_id: Option<MsgId>,
+    grpc: &NullnetGrpcInterface,
+    message_type: &str,
+) {
+    let Some(msg_id) = msg_id else {
+        return;
+    };
+    if outbound.send(msg_id.clone()).await.is_err() {
+        fire_event(
+            grpc,
+            AgentEventKind::ControlChannelAckFailed(AgentControlChannelAckFailed {
+                msg_id: msg_id.id,
+                message_type: message_type.to_string(),
+            }),
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn control_channel(
     server: NullnetGrpcInterface,
@@ -87,6 +114,7 @@ pub(crate) async fn control_channel(
                         vlan_teardown,
                         rtnetlink_handle,
                         peers,
+                        outbound,
                         host_mappings_state,
                         server,
                         firewall_peers,
@@ -118,12 +146,14 @@ pub(crate) async fn control_channel(
                     handle_vxlan_teardown(
                         vxlan_teardown,
                         triggers_state,
+                        outbound,
                         host_mappings_state,
                         server,
                         firewall_peers,
                         firewall_vxlan_ports,
                         egress_state,
-                    );
+                    )
+                    .await;
                 });
             }
             Some(net_message::Message::ContainerSuspend(container_suspend)) => {
@@ -290,10 +320,12 @@ async fn handle_vlan_teardown(
     message: VlanTeardown,
     rtnetlink_handle: RtNetLinkHandle,
     peers: Arc<RwLock<Peers>>,
+    outbound: Sender<MsgId>,
     host_mappings_state: Arc<HostMappingsState>,
     grpc: NullnetGrpcInterface,
     firewall_peers: Arc<FirewallPeers>,
 ) -> Result<(), Error> {
+    let ack_id = message.msg_id.clone();
     let vlan_id = u16::try_from(message.vlan_id)
         .handle_err(location!())
         .inspect_err(|e| {
@@ -326,6 +358,10 @@ async fn handle_vlan_teardown(
     if let Some(host_mapping) = host_mappings_state.take_vlan(vlan_id) {
         let _ = remove_host_mapping(&host_mapping, None);
     }
+
+    // Acked last: the server frees the net id on this, so everything above must
+    // already be undone.
+    ack_teardown(&outbound, ack_id, &grpc, "vlan_teardown").await;
 
     Ok(())
 }
@@ -632,15 +668,18 @@ async fn handle_vxlan_setup(
     Ok(())
 }
 
-fn handle_vxlan_teardown(
+#[allow(clippy::too_many_arguments)]
+async fn handle_vxlan_teardown(
     message: VxlanTeardown,
     triggers_state: Arc<TriggersState>,
+    outbound: Sender<MsgId>,
     host_mappings_state: Arc<HostMappingsState>,
     grpc: NullnetGrpcInterface,
     firewall_peers: Arc<FirewallPeers>,
     firewall_vxlan_ports: Arc<FirewallVxlanPorts>,
     egress_state: Arc<EgressState>,
 ) {
+    let ack_id = message.msg_id.clone();
     // reverse egress steering/interception if this was an egress edge
     if let Some(rec) = egress_state.take(message.vxlan_id) {
         match rec {
@@ -749,6 +788,11 @@ fn handle_vxlan_teardown(
         "VXLAN teardown completed in {} ms",
         init_t.elapsed().as_millis()
     );
+
+    // Acked last: the server frees the net id on this, so every kernel object
+    // named after it — bridge, veth/macsec pair, XFRM SA, DNAT — must already
+    // be gone.
+    ack_teardown(&outbound, ack_id, &grpc, "vxlan_teardown").await;
 }
 
 /// Pause an idle container. Fire-and-forget: the server marks the replica
@@ -872,49 +916,70 @@ fn container_running(container: &str) -> bool {
 }
 
 fn add_host_mapping(hm: &HostMapping, docker_container: Option<&str>) -> Result<(), Error> {
+    let path = "/etc/hosts";
+    // Marked so a restarted process can sweep its predecessor's entries without
+    // touching the operator's (see `host_mappings::purge_stale_mappings`).
+    let entry = format!("{} {} {HOSTS_MARKER}", hm.ip, hm.name);
+
+    // Serialize against every other mapping change on this same file; the
+    // read-modify-write below is only atomic while this is held.
+    let lock = hosts_file_lock(docker_container);
+    let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+
     if let Some(container) = docker_container {
         // container-targeted: the resolver that needs this name lives inside
         // the container, so write only there and leave the host's file alone.
-        // Locking, the crash-recovery marker, and the failed-read guard all
-        // live inside this shared helper now — see `host_mappings.rs`.
-        host_mappings::upsert_container_host_entry(container, &hm.name, &hm.ip)
+        // Edited from the host side (see `host_mappings::edit_container_hosts`)
+        // so a paused container is served just as well as a running one.
+        //
+        // Bail rather than write on a failed read: treating a missing file as
+        // empty content would truncate a live `/etc/hosts` down to this one
+        // entry.
+        host_mappings::edit_container_hosts(container, |current| {
+            host_mappings::upsert_hosts_entry(current, &hm.name, &entry)
+        })
+        .handle_err(location!())?;
     } else {
         // host-targeted: upsert into the host's /etc/hosts
-        let path = "/etc/hosts";
-        // Serialize against every other mapping change on this same file;
-        // the read-modify-write below is only atomic while this is held.
-        let lock = hosts_file_lock(None);
-        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        // Marked so a restarted process can sweep its predecessor's entries
-        // without touching the operator's (see `host_mappings::purge_stale_mappings`).
-        let entry = format!("{} {} {HOSTS_MARKER}", hm.ip, hm.name);
         let content = std::fs::read_to_string(path).handle_err(location!())?;
         std::fs::write(
             path,
             host_mappings::upsert_hosts_entry(&content, &hm.name, &entry),
         )
-        .handle_err(location!())
+        .handle_err(location!())?;
     }
+
+    Ok(())
 }
 
 fn remove_host_mapping(hm: &HostMapping, docker_container: Option<&str>) -> Result<(), Error> {
+    let path = "/etc/hosts";
+
+    let lock = hosts_file_lock(docker_container);
+    let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+
     if let Some(container) = docker_container {
         // container-targeted: setup only wrote inside the container, so the
-        // matching removal is container-only too. Locking and the IP-scoped
-        // match both live inside this shared helper now — see `host_mappings.rs`.
-        host_mappings::remove_container_host_entry(container, &hm.name, &hm.ip)
+        // matching removal is container-only too. Host-side, so this still
+        // works when the container has already been paused — the teardown and
+        // the `docker pause` that follows it race, and losing that race used to
+        // strand the entry, leaving the name pointing at a dead overlay IP for
+        // as long as the container kept being resumed rather than restarted.
+        host_mappings::edit_container_hosts(container, |current| {
+            host_mappings::remove_hosts_entry(current, &hm.name, &hm.ip)
+        })
+        .handle_err(location!())?;
     } else {
         // host-targeted: drop this net's line from the host file
-        let path = "/etc/hosts";
-        let lock = hosts_file_lock(None);
-        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         let content = std::fs::read_to_string(path).handle_err(location!())?;
         std::fs::write(
             path,
             host_mappings::remove_hosts_entry(&content, &hm.name, &hm.ip),
         )
-        .handle_err(location!())
+        .handle_err(location!())?;
     }
+
+    Ok(())
 }
 
 /// Lowercase hex encoding, used to pass the tunnel's AES key to

@@ -554,6 +554,12 @@ impl RegisteredServiceInfo {
                         )
                         .await;
                     // Invariant: a non-pinned Docker-backed replica with no clients is paused.
+                    // Sent immediately, not deferred behind the teardown ack: the flag flips
+                    // here, and `replica_suspended` gates the resume, so any gap between flag
+                    // and pause is a window where an arriving request "resumes" a container
+                    // that was never paused and the late pause then freezes a live client out.
+                    // Ordering the pause is unnecessary anyway — every teardown step works on
+                    // a paused container (hosts edits go through the host-side file).
                     replica.reconcile_suspend(orchestrator, pinned).await;
                 }
                 return;

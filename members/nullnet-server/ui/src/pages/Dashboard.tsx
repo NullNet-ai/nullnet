@@ -119,6 +119,9 @@ function DashboardView() {
                     <tbody>
                       {graph!.edges.map((e, i) => {
                         const session = sessionByNetId.get(e.net_id);
+                        const netIdsLabel = e.via_proxy && chainByProxyNetId.has(e.net_id)
+                          ? chainByProxyNetId.get(e.net_id)!.join(', ')
+                          : String(e.net_id);
                         return (
                           <tr
                             key={i}
@@ -136,9 +139,12 @@ function DashboardView() {
                             </td>
                             <td style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 500 }}>{e.to}</td>
                             <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--cyan)' }}>
-                              {e.via_proxy && chainByProxyNetId.has(e.net_id)
-                                ? chainByProxyNetId.get(e.net_id)!.join(', ')
-                                : e.net_id}
+                              <div
+                                title={netIdsLabel}
+                                style={{ maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                              >
+                                {netIdsLabel}
+                              </div>
                             </td>
                             <td style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: 'var(--t1)' }}>
                               {session?.client_net ?? <span style={{ color: 'var(--t3)' }}>—</span>}

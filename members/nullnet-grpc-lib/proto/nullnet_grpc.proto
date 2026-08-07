@@ -146,6 +146,11 @@ message VlanSetup {
 
 message VlanTeardown {
   uint32 vlan_id = 1;
+  // Acked once the teardown has actually run, so the server can hold the net id
+  // out of the pool until this edge is really gone. Optional: a client that
+  // predates this field simply never acks, and the server frees on its grace
+  // timer instead.
+  optional MsgId msg_id = 2;
 }
 
 message VxlanSetup {
@@ -199,6 +204,11 @@ message VxlanTeardown {
   string local_ip = 5;
   string remote_ip = 6;
   uint32 dstport = 7;
+  // Acked once the teardown has actually run, so the server can hold the net id
+  // out of the pool until this edge is really gone. Optional: a client that
+  // predates this field simply never acks, and the server frees on its grace
+  // timer instead.
+  optional MsgId msg_id = 8;
 }
 
 message MsgId {
@@ -233,11 +243,14 @@ message ServiceTrigger {
   reserved 2;
   reserved "ports";
   repeated TriggerPort trigger_ports = 3;
-  // Real Docker container name of the local replica hosting this service —
-  // the container `target_name` (per TriggerPort) should be pre-seeded into.
-  // Empty when the client couldn't resolve one (host process, no docker
-  // context); the client skips seeding for those.
-  string initiator_container = 4;
+  // Real container names hosting this service on the receiving node — the same
+  // string space as the client's bridge-IP cache and as Container.real_name.
+  // Scopes both the port and the target-chain lookups to this service's own
+  // replicas: `target_name` (per TriggerPort) should be pre-seeded into each
+  // one, and a container not in this list never gets attributed to this
+  // trigger even if it happens to share the port. Empty means a server that
+  // predates this field, and the client falls back to matching any container.
+  repeated string containers = 4;
 }
 
 // One trigger port this service's initiator container should be observed on.

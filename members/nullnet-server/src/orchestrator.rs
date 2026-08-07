@@ -12,6 +12,7 @@ use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tonic::{Request, Status, Streaming};
@@ -27,6 +28,12 @@ type EgressKey = (IpAddr, Option<String>);
 /// least-recently-contacted destination is evicted. Bounds memory for a service
 /// that contacts a very large set of hosts (e.g. a crawler).
 const MAX_DESTS_PER_EDGE: usize = 256;
+
+/// How long to wait for an endpoint to confirm a teardown before returning the
+/// net id to the pool unconfirmed. Matches `send_container_resume`'s 30s ack
+/// window; teardown is a short local operation, so reaching this means the
+/// endpoint is wedged or gone rather than slow.
+const TEARDOWN_ACK_GRACE: Duration = Duration::from_secs(30);
 
 /// Per-destination stats on an egress edge, reported by the client (which owns
 /// the running count and latest-seen time; the server stores them verbatim).
@@ -102,6 +109,10 @@ pub struct Orchestrator {
     egress_edges: Arc<RwLock<HashMap<EgressKey, EgressEdge>>>,
     /// IP → country/ASN cache enriching contacted egress destinations.
     geo: GeoCache,
+    /// Teardowns whose net id has not yet been returned to the pool because
+    /// their acks are still outstanding. Lets tests wait for the pool to reach
+    /// steady state instead of racing the detached free task.
+    inflight_teardowns: Arc<AtomicUsize>,
     pub(crate) events: EventStore,
 }
 
@@ -115,6 +126,7 @@ impl Orchestrator {
             net_id_ports: Arc::new(Mutex::new(HashMap::new())),
             egress_edges: Arc::new(RwLock::new(HashMap::new())),
             geo: GeoCache::from_env(),
+            inflight_teardowns: Arc::new(AtomicUsize::new(0)),
             events: EventStore::new(),
         }
     }
@@ -645,6 +657,25 @@ impl Orchestrator {
         self.clients.read().await.keys().copied().collect()
     }
 
+    /// Tear an edge down on both endpoints and return the net id (and its
+    /// dstport) to their pools — but only **after** the endpoints confirm the
+    /// teardown actually ran.
+    ///
+    /// Freeing on enqueue, as this used to do, is the root of the net-id reuse
+    /// races: the id names every kernel object the edge owns, so handing it
+    /// straight back out lets the next generation collide with an edge that is
+    /// still being dismantled. The free is therefore deferred to a detached
+    /// task that waits on the endpoints' acks.
+    ///
+    /// Detached deliberately — callers `.await` this in loops (`decrement_chain`
+    /// per replica, `collect_dep_chain_edges` per edge), so blocking here would
+    /// turn a multi-edge chain teardown into a serial walk of ack timeouts.
+    /// Caller-visible latency is unchanged.
+    ///
+    /// The id is still freed if an ack never arrives (`TEARDOWN_ACK_GRACE`),
+    /// because the endpoint being gone is the *normal* case on this path —
+    /// `teardown_egress_edges_for_node` runs precisely when a node has
+    /// disconnected — and refusing to free would leak every id that node held.
     pub(crate) async fn send_net_teardown(
         &self,
         client: IpAddr,
@@ -655,13 +686,15 @@ impl Orchestrator {
     ) {
         // Peeked (not removed yet) so both teardown messages can carry the
         // same dstport that was used to install this tunnel's XFRM state;
-        // the pool slot itself is freed below, after both sides are notified.
+        // the pool slot itself is freed by the task below.
         let dstport = self
             .net_id_ports
             .lock()
             .await
             .get(&net_id)
             .map(|(_pair, port)| *port);
+
+        let mut acks = Vec::new();
         for (dest, remote, side, docker) in [
             (client, server, "c", client_docker),
             (server, client, "s", server_docker),
@@ -670,17 +703,96 @@ impl Orchestrator {
             if let Some(outbound) = outbound {
                 println!("Sending network {net_id} teardown to client {dest}");
 
-                let message = NET_TYPE.teardown(net_id, side, docker, dest, remote, dstport);
+                let (tx, rx) = oneshot::channel();
+                let msg_id = Uuid::new_v4().to_string();
+                self.pending.lock().await.insert(msg_id.clone(), tx);
 
-                let _ = outbound.send(Ok(message)).await.handle_err(location!());
+                let message =
+                    NET_TYPE.teardown(net_id, side, docker, dest, remote, dstport, msg_id.clone());
+
+                if outbound
+                    .send(Ok(message))
+                    .await
+                    .handle_err(location!())
+                    .is_err()
+                {
+                    // Nothing will ever ack a message that was never sent.
+                    self.pending.lock().await.remove(&msg_id);
+                } else {
+                    acks.push((dest, msg_id, rx));
+                }
             }
         }
+
+        if acks.is_empty() {
+            // Neither endpoint was reachable, so nothing was sent and there is
+            // nothing to wait for — deferring would hold the id without
+            // learning anything. Same behaviour as before this change; the
+            // edge's kernel state, if any survives, is reconciled by the
+            // client's startup purge when that node comes back.
+            self.free_net_id_and_port(net_id).await;
+        } else {
+            self.spawn_deferred_net_id_free(net_id, acks);
+        }
+    }
+
+    /// Return a net id and its VXLAN dstport to their pools.
+    async fn free_net_id_and_port(&self, net_id: u32) {
         self.net_id_pool.lock().await.free(net_id);
         if let Some((pair, port)) = self.net_id_ports.lock().await.remove(&net_id)
             && let Some(pool) = self.udp_port_pools.lock().await.get_mut(&pair)
         {
             pool.free(port);
         }
+    }
+
+    /// Wait for every endpoint that was actually sent a teardown to ack it,
+    /// then return the net id and its dstport to the pools. See
+    /// `send_net_teardown` for why this is detached and why it frees anyway on
+    /// timeout.
+    fn spawn_deferred_net_id_free(
+        &self,
+        net_id: u32,
+        acks: Vec<(IpAddr, String, oneshot::Receiver<()>)>,
+    ) {
+        let net_id_pool = self.net_id_pool.clone();
+        let net_id_ports = self.net_id_ports.clone();
+        let udp_port_pools = self.udp_port_pools.clone();
+        let pending = self.pending.clone();
+        let events = self.events.clone();
+        let inflight = self.inflight_teardowns.clone();
+
+        // Counted before the spawn so a caller that awaits `send_net_teardown`
+        // and then waits for quiescence can never observe zero prematurely.
+        inflight.fetch_add(1, Ordering::SeqCst);
+
+        tokio::spawn(async move {
+            for (dest, msg_id, rx) in acks {
+                match tokio::time::timeout(TEARDOWN_ACK_GRACE, rx).await {
+                    Ok(Ok(())) => {}
+                    // Timed out, or the sender was dropped without acking.
+                    _ => {
+                        pending.lock().await.remove(&msg_id);
+                        println!(
+                            "Network {net_id} teardown was not acked by {dest} within {}s; \
+                             freeing the id anyway",
+                            TEARDOWN_ACK_GRACE.as_secs()
+                        );
+                        events
+                            .emit(Event::net_teardown_unconfirmed(net_id, dest.to_string()))
+                            .await;
+                    }
+                }
+            }
+
+            net_id_pool.lock().await.free(net_id);
+            if let Some((pair, port)) = net_id_ports.lock().await.remove(&net_id)
+                && let Some(pool) = udp_port_pools.lock().await.get_mut(&pair)
+            {
+                pool.free(port);
+            }
+            inflight.fetch_sub(1, Ordering::SeqCst);
+        });
     }
 }
 
@@ -698,6 +810,31 @@ impl Orchestrator {
 
     pub(crate) async fn register_fake_client(&self, ip: IpAddr) {
         self.register_recording_client(ip).await;
+    }
+
+    /// Wait until every in-flight teardown has returned its net id to the pool.
+    /// Production code never needs to observe the deferred free; assertions
+    /// about pool state do, and must not race the detached task.
+    pub(crate) async fn settle_teardowns(&self) {
+        // Bounded: a teardown whose ack never arrives resolves via
+        // TEARDOWN_ACK_GRACE, which no test should be waiting on. If this cap
+        // is ever hit, the assertion that follows will fail loudly rather than
+        // hang.
+        for _ in 0..10_000 {
+            if self.inflight_teardowns.load(Ordering::SeqCst) == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// A connected client that receives messages but never acks any of them —
+    /// a node that is wedged rather than gone. Distinct from simply not being
+    /// registered, which means nothing is sent at all.
+    pub(crate) async fn register_silent_client(&self, ip: IpAddr) {
+        let (tx, mut rx) = mpsc::channel::<Result<NetMessage, Status>>(64);
+        self.clients.write().await.insert(ip, tx);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
     }
 
     /// Like `register_fake_client`, but returns a log of every `NetMessage` sent
@@ -728,6 +865,14 @@ impl Orchestrator {
                     | Some(net_message::Message::ContainerResume(ContainerResume {
                         msg_id, ..
                     })) => msg_id.clone(),
+                    // Teardowns are ack'd too, mirroring the real client: the
+                    // server holds the net id out of the pool until this lands.
+                    Some(net_message::Message::VlanTeardown(
+                        nullnet_grpc_lib::nullnet_grpc::VlanTeardown { msg_id, .. },
+                    ))
+                    | Some(net_message::Message::VxlanTeardown(
+                        nullnet_grpc_lib::nullnet_grpc::VxlanTeardown { msg_id, .. },
+                    )) => msg_id.clone(),
                     _ => None,
                 };
                 log_task.lock().await.push(msg);
@@ -740,6 +885,76 @@ impl Orchestrator {
         });
 
         log
+    }
+}
+
+/// A net id names every kernel object its edge owns, so returning it to the
+/// pool before the edge is actually gone is what lets the next generation
+/// collide with the previous one. These cover when the id comes back.
+#[cfg(test)]
+mod teardown_ack_tests {
+    use super::*;
+
+    fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+    }
+
+    /// Both endpoints ack, so the id returns to the pool.
+    #[tokio::test]
+    async fn acked_teardown_returns_the_net_id() {
+        let orch = Orchestrator::new();
+        let (a, b) = (ip(10, 0, 0, 1), ip(10, 0, 0, 2));
+        orch.register_fake_client(a).await;
+        orch.register_fake_client(b).await;
+
+        let id = orch.allocate_net_id().await.unwrap();
+        assert_eq!(orch.net_ids_in_use().await, 1);
+
+        orch.send_net_teardown(a, None, b, None, id).await;
+        orch.settle_teardowns().await;
+
+        assert_eq!(orch.net_ids_in_use().await, 0);
+    }
+
+    /// A connected but unresponsive endpoint must hold the id out of the pool.
+    /// Freeing here is precisely the race: the edge is still up on that node.
+    #[tokio::test]
+    async fn unacked_teardown_withholds_the_net_id() {
+        let orch = Orchestrator::new();
+        let (a, b) = (ip(10, 0, 0, 1), ip(10, 0, 0, 2));
+        orch.register_silent_client(a).await;
+        orch.register_silent_client(b).await;
+
+        let id = orch.allocate_net_id().await.unwrap();
+        orch.send_net_teardown(a, None, b, None, id).await;
+
+        // Give the detached task every chance to run; it must still be parked
+        // on the ack rather than freeing (it frees only after the grace).
+        for _ in 0..256 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            orch.net_ids_in_use().await,
+            1,
+            "id must stay out of the pool until the teardown is confirmed"
+        );
+        // And it must not be handed to the next edge.
+        assert_ne!(orch.allocate_net_id().await.unwrap(), id);
+    }
+
+    /// Neither endpoint is connected, so nothing was sent and there is nothing
+    /// to wait for — the id comes back immediately, as before this change.
+    /// `teardown_egress_edges_for_node` runs in exactly this state.
+    #[tokio::test]
+    async fn teardown_to_absent_endpoints_frees_immediately() {
+        let orch = Orchestrator::new();
+        let (a, b) = (ip(10, 0, 0, 1), ip(10, 0, 0, 2));
+
+        let id = orch.allocate_net_id().await.unwrap();
+        orch.send_net_teardown(a, None, b, None, id).await;
+
+        assert_eq!(orch.net_ids_in_use().await, 0);
     }
 }
 

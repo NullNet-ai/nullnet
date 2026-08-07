@@ -372,34 +372,37 @@ async fn declare_services(
                     });
                 }
 
-                // More than one target can share a port (two dependencies
-                // reached on the same real port, e.g. two plain-HTTPS deps
-                // both 443) — group by port so the listener can disambiguate
-                // by destination address at trigger time.
+                // More than one target can share a port — either the same
+                // service's own multiple dependency chains (two plain-HTTPS
+                // deps both 443, disambiguated by destination), or an
+                // unrelated service/container that just happens to talk to
+                // the same port number (disambiguated by source container).
+                // Group by port so the listener can apply both.
                 let mut port_to_target: HashMap<u16, Vec<nfqueue::TriggerTarget>> = HashMap::new();
                 for st in response.service_triggers {
-                    let initiator_container = (!st.initiator_container.is_empty())
-                        .then_some(st.initiator_container.as_str());
                     for tp in st.trigger_ports {
                         let Ok(port) = u16::try_from(tp.port) else {
                             eprintln!("server returned invalid trigger port {}; skipping", tp.port);
                             continue;
                         };
                         // Pre-seed a placeholder /etc/hosts entry for the
-                        // dependency's literal name *before* any packet is
-                        // observed, so a bare container name (not just a
-                        // pre-provisioned DNS alias) produces a real first
-                        // packet for NFQUEUE to catch. Idempotent — safe on
-                        // every reconcile pass; self-heals across container
-                        // restarts (Docker wipes /etc/hosts on every start).
-                        if let Some(container) = initiator_container
-                            && let Err(e) =
+                        // dependency's literal name in every replica
+                        // container hosting the initiator service, *before*
+                        // any packet is observed, so a bare container name
+                        // (not just a pre-provisioned DNS alias) produces a
+                        // real first packet for NFQUEUE to catch. Idempotent
+                        // — safe on every reconcile pass; self-heals across
+                        // container restarts (Docker wipes /etc/hosts on
+                        // every start).
+                        for container in &st.containers {
+                            if let Err(e) =
                                 placeholder::seed_placeholder(container, &tp.target_name)
-                        {
-                            eprintln!(
-                                "failed to seed placeholder for '{}' in {container}: {e:?}",
-                                tp.target_name
-                            );
+                            {
+                                eprintln!(
+                                    "failed to seed placeholder for '{}' in {container}: {e:?}",
+                                    tp.target_name
+                                );
+                            }
                         }
                         port_to_target
                             .entry(port)
@@ -407,6 +410,7 @@ async fn declare_services(
                             .push(nfqueue::TriggerTarget {
                                 service_name: st.service_name.clone(),
                                 target_name: tp.target_name.clone(),
+                                containers: st.containers.clone(),
                             });
                     }
                 }

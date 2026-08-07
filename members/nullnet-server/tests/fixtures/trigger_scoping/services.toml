@@ -1,0 +1,27 @@
+# S declares a trigger on P, and P is also the backend port of the service that
+# trigger reaches — the instaprotek shape, where `service` triggers on 8932 and
+# api-prod-v2 listens on 8932. Co-located containers legitimately dial P.
+[[services]]
+name = "S"
+docker_container = "s_match"
+port = 3000
+
+[[services.triggers]]
+port = 8932
+chain = ["P"]
+
+[[services]]
+name = "P"
+docker_container = "p_match"
+port = 8932
+timeout = 0
+
+# Hosted as a bare process, and also declares a trigger on the same port.
+[[services]]
+name = "HostSvc"
+process_path = "/usr/bin/hostsvc"
+port = 4000
+
+[[services.triggers]]
+port = 8932
+chain = ["P"]
