@@ -382,33 +382,45 @@ lightweight transitive dependency of the `toml` ecosystem) to splice the
   Fine at expected config scale (this mirrors two existing streams that
   already do this); revisit only if it becomes a real bottleneck.
 
+## Implementation status
+
+Implemented on `feature/proxy-redirects-137`:
+
+1. **Contract** (`nullnet-grpc-lib`): `HttpRoute`, `HttpRedirect`,
+   `HttpRouteBundle`, `WatchHttpRoutes` RPC. ✅ builds + tested.
+2. **Server**: `RouteToml` parsing + validation (mutual exclusion, status
+   code, same-stack service reference, `protocol = http` + proxy-reachable
+   check), `detect_route_conflicts`, `build_http_route_bundle` (incl. implicit
+   fallback routes), `watch_http_routes` RPC handler + its own `Notify`,
+   `route_conflict` server event. `[[services]]` is now `#[serde(default)]`
+   so a stack can be routes-only (a bare redirect needs no backend at all).
+   Unit tests mirroring the existing `detect_port_conflicts`/
+   `parses_explicit_and_implicit_services` coverage in `services/input.rs`,
+   plus `build_http_route_bundle` coverage in `nullnet_grpc_impl.rs`. ✅ 154
+   tests pass.
+3. **Proxy**: `routes.rs` (`RouteTable`, longest-prefix lookup,
+   `watch_and_serve`), `main.rs` dispatch changes (`request_filter`
+   redirect/404/backend-selection via a new `ProxyCtx`, `upstream_peer`
+   reading the resolved service name). Unit tests for prefix matching,
+   backward-compat fallback (no explicit routes → today's behavior), and
+   redirect resolution. ✅ 22 tests pass.
+4. **Admin API**: `GET`/`POST /api/routes/{stack}` (`http_server/routes.rs`),
+   `toml_edit`-based structural merge into the stack file (new
+   `toml_edit` workspace dependency).
+5. **UI**: `pages/Routes.tsx` (table + add/edit `Modal`, following the
+   `Users.tsx` CRUD pattern), nav entry, `RouteJson`/`RoutesResponseJson`
+   types. ✅ `tsc -b` + `vite build` + `eslint` clean.
+6. **Docs**: not yet updated — `docs/architecture.md` doesn't currently
+   enumerate individual watch streams, so no change was needed there.
+
+`cargo fmt`/`cargo clippy -D warnings` clean for `nullnet-grpc-lib`,
+`nullnet-server`, `nullnet-proxy` (the three crates CI lints/tests).
+
 ## Follow-ups (out of scope for this issue)
 
+- Manual end-to-end verification against a running proxy + control service
+  (this stage covered unit tests only).
 - Regex/wildcard path matching.
 - Redirect target variable interpolation (preserve matched suffix, query
   string passthrough is already implicit since redirects don't touch it).
 - Header-based routing (beyond Host), if ever needed.
-
-## Implementation status
-
-Design only — nothing below is implemented yet. Planned as a sequence of
-commits so each stage builds/tests independently:
-
-1. **Contract** (`nullnet-grpc-lib`): `HttpRoute`, `HttpRedirect`,
-   `HttpRouteBundle`, `WatchHttpRoutes` RPC.
-2. **Server**: `RouteToml` parsing + validation (mutual exclusion, status
-   code, same-stack service reference, `protocol = http` check),
-   `detect_route_conflicts`, `build_http_route_bundle` (incl. implicit
-   fallback routes), `watch_http_routes` RPC handler + its own `Notify`.
-   Unit tests mirroring the existing `detect_port_conflicts`/
-   `parses_explicit_and_implicit_services` coverage in `services/input.rs`.
-3. **Proxy**: `routes.rs` (`RouteTable`, longest-prefix lookup,
-   `watch_and_serve`), `main.rs` dispatch changes (`request_filter`
-   redirect/404/backend-selection, `upstream_peer` reading resolved ctx).
-   Unit tests for prefix matching, backward-compat fallback (no explicit
-   routes → today's behavior), and the redirect response writer.
-4. **Admin API**: `GET`/`POST /api/routes/{stack}`, `toml_edit`-based
-   structural merge into the stack file.
-5. **UI**: `RoutesPage.tsx`, nav entry, `Modal`-based add/edit form.
-6. **Docs**: update `docs/architecture.md` if the route-table stream is
-   worth calling out at the overview level once shipped.
