@@ -96,12 +96,34 @@ host = "old.example.com"
 path = "/"
 redirect_to = "https://ops.example.com/"
 redirect_status = 301        # optional, defaults to 301
+
+# new — strip the matched prefix before forwarding (NGINX
+# `proxy_pass http://backend/;` trailing-slash equivalent): "api" sees
+# "/users", not "/api/users"
+[[route]]
+host = "ops.example.com"
+path = "/api"
+service = "api"
+strip_prefix = true
+
+# new — carry the matched suffix and the original query string into a
+# redirect (NGINX `rewrite ^/old(.*) /new$1 permanent;` equivalent):
+# /old/x/y?foo=bar -> /new/x/y?foo=bar
+[[route]]
+host = "old.example.com"
+path = "/old"
+redirect_to = "/new"
+preserve_path = true
+preserve_query = true
 ```
 
 `service` and `redirect_to` are mutually exclusive (exactly one required),
 mirroring how `*_blocked_countries`/`*_allowed_countries` are already
 validated as mutually exclusive in `input.rs`. `redirect_status` is
-restricted to `301 | 302 | 307 | 308`.
+restricted to `301 | 302 | 307 | 308`. `strip_prefix` only applies to
+`service` routes; `preserve_path`/`preserve_query` only apply to
+`redirect_to` routes — each is rejected on the wrong target kind. All three
+default to `false`, so every existing config is unaffected.
 
 ### Example: the issue's own scenario
 
@@ -193,12 +215,18 @@ message HttpRoute {
                                   // way a Host-routed service is today
     HttpRedirect redirect = 4;
   }
+  // Only meaningful when target = service_name: strip path_prefix from the
+  // path forwarded to the backend (NGINX `proxy_pass http://backend/;`
+  // trailing-slash equivalent). Default false forwards the path unchanged.
+  bool strip_prefix = 5;
 }
 
 message HttpRedirect {
-  string to = 1;           // absolute URL, or a path template — see "Redirect
-                            // target" below
-  uint32 status_code = 2;  // 301/302/307/308
+  string to = 1;              // absolute URL, or a path template — see
+                               // "Redirect target" below
+  uint32 status_code = 2;     // 301/302/307/308
+  bool preserve_path = 3;     // append the request path's matched suffix to `to`
+  bool preserve_query = 4;    // append the original request's query string
 }
 
 message HttpRouteBundle {
@@ -216,10 +244,20 @@ setup, `get_or_add_upstream`) is untouched.
 
 ### Redirect target
 
-Keep it simple for v1: `to` is either an absolute URL (used verbatim) or
-starts with `/` (path-only — same scheme/host as the incoming request,
-target path substituted). No variable interpolation (no `$request_uri`
-equivalent) in v1 — see Open wrinkles.
+`to` is either an absolute URL (used verbatim) or starts with `/` (path-only
+— same scheme/host as the incoming request, target path substituted).
+`preserve_path` appends the request path's suffix beyond the matched
+`path_prefix` (NGINX `rewrite ^/old(.*) /new$1 permanent;` equivalent);
+`preserve_query` appends the original request's `?query` string, merged with
+`&` if `to` already carries its own. Both default to `false`, reproducing
+`to` used verbatim — the only behavior before these two fields existed.
+
+**Correction to an earlier version of this doc**: it previously claimed
+query-string passthrough was "already implicit since redirects don't touch
+it." That was wrong — the original implementation never touched the request
+path/query at all in either direction, so nothing was preserved by default.
+`preserve_query`/`preserve_path` are the fix, not a refinement of existing
+passthrough.
 
 ### Server changes (`nullnet-server`)
 
@@ -232,9 +270,14 @@ equivalent) in v1 — see Open wrinkles.
       #[serde(default = "default_path")]
       path: String,
       service: Option<String>,
-      redirect_to: Option<String>,
       #[serde(default)]
+      strip_prefix: bool,
+      redirect_to: Option<String>,
       redirect_status: Option<u16>,
+      #[serde(default)]
+      preserve_path: bool,
+      #[serde(default)]
+      preserve_query: bool,
   }
   ```
 - `ServicesToml` gains `#[serde(default)] routes: Vec<RouteToml>`.
@@ -245,6 +288,9 @@ equivalent) in v1 — see Open wrinkles.
   - `service` must name a declared service in the *same* stack (routes don't
     reach across stacks, same scoping as `proxy_dependencies`);
   - the referenced service must be `protocol = "http"`;
+  - `strip_prefix` is rejected on a `redirect_to` route; `preserve_path`/
+    `preserve_query` are rejected on a `service` route — each only makes
+    sense for its own target kind;
   - no two routes in the *same stack* share `(host, path)` exactly — this
     plus the equivalent cross-stack check (below) is `detect_route_conflicts`,
     the HTTP-route sibling of the existing `detect_port_conflicts`.
@@ -286,6 +332,33 @@ equivalent) in v1 — see Open wrinkles.
   - `upstream_peer` uses `ctx`'s resolved service name instead of
     recomputing it from the Host header — the only production-code change to
     this function is where `service_name` comes from.
+
+### Path rewrite additions (`strip_prefix` / `preserve_path` / `preserve_query`)
+
+Added on top of the v1 design above, closing three gaps identified after the
+initial implementation landed:
+
+- `routes.rs`'s `RouteTable::resolve` computes the request path's suffix
+  beyond the matched `path_prefix` (via `str::strip_prefix`) and returns it
+  as part of the match — `RouteMatch::Backend { service_name, forward_path
+  }` (the path to actually forward — rewritten when `strip_prefix` is set,
+  via a `normalize_forward_path` helper that guarantees the result is a
+  valid absolute path even when stripping would otherwise leave `""`) or
+  `RouteMatch::Redirect { .., matched_suffix }` (the raw suffix; `main.rs`
+  combines it with the request's query string and Host header, which
+  `routes.rs` has no access to).
+- `main.rs`'s `ProxyCtx` gains `forward_path: Option<String>`, set in
+  `request_filter` alongside `service_name`. `upstream_request_filter`
+  applies it via a new `rewrite_uri_path` helper (`RequestHeader::set_uri`
+  with the new path, existing query string preserved) — the client-facing
+  session and every log line still show the *original* path; only the
+  request actually sent upstream changes.
+- `resolve_redirect_target` gained `matched_suffix`/`preserve_path`/
+  `preserve_query` parameters: splits any query already in the configured
+  `to`, optionally appends the matched suffix to the path portion, then
+  optionally appends the request's own query (merged with `&`, not
+  overwritten), before applying the existing absolute-URL-vs-relative-path
+  logic unchanged.
 
 ### What is reused vs new
 
@@ -367,13 +440,14 @@ lightweight transitive dependency of the `toml` ecosystem) to splice the
 - **Path matching is prefix-only**, like NGINX's plain (non-regex)
   `location` — no wildcards/regex in v1. If a follow-up needs `location ~`
   parity, that's a separate `path_regex` field on `HttpRoute`, additive.
-- **No variable interpolation in redirect targets** (`$request_uri`-style).
-  A path-only `to` re-appends the literal target path, not the *matched
-  suffix* — `path="/old" → to="/new"` on request `/old/x` redirects to
-  `/new`, not `/new/x`. If suffix-preserving redirects are needed, that's a
-  `preserve_suffix: bool` flag as a follow-up, not a v1 requirement (the
-  issue only asks for redirects "of course that's included," not detailed
-  semantics).
+- **Resolved**: matched-suffix and query-string preservation in redirects
+  (`preserve_path`/`preserve_query`) and backend path rewriting
+  (`strip_prefix`) — see "Path rewrite additions" above.
+- **The admin UI form doesn't expose `strip_prefix`/`preserve_path`/
+  `preserve_query` yet** — `pages/Routes.tsx`'s Add/Edit modal only has
+  Host/Path/Service-or-Redirect/Status fields. They're fully settable via
+  TOML or a direct `POST /api/routes/{stack}` call (the API layer accepts
+  them), just not from the form. Follow-up UI work, not a backend gap.
 - **Ingress country policy is keyed by service name today** — a redirect
   route has no backend service, so there's no ingress policy to check before
   issuing it. This is consistent with NGINX (a `return` in a `location`
@@ -409,18 +483,33 @@ Implemented on `feature/proxy-redirects-137`:
    `toml_edit` workspace dependency).
 5. **UI**: `pages/Routes.tsx` (table + add/edit `Modal`, following the
    `Users.tsx` CRUD pattern), nav entry, `RouteJson`/`RoutesResponseJson`
-   types. ✅ `tsc -b` + `vite build` + `eslint` clean.
+   types. ✅ `tsc -b` + `vite build` + `eslint` clean. Does **not** yet expose
+   `strip_prefix`/`preserve_path`/`preserve_query` in the form (see Open
+   wrinkles) — added to the wire/API/TOML layers only so far.
 6. **Docs**: not yet updated — `docs/architecture.md` doesn't currently
    enumerate individual watch streams, so no change was needed there.
+7. **Path rewrite additions** (`strip_prefix`, `preserve_path`,
+   `preserve_query`): proto fields, server validation (each rejected on the
+   wrong target kind), `RouteTable::resolve`'s `forward_path`/
+   `matched_suffix` computation, `main.rs`'s `rewrite_uri_path` +
+   `resolve_redirect_target` rewrite. ✅ 161 server tests, 36 proxy tests pass
+   (found and fixed a genuine bug in the process — the original
+   `resolve_redirect_target` never touched the request's path/query at all,
+   contrary to what an earlier version of this doc claimed).
+
+Manually verified end-to-end by the repo owner against a real deployment
+(`nullnet-server` + `nullnet-proxy` + `nullnet-client`, real backend
+containers) — confirmed working, including hot-reload of route changes. A
+"not working" symptom hit during that verification turned out to be a stale
+`nullnet-proxy` binary (right commit checked out, binary not rebuilt from
+it), not a code bug.
 
 `cargo fmt`/`cargo clippy -D warnings` clean for `nullnet-grpc-lib`,
 `nullnet-server`, `nullnet-proxy` (the three crates CI lints/tests).
 
 ## Follow-ups (out of scope for this issue)
 
-- Manual end-to-end verification against a running proxy + control service
-  (this stage covered unit tests only).
+- Admin UI form support for `strip_prefix`/`preserve_path`/`preserve_query`
+  (backend/API already support them; see Open wrinkles).
 - Regex/wildcard path matching.
-- Redirect target variable interpolation (preserve matched suffix, query
-  string passthrough is already implicit since redirects don't touch it).
 - Header-based routing (beyond Host), if ever needed.
