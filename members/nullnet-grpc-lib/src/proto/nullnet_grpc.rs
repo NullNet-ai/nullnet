@@ -284,6 +284,46 @@ pub struct PortMappingBundle {
     #[prost(message, repeated, tag = "1")]
     pub mappings: ::prost::alloc::vec::Vec<PortMapping>,
 }
+/// One location-block-style dispatch rule for HTTP(S): within a host, the
+/// entry with the longest `path_prefix` that prefix-matches the request path
+/// wins. `path_prefix = "/"` is the catch-all. Target is mutually exclusive:
+/// either proxy_pass to an existing HTTP service (resolved exactly like a
+/// Host-routed service is today) or a literal redirect.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct HttpRoute {
+    #[prost(string, tag = "1")]
+    pub host: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub path_prefix: ::prost::alloc::string::String,
+    #[prost(oneof = "http_route::Target", tags = "3, 4")]
+    pub target: ::core::option::Option<http_route::Target>,
+}
+/// Nested message and enum types in `HttpRoute`.
+pub mod http_route {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Target {
+        #[prost(string, tag = "3")]
+        ServiceName(::prost::alloc::string::String),
+        #[prost(message, tag = "4")]
+        Redirect(super::HttpRedirect),
+    }
+}
+/// A literal redirect target for an HttpRoute. `to` is either an absolute URL
+/// (used verbatim) or a path (starting with `/`; same scheme/host as the
+/// incoming request, target path substituted). No variable interpolation.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct HttpRedirect {
+    #[prost(string, tag = "1")]
+    pub to: ::prost::alloc::string::String,
+    /// One of 301/302/307/308.
+    #[prost(uint32, tag = "2")]
+    pub status_code: u32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct HttpRouteBundle {
+    #[prost(message, repeated, tag = "1")]
+    pub routes: ::prost::alloc::vec::Vec<HttpRoute>,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BackendTriggerRequest {
     #[prost(string, tag = "1")]
@@ -1163,6 +1203,34 @@ pub mod nullnet_grpc_client {
                 );
             self.inner.server_streaming(req, path, codec).await
         }
+        /// Long-lived stream: the server pushes the full HTTP (host, path) → target
+        /// route table immediately on subscribe and again whenever services.toml
+        /// changes, so the proxy dispatches path-based routes/redirects without a
+        /// restart. See docs/http-path-routing-design.md.
+        pub async fn watch_http_routes(
+            &mut self,
+            request: impl tonic::IntoRequest<super::Empty>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::HttpRouteBundle>>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/nullnet_grpc.NullnetGrpc/WatchHttpRoutes",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("nullnet_grpc.NullnetGrpc", "WatchHttpRoutes"));
+            self.inner.server_streaming(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -1290,6 +1358,23 @@ pub mod nullnet_grpc_server {
             request: tonic::Request<super::Empty>,
         ) -> std::result::Result<
             tonic::Response<Self::WatchPortMappingsStream>,
+            tonic::Status,
+        >;
+        /// Server streaming response type for the WatchHttpRoutes method.
+        type WatchHttpRoutesStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::HttpRouteBundle, tonic::Status>,
+            >
+            + std::marker::Send
+            + 'static;
+        /// Long-lived stream: the server pushes the full HTTP (host, path) → target
+        /// route table immediately on subscribe and again whenever services.toml
+        /// changes, so the proxy dispatches path-based routes/redirects without a
+        /// restart. See docs/http-path-routing-design.md.
+        async fn watch_http_routes(
+            &self,
+            request: tonic::Request<super::Empty>,
+        ) -> std::result::Result<
+            tonic::Response<Self::WatchHttpRoutesStream>,
             tonic::Status,
         >;
     }
@@ -1899,6 +1984,52 @@ pub mod nullnet_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = WatchPortMappingsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.server_streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/nullnet_grpc.NullnetGrpc/WatchHttpRoutes" => {
+                    #[allow(non_camel_case_types)]
+                    struct WatchHttpRoutesSvc<T: NullnetGrpc>(pub Arc<T>);
+                    impl<
+                        T: NullnetGrpc,
+                    > tonic::server::ServerStreamingService<super::Empty>
+                    for WatchHttpRoutesSvc<T> {
+                        type Response = super::HttpRouteBundle;
+                        type ResponseStream = T::WatchHttpRoutesStream;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::Empty>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as NullnetGrpc>::watch_http_routes(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = WatchHttpRoutesSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

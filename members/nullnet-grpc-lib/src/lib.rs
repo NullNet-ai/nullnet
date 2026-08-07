@@ -5,8 +5,9 @@ use crate::control_tls_verifier::PinnedCa;
 use crate::nullnet_grpc::nullnet_grpc_client::NullnetGrpcClient;
 use crate::nullnet_grpc::{
     AgentEvent, BackendTriggerRequest, CertBundle, EgressDestinationEntry, EgressDestinationReport,
-    EgressPolicyCheck, EgressTriggerRequest, Empty, IngressPolicyCheck, MsgId, NetMessage, NetType,
-    PortMappingBundle, ProxyRequest, ServiceReport, ServicesListResponse, Upstream,
+    EgressPolicyCheck, EgressTriggerRequest, Empty, HttpRouteBundle, IngressPolicyCheck, MsgId,
+    NetMessage, NetType, PortMappingBundle, ProxyRequest, ServiceReport, ServicesListResponse,
+    Upstream,
 };
 pub use proto::*;
 use std::path::Path;
@@ -235,6 +236,20 @@ impl NullnetGrpcInterface {
             .client
             .clone()
             .watch_port_mappings(Request::new(Empty {}))
+            .await
+            .map_err(|e| e.to_string())?
+            .into_inner())
+    }
+
+    /// Subscribe to HTTP route-table changes: the returned stream yields the
+    /// full (host, path) → target table immediately on subscribe and again
+    /// whenever it changes.
+    #[allow(clippy::missing_errors_doc)]
+    pub async fn watch_http_routes(&self) -> Result<Streaming<HttpRouteBundle>, String> {
+        Ok(self
+            .client
+            .clone()
+            .watch_http_routes(Request::new(Empty {}))
             .await
             .map_err(|e| e.to_string())?
             .into_inner())
