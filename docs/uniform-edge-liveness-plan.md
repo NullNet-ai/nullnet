@@ -139,6 +139,102 @@ for close too.
 
 ---
 
+## 4b. Revisions from 2026-08-07 (measurements + landed work)
+
+Four findings that change how this plan should be read. The design is unchanged;
+what changes is what it *delivers* and what it must defend against.
+
+### 4b.1 HTTP ingress liveness does NOT keep an idle chain warm — and that is the
+common case
+
+The real traffic pattern was supplied by the user:
+
+- `socket` is reached **only at browser page reload** (one upgrade per page load,
+  and it does not auto-reconnect).
+- `crm`, `upload-v2`, `api-v2` are reached on each record opened / tab selected.
+- **None of them is reached while a tab sits idle on the same record.**
+
+For **TCP / WebSocket** the counter is genuinely connection-scoped
+(`copy_bidirectional` returns), so this plan does fix `socket` — today any
+non-zero timeout deletes the tunnel under a live WebSocket, silently, with no
+reconnect. That remains the headline win.
+
+For **plain HTTP** the counter is *request*-scoped: `open_connections` returns to
+0 as soon as each request finishes (§5 Step 1 "count oscillates but stays
+balanced"). Since an idle tab issues no requests, the count sits at 0 through the
+user's entire read, and the grace window behaves exactly like today's idle timer.
+
+**Consequences to design around:**
+- Liveness prevents reaping *mid-request* (the §2.4 long-download bug). It does
+  **not** keep a chain warm between interactions.
+- So `ingress_timeout` on HTTP entry points is still an idle timer and must be
+  sized for **human** idle (minutes), not seconds. A 60 s grace reaps while a
+  user reads a record, and the next click pays a full cold rebuild — for `crm`,
+  12 edges plus up to six container unpauses.
+- Do not claim this plan removes the post-idle latency cliff for HTTP. It does
+  not. Only measuring the cliff (Gate 1) tells us what grace value is tolerable.
+
+### 4b.2 Our own conntrack flushes fire `DESTROY` — false closes for Step 2
+
+Step 2 removes a tuple from the open-set on a conntrack `DESTROY` event. But
+nullnet *itself* deletes conntrack entries in three places, and every deletion
+emits `DESTROY` for flows that are still alive:
+
+| Site | Scope | When |
+|---|---|---|
+| `dnat::init` | `conntrack -F` — **entire host table** | client startup |
+| `dnat::flush_conntrack` | `-s <container_ip> --dport <port>` (scoped 2026-08-07) | twice per trigger-edge lifecycle |
+| `egress_policy::flush_container_conntrack` | `-D -s <container bridge ip>` — **all flows from that container** | every `EgressPolicyChanged` broadcast |
+
+The third is the dangerous one: it is keyed by container bridge IP — *exactly*
+Step 2's liveness key — and removes everything, so an egress policy reload would
+zero the open-flow set for every tracked container and reap live edges. That is
+the silent black-hole failure this plan exists to avoid.
+
+**Required:** treat a self-inflicted flush as a reconcile trigger, not a set of
+closes — re-dump `conntrack -L -s <bridge_ip>` immediately after any flush we
+issue, rather than waiting for the periodic backstop. Relying on the periodic
+reconcile alone is not enough: with a short `egress_timeout` the edge can be
+reaped before the next reconcile lands.
+
+### 4b.3 The proxy pools upstream connections with no idle timeout
+
+Measured on 104: `nullnet-proxy` holds `ESTAB` upstream sockets open
+indefinitely (unchanged across 60 s idle), **including sockets to overlay IPs
+whose tunnel has already been torn down** (a socket to net id 104's overlay IP
+survived after `br_104` was gone). `HttpPeer::new(upstream, false, …)` uses
+pingora defaults and nullnet sets no upstream idle timeout.
+
+This does not affect the request-scoped counter, but it matters twice:
+- A pooled socket into a dead tunnel is a candidate cause of the intermittent
+  502s seen during 2026-08-07 lab work (~3 s, always after edge churn).
+  **Unproven** — verify before building on it.
+- It compounds with net-id reuse: a rebuilt edge can be handed the same overlay
+  IP while the proxy still holds a socket to the previous tunnel.
+
+Giving the proxy an upstream idle timeout is a small prerequisite worth doing
+before Step 1, so the pool actually drains.
+
+### 4b.4 Landed work this plan now sits on top of
+
+`main` has moved ahead of this branch (this doc's line references are stale).
+Relevant landings:
+- **#149** — teardown is now **ack'd**, and `send_net_teardown` frees the net id
+  only after both endpoints confirm (or a 30 s grace, emitting
+  `net_teardown_unconfirmed`). Step 3 still reuses `send_net_teardown`, but the
+  id now returns **asynchronously**; any test asserting pool state must settle
+  first (`Orchestrator::settle_teardowns`).
+- **caf6138** — `dnat::flush_conntrack` is now source-scoped, which materially
+  shrinks the false-close blast radius in 4b.2.
+- **#150** — container `/etc/hosts` edits go through the host-side bind-mounted
+  file, so teardown no longer breaks on a paused container.
+- **#148** — backend trigger attribution is now per-container (§2.5 assumed
+  port-only attribution).
+- A load test at **40 concurrent edges** (3.3× `crm`'s chain) showed no client
+  runtime starvation, so the new netlink listener has ample headroom.
+
+---
+
 ## 5. Build plan (three independently verifiable steps)
 
 ### Step 1 — `ingress_timeout` rename + ingress open-count/grace
@@ -225,6 +321,11 @@ for close too.
   network dies only when its last referencing entry is reaped
   (`has_clients_with_net_id`). Verify the grace model composes with this and with
   sticky sessions.
+- **Scope of the win — see §4b.1.** This counter is *request*-scoped for HTTP, so
+  it returns to 0 between interactions and an idle tab is indistinguishable from
+  an abandoned one. It fixes mid-request reaping (§2.4) and, via the TCP path,
+  the `socket` WebSocket bug — it does **not** hold a chain warm across idle.
+  Size `ingress_timeout` on HTTP entry points for human idle (minutes).
 - **Watch out:** HTTP keep-alive calls `Proxy` per request → count oscillates but
   stays balanced (one close per open via logging hook). Confirm pingora calls
   `upstream_peer`/`get_or_add_upstream` once per request and that the logging
@@ -269,6 +370,13 @@ for close too.
   `conntrack -L -s <bridge_ip>` dump (same `conntrack` CLI already used by
   `flush_container_conntrack` in `egress_policy.rs`) to correct drift. This is
   self-heal, not liveness-polling.
+- **Self-inflicted `DESTROY` events (see §4b.2) — must handle, not tolerate.**
+  Our own conntrack deletions emit `DESTROY` for flows that are still alive, and
+  `flush_container_conntrack` deletes *every* flow from a container bridge IP —
+  the same key this open-set uses — on every `EgressPolicyChanged`. Treating
+  those as closes zeroes the set and reaps live edges. Reconcile **immediately
+  after any flush we issue**; the periodic backstop alone is too late when
+  `egress_timeout` is short.
 
 ### Step 3 — `egress_timeout` + egress grace reaper (server)
 **Touches:** server (+ config). **Needs Linux / 103–104 to verify end-to-end.**
@@ -300,6 +408,16 @@ for close too.
 - Watch the `nullnet-server` timing tests — they use real wall-clock and have
   flaked on CI before (see memory `nullnet_server_timing_tests_flaky`). The new
   grace logic adds more `Instant`-based timing; keep margins wide.
+- **Net-id assertions must settle first (§4b.4).** Teardown is ack'd since #149,
+  so `send_net_teardown` returns the id asynchronously; use
+  `Orchestrator::settle_teardowns()` before sampling pool state.
+- **Explicitly test the self-inflicted-flush case (§4b.2):** with an egress edge
+  carrying live flows, trigger an `EgressPolicyChanged` reload and confirm the
+  edge is **not** reaped. This is the regression most likely to ship silently.
+- **Explicitly test the idle-tab case (§4b.1):** hold an HTTP entry point idle
+  past `ingress_timeout` with a browser tab open and confirm the behaviour is
+  what you intend (chain reaped, next click pays the rebuild) rather than what
+  the "connection existence" framing might suggest.
 
 ## 7. Key file map
 
