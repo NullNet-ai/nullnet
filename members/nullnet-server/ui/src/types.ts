@@ -180,8 +180,8 @@ export interface ChainJson {
 
 // HTTP path-based routing — see docs/http-path-routing-design.md.
 export type RouteTargetJson =
-  | { kind: 'service'; service: string }
-  | { kind: 'redirect'; to: string; status: number };
+  | { kind: 'service'; service: string; strip_prefix: boolean }
+  | { kind: 'redirect'; to: string; status: number; preserve_path: boolean; preserve_query: boolean };
 
 export interface RouteJson {
   host: string;

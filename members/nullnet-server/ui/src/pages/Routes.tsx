@@ -13,8 +13,11 @@ interface RouteFormState {
   path: string;
   targetKind: 'service' | 'redirect';
   service: string;
+  stripPrefix: boolean;
   redirectTo: string;
   redirectStatus: RedirectStatus;
+  preservePath: boolean;
+  preserveQuery: boolean;
 }
 
 const EMPTY_FORM: RouteFormState = {
@@ -22,8 +25,11 @@ const EMPTY_FORM: RouteFormState = {
   path: '/',
   targetKind: 'service',
   service: '',
+  stripPrefix: false,
   redirectTo: '',
   redirectStatus: 301,
+  preservePath: false,
+  preserveQuery: false,
 };
 
 function routeToForm(r: RouteJson): RouteFormState {
@@ -32,8 +38,11 @@ function routeToForm(r: RouteJson): RouteFormState {
     path: r.path,
     targetKind: r.target.kind,
     service: r.target.kind === 'service' ? r.target.service : '',
+    stripPrefix: r.target.kind === 'service' ? r.target.strip_prefix : false,
     redirectTo: r.target.kind === 'redirect' ? r.target.to : '',
     redirectStatus: r.target.kind === 'redirect' ? (r.target.status as RedirectStatus) : 301,
+    preservePath: r.target.kind === 'redirect' ? r.target.preserve_path : false,
+    preserveQuery: r.target.kind === 'redirect' ? r.target.preserve_query : false,
   };
 }
 
@@ -43,13 +52,25 @@ function formToRoute(f: RouteFormState): RouteJson {
     path: f.path.trim() || '/',
     target:
       f.targetKind === 'service'
-        ? { kind: 'service', service: f.service }
-        : { kind: 'redirect', to: f.redirectTo.trim(), status: f.redirectStatus },
+        ? { kind: 'service', service: f.service, strip_prefix: f.stripPrefix }
+        : {
+            kind: 'redirect',
+            to: f.redirectTo.trim(),
+            status: f.redirectStatus,
+            preserve_path: f.preservePath,
+            preserve_query: f.preserveQuery,
+          },
   };
 }
 
 function targetLabel(r: RouteJson): string {
-  return r.target.kind === 'service' ? `→ ${r.target.service}` : `redirect ${r.target.status} → ${r.target.to}`;
+  if (r.target.kind === 'service') {
+    return `→ ${r.target.service}${r.target.strip_prefix ? ' (strip prefix)' : ''}`;
+  }
+  const flags = [r.target.preserve_path && 'preserve path', r.target.preserve_query && 'preserve query']
+    .filter(Boolean)
+    .join(', ');
+  return `redirect ${r.target.status} → ${r.target.to}${flags ? ` (${flags})` : ''}`;
 }
 
 export default function RoutesPage() {
@@ -247,24 +268,39 @@ export default function RoutesPage() {
             </select>
           </label>
           {form.targetKind === 'service' ? (
-            <label className="modal-field">
-              <span>Service</span>
-              <select value={form.service} onChange={e => setForm(f => ({ ...f, service: e.target.value }))}>
-                <option value="" disabled>
-                  select a service…
-                </option>
-                {httpServices.map(s => (
-                  <option key={s} value={s}>
-                    {s}
+            <>
+              <label className="modal-field">
+                <span>Service</span>
+                <select value={form.service} onChange={e => setForm(f => ({ ...f, service: e.target.value }))}>
+                  <option value="" disabled>
+                    select a service…
                   </option>
-                ))}
-              </select>
-              {httpServices.length === 0 && (
-                <div style={{ fontSize: 11, color: 'var(--t2)' }}>
-                  No proxy-reachable http services declared in this stack yet.
-                </div>
-              )}
-            </label>
+                  {httpServices.map(s => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+                {httpServices.length === 0 && (
+                  <div style={{ fontSize: 11, color: 'var(--t2)' }}>
+                    No proxy-reachable http services declared in this stack yet.
+                  </div>
+                )}
+              </label>
+              <label className="scope-check">
+                <input
+                  type="checkbox"
+                  checked={form.stripPrefix}
+                  onChange={e => setForm(f => ({ ...f, stripPrefix: e.target.checked }))}
+                />
+                Strip matched prefix before forwarding
+              </label>
+              <div style={{ fontSize: 11, color: 'var(--t2)', marginTop: -8 }}>
+                E.g. path <code>/api</code> forwards <code>/users</code> instead of{' '}
+                <code>/api/users</code> — like NGINX's <code>proxy_pass http://backend/;</code>{' '}
+                trailing-slash behavior.
+              </div>
+            </>
           ) : (
             <>
               <label className="modal-field">
@@ -288,6 +324,30 @@ export default function RoutesPage() {
                   <option value={308}>308 Permanent Redirect</option>
                 </select>
               </label>
+              <label className="scope-check">
+                <input
+                  type="checkbox"
+                  checked={form.preservePath}
+                  onChange={e => setForm(f => ({ ...f, preservePath: e.target.checked }))}
+                />
+                Preserve matched path suffix
+              </label>
+              <div style={{ fontSize: 11, color: 'var(--t2)', marginTop: -8 }}>
+                E.g. path <code>/old</code> → <code>/new</code> on request <code>/old/x</code> redirects
+                to <code>/new/x</code>, not <code>/new</code>.
+              </div>
+              <label className="scope-check">
+                <input
+                  type="checkbox"
+                  checked={form.preserveQuery}
+                  onChange={e => setForm(f => ({ ...f, preserveQuery: e.target.checked }))}
+                />
+                Preserve query string
+              </label>
+              <div style={{ fontSize: 11, color: 'var(--t2)', marginTop: -8 }}>
+                Appends the original request's <code>?query</code> to the redirect target (merged
+                with <code>&amp;</code> if it already has one).
+              </div>
             </>
           )}
           {formError && <div className="modal-err">{formError}</div>}
