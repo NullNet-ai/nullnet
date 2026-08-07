@@ -406,6 +406,13 @@ message AgentEvent {
     AgentContainerResumeFailed    container_resume_failed     = 25;
     AgentEgressTriggerSendFailed  egress_trigger_send_failed  = 30;
     AgentGatewayForwardInstallFailed gateway_forward_install_failed = 31;
+    AgentBackendTriggerSetupTimedOut backend_trigger_setup_timed_out = 32;
+    AgentEgressSteerSetupTimedOut egress_steer_setup_timed_out = 33;
+    AgentEgressSteerInstallFailed egress_steer_install_failed = 34;
+    AgentNfqueueBindFailed        nfqueue_bind_failed        = 35;
+    AgentMssClampInstallFailed    mss_clamp_install_failed   = 36;
+    AgentEgressPolicyCheckFailed  egress_policy_check_failed = 37;
+    AgentConntrackFlushFailed     conntrack_flush_failed     = 38;
     // Client info events
     AgentVxlanSetupCompleted      vxlan_setup_completed      = 13;
     AgentVlanSetupCompleted       vlan_setup_completed       = 14;
@@ -443,6 +450,13 @@ message AgentContainerSuspendFailed  { string docker_container = 1; string error
 message AgentContainerResumeFailed   { string docker_container = 1; string error_message = 2; }
 message AgentEgressTriggerSendFailed { string service_name = 1; string dst_ip = 2; uint32 dst_port = 3; string error_message = 4; }
 message AgentGatewayForwardInstallFailed { uint32 vxlan_id = 1; string br_net = 2; }
+message AgentBackendTriggerSetupTimedOut { string service_name = 1; uint32 port = 2; string docker_container = 3; string error_message = 4; }
+message AgentEgressSteerSetupTimedOut { string docker_container = 1; string dst_ip = 2; uint32 dst_port = 3; string error_message = 4; }
+message AgentEgressSteerInstallFailed { uint32 vxlan_id = 1; optional string docker_container = 2; string error_message = 3; }
+message AgentNfqueueBindFailed      { uint32 queue_id = 1; string error_message = 2; }
+message AgentMssClampInstallFailed  { string error_message = 1; }
+message AgentEgressPolicyCheckFailed { string docker_container = 1; string dst_ip = 2; string error_message = 3; }
+message AgentConntrackFlushFailed   { string ip = 1; string error_message = 2; }
 message AgentVxlanSetupCompleted    { uint32 vxlan_id = 1; string ns_name = 2; }
 message AgentVlanSetupCompleted     { uint32 vlan_id = 1; }
 message AgentControlChannelEstablished {}

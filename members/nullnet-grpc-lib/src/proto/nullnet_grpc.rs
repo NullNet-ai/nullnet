@@ -402,7 +402,7 @@ pub struct Empty {}
 pub struct AgentEvent {
     #[prost(
         oneof = "agent_event::Event",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 25, 30, 31, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 26, 27, 28, 29, 22"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 25, 30, 31, 32, 33, 34, 35, 36, 37, 38, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 26, 27, 28, 29, 22"
     )]
     pub event: ::core::option::Option<agent_event::Event>,
 }
@@ -443,6 +443,20 @@ pub mod agent_event {
         EgressTriggerSendFailed(super::AgentEgressTriggerSendFailed),
         #[prost(message, tag = "31")]
         GatewayForwardInstallFailed(super::AgentGatewayForwardInstallFailed),
+        #[prost(message, tag = "32")]
+        BackendTriggerSetupTimedOut(super::AgentBackendTriggerSetupTimedOut),
+        #[prost(message, tag = "33")]
+        EgressSteerSetupTimedOut(super::AgentEgressSteerSetupTimedOut),
+        #[prost(message, tag = "34")]
+        EgressSteerInstallFailed(super::AgentEgressSteerInstallFailed),
+        #[prost(message, tag = "35")]
+        NfqueueBindFailed(super::AgentNfqueueBindFailed),
+        #[prost(message, tag = "36")]
+        MssClampInstallFailed(super::AgentMssClampInstallFailed),
+        #[prost(message, tag = "37")]
+        EgressPolicyCheckFailed(super::AgentEgressPolicyCheckFailed),
+        #[prost(message, tag = "38")]
+        ConntrackFlushFailed(super::AgentConntrackFlushFailed),
         /// Client info events
         #[prost(message, tag = "13")]
         VxlanSetupCompleted(super::AgentVxlanSetupCompleted),
@@ -598,6 +612,65 @@ pub struct AgentGatewayForwardInstallFailed {
     pub vxlan_id: u32,
     #[prost(string, tag = "2")]
     pub br_net: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentBackendTriggerSetupTimedOut {
+    #[prost(string, tag = "1")]
+    pub service_name: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub port: u32,
+    #[prost(string, tag = "3")]
+    pub docker_container: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub error_message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentEgressSteerSetupTimedOut {
+    #[prost(string, tag = "1")]
+    pub docker_container: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub dst_ip: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "3")]
+    pub dst_port: u32,
+    #[prost(string, tag = "4")]
+    pub error_message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentEgressSteerInstallFailed {
+    #[prost(uint32, tag = "1")]
+    pub vxlan_id: u32,
+    #[prost(string, optional, tag = "2")]
+    pub docker_container: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, tag = "3")]
+    pub error_message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentNfqueueBindFailed {
+    #[prost(uint32, tag = "1")]
+    pub queue_id: u32,
+    #[prost(string, tag = "2")]
+    pub error_message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentMssClampInstallFailed {
+    #[prost(string, tag = "1")]
+    pub error_message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentEgressPolicyCheckFailed {
+    #[prost(string, tag = "1")]
+    pub docker_container: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub dst_ip: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub error_message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentConntrackFlushFailed {
+    #[prost(string, tag = "1")]
+    pub ip: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub error_message: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AgentVxlanSetupCompleted {
