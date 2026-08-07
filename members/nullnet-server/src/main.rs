@@ -101,6 +101,7 @@ async fn main() -> Result<(), Error> {
     let nullnet = init_nullnet().await?;
     let app_state = http_server::AppState {
         services: nullnet.services().clone(),
+        routes: nullnet.routes().clone(),
         events: nullnet.orchestrator().events.clone(),
         orchestrator: nullnet.orchestrator().clone(),
         db,

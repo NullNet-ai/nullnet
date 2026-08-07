@@ -13,15 +13,17 @@ use crate::services::changes::{
 };
 use crate::services::clients::{Client, ClientInfo};
 use crate::services::edge::{Edge, RegisteredEdge};
-use crate::services::input::{MatchIndex, ServicesToml, StackMap};
+use crate::services::input::{MatchIndex, RouteMap, RouteTarget, ServicesToml, StackMap};
 use crate::services::service_info::{CountryPolicy, ServiceInfo, backend_involved_services};
 use crate::timeout::check_timeouts;
 use nullnet_grpc_lib::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use nullnet_grpc_lib::nullnet_grpc::{
     AgentEvent, BackendTriggerRequest, CertBundle, EgressDestinationReport, EgressPolicyCheck,
-    EgressPolicyVerdict, EgressTriggerRequest, Empty, IngressPolicyCheck, IngressPolicyVerdict,
-    MsgId, Net, NetMessage, NetType, PortMapping, PortMappingBundle, ProxyRequest, ServiceReport,
-    ServiceTrigger, ServicesListResponse, Upstream, agent_event::Event as AgentEventKind,
+    EgressPolicyVerdict, EgressTriggerRequest, Empty, HttpRedirect, HttpRoute, HttpRouteBundle,
+    IngressPolicyCheck, IngressPolicyVerdict, MsgId, Net, NetMessage, NetType, PortMapping,
+    PortMappingBundle, ProxyRequest, ServiceProtocol, ServiceReport, ServiceTrigger,
+    ServicesListResponse, Upstream, agent_event::Event as AgentEventKind,
+    http_route::Target as HttpRouteTarget,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::{HashMap, HashSet};
@@ -38,6 +40,12 @@ pub(crate) struct NullnetGrpcImpl {
     /// Host-match index (stack → match entries), rebuilt alongside `services`.
     /// Used to join a client's raw observations to the services it hosts.
     match_index: Arc<RwLock<MatchIndex>>,
+    /// Explicit `[[route]]` entries, partitioned by stack name, rebuilt
+    /// alongside `services`. The admin API reads this for cross-stack
+    /// `(host, path)` conflict checks on save; see `build_http_route_bundle`
+    /// for how it's turned into the wire table (including implicit fallback
+    /// routes) the proxy actually consumes.
+    routes: Arc<RwLock<RouteMap>>,
     /// Orchestrator to manage TAP-based clients and NET setups
     orchestrator: Orchestrator,
     /// Latest TLS certificate set, kept in sync with `./certs` by a watcher.
@@ -46,6 +54,10 @@ pub(crate) struct NullnetGrpcImpl {
     /// Live TCP/UDP port→service table, derived from `services` and refreshed
     /// on every services.toml change. Proxies subscribe for updates.
     port_mappings: watch::Receiver<PortMappingBundle>,
+    /// Live HTTP (host, path) → target route table, derived from `services`/
+    /// `routes` and refreshed on every services.toml change. Proxies
+    /// subscribe for updates. See docs/http-path-routing-design.md.
+    http_routes: watch::Receiver<HttpRouteBundle>,
     /// One lock per in-flight proxy request identity, so concurrent duplicates
     /// are serialized rather than each building the same chain. See
     /// [`NullnetGrpcImpl::handle_proxy_request`].
@@ -82,6 +94,55 @@ fn build_port_mapping_bundle(stacks: &StackMap) -> PortMappingBundle {
             .join(", ")
     );
     PortMappingBundle { mappings }
+}
+
+/// Build the live HTTP `(host, path)` → target route table from the current
+/// `StackMap`/`RouteMap`: every explicit `[[route]]` entry, plus an implicit
+/// `{host = name, path = "/"} -> Service(name)` fallback for every
+/// proxy-reachable http service whose name isn't already claimed as a host by
+/// an explicit route in *any* stack — so an install with no `[[route]]`
+/// entries at all keeps today's plain Host-header routing unchanged. See
+/// docs/http-path-routing-design.md.
+fn build_http_route_bundle(stacks: &StackMap, routes: &RouteMap) -> HttpRouteBundle {
+    let explicit_hosts: HashSet<&str> = routes
+        .values()
+        .flat_map(|entries| entries.iter().map(|r| r.host.as_str()))
+        .collect();
+
+    let mut wire_routes: Vec<HttpRoute> = routes
+        .values()
+        .flat_map(|entries| entries.iter())
+        .map(|r| HttpRoute {
+            host: r.host.clone(),
+            path_prefix: r.path.clone(),
+            target: Some(match &r.target {
+                RouteTarget::Service(name) => HttpRouteTarget::ServiceName(name.clone()),
+                RouteTarget::Redirect { to, status } => HttpRouteTarget::Redirect(HttpRedirect {
+                    to: to.clone(),
+                    status_code: u32::from(*status),
+                }),
+            }),
+        })
+        .collect();
+
+    for (name, info) in stacks.values().flat_map(HashMap::iter) {
+        if info.protocol() != ServiceProtocol::Http || info.timeout().is_none() {
+            continue;
+        }
+        if explicit_hosts.contains(name.as_str()) {
+            continue;
+        }
+        wire_routes.push(HttpRoute {
+            host: name.clone(),
+            path_prefix: "/".to_string(),
+            target: Some(HttpRouteTarget::ServiceName(name.clone())),
+        });
+    }
+
+    println!("[http-routes] bundle built: {} route(s)", wire_routes.len());
+    HttpRouteBundle {
+        routes: wire_routes,
+    }
 }
 
 /// Build the trigger config for one node: the triggers of the services it
@@ -151,9 +212,10 @@ fn find_service_stack<'a>(services: &'a StackMap, service_name: &str) -> Option<
 
 impl NullnetGrpcImpl {
     pub async fn new() -> Result<Self, Error> {
-        let (stacks, index) = ServicesToml::load_validated().await?;
+        let (stacks, index, route_map) = ServicesToml::load_validated().await?;
         let services = Arc::new(RwLock::new(stacks));
         let match_index = Arc::new(RwLock::new(index));
+        let routes = Arc::new(RwLock::new(route_map));
 
         // regenerate the service graphviz periodically for debugging
         let services_2 = services.clone();
@@ -167,20 +229,25 @@ impl NullnetGrpcImpl {
         // one waiter, so each consumer needs its own `Notify` rather than
         // racing `check_timeouts` for the same wake-up.
         let port_mappings_changed = Arc::new(Notify::new());
+        let http_routes_changed = Arc::new(Notify::new());
 
         // keep services up to date with the services.toml file
         let services_2 = services.clone();
         let match_index_2 = match_index.clone();
+        let routes_2 = routes.clone();
         let orchestrator_2 = orchestrator.clone();
         let config_changed_2 = config_changed.clone();
         let port_mappings_changed_2 = port_mappings_changed.clone();
+        let http_routes_changed_2 = http_routes_changed.clone();
         tokio::spawn(async move {
             if let Err(e) = ServicesToml::watch(
                 &services_2,
                 &match_index_2,
+                &routes_2,
                 orchestrator_2,
                 config_changed_2,
                 port_mappings_changed_2,
+                http_routes_changed_2,
             )
             .await
             {
@@ -197,6 +264,24 @@ impl NullnetGrpcImpl {
                 port_mappings_changed.notified().await;
                 let bundle = build_port_mapping_bundle(&*services_2.read().await);
                 if port_mappings_tx.send(bundle).is_err() {
+                    break;
+                }
+            }
+        });
+
+        // live HTTP (host, path)→target route table, refreshed whenever
+        // services.toml changes
+        let initial_routes =
+            build_http_route_bundle(&*services.read().await, &*routes.read().await);
+        let (http_routes_tx, http_routes_rx) = watch::channel(initial_routes);
+        let services_2 = services.clone();
+        let routes_2 = routes.clone();
+        tokio::spawn(async move {
+            loop {
+                http_routes_changed.notified().await;
+                let bundle =
+                    build_http_route_bundle(&*services_2.read().await, &*routes_2.read().await);
+                if http_routes_tx.send(bundle).is_err() {
                     break;
                 }
             }
@@ -220,9 +305,11 @@ impl NullnetGrpcImpl {
         Ok(NullnetGrpcImpl {
             services,
             match_index,
+            routes,
             orchestrator,
             certs: certs_rx,
             port_mappings: port_mappings_rx,
+            http_routes: http_routes_rx,
             inflight_proxy: Arc::new(StdMutex::new(HashMap::new())),
         })
     }
@@ -1124,6 +1211,10 @@ impl NullnetGrpcImpl {
         &self.services
     }
 
+    pub(crate) fn routes(&self) -> &Arc<RwLock<RouteMap>> {
+        &self.routes
+    }
+
     pub(crate) fn orchestrator(&self) -> &Orchestrator {
         &self.orchestrator
     }
@@ -1561,12 +1652,15 @@ impl NullnetGrpcImpl {
     pub(crate) fn new_for_test(services: StackMap) -> Self {
         let (_, certs) = watch::channel(CertBundle::default());
         let (_, port_mappings) = watch::channel(PortMappingBundle::default());
+        let (_, http_routes) = watch::channel(HttpRouteBundle::default());
         NullnetGrpcImpl {
             services: Arc::new(RwLock::new(services)),
             match_index: Arc::new(RwLock::new(MatchIndex::new())),
+            routes: Arc::new(RwLock::new(RouteMap::new())),
             orchestrator: Orchestrator::new(),
             certs,
             port_mappings,
+            http_routes,
             inflight_proxy: Arc::new(StdMutex::new(HashMap::new())),
         }
     }
@@ -1728,6 +1822,30 @@ impl NullnetGrpc for NullnetGrpcImpl {
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
+    type WatchHttpRoutesStream = ReceiverStream<Result<HttpRouteBundle, Status>>;
+
+    async fn watch_http_routes(
+        &self,
+        _: Request<Empty>,
+    ) -> Result<Response<Self::WatchHttpRoutesStream>, Status> {
+        let mut routes = self.http_routes.clone();
+        let (tx, rx) = mpsc::channel(4);
+        tokio::spawn(async move {
+            // send the current table immediately, then one snapshot per change
+            let initial = routes.borrow_and_update().clone();
+            if tx.send(Ok(initial)).await.is_err() {
+                return;
+            }
+            while routes.changed().await.is_ok() {
+                let snapshot = routes.borrow_and_update().clone();
+                if tx.send(Ok(snapshot)).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
     async fn report_event(&self, req: Request<AgentEvent>) -> Result<Response<Empty>, Status> {
         let Some(kind) = req.into_inner().event else {
             return Ok(Response::new(Empty {}));
@@ -1829,5 +1947,138 @@ impl NullnetGrpc for NullnetGrpcImpl {
         };
         self.orchestrator.events.emit(event).await;
         Ok(Response::new(Empty {}))
+    }
+}
+
+#[cfg(test)]
+mod http_route_bundle_tests {
+    use super::*;
+    use crate::services::input::{RouteEntry, RouteTarget};
+    use crate::services::service_info::CountryPolicy;
+
+    fn http_service(timeout: Option<u64>) -> ServiceInfo {
+        ServiceInfo::new(
+            vec![],
+            HashMap::new(),
+            timeout,
+            None,
+            ServiceProtocol::Http,
+            None,
+            CountryPolicy::None,
+            CountryPolicy::None,
+        )
+    }
+
+    fn tcp_service(listen_port: u16) -> ServiceInfo {
+        ServiceInfo::new(
+            vec![],
+            HashMap::new(),
+            Some(0),
+            None,
+            ServiceProtocol::Tcp,
+            Some(listen_port),
+            CountryPolicy::None,
+            CountryPolicy::None,
+        )
+    }
+
+    #[test]
+    fn declares_no_routes_falls_back_to_implicit_host_route() {
+        let stacks: StackMap = HashMap::from([(
+            "alpha".to_string(),
+            HashMap::from([("grafana".to_string(), http_service(Some(30)))]),
+        )]);
+        let bundle = build_http_route_bundle(&stacks, &RouteMap::new());
+
+        assert_eq!(bundle.routes.len(), 1);
+        assert_eq!(bundle.routes[0].host, "grafana");
+        assert_eq!(bundle.routes[0].path_prefix, "/");
+        assert_eq!(
+            bundle.routes[0].target,
+            Some(HttpRouteTarget::ServiceName("grafana".to_string()))
+        );
+    }
+
+    #[test]
+    fn explicit_route_for_a_host_suppresses_its_implicit_fallback() {
+        let stacks: StackMap = HashMap::from([(
+            "alpha".to_string(),
+            HashMap::from([
+                ("grafana".to_string(), http_service(Some(30))),
+                ("gitlab".to_string(), http_service(Some(30))),
+            ]),
+        )]);
+        // "grafana" gets explicit path-based routes; "gitlab" gets none, so it
+        // still falls back to its own implicit `{host=name, path="/"}` route.
+        let routes: RouteMap = HashMap::from([(
+            "alpha".to_string(),
+            vec![RouteEntry {
+                host: "grafana".to_string(),
+                path: "/dashboards".to_string(),
+                target: RouteTarget::Service("grafana".to_string()),
+            }],
+        )]);
+        let bundle = build_http_route_bundle(&stacks, &routes);
+
+        assert_eq!(bundle.routes.len(), 2);
+        assert!(
+            bundle
+                .routes
+                .iter()
+                .any(|r| r.host == "grafana" && r.path_prefix == "/dashboards")
+        );
+        assert!(
+            bundle
+                .routes
+                .iter()
+                .any(|r| r.host == "gitlab" && r.path_prefix == "/"),
+            "gitlab has no explicit route, so it should keep its implicit fallback"
+        );
+        // no separate implicit "/" route synthesized for grafana on top of its
+        // explicit one
+        assert!(
+            !bundle
+                .routes
+                .iter()
+                .any(|r| r.host == "grafana" && r.path_prefix == "/")
+        );
+    }
+
+    #[test]
+    fn backend_only_and_non_http_services_get_no_implicit_route() {
+        let stacks: StackMap = HashMap::from([(
+            "alpha".to_string(),
+            HashMap::from([
+                ("backend.only".to_string(), http_service(None)),
+                ("redis".to_string(), tcp_service(6379)),
+            ]),
+        )]);
+        let bundle = build_http_route_bundle(&stacks, &RouteMap::new());
+        assert!(bundle.routes.is_empty());
+    }
+
+    #[test]
+    fn redirect_route_converts_to_wire_redirect() {
+        let routes: RouteMap = HashMap::from([(
+            "alpha".to_string(),
+            vec![RouteEntry {
+                host: "old.example.com".to_string(),
+                path: "/".to_string(),
+                target: RouteTarget::Redirect {
+                    to: "https://new.example.com/".to_string(),
+                    status: 301,
+                },
+            }],
+        )]);
+        let bundle = build_http_route_bundle(&StackMap::new(), &routes);
+
+        assert_eq!(bundle.routes.len(), 1);
+        assert_eq!(
+            bundle.routes[0].target,
+            Some(HttpRouteTarget::Redirect(HttpRedirect {
+                to: "https://new.example.com/".to_string(),
+                status_code: 301,
+            }))
+        );
     }
 }
