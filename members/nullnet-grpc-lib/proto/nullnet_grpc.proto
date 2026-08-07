@@ -312,15 +312,27 @@ message HttpRoute {
     string service_name = 3;
     HttpRedirect redirect = 4;
   }
+  // Only meaningful when `target` is `service_name`: strip the matched
+  // `path_prefix` from the path forwarded to the backend — the NGINX
+  // `proxy_pass http://backend/;` trailing-slash equivalent. `false`
+  // (default) forwards the original request path unchanged.
+  bool strip_prefix = 5;
 }
 
 // A literal redirect target for an HttpRoute. `to` is either an absolute URL
 // (used verbatim) or a path (starting with `/`; same scheme/host as the
-// incoming request, target path substituted). No variable interpolation.
+// incoming request, target path substituted).
 message HttpRedirect {
   string to = 1;
   // One of 301/302/307/308.
   uint32 status_code = 2;
+  // Append the request path's suffix beyond the matched `path_prefix` to
+  // `to` — the NGINX `rewrite ^/old(.*) /new$1 permanent;` equivalent.
+  // `false` (default) uses `to` verbatim, same as before this field existed.
+  bool preserve_path = 3;
+  // Append the original request's query string to the final redirect
+  // target (merged with `?`/`&` if `to` already carries its own query).
+  bool preserve_query = 4;
 }
 
 message HttpRouteBundle {

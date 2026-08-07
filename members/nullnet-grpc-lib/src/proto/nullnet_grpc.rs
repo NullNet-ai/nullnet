@@ -295,6 +295,12 @@ pub struct HttpRoute {
     pub host: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub path_prefix: ::prost::alloc::string::String,
+    /// Only meaningful when `target` is `service_name`: strip the matched
+    /// `path_prefix` from the path forwarded to the backend — the NGINX
+    /// `proxy_pass <http://backend/;`> trailing-slash equivalent. `false`
+    /// (default) forwards the original request path unchanged.
+    #[prost(bool, tag = "5")]
+    pub strip_prefix: bool,
     #[prost(oneof = "http_route::Target", tags = "3, 4")]
     pub target: ::core::option::Option<http_route::Target>,
 }
@@ -310,7 +316,7 @@ pub mod http_route {
 }
 /// A literal redirect target for an HttpRoute. `to` is either an absolute URL
 /// (used verbatim) or a path (starting with `/`; same scheme/host as the
-/// incoming request, target path substituted). No variable interpolation.
+/// incoming request, target path substituted).
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct HttpRedirect {
     #[prost(string, tag = "1")]
@@ -318,6 +324,15 @@ pub struct HttpRedirect {
     /// One of 301/302/307/308.
     #[prost(uint32, tag = "2")]
     pub status_code: u32,
+    /// Append the request path's suffix beyond the matched `path_prefix` to
+    /// `to` — the NGINX `rewrite ^/old(.*) /new$1 permanent;` equivalent.
+    /// `false` (default) uses `to` verbatim, same as before this field existed.
+    #[prost(bool, tag = "3")]
+    pub preserve_path: bool,
+    /// Append the original request's query string to the final redirect
+    /// target (merged with `?`/`&` if `to` already carries its own query).
+    #[prost(bool, tag = "4")]
+    pub preserve_query: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HttpRouteBundle {
