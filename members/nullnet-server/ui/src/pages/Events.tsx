@@ -33,6 +33,10 @@ const KIND_LABELS: Record<string, string> = {
   net_id_pool_exhausted: 'net_id_pool_exhausted',
   proxy_chain_setup_failed: 'proxy_chain_setup_failed',
   backend_trigger_setup_bailed: 'backend_trigger_setup_bailed',
+  udp_port_pool_exhausted: 'udp_port_pool_exhausted',
+  config_reload_failed: 'config_reload_failed',
+  file_watch_failed: 'file_watch_failed',
+  port_mapping_conflict: 'port_mapping_conflict',
   // Client error
   vxlan_setup_failed: 'vxlan_setup_failed',
   vlan_setup_failed: 'vlan_setup_failed',
@@ -50,6 +54,13 @@ const KIND_LABELS: Record<string, string> = {
   firewall_rules_load_failed: 'firewall_rules_load_failed',
   container_suspend_failed: 'container_suspend_failed',
   container_resume_failed: 'container_resume_failed',
+  backend_trigger_setup_timed_out: 'backend_trigger_setup_timed_out',
+  egress_steer_setup_timed_out: 'egress_steer_setup_timed_out',
+  egress_steer_install_failed: 'egress_steer_install_failed',
+  nfqueue_bind_failed: 'nfqueue_bind_failed',
+  mss_clamp_install_failed: 'mss_clamp_install_failed',
+  egress_policy_check_failed: 'egress_policy_check_failed',
+  conntrack_flush_failed: 'conntrack_flush_failed',
   // Client info
   vxlan_setup_completed: 'vxlan_setup_completed',
   vlan_setup_completed: 'vlan_setup_completed',
@@ -62,12 +73,20 @@ const KIND_LABELS: Record<string, string> = {
   upstream_ip_parse_failed: 'upstream_ip_parse_failed',
   proxy_client_not_inet: 'proxy_client_not_inet',
   tls_certificate_invalid: 'tls_certificate_invalid',
+  tcp_listener_bind_failed: 'tcp_listener_bind_failed',
+  udp_listener_bind_failed: 'udp_listener_bind_failed',
+  tcp_upstream_connect_failed: 'tcp_upstream_connect_failed',
+  udp_upstream_connect_failed: 'udp_upstream_connect_failed',
   // Proxy info
   proxy_request_routed: 'proxy_request_routed',
+  proxy_connected: 'proxy_connected',
+  proxy_disconnected: 'proxy_disconnected',
   // Certificate
   certificate_installed: 'certificate_installed',
   certificate_renewed: 'certificate_renewed',
   certificate_removed: 'certificate_removed',
+  certificate_renewal_failed: 'certificate_renewal_failed',
+  certificate_credentials_store_failed: 'certificate_credentials_store_failed',
 };
 
 const ALL_KINDS = Object.keys(KIND_LABELS);
@@ -109,10 +128,17 @@ function eventDetail(e: EventJson): string {
     case 'max_networks_limit_enforced':
       return `${e.service} · proxy ${e.proxy_ip} · net ${e.net_id} · limit ${e.limit}`;
     case 'net_id_pool_exhausted':
+    case 'udp_port_pool_exhausted':
     case 'proxy_chain_setup_failed':
       return `${e.service} · ${e.client_ip}`;
     case 'backend_trigger_setup_bailed':
       return `${e.service} · port ${e.port}`;
+    case 'config_reload_failed':
+      return e.error_message;
+    case 'file_watch_failed':
+      return `${e.target} · ${e.error_message}`;
+    case 'port_mapping_conflict':
+      return `${e.protocol}/${e.listen_port} · ${e.stack_a}/${e.service_a} vs ${e.stack_b}/${e.service_b}`;
     // Client error
     case 'vxlan_setup_failed':
     case 'vxlan_teardown_failed':
@@ -143,6 +169,20 @@ function eventDetail(e: EventJson): string {
     case 'container_suspend_failed':
     case 'container_resume_failed':
       return `${e.docker_container} · ${e.error_message}`;
+    case 'backend_trigger_setup_timed_out':
+      return `${e.service_name}:${e.port} · ${e.docker_container} · ${e.error_message}`;
+    case 'egress_steer_setup_timed_out':
+      return `${e.docker_container} → ${e.dst_ip}:${e.dst_port} · ${e.error_message}`;
+    case 'egress_steer_install_failed':
+      return `vxlan ${e.vxlan_id} · ${e.docker_container ?? '—'} · ${e.error_message}`;
+    case 'nfqueue_bind_failed':
+      return `queue ${e.queue_id} · ${e.error_message}`;
+    case 'mss_clamp_install_failed':
+      return e.error_message;
+    case 'egress_policy_check_failed':
+      return `${e.docker_container} → ${e.dst_ip} · ${e.error_message}`;
+    case 'conntrack_flush_failed':
+      return `${e.ip} · ${e.error_message}`;
     // Client info
     case 'vxlan_setup_completed':
       return `vxlan ${e.vxlan_id} · ${e.ns_name}`;
@@ -164,14 +204,26 @@ function eventDetail(e: EventJson): string {
       return e.address_family;
     case 'tls_certificate_invalid':
       return `${e.domain} · ${e.reason}`;
+    case 'tcp_listener_bind_failed':
+    case 'udp_listener_bind_failed':
+      return `:${e.listen_port} · ${e.service_name} · ${e.error_message}`;
+    case 'tcp_upstream_connect_failed':
+    case 'udp_upstream_connect_failed':
+      return `${e.service_name} · ${e.client_ip} · ${e.error_message}`;
     // Certificate events
     case 'certificate_installed':
     case 'certificate_renewed':
     case 'certificate_removed':
       return e.domain;
+    case 'certificate_renewal_failed':
+    case 'certificate_credentials_store_failed':
+      return `${e.domain} · ${e.error_message}`;
     // Proxy info
     case 'proxy_request_routed':
       return `${e.service_name} · ${e.client_ip} → ${e.upstream_ip} · ${e.latency_ms}ms`;
+    case 'proxy_connected':
+    case 'proxy_disconnected':
+      return e.ip;
   }
 }
 
