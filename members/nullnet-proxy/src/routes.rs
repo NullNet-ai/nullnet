@@ -8,8 +8,27 @@ use std::sync::Arc;
 /// What a matched route dispatches to.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum RouteMatch {
-    Backend(String),
-    Redirect { to: String, status: u16 },
+    Backend {
+        service_name: String,
+        /// Path to actually forward to the backend: the original request
+        /// path unchanged, or — when the route's `strip_prefix` is set —
+        /// the original path with the matched `path_prefix` stripped (the
+        /// NGINX `proxy_pass http://backend/;` trailing-slash equivalent).
+        /// Always a valid absolute path (never empty, always starts with
+        /// `/`), even when stripping would otherwise leave nothing.
+        forward_path: String,
+    },
+    Redirect {
+        to: String,
+        status: u16,
+        preserve_path: bool,
+        preserve_query: bool,
+        /// The request path's suffix beyond the matched `path_prefix` —
+        /// appended to `to` when `preserve_path` is set. Caller (`main.rs`)
+        /// combines this with the request's query string and Host header;
+        /// `routes.rs` only knows about the path.
+        matched_suffix: String,
+    },
 }
 
 /// The outcome of resolving `(host, path)` against the route table.
@@ -64,16 +83,27 @@ impl RouteTable {
             return Resolution::Fallback;
         };
         for r in routes {
-            if !path.starts_with(r.path_prefix.as_str()) {
+            let Some(suffix) = path.strip_prefix(r.path_prefix.as_str()) else {
                 continue;
-            }
+            };
             return match &r.target {
                 Some(Target::ServiceName(name)) => {
-                    Resolution::Matched(RouteMatch::Backend(name.clone()))
+                    let forward_path = if r.strip_prefix {
+                        normalize_forward_path(suffix)
+                    } else {
+                        path.to_string()
+                    };
+                    Resolution::Matched(RouteMatch::Backend {
+                        service_name: name.clone(),
+                        forward_path,
+                    })
                 }
                 Some(Target::Redirect(redirect)) => Resolution::Matched(RouteMatch::Redirect {
                     to: redirect.to.clone(),
                     status: u16::try_from(redirect.status_code).unwrap_or(301),
+                    preserve_path: redirect.preserve_path,
+                    preserve_query: redirect.preserve_query,
+                    matched_suffix: suffix.to_string(),
                 }),
                 // Malformed entry (neither target set) — the server never
                 // sends this; skip rather than dispatch nowhere.
@@ -81,6 +111,20 @@ impl RouteTable {
             };
         }
         Resolution::NotFound
+    }
+}
+
+/// A stripped path is always forwarded as a valid absolute path: `""` (the
+/// whole path matched the prefix exactly) becomes `/`, and a suffix that
+/// lost its leading slash (stripping `path_prefix = "/"` itself) gets one
+/// back.
+fn normalize_forward_path(suffix: &str) -> String {
+    if suffix.is_empty() {
+        "/".to_string()
+    } else if suffix.starts_with('/') {
+        suffix.to_string()
+    } else {
+        format!("/{suffix}")
     }
 }
 
@@ -121,6 +165,16 @@ mod tests {
             host: host.to_string(),
             path_prefix: path.to_string(),
             target: Some(Target::ServiceName(service.to_string())),
+            strip_prefix: false,
+        }
+    }
+
+    fn strip_prefix_route(host: &str, path: &str, service: &str) -> HttpRoute {
+        HttpRoute {
+            host: host.to_string(),
+            path_prefix: path.to_string(),
+            target: Some(Target::ServiceName(service.to_string())),
+            strip_prefix: true,
         }
     }
 
@@ -131,7 +185,24 @@ mod tests {
             target: Some(Target::Redirect(HttpRedirect {
                 to: to.to_string(),
                 status_code: status,
+                preserve_path: false,
+                preserve_query: false,
             })),
+            strip_prefix: false,
+        }
+    }
+
+    fn preserving_redirect_route(host: &str, path: &str, to: &str, status: u32) -> HttpRoute {
+        HttpRoute {
+            host: host.to_string(),
+            path_prefix: path.to_string(),
+            target: Some(Target::Redirect(HttpRedirect {
+                to: to.to_string(),
+                status_code: status,
+                preserve_path: true,
+                preserve_query: true,
+            })),
+            strip_prefix: false,
         }
     }
 
@@ -153,15 +224,24 @@ mod tests {
         let table = RouteTable::from_bundle(&bundle);
         assert_eq!(
             table.resolve("ops.example.com", "/api/v2/users"),
-            Resolution::Matched(RouteMatch::Backend("api-v2".to_string()))
+            Resolution::Matched(RouteMatch::Backend {
+                service_name: "api-v2".to_string(),
+                forward_path: "/api/v2/users".to_string(),
+            })
         );
         assert_eq!(
             table.resolve("ops.example.com", "/api/users"),
-            Resolution::Matched(RouteMatch::Backend("api".to_string()))
+            Resolution::Matched(RouteMatch::Backend {
+                service_name: "api".to_string(),
+                forward_path: "/api/users".to_string(),
+            })
         );
         assert_eq!(
             table.resolve("ops.example.com", "/anything-else"),
-            Resolution::Matched(RouteMatch::Backend("grafana".to_string()))
+            Resolution::Matched(RouteMatch::Backend {
+                service_name: "grafana".to_string(),
+                forward_path: "/anything-else".to_string(),
+            })
         );
     }
 
@@ -193,6 +273,77 @@ mod tests {
             Resolution::Matched(RouteMatch::Redirect {
                 to: "https://ops.example.com/".to_string(),
                 status: 301,
+                preserve_path: false,
+                preserve_query: false,
+                matched_suffix: "whatever".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn strip_prefix_removes_matched_prefix_from_forward_path() {
+        let bundle = HttpRouteBundle {
+            routes: vec![strip_prefix_route("ops.example.com", "/api", "api")],
+        };
+        let table = RouteTable::from_bundle(&bundle);
+        assert_eq!(
+            table.resolve("ops.example.com", "/api/users"),
+            Resolution::Matched(RouteMatch::Backend {
+                service_name: "api".to_string(),
+                forward_path: "/users".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn strip_prefix_on_exact_match_forwards_root() {
+        let bundle = HttpRouteBundle {
+            routes: vec![strip_prefix_route("ops.example.com", "/api", "api")],
+        };
+        let table = RouteTable::from_bundle(&bundle);
+        assert_eq!(
+            table.resolve("ops.example.com", "/api"),
+            Resolution::Matched(RouteMatch::Backend {
+                service_name: "api".to_string(),
+                forward_path: "/".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn strip_prefix_on_catch_all_keeps_leading_slash() {
+        let bundle = HttpRouteBundle {
+            routes: vec![strip_prefix_route("ops.example.com", "/", "root")],
+        };
+        let table = RouteTable::from_bundle(&bundle);
+        assert_eq!(
+            table.resolve("ops.example.com", "/foo/bar"),
+            Resolution::Matched(RouteMatch::Backend {
+                service_name: "root".to_string(),
+                forward_path: "/foo/bar".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn preserving_redirect_carries_suffix_and_flags() {
+        let bundle = HttpRouteBundle {
+            routes: vec![preserving_redirect_route(
+                "old.example.com",
+                "/old",
+                "/new",
+                301,
+            )],
+        };
+        let table = RouteTable::from_bundle(&bundle);
+        assert_eq!(
+            table.resolve("old.example.com", "/old/x/y"),
+            Resolution::Matched(RouteMatch::Redirect {
+                to: "/new".to_string(),
+                status: 301,
+                preserve_path: true,
+                preserve_query: true,
+                matched_suffix: "/x/y".to_string(),
             })
         );
     }
