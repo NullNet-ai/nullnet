@@ -86,6 +86,7 @@ export type EventJson =
   | WithSeverity & { type: 'setup_timeout'; net_id: number; service: string }
   | WithSeverity & { type: 'session_created'; net_id: number; service: string; client_ip: string }
   | WithSeverity & { type: 'session_torn_down'; net_id: number; service: string; client_ip: string }
+  | WithSeverity & { type: 'net_teardown_unconfirmed'; net_id: number; node_ip: string }
   | WithSeverity & { type: 'config_reloaded'; stack: string }
   | WithSeverity & { type: 'config_stack_removed'; stack: string }
   | WithSeverity & { type: 'all_replicas_removed'; service: string; stack: string; ip: string }
