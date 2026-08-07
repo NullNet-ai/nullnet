@@ -1123,6 +1123,21 @@ listen_port = 6379
             .map_err(|e| e.to_str().to_string())
     }
 
+    /// Backward compatibility: `[[route]]` is entirely optional. A stack file
+    /// written before this feature existed has no such block anywhere, and
+    /// must keep parsing exactly as it always did, with zero route entries.
+    #[test]
+    fn stack_with_no_route_blocks_parses_with_empty_routes() {
+        let toml_str = r#"
+[[services]]
+name = "color.com"
+timeout = 30
+docker_container = "color"
+port = 8080
+"#;
+        assert_eq!(routes_of(toml_str).unwrap(), Vec::new());
+    }
+
     #[test]
     fn route_targeting_a_declared_http_service_parses() {
         let toml_str = r#"

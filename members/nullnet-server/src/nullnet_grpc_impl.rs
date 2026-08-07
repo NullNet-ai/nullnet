@@ -1982,6 +1982,51 @@ mod http_route_bundle_tests {
         )
     }
 
+    /// End-to-end backward-compatibility guarantee: a stack file written
+    /// before this feature existed — no `[[route]]` block anywhere, just a
+    /// mix of http/tcp/backend-only `[[services]]` — parses unchanged
+    /// (`[[services]]`/`[[route]]` are both optional) and produces exactly
+    /// the implicit Host-only dispatch every such service already had.
+    #[test]
+    fn old_config_with_no_route_blocks_is_unaffected() {
+        let toml_str = r#"
+[[services]]
+name = "color.com"
+timeout = 30
+docker_container = "color"
+port = 8080
+
+[[services]]
+name = "redis.internal"
+timeout = 0
+protocol = "tcp"
+listen_port = 6379
+
+[[services]]
+name = "backend.only"
+proxy_dependencies = [["color.com"]]
+"#;
+        let parsed: ServicesToml = toml::from_str(toml_str).unwrap();
+        let services = parsed.services_map().unwrap();
+        let stacks: StackMap = HashMap::from([("legacy".to_string(), services)]);
+
+        // No [[route]] block at all → RouteMap has no entry for this stack,
+        // exactly as a pre-feature server would never have populated one.
+        let bundle = build_http_route_bundle(&stacks, &RouteMap::new());
+
+        // Only the proxy-reachable http service ("color.com") gets a route —
+        // the tcp service stays on its listen_port (port_mappings, unrelated
+        // to this bundle) and the backend-only service was never
+        // proxy-reachable to begin with.
+        assert_eq!(bundle.routes.len(), 1);
+        assert_eq!(bundle.routes[0].host, "color.com");
+        assert_eq!(bundle.routes[0].path_prefix, "/");
+        assert_eq!(
+            bundle.routes[0].target,
+            Some(HttpRouteTarget::ServiceName("color.com".to_string()))
+        );
+    }
+
     #[test]
     fn declares_no_routes_falls_back_to_implicit_host_route() {
         let stacks: StackMap = HashMap::from([(
