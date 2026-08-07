@@ -110,6 +110,13 @@ pub(crate) enum Event {
         listen_port: u16,
         timestamp: u64,
     },
+    RouteConflict {
+        stack_a: String,
+        stack_b: String,
+        host: String,
+        path: String,
+        timestamp: u64,
+    },
     AllReplicasRemoved {
         service: String,
         stack: String,
@@ -362,6 +369,7 @@ impl Event {
             Self::ConfigReloaded { .. } => "config_reloaded",
             Self::ConfigStackRemoved { .. } => "config_stack_removed",
             Self::PortMappingConflict { .. } => "port_mapping_conflict",
+            Self::RouteConflict { .. } => "route_conflict",
             Self::AllReplicasRemoved { .. } => "all_replicas_removed",
             Self::ServiceReachabilityToggled { .. } => "service_reachability_toggled",
             Self::ProxyClientTimedOut { .. } => "proxy_client_timed_out",
@@ -465,6 +473,7 @@ impl Event {
             | Self::ProxyClientNotInet { .. }
             | Self::TlsCertificateInvalid { .. }
             | Self::PortMappingConflict { .. }
+            | Self::RouteConflict { .. }
             | Self::TcpListenerBindFailed { .. }
             | Self::UdpListenerBindFailed { .. }
             | Self::TcpUpstreamConnectFailed { .. }
@@ -597,6 +606,21 @@ impl Event {
             service_b,
             protocol,
             listen_port,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn route_conflict(
+        stack_a: String,
+        stack_b: String,
+        host: String,
+        path: String,
+    ) -> Self {
+        Self::RouteConflict {
+            stack_a,
+            stack_b,
+            host,
+            path,
             timestamp: now_secs(),
         }
     }

@@ -177,3 +177,21 @@ export interface ChainJson {
   proxy_net_id: number;
   all_net_ids: number[];
 }
+
+// HTTP path-based routing — see docs/http-path-routing-design.md.
+export type RouteTargetJson =
+  | { kind: 'service'; service: string; strip_prefix: boolean }
+  | { kind: 'redirect'; to: string; status: number; preserve_path: boolean; preserve_query: boolean };
+
+export interface RouteJson {
+  host: string;
+  path: string;
+  target: RouteTargetJson;
+}
+
+export interface RoutesResponseJson {
+  routes: RouteJson[];
+  /** Declared, proxy-reachable `protocol = "http"` service names in this
+   * stack — populates the "backend service" dropdown when adding a route. */
+  http_services: string[];
+}

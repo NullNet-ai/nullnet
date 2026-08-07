@@ -66,6 +66,14 @@ service NullnetGrpc {
   // table immediately on subscribe and again whenever services.toml changes,
   // so the proxy opens/closes raw TCP/UDP listeners without a restart.
   rpc WatchPortMappings(Empty) returns (stream PortMappingBundle);
+
+  // HTTP path-routing distribution APIs --------------------------------------------------------
+
+  // Long-lived stream: the server pushes the full HTTP (host, path) → target
+  // route table immediately on subscribe and again whenever services.toml
+  // changes, so the proxy dispatches path-based routes/redirects without a
+  // restart. See docs/http-path-routing-design.md.
+  rpc WatchHttpRoutes(Empty) returns (stream HttpRouteBundle);
 }
 
 // TAP-based clients ---------------------------------------------------------------------------------------------------
@@ -288,6 +296,47 @@ message PortMapping {
 
 message PortMappingBundle {
   repeated PortMapping mappings = 1;
+}
+
+// HTTP path routing ----------------------------------------------------------------------------
+
+// One location-block-style dispatch rule for HTTP(S): within a host, the
+// entry with the longest `path_prefix` that prefix-matches the request path
+// wins. `path_prefix = "/"` is the catch-all. Target is mutually exclusive:
+// either proxy_pass to an existing HTTP service (resolved exactly like a
+// Host-routed service is today) or a literal redirect.
+message HttpRoute {
+  string host = 1;
+  string path_prefix = 2;
+  oneof target {
+    string service_name = 3;
+    HttpRedirect redirect = 4;
+  }
+  // Only meaningful when `target` is `service_name`: strip the matched
+  // `path_prefix` from the path forwarded to the backend — the NGINX
+  // `proxy_pass http://backend/;` trailing-slash equivalent. `false`
+  // (default) forwards the original request path unchanged.
+  bool strip_prefix = 5;
+}
+
+// A literal redirect target for an HttpRoute. `to` is either an absolute URL
+// (used verbatim) or a path (starting with `/`; same scheme/host as the
+// incoming request, target path substituted).
+message HttpRedirect {
+  string to = 1;
+  // One of 301/302/307/308.
+  uint32 status_code = 2;
+  // Append the request path's suffix beyond the matched `path_prefix` to
+  // `to` — the NGINX `rewrite ^/old(.*) /new$1 permanent;` equivalent.
+  // `false` (default) uses `to` verbatim, same as before this field existed.
+  bool preserve_path = 3;
+  // Append the original request's query string to the final redirect
+  // target (merged with `?`/`&` if `to` already carries its own query).
+  bool preserve_query = 4;
+}
+
+message HttpRouteBundle {
+  repeated HttpRoute routes = 1;
 }
 
 // Backend-triggered chains --------------------------------------------------------------------------------------------

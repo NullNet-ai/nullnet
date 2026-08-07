@@ -1,7 +1,7 @@
 use crate::db::Db;
 use crate::events::EventStore;
 use crate::orchestrator::Orchestrator;
-use crate::services::input::StackMap;
+use crate::services::input::{RouteMap, StackMap};
 use axum::Router;
 use axum::routing::{delete, get, patch, post};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -17,6 +17,7 @@ mod events_stream;
 mod graph;
 mod health;
 mod nodes;
+mod routes;
 mod services;
 mod sessions;
 mod stacks;
@@ -27,6 +28,10 @@ const HTTP_PORT: u16 = 8080;
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) services: Arc<RwLock<StackMap>>,
+    /// Explicit `[[route]]` entries, partitioned by stack name — read for
+    /// cross-stack `(host, path)` conflict checks on config/route saves. See
+    /// docs/http-path-routing-design.md.
+    pub(crate) routes: Arc<RwLock<RouteMap>>,
     pub(crate) orchestrator: Orchestrator,
     pub(crate) events: EventStore,
     pub(crate) db: Db,
@@ -45,6 +50,10 @@ pub async fn serve(state: AppState) {
             get(config::config_handler)
                 .post(config::save_handler)
                 .delete(config::delete_handler),
+        )
+        .route(
+            "/api/routes/{stack}",
+            get(routes::routes_handler).post(routes::save_handler),
         )
         .route("/api/graph/{stack}", get(graph::graph_handler))
         .route("/api/sessions/{stack}", get(sessions::list_handler))
