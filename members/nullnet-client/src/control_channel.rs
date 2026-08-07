@@ -2,7 +2,9 @@ use crate::commands::{RtNetLinkHandle, configure_access_port, dnat, egress, remo
 use crate::ebpf::{FirewallPeers, FirewallVxlanPorts, NetId};
 use crate::egress_policy::{PolicyVerdicts, flush_container_conntrack};
 use crate::egress_state::{EgressRecord, EgressState};
-use crate::host_mappings::{HOSTS_MARKER, HostMappingsState, hosts_file_lock};
+use crate::host_mappings::{
+    HOSTS_MARKER, HostMappingsState, edit_container_hosts, hosts_file_lock,
+};
 use crate::nfqueue::BridgeIpCache;
 use crate::peers::peer::{Peers, VethKey};
 use crate::triggers::TriggersState;
@@ -899,41 +901,16 @@ fn add_host_mapping(hm: &HostMapping, docker_container: Option<&str>) -> Result<
     if let Some(container) = docker_container {
         // container-targeted: the resolver that needs this name lives inside
         // the container, so write only there and leave the host's file alone.
-        let cat = std::process::Command::new("docker")
-            .args(["exec", container, "cat", path])
-            .output()
-            .handle_err(location!())?;
-        // Bail rather than write on a failed read: `output()` is Ok even when
-        // the exec itself failed (container gone, docker hiccup), and treating
-        // the empty stdout as the file's contents would truncate a live
-        // `/etc/hosts` down to this one entry.
-        if !cat.status.success() {
-            Err(format!(
-                "reading {path} in '{container}' failed: {}",
-                String::from_utf8_lossy(&cat.stderr).trim()
-            ))
-            .handle_err(location!())?;
-        }
-        let content = upsert_hosts_entry(&String::from_utf8_lossy(&cat.stdout), &hm.name, &entry);
-        let mut child = std::process::Command::new("docker")
-            .args([
-                "exec",
-                "-i",
-                container,
-                "sh",
-                "-c",
-                &format!("cat > {path}"),
-            ])
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .handle_err(location!())?;
-        if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
-            stdin
-                .write_all(content.as_bytes())
-                .handle_err(location!())?;
-        }
-        let _ = child.wait();
+        // Edited from the host side (see `read_container_hosts`) so a paused
+        // container is served just as well as a running one.
+        //
+        // Bail rather than write on a failed read: treating a missing file as
+        // empty content would truncate a live `/etc/hosts` down to this one
+        // entry.
+        edit_container_hosts(container, |current| {
+            upsert_hosts_entry(current, &hm.name, &entry)
+        })
+        .handle_err(location!())?;
     } else {
         // host-targeted: upsert into the host's /etc/hosts
         let content = std::fs::read_to_string(path).handle_err(location!())?;
@@ -967,38 +944,15 @@ fn remove_host_mapping(hm: &HostMapping, docker_container: Option<&str>) -> Resu
 
     if let Some(container) = docker_container {
         // container-targeted: setup only wrote inside the container, so the
-        // matching removal is container-only too.
-        let cat = std::process::Command::new("docker")
-            .args(["exec", container, "cat", path])
-            .output()
-            .handle_err(location!())?;
-        if !cat.status.success() {
-            Err(format!(
-                "reading {path} in '{container}' failed: {}",
-                String::from_utf8_lossy(&cat.stderr).trim()
-            ))
-            .handle_err(location!())?;
-        }
-        let content = remove_hosts_entry(&String::from_utf8_lossy(&cat.stdout), &hm.name, &hm.ip);
-        let mut child = std::process::Command::new("docker")
-            .args([
-                "exec",
-                "-i",
-                container,
-                "sh",
-                "-c",
-                &format!("cat > {path}"),
-            ])
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .handle_err(location!())?;
-        if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
-            stdin
-                .write_all(content.as_bytes())
-                .handle_err(location!())?;
-        }
-        let _ = child.wait();
+        // matching removal is container-only too. Host-side, so this still
+        // works when the container has already been paused — the teardown and
+        // the `docker pause` that follows it race, and losing that race used to
+        // strand the entry, leaving the name pointing at a dead overlay IP for
+        // as long as the container kept being resumed rather than restarted.
+        edit_container_hosts(container, |current| {
+            remove_hosts_entry(current, &hm.name, &hm.ip)
+        })
+        .handle_err(location!())?;
     } else {
         // host-targeted: drop this net's line from the host file
         let content = std::fs::read_to_string(path).handle_err(location!())?;
