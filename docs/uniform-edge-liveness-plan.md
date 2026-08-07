@@ -205,15 +205,33 @@ whose tunnel has already been torn down** (a socket to net id 104's overlay IP
 survived after `br_104` was gone). `HttpPeer::new(upstream, false, …)` uses
 pingora defaults and nullnet sets no upstream idle timeout.
 
-This does not affect the request-scoped counter, but it matters twice:
-- A pooled socket into a dead tunnel is a candidate cause of the intermittent
-  502s seen during 2026-08-07 lab work (~3 s, always after edge churn).
-  **Unproven** — verify before building on it.
-- It compounds with net-id reuse: a rebuilt edge can be handed the same overlay
-  IP while the proxy still holds a socket to the previous tunnel.
+**A 502 theory built on this was tested and DISPROVEN — do not repeat it.** The
+intermittent 502s seen that day were caused by **stale `vxlan_scripts/` on the
+lab** (the deployed checkout was still on a pre-#145 branch, so veth MACs were
+random instead of derived → mismatched MACsec SCIs → one-way black hole). Pooled
+sockets had nothing to do with it. Two measurements closed it out:
 
-Giving the proxy an upstream idle timeout is a small prerequisite worth doing
-before Step 1, so the pool actually drains.
+- A normal timeout-driven reap creates **no** zombie: tearing the tunnel down
+  deletes the proxy-side overlay address, which destroys the socket, so the pool
+  drops it. The zombies originally seen came from *abnormal* churn (mass teardown
+  of 40 edges, client restarts mid-flight) leaving half-torn edges.
+- Six full expire→rebuild cycles: **12/12 requests 200**, and a later 200 s burn
+  at 16 workers over a 12-edge multi-hop chain with `timeout = 20`: **7,975
+  requests, 0 non-200, 0 ghost SCIs, 0 unconfirmed teardowns**.
+
+What still stands, and why it matters here:
+
+- Idle pooled sockets genuinely do persist indefinitely (unchanged across 60 s).
+  That is **harmless to the design as specced**, because Step 1 counts
+  *requests*, not sockets. It becomes a problem only if a future revision tries
+  to derive ingress liveness from socket existence — then the edge would never
+  reap. Note this before anyone "improves" §4b.1 that way.
+- It still compounds with net-id reuse: a rebuilt edge can be handed the same
+  overlay IP while the proxy holds a socket to the previous tunnel. Not observed
+  to cause failures, but the window is real.
+
+An upstream idle timeout on the proxy remains worth adding as hygiene — it is no
+longer a prerequisite for Step 1.
 
 ### 4b.4 Landed work this plan now sits on top of
 
@@ -232,6 +250,24 @@ Relevant landings:
   port-only attribution).
 - A load test at **40 concurrent edges** (3.3× `crm`'s chain) showed no client
   runtime starvation, so the new netlink listener has ample headroom.
+
+**Full E2E re-run on current `main` (2026-08-07, after the stale-script fix).**
+16 workers, 4 source IPs, 4 proxy-reachable services — including a `crm`-shaped
+12-edge chain (7 branches, 2–3 hops, shared prefixes, an `a→e→a` loop) and an
+entry point that is also another chain's dependency — all at `timeout = 20` so
+sessions expired and rebuilt continuously:
+
+**7,975 requests, 0 non-200, 0 unconfirmed teardowns, 0 setup timeouts, 0 client
+errors, 0 ghost SCIs.** The reaper machinery is sound at production-like rates;
+whatever liveness changes, it is not fixing a broken teardown path.
+
+Two config-shape facts confirmed while doing it, both worth knowing before
+writing config for the liveness tests:
+- **`proxy_dependencies` do not resolve across stacks.** A dep in another TOML
+  parses fine and then fails at runtime with a generic 500 "Dependency not
+  registered". Keep a chain and its deps in one file.
+- **An entry point that is also another chain's dependency works** (the
+  `api-v2` / `upload-v2` shape in instaprotek) — verified explicitly, same stack.
 
 ---
 
