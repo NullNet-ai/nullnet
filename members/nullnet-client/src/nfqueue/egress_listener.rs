@@ -19,7 +19,7 @@ use crate::egress_policy::PolicyVerdicts;
 use crate::nfqueue::cache::BridgeIpCache;
 use crate::nfqueue::parse::ipv4_flow;
 use crate::nfqueue::recv_loop::spawn_queue_loop;
-use crate::triggers::{EGRESS_TRIGGER_PORT, TriggerState, TriggersState};
+use crate::triggers::{EGRESS_DST_IP, EGRESS_TRIGGER_PORT, TriggerState, TriggersState};
 use nfq::{Message, Verdict};
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
@@ -157,13 +157,19 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<(Ipv4Addr, Ipv4Addr, u16)>
         return Verdict::Drop;
     }
 
-    match ctx.triggers_state.state(&container, EGRESS_TRIGGER_PORT) {
+    match ctx
+        .triggers_state
+        .state(&container, EGRESS_DST_IP, EGRESS_TRIGGER_PORT)
+    {
         TriggerState::Active => Verdict::Accept,
         TriggerState::Pending(notify) => wait_for_steer(ctx, &container, notify).await,
         TriggerState::Fresh => {
-            let notify = ctx
-                .triggers_state
-                .mark_pending(&container, EGRESS_TRIGGER_PORT, src_ip);
+            let notify = ctx.triggers_state.mark_pending(
+                &container,
+                EGRESS_DST_IP,
+                EGRESS_TRIGGER_PORT,
+                src_ip,
+            );
             // Register the waiter BEFORE the gRPC round-trip: the server can
             // dispatch the egress `VxlanSetup` (→ `mark_active`) faster than its
             // reply to `egress_trigger` returns, and `notify_waiters` only wakes
@@ -172,7 +178,8 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<(Ipv4Addr, Ipv4Addr, u16)>
             tokio::pin!(notified);
             if notified.as_mut().enable()
                 || matches!(
-                    ctx.triggers_state.state(&container, EGRESS_TRIGGER_PORT),
+                    ctx.triggers_state
+                        .state(&container, EGRESS_DST_IP, EGRESS_TRIGGER_PORT),
                     TriggerState::Active
                 )
             {
@@ -202,7 +209,8 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<(Ipv4Addr, Ipv4Addr, u16)>
                 Ok(Err(e)) => {
                     eprintln!("[egress-nfq] egress_trigger {container}: {e}");
                     report_trigger_send_failed(&ctx.grpc, &container, dst_ip, dst_port, e);
-                    ctx.triggers_state.forget(&container, EGRESS_TRIGGER_PORT);
+                    ctx.triggers_state
+                        .forget(&container, EGRESS_DST_IP, EGRESS_TRIGGER_PORT);
                     Verdict::Drop
                 }
                 Err(_) => {
@@ -214,7 +222,8 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<(Ipv4Addr, Ipv4Addr, u16)>
                         dst_port,
                         format!("egress_trigger timed out after {TRIGGER_TIMEOUT:?}"),
                     );
-                    ctx.triggers_state.forget(&container, EGRESS_TRIGGER_PORT);
+                    ctx.triggers_state
+                        .forget(&container, EGRESS_DST_IP, EGRESS_TRIGGER_PORT);
                     Verdict::Drop
                 }
             }
@@ -261,7 +270,8 @@ async fn wait_for_steer(ctx: &EgressCtx, container: &str, notify: Arc<Notify>) -
     tokio::pin!(notified);
     if notified.as_mut().enable()
         || matches!(
-            ctx.triggers_state.state(container, EGRESS_TRIGGER_PORT),
+            ctx.triggers_state
+                .state(container, EGRESS_DST_IP, EGRESS_TRIGGER_PORT),
             TriggerState::Active
         )
     {

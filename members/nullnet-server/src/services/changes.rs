@@ -416,31 +416,33 @@ fn collect_backend_chain_edges(
     let Some(triggers) = services.get(initiator_name).map(ServiceInfo::triggers) else {
         return edges;
     };
-    for chain in triggers.values() {
-        if let Some(dep) = only_through
-            && !chain.iter().any(|d| d == dep)
-        {
-            continue;
-        }
-        let mut current_name = initiator_name.to_string();
-        let mut current_ip = initiator_ip;
-        let mut current_docker: Option<String> = initiator_docker.map(String::from);
-        for dep_name in chain {
-            let hop = emit_edge_and_probe_hop(
-                &mut edges,
-                &current_name,
-                current_ip,
-                current_docker.as_deref(),
-                dep_name,
-                services,
-            );
-            match hop {
-                Some((ip, docker)) => {
-                    current_name.clone_from(dep_name);
-                    current_ip = ip;
-                    current_docker = docker;
+    for chains in triggers.values() {
+        for chain in chains {
+            if let Some(dep) = only_through
+                && !chain.iter().any(|d| d == dep)
+            {
+                continue;
+            }
+            let mut current_name = initiator_name.to_string();
+            let mut current_ip = initiator_ip;
+            let mut current_docker: Option<String> = initiator_docker.map(String::from);
+            for dep_name in chain {
+                let hop = emit_edge_and_probe_hop(
+                    &mut edges,
+                    &current_name,
+                    current_ip,
+                    current_docker.as_deref(),
+                    dep_name,
+                    services,
+                );
+                match hop {
+                    Some((ip, docker)) => {
+                        current_name.clone_from(dep_name);
+                        current_ip = ip;
+                        current_docker = docker;
+                    }
+                    None => break,
                 }
-                None => break,
             }
         }
     }

@@ -1,5 +1,5 @@
 use crate::nfqueue::cache::BridgeIpCache;
-use crate::nfqueue::parse::ipv4_src_and_dst_port;
+use crate::nfqueue::parse::ipv4_flow;
 use crate::nfqueue::recv_loop::spawn_queue_loop;
 use crate::triggers::{TriggerState, TriggersState};
 use nfq::{Message, Verdict};
@@ -8,6 +8,7 @@ use nullnet_grpc_lib::nullnet_grpc::{
     AgentBackendTriggerSendFailed, AgentEvent, agent_event::Event as AgentEventKind,
 };
 use std::collections::HashMap;
+use std::net::Ipv4Addr;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -32,34 +33,19 @@ const TRIGGER_TIMEOUT: Duration = Duration::from_secs(5);
 /// giving up on the held packet.
 const ACTIVE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// A service that declared a trigger on a port, and the containers on this node
-/// that host it.
-#[derive(Debug, Clone)]
-pub struct TriggerOwner {
-    pub service: String,
-    /// Real container names, matching the bridge-IP cache's string space. Empty
-    /// means a server predating `ServiceTrigger.containers`, in which case the
-    /// owner matches any container — the old port-only behaviour.
+/// What a watched trigger port is associated with: the declaring (initiator)
+/// service, for reporting; the real container names hosting it on this node
+/// (the same string space as the bridge-IP cache and `Container.real_name`) —
+/// empty means a server predating this field, matching any source container;
+/// and the literal name its chain[0] resolves to — what
+/// `placeholder::seed_placeholder` pre-seeds into the initiator container's
+/// `/etc/hosts`, and what disambiguates two dependencies that happen to
+/// share a port (via their distinct placeholder addresses).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TriggerTarget {
+    pub service_name: String,
+    pub target_name: String,
     pub containers: Vec<String>,
-}
-
-/// Watched port → the services claiming it on this node. More than one may
-/// claim the same port, each through its own replicas.
-pub type TriggerMap = HashMap<u16, Vec<TriggerOwner>>;
-
-/// The service whose trigger `container` should fire on `port`, if any.
-///
-/// The ipset that queues these packets matches on destination port alone, so a
-/// port watched for one service catches every container on the node. Resolving
-/// the owner by container is what keeps a co-located container's traffic from
-/// being attributed to — and rejected by — someone else's trigger.
-fn owner_for<'a>(map: &'a TriggerMap, container: &str, port: u16) -> Option<&'a str> {
-    let owners = map.get(&port)?;
-    owners
-        .iter()
-        .find(|o| o.containers.iter().any(|c| c == container))
-        .or_else(|| owners.iter().find(|o| o.containers.is_empty()))
-        .map(|o| o.service.as_str())
 }
 
 /// State shared by every per-packet handler. Cloned freely across tokio tasks.
@@ -67,9 +53,57 @@ fn owner_for<'a>(map: &'a TriggerMap, container: &str, port: u16) -> Option<&'a 
 pub struct ListenerCtx {
     pub grpc: NullnetGrpcInterface,
     pub cache: BridgeIpCache,
-    pub trigger_owners: Arc<RwLock<TriggerMap>>,
+    /// More than one target can share a port — either the same service's own
+    /// multiple dependency chains, or an unrelated service/container that
+    /// just happens to talk to the same port number (the ipset match is
+    /// destination-port only, so a watched port catches every container on
+    /// the node). `resolve_target` disambiguates in two stages: by source
+    /// container first, then by destination.
+    pub port_to_target: Arc<RwLock<HashMap<u16, Vec<TriggerTarget>>>>,
     pub triggers_state: Arc<TriggersState>,
     pub semaphore: Arc<Semaphore>,
+}
+
+/// Pick the target this packet's (source container, destination) actually
+/// belongs to.
+///
+/// Two independent scoping axes, applied in sequence:
+/// 1. By source container — a candidate explicitly listing `container`
+///    always wins over one that doesn't. Only when *no* candidate names
+///    `container` do the container-less (legacy) candidates apply — a
+///    scoped candidate must beat a legacy catch-all for its own container
+///    even though both may share a target_name/destination, which
+///    destination-matching alone could never break the tie on.
+/// 2. By destination — when more than one candidate survives step 1 (this
+///    service's own multiple chains sharing the port, or several
+///    same-priority candidates), an exact match against each candidate's
+///    own deterministic placeholder address is required — there is no safe
+///    default to fall back on, since guessing wrong would route the packet
+///    into the wrong tunnel. A lone survivor is trusted unconditionally
+///    (covers a destination that doesn't yet match its placeholder, e.g.
+///    the very first packet on a freshly re-seeded name).
+fn resolve_target<'a>(
+    targets: &'a [TriggerTarget],
+    container: &str,
+    dst_ip: Ipv4Addr,
+) -> Option<&'a TriggerTarget> {
+    let scoped: Vec<&TriggerTarget> = targets
+        .iter()
+        .filter(|t| t.containers.iter().any(|c| c == container))
+        .collect();
+    let candidates: Vec<&TriggerTarget> = if scoped.is_empty() {
+        targets.iter().filter(|t| t.containers.is_empty()).collect()
+    } else {
+        scoped
+    };
+    match candidates.as_slice() {
+        [] => None,
+        [only] => Some(only),
+        many => many
+            .iter()
+            .copied()
+            .find(|t| crate::placeholder::ip_for(&t.target_name) == dst_ip),
+    }
 }
 
 /// Spawn the backend-trigger recv loop (queue 0). Each packet is held until
@@ -100,7 +134,7 @@ async fn handle_packet(mut msg: Message, ctx: ListenerCtx, verdict_tx: Sender<Me
         }
     };
 
-    let Some((src_ip, dst_port)) = ipv4_src_and_dst_port(msg.get_payload()) else {
+    let Some((src_ip, dst_ip, dst_port)) = ipv4_flow(msg.get_payload()) else {
         msg.set_verdict(Verdict::Accept);
         let _ = verdict_tx.send(msg);
         return;
@@ -115,19 +149,30 @@ async fn handle_packet(mut msg: Message, ctx: ListenerCtx, verdict_tx: Sender<Me
         return;
     };
 
-    let service = owner_for(&ctx.trigger_owners.read().unwrap(), &container, dst_port)
-        .map(ToString::to_string);
-    let Some(service) = service else {
-        // Either the port is watched for some other service's containers — this
-        // container just happens to talk to it, and attributing the packet would
-        // get it rejected server-side and dropped — or the port left the set
-        // between the rule check and recv. Pass through either way.
+    let targets = ctx.port_to_target.read().unwrap().get(&dst_port).cloned();
+    let Some(targets) = targets else {
+        // Port left the watched set between rule check and recv — rare but
+        // possible during config updates. Pass through.
+        msg.set_verdict(Verdict::Accept);
+        let _ = verdict_tx.send(msg);
+        return;
+    };
+    let Some(target) = resolve_target(&targets, &container, dst_ip).cloned() else {
+        // Either no candidate's declaring service actually runs in this
+        // container (a co-located container just happens to share the
+        // port), or several candidates survived container-scoping and none
+        // matches the observed destination — can't safely tell which
+        // dependency this is. Pass through rather than guess.
+        println!(
+            "[nfqueue] no matching target for container '{container}' dst {dst_ip}:{dst_port} among {} candidates; accept passthrough",
+            targets.len()
+        );
         msg.set_verdict(Verdict::Accept);
         let _ = verdict_tx.send(msg);
         return;
     };
 
-    let verdict = decide_verdict(&ctx, &container, dst_port, src_ip, &service).await;
+    let verdict = decide_verdict(&ctx, &container, dst_ip, dst_port, src_ip, &target).await;
     msg.set_verdict(verdict);
     let _ = verdict_tx.send(msg);
 }
@@ -135,11 +180,13 @@ async fn handle_packet(mut msg: Message, ctx: ListenerCtx, verdict_tx: Sender<Me
 async fn decide_verdict(
     ctx: &ListenerCtx,
     container: &str,
+    dst_ip: Ipv4Addr,
     dst_port: u16,
-    src_ip: std::net::Ipv4Addr,
-    service: &str,
+    src_ip: Ipv4Addr,
+    target: &TriggerTarget,
 ) -> Verdict {
-    match ctx.triggers_state.state(container, dst_port) {
+    let service = target.service_name.as_str();
+    match ctx.triggers_state.state(container, dst_ip, dst_port) {
         TriggerState::Active => Verdict::Accept,
         TriggerState::Pending(notify) => {
             // `mark_active` wakes us with `Notify::notify_waiters()`, which
@@ -156,7 +203,7 @@ async fn decide_verdict(
             tokio::pin!(notified);
             if notified.as_mut().enable()
                 || matches!(
-                    ctx.triggers_state.state(container, dst_port),
+                    ctx.triggers_state.state(container, dst_ip, dst_port),
                     TriggerState::Active
                 )
             {
@@ -173,7 +220,9 @@ async fn decide_verdict(
             }
         }
         TriggerState::Fresh => {
-            let notify = ctx.triggers_state.mark_pending(container, dst_port, src_ip);
+            let notify = ctx
+                .triggers_state
+                .mark_pending(container, dst_ip, dst_port, src_ip);
             // Register BEFORE the gRPC round-trip: the server can dispatch
             // `VxlanSetup` (→ `mark_active` here) faster than its reply to
             // `backend_trigger` arrives back, especially on multi-edge
@@ -184,7 +233,7 @@ async fn decide_verdict(
             tokio::pin!(notified);
             if notified.as_mut().enable()
                 || matches!(
-                    ctx.triggers_state.state(container, dst_port),
+                    ctx.triggers_state.state(container, dst_ip, dst_port),
                     TriggerState::Active
                 )
             {
@@ -196,6 +245,7 @@ async fn decide_verdict(
                     service.to_string(),
                     u32::from(dst_port),
                     container.to_string(),
+                    target.target_name.clone(),
                 ),
             )
             .await;
@@ -219,7 +269,7 @@ async fn decide_verdict(
                         "[nfqueue] backend_trigger '{service}' port {dst_port} container {container}: {e}"
                     );
                     report_trigger_send_failed(&ctx.grpc, service, dst_port, e);
-                    ctx.triggers_state.forget(container, dst_port);
+                    ctx.triggers_state.forget(container, dst_ip, dst_port);
                     Verdict::Drop
                 }
                 Err(_) => {
@@ -232,7 +282,7 @@ async fn decide_verdict(
                         dst_port,
                         format!("backend_trigger timed out after {TRIGGER_TIMEOUT:?}"),
                     );
-                    ctx.triggers_state.forget(container, dst_port);
+                    ctx.triggers_state.forget(container, dst_ip, dst_port);
                     Verdict::Drop
                 }
             }
@@ -265,13 +315,19 @@ fn report_trigger_send_failed(
 
 #[cfg(test)]
 mod tests {
-    use super::{TriggerMap, TriggerOwner, owner_for};
+    use super::{TriggerTarget, resolve_target};
+    use std::net::Ipv4Addr;
 
-    fn owner(service: &str, containers: &[&str]) -> TriggerOwner {
-        TriggerOwner {
-            service: service.to_string(),
+    fn target(service: &str, target_name: &str, containers: &[&str]) -> TriggerTarget {
+        TriggerTarget {
+            service_name: service.to_string(),
+            target_name: target_name.to_string(),
             containers: containers.iter().map(|c| (*c).to_string()).collect(),
         }
+    }
+
+    fn dst_of(target_name: &str) -> Ipv4Addr {
+        crate::placeholder::ip_for(target_name)
     }
 
     /// The instaprotek case: `service` triggers on 8932, which is also
@@ -280,61 +336,124 @@ mod tests {
     /// server then found no matching replica and the client dropped the SYN.
     #[test]
     fn foreign_container_on_a_watched_port_is_not_attributed() {
-        let map: TriggerMap = TriggerMap::from([(8932, vec![owner("service", &["svc_c1"])])]);
+        let targets = [target("service", "dep", &["svc_c1"])];
+        let dst = dst_of("dep");
 
-        assert_eq!(owner_for(&map, "svc_c1", 8932), Some("service"));
         assert_eq!(
-            owner_for(&map, "portal_c1", 8932),
+            resolve_target(&targets, "svc_c1", dst).map(|t| t.service_name.as_str()),
+            Some("service")
+        );
+        assert_eq!(
+            resolve_target(&targets, "portal_c1", dst),
             None,
             "a container that doesn't host the declaring service must pass through"
         );
     }
 
-    #[test]
-    fn unwatched_port_is_a_miss() {
-        let map: TriggerMap = TriggerMap::from([(8932, vec![owner("service", &["svc_c1"])])]);
-        assert_eq!(owner_for(&map, "svc_c1", 9999), None);
-    }
-
     /// Several replicas of one service on the same node all own its trigger.
     #[test]
     fn every_replica_of_the_declaring_service_owns_it() {
-        let map: TriggerMap =
-            TriggerMap::from([(8932, vec![owner("service", &["svc_c1", "svc_c2"])])]);
-        assert_eq!(owner_for(&map, "svc_c1", 8932), Some("service"));
-        assert_eq!(owner_for(&map, "svc_c2", 8932), Some("service"));
+        let targets = [target("service", "dep", &["svc_c1", "svc_c2"])];
+        let dst = dst_of("dep");
+        assert_eq!(
+            resolve_target(&targets, "svc_c1", dst).map(|t| t.service_name.as_str()),
+            Some("service")
+        );
+        assert_eq!(
+            resolve_target(&targets, "svc_c2", dst).map(|t| t.service_name.as_str()),
+            Some("service")
+        );
     }
 
     /// Two services may now claim the same port on one node; each resolves to
     /// its own, which was impossible while the map was keyed by port alone.
     #[test]
     fn two_services_can_share_a_port() {
-        let map: TriggerMap = TriggerMap::from([(
-            8932,
-            vec![owner("service", &["svc_c1"]), owner("other", &["other_c1"])],
-        )]);
-        assert_eq!(owner_for(&map, "svc_c1", 8932), Some("service"));
-        assert_eq!(owner_for(&map, "other_c1", 8932), Some("other"));
-        assert_eq!(owner_for(&map, "stranger_c1", 8932), None);
+        let targets = [
+            target("service", "dep-a", &["svc_c1"]),
+            target("other", "dep-b", &["other_c1"]),
+        ];
+        assert_eq!(
+            resolve_target(&targets, "svc_c1", dst_of("dep-a")).map(|t| t.service_name.as_str()),
+            Some("service")
+        );
+        assert_eq!(
+            resolve_target(&targets, "other_c1", dst_of("dep-b")).map(|t| t.service_name.as_str()),
+            Some("other")
+        );
+        assert_eq!(
+            resolve_target(&targets, "stranger_c1", dst_of("dep-a")),
+            None
+        );
     }
 
-    /// A server predating `ServiceTrigger.containers` sends none, and must keep
-    /// behaving exactly as before: any container matches.
+    /// A server predating `TriggerTarget::containers` sends none, and must
+    /// keep behaving exactly as before: any container matches.
     #[test]
-    fn container_less_owner_matches_anything() {
-        let map: TriggerMap = TriggerMap::from([(8932, vec![owner("service", &[])])]);
-        assert_eq!(owner_for(&map, "anything", 8932), Some("service"));
+    fn container_less_target_matches_anything() {
+        let targets = [target("service", "dep", &[])];
+        assert_eq!(
+            resolve_target(&targets, "anything", dst_of("dep")).map(|t| t.service_name.as_str()),
+            Some("service")
+        );
     }
 
-    /// Mixed fleet: a scoped owner must win over a legacy catch-all for its own
-    /// container, and the catch-all still covers everyone else.
+    /// Mixed fleet: a scoped target must win over a legacy catch-all for its
+    /// own container, and the catch-all still covers everyone else.
     #[test]
-    fn scoped_owner_wins_over_legacy_catch_all() {
-        let map: TriggerMap = TriggerMap::from([(
-            8932,
-            vec![owner("legacy", &[]), owner("scoped", &["scoped_c1"])],
-        )]);
-        assert_eq!(owner_for(&map, "scoped_c1", 8932), Some("scoped"));
-        assert_eq!(owner_for(&map, "someone_else", 8932), Some("legacy"));
+    fn scoped_target_wins_over_legacy_catch_all() {
+        let targets = [
+            target("legacy", "dep", &[]),
+            target("scoped", "dep", &["scoped_c1"]),
+        ];
+        assert_eq!(
+            resolve_target(&targets, "scoped_c1", dst_of("dep")).map(|t| t.service_name.as_str()),
+            Some("scoped")
+        );
+        assert_eq!(
+            resolve_target(&targets, "someone_else", dst_of("dep"))
+                .map(|t| t.service_name.as_str()),
+            Some("legacy")
+        );
+    }
+
+    /// The original disambiguation this module was built around: one
+    /// container hosting two chains sharing a port, told apart only by
+    /// which placeholder address the packet was actually addressed to.
+    #[test]
+    fn same_container_disambiguates_multiple_chains_by_destination() {
+        let targets = [
+            target("portal", "dep-a", &["portal_c1"]),
+            target("portal", "dep-b", &["portal_c1"]),
+        ];
+        assert_eq!(
+            resolve_target(&targets, "portal_c1", dst_of("dep-a")).map(|t| t.target_name.as_str()),
+            Some("dep-a")
+        );
+        assert_eq!(
+            resolve_target(&targets, "portal_c1", dst_of("dep-b")).map(|t| t.target_name.as_str()),
+            Some("dep-b")
+        );
+    }
+
+    /// Both axes combined: container-scoping first narrows to `portal_c1`'s
+    /// own two candidates (excluding `other`'s, scoped to a different
+    /// container), then destination-matching picks the right chain among
+    /// what's left.
+    #[test]
+    fn container_scoping_and_destination_matching_compose() {
+        let targets = [
+            target("portal", "dep-a", &["portal_c1"]),
+            target("portal", "dep-b", &["portal_c1"]),
+            target("other", "dep-c", &["other_c1"]),
+        ];
+        assert_eq!(
+            resolve_target(&targets, "portal_c1", dst_of("dep-b")).map(|t| t.target_name.as_str()),
+            Some("dep-b")
+        );
+        // portal_c1's own two candidates survive container-scoping, but
+        // neither's placeholder matches a destination that was never one of
+        // portal's own (dep-c belongs to "other", scoped to "other_c1").
+        assert_eq!(resolve_target(&targets, "portal_c1", dst_of("dep-c")), None);
     }
 }

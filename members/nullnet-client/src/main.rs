@@ -10,7 +10,6 @@ use crate::forward::receive::receive;
 use crate::forward::send::send;
 use crate::host_mappings::HostMappingsState;
 use crate::local_endpoints::LocalEndpoints;
-use crate::nfqueue::{TriggerMap, TriggerOwner};
 use crate::peers::peer::Peers;
 use crate::triggers::TriggersState;
 use clap::Parser;
@@ -42,6 +41,7 @@ mod host_mappings;
 mod local_endpoints;
 mod nfqueue;
 mod peers;
+mod placeholder;
 mod triggers;
 
 pub const FORWARD_PORT: u16 = 9999;
@@ -162,7 +162,8 @@ async fn main() -> Result<(), Error> {
     // packet of each new watched-port flow, listener fires backend_trigger
     // with the resolved initiator container, waits for VxlanSetup to install
     // DNAT, then verdicts ACCEPT so the original packet hits the new chain.
-    let (config_tx, config_rx) = tokio::sync::mpsc::unbounded_channel::<TriggerMap>();
+    let (config_tx, config_rx) =
+        tokio::sync::mpsc::unbounded_channel::<HashMap<u16, Vec<nfqueue::TriggerTarget>>>();
 
     // Poked by the cache's docker-events watcher after every container
     // start/die so `declare_services` re-runs immediately instead of
@@ -182,8 +183,8 @@ async fn main() -> Result<(), Error> {
         policy_verdicts,
     );
 
-    // declare services + push the port→trigger-owners map to the NFQUEUE
-    // listener on each refresh.
+    // declare services + push the port→target map to the NFQUEUE listener
+    // on each refresh.
     tokio::spawn(async move {
         declare_services(grpc_server, config_tx, docker_changed)
             .await
@@ -292,7 +293,7 @@ async fn grpc_init() -> Result<NullnetGrpcInterface, Error> {
 
 async fn declare_services(
     grpc_server: NullnetGrpcInterface,
-    config_tx: UnboundedSender<TriggerMap>,
+    config_tx: UnboundedSender<HashMap<u16, Vec<nfqueue::TriggerTarget>>>,
     docker_changed: Arc<Notify>,
 ) -> Result<(), Error> {
     let mut last_snapshot: Vec<String> = Vec::new();
@@ -371,22 +372,49 @@ async fn declare_services(
                     });
                 }
 
-                // One port may be claimed by several services on this node, so
-                // each maps to a list of owners rather than a single service.
-                let mut trigger_owners: TriggerMap = HashMap::new();
+                // More than one target can share a port — either the same
+                // service's own multiple dependency chains (two plain-HTTPS
+                // deps both 443, disambiguated by destination), or an
+                // unrelated service/container that just happens to talk to
+                // the same port number (disambiguated by source container).
+                // Group by port so the listener can apply both.
+                let mut port_to_target: HashMap<u16, Vec<nfqueue::TriggerTarget>> = HashMap::new();
                 for st in response.service_triggers {
-                    for port in st.ports {
-                        let Ok(port) = u16::try_from(port) else {
-                            eprintln!("server returned invalid trigger port {port}; skipping");
+                    for tp in st.trigger_ports {
+                        let Ok(port) = u16::try_from(tp.port) else {
+                            eprintln!("server returned invalid trigger port {}; skipping", tp.port);
                             continue;
                         };
-                        trigger_owners.entry(port).or_default().push(TriggerOwner {
-                            service: st.service_name.clone(),
-                            containers: st.containers.clone(),
-                        });
+                        // Pre-seed a placeholder /etc/hosts entry for the
+                        // dependency's literal name in every replica
+                        // container hosting the initiator service, *before*
+                        // any packet is observed, so a bare container name
+                        // (not just a pre-provisioned DNS alias) produces a
+                        // real first packet for NFQUEUE to catch. Idempotent
+                        // — safe on every reconcile pass; self-heals across
+                        // container restarts (Docker wipes /etc/hosts on
+                        // every start).
+                        for container in &st.containers {
+                            if let Err(e) =
+                                placeholder::seed_placeholder(container, &tp.target_name)
+                            {
+                                eprintln!(
+                                    "failed to seed placeholder for '{}' in {container}: {e:?}",
+                                    tp.target_name
+                                );
+                            }
+                        }
+                        port_to_target
+                            .entry(port)
+                            .or_default()
+                            .push(nfqueue::TriggerTarget {
+                                service_name: st.service_name.clone(),
+                                target_name: tp.target_name.clone(),
+                                containers: st.containers.clone(),
+                            });
                     }
                 }
-                if config_tx.send(trigger_owners).is_err() {
+                if config_tx.send(port_to_target).is_err() {
                     // observer task gone; nothing more to do here
                     return Ok(());
                 }
