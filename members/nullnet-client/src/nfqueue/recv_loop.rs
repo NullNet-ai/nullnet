@@ -9,6 +9,10 @@
 //! the datapath (DNAT / egress steer) is ready, so the original packet isn't lost.
 
 use nfq::{Message, Queue};
+use nullnet_grpc_lib::NullnetGrpcInterface;
+use nullnet_grpc_lib::nullnet_grpc::{
+    AgentEvent, AgentNfqueueBindFailed, agent_event::Event as AgentEventKind,
+};
 use std::future::Future;
 use std::sync::mpsc::{Sender, TryRecvError};
 use std::time::Duration;
@@ -25,22 +29,30 @@ const IDLE_SLEEP: Duration = Duration::from_millis(1);
 /// Failure to open/bind the queue is logged and the thread exits; the rest of the
 /// client keeps running. With `--queue-bypass` on the iptables rule, the absence
 /// of a consumer fail-opens, so traffic flows unaltered.
-pub fn spawn_queue_loop<H, Fut>(queue_id: u16, copy_range: u16, queue_max_len: u32, handler: H)
-where
+pub fn spawn_queue_loop<H, Fut>(
+    grpc: &NullnetGrpcInterface,
+    queue_id: u16,
+    copy_range: u16,
+    queue_max_len: u32,
+    handler: H,
+) where
     H: Fn(Message, Sender<Message>) -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
     let runtime = tokio::runtime::Handle::current();
+    let grpc = grpc.clone();
     std::thread::spawn(move || {
         let mut queue = match Queue::open() {
             Ok(q) => q,
             Err(e) => {
                 eprintln!("[nfqueue] open queue {queue_id} failed: {e} (need CAP_NET_ADMIN)");
+                report_bind_failed(&runtime, &grpc, queue_id, format!("open: {e}"));
                 return;
             }
         };
         if let Err(e) = queue.bind(queue_id) {
             eprintln!("[nfqueue] bind queue {queue_id} failed: {e}");
+            report_bind_failed(&runtime, &grpc, queue_id, format!("bind: {e}"));
             return;
         }
         if let Err(e) = queue.set_copy_range(queue_id, copy_range) {
@@ -93,5 +105,27 @@ where
                 std::thread::sleep(IDLE_SLEEP);
             }
         }
+    });
+}
+
+/// Report a queue that never came up. Spawned onto the runtime because the
+/// caller is a plain OS thread with no reactor of its own. Worth an event: with
+/// no consumer, `--queue-bypass` fail-opens, so trigger detection and egress
+/// policy are both off on this queue until the client restarts.
+fn report_bind_failed(
+    runtime: &tokio::runtime::Handle,
+    grpc: &NullnetGrpcInterface,
+    queue_id: u16,
+    error_message: String,
+) {
+    let grpc = grpc.clone();
+    let event = AgentEvent {
+        event: Some(AgentEventKind::NfqueueBindFailed(AgentNfqueueBindFailed {
+            queue_id: u32::from(queue_id),
+            error_message,
+        })),
+    };
+    runtime.spawn(async move {
+        let _ = grpc.report_event(event).await;
     });
 }

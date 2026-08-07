@@ -124,11 +124,14 @@ impl RtNetLinkHandle {
     }
 }
 
-pub(crate) async fn cleanup_network(rtnetlink_handle: &RtNetLinkHandle) {
+/// Returns the MSS-clamp install error, if there was one. It can't be reported
+/// from here — this runs before the control connection exists — so the caller
+/// emits the event once it does.
+pub(crate) async fn cleanup_network(rtnetlink_handle: &RtNetLinkHandle) -> Option<String> {
     dnat::init();
     nfqueue::init();
     egress::init();
-    install_mss_clamp();
+    let mss_error = install_mss_clamp();
     vxlan_cleanup_network();
     vlan_cleanup_network(rtnetlink_handle).await;
     // State a killed process never got to tear down, and that no `VxlanTeardown`
@@ -139,6 +142,7 @@ pub(crate) async fn cleanup_network(rtnetlink_handle: &RtNetLinkHandle) {
     purge_stale_xfrm();
     crate::host_mappings::purge_stale_mappings();
     egress::purge_stale_steers();
+    mss_error
 }
 
 /// SPI range `vxlan-setup.sh` can install: it offsets the net id by 1000 to
@@ -346,7 +350,7 @@ src 10.20.30.1/32 dst 10.20.30.2/32
 /// removed first — `-C` only matches a rule verbatim, so without that an
 /// upgrade would leave two clamps installed and the older one would win by
 /// position.
-fn install_mss_clamp() {
+fn install_mss_clamp() -> Option<String> {
     prune_superseded_mss_rules();
     // Must match OVERLAY_MTU in vxlan_scripts/vxlan-setup.sh (1080) minus the
     // 40-byte IP+TCP headers. The previous 1400 came from a theoretical
@@ -371,16 +375,23 @@ fn install_mss_clamp() {
     let mut check = vec!["iptables", "-t", "mangle", "-C", "FORWARD"];
     check.extend_from_slice(&rule);
     if sudo(&check).map(|s| s.success()).unwrap_or(false) {
-        return;
+        return None;
     }
     let mut add = vec!["iptables", "-t", "mangle", "-A", "FORWARD"];
     add.extend_from_slice(&rule);
     match sudo(&add) {
         Ok(s) if s.success() => {
-            println!("[mss] clamp installed on mangle/FORWARD: --set-mss {MSS}")
+            println!("[mss] clamp installed on mangle/FORWARD: --set-mss {MSS}");
+            None
         }
-        Ok(s) => eprintln!("[mss] clamp install exited {s}"),
-        Err(e) => eprintln!("[mss] clamp install failed: {e}"),
+        Ok(s) => {
+            eprintln!("[mss] clamp install exited {s}");
+            Some(format!("iptables exited {s}"))
+        }
+        Err(e) => {
+            eprintln!("[mss] clamp install failed: {e}");
+            Some(e.to_string())
+        }
     }
 }
 

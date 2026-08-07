@@ -13,8 +13,8 @@ use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
     AgentContainerResumeFailed, AgentContainerSuspendFailed, AgentControlChannelAckFailed,
     AgentControlChannelClosed, AgentControlChannelEstablished, AgentDnatInstallFailed,
-    AgentDnatRemovalFailed, AgentGatewayForwardInstallFailed, AgentHostMappingFailed,
-    AgentVlanSetupCompleted, AgentVlanSetupFailed, AgentVlanTeardownFailed,
+    AgentDnatRemovalFailed, AgentEgressSteerInstallFailed, AgentGatewayForwardInstallFailed,
+    AgentHostMappingFailed, AgentVlanSetupCompleted, AgentVlanSetupFailed, AgentVlanTeardownFailed,
     AgentVxlanSetupCompleted, AgentVxlanSetupFailed, AgentVxlanTeardownFailed,
 };
 use nullnet_grpc_lib::nullnet_grpc::{
@@ -174,10 +174,11 @@ pub(crate) async fn control_channel(
                 // re-enter the NFQUEUE as NEW — newly-denied ones die there.
                 let verdicts = policy_verdicts.clone();
                 let cache = bridge_cache.clone();
+                let grpc = server.clone();
                 tokio::spawn(async move {
                     println!("[egress-policy] policy changed on server; re-verdicting flows");
                     verdicts.clear();
-                    flush_container_conntrack(cache.ips()).await;
+                    flush_container_conntrack(&grpc, cache.ips()).await;
                 });
             }
             None => {}
@@ -537,12 +538,33 @@ async fn handle_vxlan_setup(
                             cip,
                         );
                     }
+                } else {
+                    // Mirrors the DNAT path below: without steering the held
+                    // packet is never woken and drops at ACTIVE_TIMEOUT.
+                    fire_event(
+                        &grpc,
+                        AgentEventKind::EgressSteerInstallFailed(AgentEgressSteerInstallFailed {
+                            vxlan_id,
+                            docker_container: message.docker_container.clone(),
+                            error_message: "steer rules failed to install".to_string(),
+                        }),
+                    );
                 }
             }
             _ => {
                 eprintln!(
                     "[vxlan_setup] egress steer missing gateway/container_ip \
                      (gw={proxy_gw:?}, cip={container_ip:?}); steering not installed"
+                );
+                fire_event(
+                    &grpc,
+                    AgentEventKind::EgressSteerInstallFailed(AgentEgressSteerInstallFailed {
+                        vxlan_id,
+                        docker_container: message.docker_container.clone(),
+                        error_message: format!(
+                            "missing gateway/container_ip (gw={proxy_gw:?}, cip={container_ip:?})"
+                        ),
+                    }),
                 );
             }
         }

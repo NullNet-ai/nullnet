@@ -7,6 +7,10 @@
 //! so live flows re-enter the queue as NEW and get re-verdicted — flows the
 //! new policy denies die on their next packet.
 
+use nullnet_grpc_lib::NullnetGrpcInterface;
+use nullnet_grpc_lib::nullnet_grpc::{
+    AgentConntrackFlushFailed, AgentEvent, agent_event::Event as AgentEventKind,
+};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Mutex;
@@ -56,22 +60,40 @@ impl PolicyVerdicts {
 /// Delete the conntrack entries originating from each container bridge IP so
 /// every live flow re-enters the NFQUEUE as NEW and is re-verdicted. Exit
 /// code 1 just means "no entries matched" — only real failures are logged.
-pub async fn flush_container_conntrack(ips: Vec<Ipv4Addr>) {
+pub async fn flush_container_conntrack(grpc: &NullnetGrpcInterface, ips: Vec<Ipv4Addr>) {
     for ip in ips {
         let out = tokio::process::Command::new("conntrack")
             .args(["-D", "-s", &ip.to_string()])
             .output()
             .await;
-        match out {
-            Ok(o) if o.status.code() == Some(0) || o.status.code() == Some(1) => {}
-            Ok(o) => eprintln!(
-                "[egress-policy] conntrack -D -s {ip} exited {}: {}",
-                o.status,
-                String::from_utf8_lossy(&o.stderr).trim()
-            ),
+        // A failed flush leaves flows the new policy denies running until they
+        // close on their own, so the policy change is only partly in force.
+        let error_message = match out {
+            Ok(o) if o.status.code() == Some(0) || o.status.code() == Some(1) => continue,
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                eprintln!(
+                    "[egress-policy] conntrack -D -s {ip} exited {}: {stderr}",
+                    o.status
+                );
+                format!("conntrack exited {}: {stderr}", o.status)
+            }
             Err(e) => {
                 eprintln!("[egress-policy] conntrack flush {ip}: {e} (is conntrack installed?)");
+                format!("{e} (is conntrack installed?)")
             }
-        }
+        };
+        let grpc = grpc.clone();
+        let event = AgentEvent {
+            event: Some(AgentEventKind::ConntrackFlushFailed(
+                AgentConntrackFlushFailed {
+                    ip: ip.to_string(),
+                    error_message,
+                },
+            )),
+        };
+        tokio::spawn(async move {
+            let _ = grpc.report_event(event).await;
+        });
     }
 }
