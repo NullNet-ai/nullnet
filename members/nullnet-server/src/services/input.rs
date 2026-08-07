@@ -105,7 +105,12 @@ impl ServicesToml {
     /// Load every stack and fail loudly if any `(protocol, listen_port)` pair
     /// is claimed by more than one service — ports are global on the proxy,
     /// unlike service names which only need to be unique within a stack.
-    pub(crate) async fn load_validated() -> Result<(StackMap, MatchIndex), Error> {
+    ///
+    /// The conflicts are returned rather than reported here: the event store
+    /// doesn't exist yet this early in startup, so the caller emits them once
+    /// the orchestrator is up (the reload path emits its own directly).
+    pub(crate) async fn load_validated() -> Result<(StackMap, MatchIndex, Vec<PortConflict>), Error>
+    {
         let (mut stacks, mut index) = Self::load().await?;
         // Don't brick the control plane on a port conflict (e.g. a bad UI edit or
         // hand-edited file left two stacks claiming the same listen_port). Drop the
@@ -126,7 +131,7 @@ impl ServicesToml {
             stacks.remove(stack);
             index.remove(stack);
         }
-        Ok((stacks, index))
+        Ok((stacks, index, conflicts))
     }
 
     /// `config_changed` and `port_mappings_changed` are separate `Notify`s —
@@ -203,7 +208,15 @@ impl ServicesToml {
                                 }
                             }
                         }
-                        Err(e) => eprintln!("Failed to reload services.toml: {e:?}"),
+                        // Unparseable file: the previous config stays in force,
+                        // which looks identical to "nothing changed" from the UI.
+                        Err(e) => {
+                            eprintln!("Failed to reload services.toml: {e:?}");
+                            orchestrator
+                                .events
+                                .emit(ServerEvent::config_reload_failed(format!("{e:?}")))
+                                .await;
+                        }
                     }
                     last_update_time = Instant::now();
                 }

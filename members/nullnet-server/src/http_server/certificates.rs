@@ -131,14 +131,30 @@ pub(super) async fn request_handler(
             // store creds for auto-renew, but only if the cert actually persisted
             // (otherwise we'd orphan a creds file with no matching cert)
             if resp.status() == StatusCode::NO_CONTENT {
+                // Without stored credentials the cert installs fine but can
+                // never auto-renew, and the operator sees only a success here.
                 match serde_json::to_string(&credentials) {
                     Ok(json) => {
                         if let Err(e) = crate::certs::store_dns_credentials(&domain, &json).await {
                             eprintln!("Failed to store DNS credentials for '{domain}': {e:?}");
+                            state
+                                .events
+                                .emit(Event::certificate_credentials_store_failed(
+                                    domain.clone(),
+                                    format!("{e:?}"),
+                                ))
+                                .await;
                         }
                     }
                     Err(e) => {
-                        eprintln!("Failed to serialize DNS credentials for '{domain}': {e:?}")
+                        eprintln!("Failed to serialize DNS credentials for '{domain}': {e:?}");
+                        state
+                            .events
+                            .emit(Event::certificate_credentials_store_failed(
+                                domain.clone(),
+                                format!("{e:?}"),
+                            ))
+                            .await;
                     }
                 }
             }
