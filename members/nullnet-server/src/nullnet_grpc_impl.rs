@@ -84,6 +84,61 @@ fn build_port_mapping_bundle(stacks: &StackMap) -> PortMappingBundle {
     PortMappingBundle { mappings }
 }
 
+/// Build the trigger config for one node: the triggers of the services it
+/// declared as hosting, each carrying the real container names hosting that
+/// service *there*.
+///
+/// The client's NFQUEUE watch is a destination-port match, so a watched port
+/// catches every container on the node. The container list is what lets it tell
+/// the declaring service's own traffic from a co-located container that merely
+/// talks to the same port — the latter used to be attributed to the declaring
+/// service, rejected by `handle_backend_trigger`, and dropped.
+///
+/// A service the node hosts as a bare process contributes no containers and is
+/// skipped: its trigger can never fire (the NFQUEUE path passes host traffic
+/// straight through), and shipping it would claim the port with an owner that
+/// matches every container instead of none.
+#[allow(clippy::type_complexity)]
+pub(crate) fn build_service_triggers(
+    services: &StackMap,
+    declared: &HashMap<String, Vec<(String, u16, Option<String>)>>,
+) -> Vec<ServiceTrigger> {
+    let mut containers_by_service: HashMap<(&str, &str), Vec<&str>> = HashMap::new();
+    for (stack, list) in declared {
+        for (name, _, docker) in list {
+            let entry = containers_by_service
+                .entry((stack.as_str(), name.as_str()))
+                .or_default();
+            if let Some(container) = docker.as_deref()
+                && !entry.contains(&container)
+            {
+                entry.push(container);
+            }
+        }
+    }
+
+    let mut service_triggers: Vec<ServiceTrigger> = containers_by_service
+        .into_iter()
+        .filter(|(_, containers)| !containers.is_empty())
+        .filter_map(|((stack, name), mut containers)| {
+            let triggers = services.get(stack)?.get(name).map(ServiceInfo::triggers)?;
+            if triggers.is_empty() {
+                return None;
+            }
+            let mut ports: Vec<u32> = triggers.keys().map(|p| u32::from(*p)).collect();
+            ports.sort_unstable();
+            containers.sort_unstable();
+            Some(ServiceTrigger {
+                service_name: name.to_string(),
+                ports,
+                containers: containers.into_iter().map(ToString::to_string).collect(),
+            })
+        })
+        .collect();
+    service_triggers.sort_by(|a, b| a.service_name.cmp(&b.service_name));
+    service_triggers
+}
+
 /// Return the stack name that holds `service_name`, if any. Service names
 /// are unique within a stack but may collide across stacks; this returns
 /// the first match in iteration order.
@@ -511,34 +566,8 @@ impl NullnetGrpcImpl {
             .teardown_egress_edges_for_missing_containers(sender_ip, &live_containers)
             .await;
 
-        // Build the trigger config to send back: only the triggers attached
-        // to the services this caller declared as hosting. Look up triggers
-        // in the same stack the entry was declared under.
         let guard = self.services.read().await;
-        let mut seen: HashSet<(String, String)> = HashSet::new();
-        let mut service_triggers: Vec<ServiceTrigger> = Vec::new();
-        for (stack, list) in &service_list_by_stack {
-            let Some(stack_map) = guard.get(stack) else {
-                continue;
-            };
-            for (name, _, _) in list {
-                if !seen.insert((stack.clone(), name.clone())) {
-                    continue;
-                }
-                let Some(triggers) = stack_map.get(name).map(ServiceInfo::triggers) else {
-                    continue;
-                };
-                if triggers.is_empty() {
-                    continue;
-                }
-                let mut ports: Vec<u32> = triggers.keys().map(|p| u32::from(*p)).collect();
-                ports.sort_unstable();
-                service_triggers.push(ServiceTrigger {
-                    service_name: name.clone(),
-                    ports,
-                });
-            }
-        }
+        let service_triggers = build_service_triggers(&guard, &service_list_by_stack);
 
         Ok(Response::new(ServicesListResponse { service_triggers }))
     }

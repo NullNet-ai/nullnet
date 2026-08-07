@@ -5,6 +5,7 @@ mod parse;
 mod recv_loop;
 
 pub use cache::BridgeIpCache;
+pub use listener::{TriggerMap, TriggerOwner};
 
 use crate::commands::nfqueue as rules;
 use crate::egress_policy::PolicyVerdicts;
@@ -34,12 +35,12 @@ use tokio::sync::mpsc::UnboundedReceiver;
 pub fn spawn_listener(
     grpc: NullnetGrpcInterface,
     triggers_state: Arc<TriggersState>,
-    config_rx: UnboundedReceiver<HashMap<u16, String>>,
+    config_rx: UnboundedReceiver<TriggerMap>,
     docker_changed: Arc<Notify>,
     cache: BridgeIpCache,
     verdicts: Arc<PolicyVerdicts>,
 ) {
-    let port_to_service: Arc<RwLock<HashMap<u16, String>>> = Arc::new(RwLock::new(HashMap::new()));
+    let trigger_owners: Arc<RwLock<TriggerMap>> = Arc::new(RwLock::new(HashMap::new()));
 
     // Initial cache populate + long-running docker-events watcher. The
     // watcher pings `docker_changed` after every refresh so the
@@ -54,14 +55,14 @@ pub fn spawn_listener(
         });
     }
 
-    // Config consumer: each services-list refresh produces a port→service
-    // map. We diff vs the previous, push the diff to the ipset (so the
-    // kernel knows which ports to queue), then atomically replace our
-    // userspace port→service lookup that the handler reads.
+    // Config consumer: each services-list refresh produces a port → owners
+    // map. We diff the ports vs the previous set, push the diff to the ipset
+    // (so the kernel knows which ports to queue), then atomically replace the
+    // userspace lookup the handler reads to resolve a packet's owner.
     {
-        let port_to_service = port_to_service.clone();
+        let trigger_owners = trigger_owners.clone();
         tokio::spawn(async move {
-            consume_config(config_rx, port_to_service).await;
+            consume_config(config_rx, trigger_owners).await;
         });
     }
 
@@ -77,7 +78,7 @@ pub fn spawn_listener(
     let ctx = ListenerCtx {
         grpc,
         cache,
-        port_to_service,
+        trigger_owners,
         triggers_state,
         semaphore: Arc::new(Semaphore::new(HANDLER_CONCURRENCY)),
     };
@@ -85,8 +86,8 @@ pub fn spawn_listener(
 }
 
 async fn consume_config(
-    mut config_rx: UnboundedReceiver<HashMap<u16, String>>,
-    port_to_service: Arc<RwLock<HashMap<u16, String>>>,
+    mut config_rx: UnboundedReceiver<TriggerMap>,
+    trigger_owners: Arc<RwLock<TriggerMap>>,
 ) {
     let mut current_ports: HashSet<u16> = HashSet::new();
     while let Some(new_map) = config_rx.recv().await {
@@ -94,7 +95,7 @@ async fn consume_config(
         rules::apply_ports_diff(&current_ports, &new_ports);
         // Swap the lookup. Sync RwLock; write is brief, never held across
         // an `.await`.
-        *port_to_service.write().unwrap() = new_map;
+        *trigger_owners.write().unwrap() = new_map;
         current_ports = new_ports;
     }
 }
