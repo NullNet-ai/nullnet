@@ -22,6 +22,7 @@ use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::{Error, ErrorType, Result};
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{ProxyHttp, Session};
+use std::net::IpAddr;
 use std::process;
 use std::sync::Arc;
 use std::thread;
@@ -190,22 +191,31 @@ impl ProxyHttp for NullnetProxy {
         let upstream = match self.get_or_add_upstream(proxy_req).await {
             Ok(u) => u,
             Err(_) => {
-                let server = self.server.clone();
-                let cip = client_ip.clone();
-                let svc = service_name.clone();
-                tokio::spawn(async move {
-                    let _ = server
-                        .report_event(AgentEvent {
-                            event: Some(AgentEventKind::UpstreamLookupFailed(
-                                AgentUpstreamLookupFailed {
-                                    service_name: svc,
-                                    client_ip: cip,
-                                    error_message: "upstream lookup failed".to_string(),
-                                },
-                            )),
-                        })
-                        .await;
-                });
+                // Anything dialing the proxy by address instead of by name sends an
+                // IP as its `Host`: internet scanners on the public :80, or a local
+                // probe (`curl http://0.0.0.0/`). No service is ever named after an
+                // IP, so these can only ever fail — log them, but keep them out of
+                // the event buffer that real errors have to share.
+                if url.parse::<IpAddr>().is_ok() {
+                    eprintln!("Ignoring proxy request for IP host '{url}' (client {client_ip})");
+                } else {
+                    let server = self.server.clone();
+                    let cip = client_ip.clone();
+                    let svc = service_name.clone();
+                    tokio::spawn(async move {
+                        let _ = server
+                            .report_event(AgentEvent {
+                                event: Some(AgentEventKind::UpstreamLookupFailed(
+                                    AgentUpstreamLookupFailed {
+                                        service_name: svc,
+                                        client_ip: cip,
+                                        error_message: "upstream lookup failed".to_string(),
+                                    },
+                                )),
+                            })
+                            .await;
+                    });
+                }
                 return Err(Error::explain(
                     ErrorType::BindError,
                     "Failed to retrieve upstream",
