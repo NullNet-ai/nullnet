@@ -10,6 +10,7 @@ use crate::forward::receive::receive;
 use crate::forward::send::send;
 use crate::host_mappings::HostMappingsState;
 use crate::local_endpoints::LocalEndpoints;
+use crate::nfqueue::{TriggerMap, TriggerOwner};
 use crate::peers::peer::Peers;
 use crate::triggers::TriggersState;
 use clap::Parser;
@@ -161,7 +162,7 @@ async fn main() -> Result<(), Error> {
     // packet of each new watched-port flow, listener fires backend_trigger
     // with the resolved initiator container, waits for VxlanSetup to install
     // DNAT, then verdicts ACCEPT so the original packet hits the new chain.
-    let (config_tx, config_rx) = tokio::sync::mpsc::unbounded_channel::<HashMap<u16, String>>();
+    let (config_tx, config_rx) = tokio::sync::mpsc::unbounded_channel::<TriggerMap>();
 
     // Poked by the cache's docker-events watcher after every container
     // start/die so `declare_services` re-runs immediately instead of
@@ -181,8 +182,8 @@ async fn main() -> Result<(), Error> {
         policy_verdicts,
     );
 
-    // declare services + push the port→service map to the NFQUEUE listener
-    // on each refresh.
+    // declare services + push the port→trigger-owners map to the NFQUEUE
+    // listener on each refresh.
     tokio::spawn(async move {
         declare_services(grpc_server, config_tx, docker_changed)
             .await
@@ -291,7 +292,7 @@ async fn grpc_init() -> Result<NullnetGrpcInterface, Error> {
 
 async fn declare_services(
     grpc_server: NullnetGrpcInterface,
-    config_tx: UnboundedSender<HashMap<u16, String>>,
+    config_tx: UnboundedSender<TriggerMap>,
     docker_changed: Arc<Notify>,
 ) -> Result<(), Error> {
     let mut last_snapshot: Vec<String> = Vec::new();
@@ -370,17 +371,22 @@ async fn declare_services(
                     });
                 }
 
-                let mut port_to_service: HashMap<u16, String> = HashMap::new();
+                // One port may be claimed by several services on this node, so
+                // each maps to a list of owners rather than a single service.
+                let mut trigger_owners: TriggerMap = HashMap::new();
                 for st in response.service_triggers {
                     for port in st.ports {
                         let Ok(port) = u16::try_from(port) else {
                             eprintln!("server returned invalid trigger port {port}; skipping");
                             continue;
                         };
-                        port_to_service.insert(port, st.service_name.clone());
+                        trigger_owners.entry(port).or_default().push(TriggerOwner {
+                            service: st.service_name.clone(),
+                            containers: st.containers.clone(),
+                        });
                     }
                 }
-                if config_tx.send(port_to_service).is_err() {
+                if config_tx.send(trigger_owners).is_err() {
                     // observer task gone; nothing more to do here
                     return Ok(());
                 }

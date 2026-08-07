@@ -21,12 +21,14 @@ const KIND_LABELS: Record<string, string> = {
   setup_timeout: 'setup_timeout',
   session_created: 'session_created',
   session_torn_down: 'session_torn_down',
+  net_teardown_unconfirmed: 'net_teardown_unconfirmed',
   config_reloaded: 'config_reloaded',
   config_stack_removed: 'config_stack_removed',
   all_replicas_removed: 'all_replicas_removed',
   service_reachability_toggled: 'service_reachability_toggled',
   proxy_client_timed_out: 'proxy_client_timed_out',
   sticky_session_reused: 'sticky_session_reused',
+  stale_session_evicted: 'stale_session_evicted',
   max_networks_limit_enforced: 'max_networks_limit_enforced',
   net_id_pool_exhausted: 'net_id_pool_exhausted',
   proxy_chain_setup_failed: 'proxy_chain_setup_failed',
@@ -90,6 +92,8 @@ function eventDetail(e: EventJson): string {
       return `net ${e.net_id} · ${e.service} ← ${e.client_ip}`;
     case 'session_torn_down':
       return `net ${e.net_id} · ${e.service} · ${e.client_ip}`;
+    case 'net_teardown_unconfirmed':
+      return `net ${e.net_id} · ${e.node_ip} never confirmed teardown`;
     case 'config_reloaded':
     case 'config_stack_removed':
       return e.stack;
@@ -100,6 +104,7 @@ function eventDetail(e: EventJson): string {
     case 'proxy_client_timed_out':
       return `${e.service} · ${e.client_ip}`;
     case 'sticky_session_reused':
+    case 'stale_session_evicted':
       return `${e.service} · ${e.client_ip} via ${e.proxy_ip}`;
     case 'max_networks_limit_enforced':
       return `${e.service} · proxy ${e.proxy_ip} · net ${e.net_id} · limit ${e.limit}`;

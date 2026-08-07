@@ -146,6 +146,11 @@ message VlanSetup {
 
 message VlanTeardown {
   uint32 vlan_id = 1;
+  // Acked once the teardown has actually run, so the server can hold the net id
+  // out of the pool until this edge is really gone. Optional: a client that
+  // predates this field simply never acks, and the server frees on its grace
+  // timer instead.
+  optional MsgId msg_id = 2;
 }
 
 message VxlanSetup {
@@ -199,6 +204,11 @@ message VxlanTeardown {
   string local_ip = 5;
   string remote_ip = 6;
   uint32 dstport = 7;
+  // Acked once the teardown has actually run, so the server can hold the net id
+  // out of the pool until this edge is really gone. Optional: a client that
+  // predates this field simply never acks, and the server frees on its grace
+  // timer instead.
+  optional MsgId msg_id = 8;
 }
 
 message MsgId {
@@ -231,6 +241,11 @@ message ServicesListResponse {
 message ServiceTrigger {
   string service_name = 1;
   repeated uint32 ports = 2;
+  // Real container names hosting this service on the receiving node — the same
+  // string space as the client's bridge-IP cache and as Container.real_name.
+  // Scopes the trigger to its own replicas; empty means a server that predates
+  // this field, and the client then falls back to matching any container.
+  repeated string containers = 3;
 }
 
 message HostMapping {
@@ -356,8 +371,7 @@ message TlsCertificate {
   string domain = 1;
   // Leaf certificate followed by any intermediates, PEM-encoded.
   string fullchain_pem = 2;
-  // PEM-encoded private key. Plaintext on the wire — protect this channel with
-  // TLS (see gRPC-TLS TODO). At-rest encryption (CERT_ENCRYPTION_KEY,
+  // PEM-encoded private key. At-rest encryption (CERT_ENCRYPTION_KEY,
   // AES-256-GCM) is applied server-side; the key is decrypted before it lands here.
   string key_pem = 3;
 }

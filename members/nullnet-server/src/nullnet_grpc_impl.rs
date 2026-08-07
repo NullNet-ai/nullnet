@@ -8,7 +8,8 @@ use crate::net::EgressRole;
 use crate::net_id_pool::generate_key;
 use crate::orchestrator::Orchestrator;
 use crate::services::changes::{
-    apply_changes, collect_dep_chain_edges, detect_services_list_changes,
+    ServiceChange, apply_changes, collect_dep_chain_edges, dep_chain_intact,
+    detect_services_list_changes,
 };
 use crate::services::clients::{Client, ClientInfo};
 use crate::services::edge::{Edge, RegisteredEdge};
@@ -25,7 +26,7 @@ use nullnet_grpc_lib::nullnet_grpc::{
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{Notify, RwLock, mpsc, watch};
 use tokio::task::JoinSet;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
@@ -45,7 +46,15 @@ pub(crate) struct NullnetGrpcImpl {
     /// Live TCP/UDP port→service table, derived from `services` and refreshed
     /// on every services.toml change. Proxies subscribe for updates.
     port_mappings: watch::Receiver<PortMappingBundle>,
+    /// One lock per in-flight proxy request identity, so concurrent duplicates
+    /// are serialized rather than each building the same chain. See
+    /// [`NullnetGrpcImpl::handle_proxy_request`].
+    inflight_proxy: Arc<StdMutex<HashMap<ProxyKey, Arc<tokio::sync::Mutex<()>>>>>,
 }
+
+/// Identity of a proxy request: the same `(service, client, proxy)` triple that
+/// keys the resulting `Client` entry, so one key ⇔ one proxy session.
+type ProxyKey = (String, String, IpAddr);
 
 /// Build the live TCP/UDP port→service table from the current `StackMap`.
 /// `Http` services are excluded — they stay on Host-header routing.
@@ -73,6 +82,61 @@ fn build_port_mapping_bundle(stacks: &StackMap) -> PortMappingBundle {
             .join(", ")
     );
     PortMappingBundle { mappings }
+}
+
+/// Build the trigger config for one node: the triggers of the services it
+/// declared as hosting, each carrying the real container names hosting that
+/// service *there*.
+///
+/// The client's NFQUEUE watch is a destination-port match, so a watched port
+/// catches every container on the node. The container list is what lets it tell
+/// the declaring service's own traffic from a co-located container that merely
+/// talks to the same port — the latter used to be attributed to the declaring
+/// service, rejected by `handle_backend_trigger`, and dropped.
+///
+/// A service the node hosts as a bare process contributes no containers and is
+/// skipped: its trigger can never fire (the NFQUEUE path passes host traffic
+/// straight through), and shipping it would claim the port with an owner that
+/// matches every container instead of none.
+#[allow(clippy::type_complexity)]
+pub(crate) fn build_service_triggers(
+    services: &StackMap,
+    declared: &HashMap<String, Vec<(String, u16, Option<String>)>>,
+) -> Vec<ServiceTrigger> {
+    let mut containers_by_service: HashMap<(&str, &str), Vec<&str>> = HashMap::new();
+    for (stack, list) in declared {
+        for (name, _, docker) in list {
+            let entry = containers_by_service
+                .entry((stack.as_str(), name.as_str()))
+                .or_default();
+            if let Some(container) = docker.as_deref()
+                && !entry.contains(&container)
+            {
+                entry.push(container);
+            }
+        }
+    }
+
+    let mut service_triggers: Vec<ServiceTrigger> = containers_by_service
+        .into_iter()
+        .filter(|(_, containers)| !containers.is_empty())
+        .filter_map(|((stack, name), mut containers)| {
+            let triggers = services.get(stack)?.get(name).map(ServiceInfo::triggers)?;
+            if triggers.is_empty() {
+                return None;
+            }
+            let mut ports: Vec<u32> = triggers.keys().map(|p| u32::from(*p)).collect();
+            ports.sort_unstable();
+            containers.sort_unstable();
+            Some(ServiceTrigger {
+                service_name: name.to_string(),
+                ports,
+                containers: containers.into_iter().map(ToString::to_string).collect(),
+            })
+        })
+        .collect();
+    service_triggers.sort_by(|a, b| a.service_name.cmp(&b.service_name));
+    service_triggers
 }
 
 /// Return the stack name that holds `service_name`, if any. Service names
@@ -159,6 +223,7 @@ impl NullnetGrpcImpl {
             orchestrator,
             certs: certs_rx,
             port_mappings: port_mappings_rx,
+            inflight_proxy: Arc::new(StdMutex::new(HashMap::new())),
         })
     }
 
@@ -201,7 +266,57 @@ impl NullnetGrpcImpl {
         Ok(Response::new(upstream))
     }
 
+    /// Serialize concurrent requests that share a proxy session identity.
+    ///
+    /// A browser opens several connections to the same host at once and the
+    /// proxy issues one `proxy` RPC per request, so duplicates routinely arrive
+    /// before the first chain is built. Without this they each miss the sticky
+    /// check, each build the full chain — incrementing every dependency edge
+    /// once per branch — and then collapse into a single `Client` entry that
+    /// teardown decrements only once. The surplus never comes off and the whole
+    /// dependency mesh stays connected after the session expires.
+    ///
+    /// Followers re-enter [`Self::proxy_request_locked`] rather than reusing the
+    /// leader's answer, so a leader that failed (or whose session was evicted
+    /// meanwhile) can't hand back a stale upstream.
     pub(crate) async fn handle_proxy_request(
+        &self,
+        service_name: &str,
+        proxy_ip: IpAddr,
+        client_ip: &str,
+    ) -> Result<Upstream, Error> {
+        let key: ProxyKey = (service_name.to_string(), client_ip.to_string(), proxy_ip);
+        let entry = {
+            let mut inflight = self
+                .inflight_proxy
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inflight.entry(key.clone()).or_default().clone()
+        };
+        let guard = entry.lock().await;
+
+        let result = self
+            .proxy_request_locked(service_name, proxy_ip, client_ip)
+            .await;
+
+        drop(guard);
+        // Drop the map entry once nobody else holds it. Taken under the map
+        // lock, so a request arriving now either already cloned the Arc (count
+        // > 2, kept) or blocks until we're done and inserts a fresh one.
+        let mut inflight = self
+            .inflight_proxy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if inflight
+            .get(&key)
+            .is_some_and(|e| Arc::strong_count(e) <= 2)
+        {
+            inflight.remove(&key);
+        }
+        result
+    }
+
+    async fn proxy_request_locked(
         &self,
         service_name: &str,
         proxy_ip: IpAddr,
@@ -223,34 +338,90 @@ impl NullnetGrpcImpl {
             Err("Service is not a configured entry point").handle_err(location!())?;
         }
 
-        let ServiceInfo::Registered(registered) = service_info else {
+        let ServiceInfo::Registered(mut registered) = service_info else {
             Err("Service is not registered").handle_err(location!())?
         };
 
         let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
 
-        // Sticky session: check if this client is already connected to a replica
+        // Sticky session: reuse the network this client is already on — but only
+        // while the dependency chain built alongside it is still complete.
+        //
+        // A dep edge can come down independently of the entry edge (its container
+        // restarting, a chain torn down through an unregistered service), and this
+        // path never rebuilds one. Serving the request anyway hands it to a replica
+        // whose `/etc/hosts` no longer maps its dependencies, so the name silently
+        // falls through to public DNS. Evict the session instead and let the setup
+        // path below rebuild entry and chain together: repairing just the missing
+        // edges here would double-count `active_chains` on the edges still up,
+        // since teardown decrements once per branch per proxy client.
         if let Some(upstream) = registered.is_client_setup(&proxy_client) {
-            println!("'{client_ip}' ---> '{service_name}' is already set up");
+            let intact = match registered.client_replica(&proxy_client) {
+                Some((replica_ip, replica_docker)) => {
+                    self.services.read().await.get(&stack).is_some_and(|sm| {
+                        dep_chain_intact(service_name, replica_ip, replica_docker.as_deref(), sm)
+                    })
+                }
+                None => false,
+            };
+
+            if intact {
+                println!("'{client_ip}' ---> '{service_name}' is already set up");
+
+                self.orchestrator
+                    .events
+                    .emit(Event::sticky_session_reused(
+                        service_name.to_string(),
+                        client_ip.to_string(),
+                        proxy_ip.to_string(),
+                    ))
+                    .await;
+
+                // update the latest timestamp for this client since it's being used again
+                let mut services_mut = self.services.write().await;
+                if let Some(stack_map) = services_mut.get_mut(&stack)
+                    && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(service_name)
+                {
+                    reg.set_latest_now(&proxy_client);
+                }
+
+                return Ok(upstream);
+            }
 
             self.orchestrator
                 .events
-                .emit(Event::sticky_session_reused(
+                .emit(Event::stale_session_evicted(
                     service_name.to_string(),
                     client_ip.to_string(),
                     proxy_ip.to_string(),
                 ))
                 .await;
 
-            // update the latest timestamp for this client since it's being used again
             let mut services_mut = self.services.write().await;
-            if let Some(stack_map) = services_mut.get_mut(&stack)
-                && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(service_name)
-            {
-                reg.set_latest_now(&proxy_client);
+            if let Some(stack_map) = services_mut.get_mut(&stack) {
+                apply_changes(
+                    vec![ServiceChange::StaleSessionEvicted {
+                        name: service_name.to_string(),
+                        client: proxy_client.clone(),
+                    }],
+                    stack_map,
+                    None,
+                    &self.orchestrator,
+                    &stack,
+                )
+                .await;
             }
+            drop(services_mut);
 
-            return Ok(upstream);
+            // The eviction dropped this client and may have freed its network, so
+            // the snapshot the max-networks check below reads has to be re-taken.
+            let guard = self.services.read().await;
+            let Some(ServiceInfo::Registered(reg)) =
+                guard.get(&stack).and_then(|sm| sm.get(service_name))
+            else {
+                Err("Service is not registered").handle_err(location!())?
+            };
+            registered = reg.clone();
         }
 
         // Max-networks: if the limit is reached, reuse the least-used existing
@@ -395,34 +566,8 @@ impl NullnetGrpcImpl {
             .teardown_egress_edges_for_missing_containers(sender_ip, &live_containers)
             .await;
 
-        // Build the trigger config to send back: only the triggers attached
-        // to the services this caller declared as hosting. Look up triggers
-        // in the same stack the entry was declared under.
         let guard = self.services.read().await;
-        let mut seen: HashSet<(String, String)> = HashSet::new();
-        let mut service_triggers: Vec<ServiceTrigger> = Vec::new();
-        for (stack, list) in &service_list_by_stack {
-            let Some(stack_map) = guard.get(stack) else {
-                continue;
-            };
-            for (name, _, _) in list {
-                if !seen.insert((stack.clone(), name.clone())) {
-                    continue;
-                }
-                let Some(triggers) = stack_map.get(name).map(ServiceInfo::triggers) else {
-                    continue;
-                };
-                if triggers.is_empty() {
-                    continue;
-                }
-                let mut ports: Vec<u32> = triggers.keys().map(|p| u32::from(*p)).collect();
-                ports.sort_unstable();
-                service_triggers.push(ServiceTrigger {
-                    service_name: name.clone(),
-                    ports,
-                });
-            }
-        }
+        let service_triggers = build_service_triggers(&guard, &service_list_by_stack);
 
         Ok(Response::new(ServicesListResponse { service_triggers }))
     }
@@ -1422,6 +1567,7 @@ impl NullnetGrpcImpl {
             orchestrator: Orchestrator::new(),
             certs,
             port_mappings,
+            inflight_proxy: Arc::new(StdMutex::new(HashMap::new())),
         }
     }
 

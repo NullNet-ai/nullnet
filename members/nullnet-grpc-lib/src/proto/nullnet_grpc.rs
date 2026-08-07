@@ -99,10 +99,16 @@ pub struct VlanSetup {
     #[prost(bool, tag = "9")]
     pub encrypted: bool,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VlanTeardown {
     #[prost(uint32, tag = "1")]
     pub vlan_id: u32,
+    /// Acked once the teardown has actually run, so the server can hold the net id
+    /// out of the pool until this edge is really gone. Optional: a client that
+    /// predates this field simply never acks, and the server frees on its grace
+    /// timer instead.
+    #[prost(message, optional, tag = "2")]
+    pub msg_id: ::core::option::Option<MsgId>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VxlanSetup {
@@ -179,6 +185,12 @@ pub struct VxlanTeardown {
     pub remote_ip: ::prost::alloc::string::String,
     #[prost(uint32, tag = "7")]
     pub dstport: u32,
+    /// Acked once the teardown has actually run, so the server can hold the net id
+    /// out of the pool until this edge is really gone. Optional: a client that
+    /// predates this field simply never acks, and the server frees on its grace
+    /// timer instead.
+    #[prost(message, optional, tag = "8")]
+    pub msg_id: ::core::option::Option<MsgId>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MsgId {
@@ -223,6 +235,12 @@ pub struct ServiceTrigger {
     pub service_name: ::prost::alloc::string::String,
     #[prost(uint32, repeated, tag = "2")]
     pub ports: ::prost::alloc::vec::Vec<u32>,
+    /// Real container names hosting this service on the receiving node — the same
+    /// string space as the client's bridge-IP cache and as Container.real_name.
+    /// Scopes the trigger to its own replicas; empty means a server that predates
+    /// this field, and the client then falls back to matching any container.
+    #[prost(string, repeated, tag = "3")]
+    pub containers: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct HostMapping {
@@ -365,8 +383,7 @@ pub struct TlsCertificate {
     /// Leaf certificate followed by any intermediates, PEM-encoded.
     #[prost(string, tag = "2")]
     pub fullchain_pem: ::prost::alloc::string::String,
-    /// PEM-encoded private key. Plaintext on the wire — protect this channel with
-    /// TLS (see gRPC-TLS TODO). At-rest encryption (CERT_ENCRYPTION_KEY,
+    /// PEM-encoded private key. At-rest encryption (CERT_ENCRYPTION_KEY,
     /// AES-256-GCM) is applied server-side; the key is decrypted before it lands here.
     #[prost(string, tag = "3")]
     pub key_pem: ::prost::alloc::string::String,

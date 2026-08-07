@@ -1,7 +1,9 @@
 #![allow(non_snake_case)]
 
 use crate::graphviz::render_graphviz;
-use crate::nullnet_grpc_impl::NullnetGrpcImpl;
+use crate::nullnet_grpc_impl::{NullnetGrpcImpl, build_service_triggers};
+use crate::services::changes::dep_chain_intact;
+use crate::services::clients::Client;
 use crate::services::input::{ServicesToml, StackMap, apply_config_update};
 use crate::services::service_info::{CountryPolicy, ServiceInfo};
 use crate::timeout::apply_timeouts;
@@ -30,6 +32,9 @@ fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
 }
 
 async fn assert_net_ids_in_use(server: &NullnetGrpcImpl, expected: u32) {
+    // A net id is returned to the pool only once both endpoints confirm the
+    // teardown, so let any in-flight teardown finish before sampling.
+    server.orchestrator().settle_teardowns().await;
     let in_use = server.orchestrator().net_ids_in_use().await;
     assert_eq!(
         in_use, expected,
@@ -2965,4 +2970,269 @@ async fn proxy_request_resumes_suspended_replica() {
         );
     }
     assert_eq!(count_resumes(&log.lock().await, "svc_c1"), 1);
+}
+
+// ===========================================================================
+// stale_session: A entry-point with proxy_dependencies=[["B","C"]] (reusing the
+// reachability_changed fixture, A's chain only). Covers the sticky-session
+// path: it must reuse an intact chain, and evict + rebuild a broken one rather
+// than serving a replica whose dependency mappings are gone.
+// ===========================================================================
+
+async fn stale_session_setup() -> (NullnetGrpcImpl, IpAddr) {
+    let services = load_fixture(REACHABILITY_CHANGED).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+
+    let ip_map = HashMap::from([
+        ("A", ip(1, 1, 1, 1)),
+        ("B", ip(2, 2, 2, 2)),
+        ("C", ip(3, 3, 3, 3)),
+    ]);
+    let proxy = ip(6, 6, 6, 6);
+    register_services(&server, &ip_map, 8080).await;
+    server.orchestrator().register_fake_client(proxy).await;
+
+    // proxy→A, A→B, B→C
+    setup_proxy_chain(&server, "A", proxy, "10.0.0.1").await;
+    assert_net_ids_in_use(&server, 3).await;
+
+    (server, proxy)
+}
+
+/// Whether A's dependency chain, walked from its only replica, is complete.
+async fn a_chain_intact(server: &NullnetGrpcImpl) -> bool {
+    let guard = server.services().read().await;
+    dep_chain_intact("A", ip(1, 1, 1, 1), None, stack_view(&guard))
+}
+
+/// An intact chain is reused as-is: same upstream, no new networks.
+#[tokio::test]
+async fn stale_session_intact_chain_is_reused() {
+    let (server, proxy) = stale_session_setup().await;
+
+    let first = server
+        .handle_proxy_request("A", proxy, "10.0.0.1")
+        .await
+        .expect("proxy request failed");
+    let second = server
+        .handle_proxy_request("A", proxy, "10.0.0.1")
+        .await
+        .expect("proxy request failed");
+
+    assert_eq!(
+        first.ip, second.ip,
+        "sticky reuse must keep serving the same network"
+    );
+    assert!(a_chain_intact(&server).await);
+    assert_net_ids_in_use(&server, 3).await;
+}
+
+/// A dep edge torn down independently of the entry edge leaves the session
+/// stale. The next request must evict it and rebuild the whole chain instead
+/// of reusing an entry whose dependency mappings no longer exist.
+#[tokio::test]
+async fn stale_session_broken_chain_is_evicted_and_rebuilt() {
+    let (server, proxy) = stale_session_setup().await;
+
+    // Drop B→C the way a real teardown would, leaving proxy→A and A→B up.
+    {
+        let mut guard = server.services().write().await;
+        let b_client = Client::new_service("B".to_string(), ip(2, 2, 2, 2), None);
+        let Some(ServiceInfo::Registered(c_reg)) = stack_view_mut(&mut guard).get_mut("C") else {
+            panic!("C is not registered");
+        };
+        c_reg
+            .decrement_chain(&b_client, server.orchestrator(), false)
+            .await;
+    }
+    assert!(
+        !a_chain_intact(&server).await,
+        "B→C should be gone after the teardown"
+    );
+    assert_net_ids_in_use(&server, 2).await;
+
+    server
+        .handle_proxy_request("A", proxy, "10.0.0.1")
+        .await
+        .expect("proxy request failed");
+
+    assert!(
+        a_chain_intact(&server).await,
+        "the stale session should have been evicted and the chain rebuilt"
+    );
+    assert_net_ids_in_use(&server, 3).await;
+}
+
+// ===========================================================================
+// concurrent_setup: A→B reached by four routes, cycles A→B→A and B→D→B, B
+// shared between three sources. Covers concurrent first-time setup: a browser
+// opens several connections to the same host at once, so the proxy issues
+// concurrent `proxy` RPCs for one (client_ip, service) before the first chain
+// finishes.
+// ===========================================================================
+
+const CONCURRENT_SETUP: &str = "concurrent_setup";
+
+/// Every surviving client entry as `service <- client (chains=N)`, sorted.
+fn live_edges(guard: &StackMap) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (name, si) in stack_view(guard) {
+        if let ServiceInfo::Registered(reg) = si {
+            for (client, ci, _, _) in reg.all_clients_owned() {
+                out.push(format!(
+                    "{name} <- {} (chains={})",
+                    client.display_name(),
+                    ci.active_chains()
+                ));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Concurrent requests for the same client collapse into ONE proxy client
+/// entry, so they must also leave the dependency edges at a count teardown can
+/// fully unwind — otherwise the whole dependency mesh stays connected after
+/// the session expires.
+#[tokio::test]
+async fn concurrent_requests_same_client_tear_down_cleanly() {
+    let services = load_fixture(CONCURRENT_SETUP).await;
+    let server = std::sync::Arc::new(NullnetGrpcImpl::new_for_test(services));
+
+    let ip_map = HashMap::from([
+        ("A", ip(1, 1, 1, 1)),
+        ("B", ip(2, 2, 2, 2)),
+        ("C", ip(3, 3, 3, 3)),
+        ("D", ip(4, 4, 4, 4)),
+    ]);
+    let proxy = ip(5, 5, 5, 5);
+    register_services(&server, &ip_map, 8080).await;
+    server.orchestrator().register_fake_client(proxy).await;
+
+    let mut set = tokio::task::JoinSet::new();
+    for _ in 0..6 {
+        let server = server.clone();
+        set.spawn(async move {
+            server
+                .handle_proxy_request("A", proxy, "10.0.0.1")
+                .await
+                .expect("proxy request failed");
+        });
+    }
+    while set.join_next().await.is_some() {}
+
+    // proxy→A, A→B, A→C, B→A, B→C, B→D, D→B, C→B — one network each, however
+    // many requests raced to build them.
+    assert_net_ids_in_use(&server, 8).await;
+    {
+        let guard = server.services().read().await;
+        assert_eq!(
+            stack_view(&guard)["A"]
+                .proxy_deps()
+                .iter()
+                .filter(|b| b.first().is_some_and(|d| d == "B"))
+                .count(),
+            4,
+            "fixture should reach B by four routes"
+        );
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    let mut guard = server.services().write().await;
+    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator(), "default").await;
+    let residual = live_edges(&guard);
+    drop(guard);
+
+    server.orchestrator().settle_teardowns().await;
+    let in_use = server.orchestrator().net_ids_in_use().await;
+    assert!(
+        residual.is_empty() && in_use == 0,
+        "still connected after the session expired: {in_use} NET ID(s), {} edge(s):\n{}",
+        residual.len(),
+        residual.join("\n")
+    );
+}
+
+// ===========================================================================
+// trigger_scoping: a trigger port is watched host-wide, so the trigger config
+// has to say which containers actually own it. Without that, every co-located
+// container dialing the port is attributed to the declaring service, rejected
+// by `handle_backend_trigger`, and its SYN dropped by the client.
+// ===========================================================================
+
+const TRIGGER_SCOPING: &str = "trigger_scoping";
+
+fn declared_by_stack(
+    entries: Vec<(&str, u16, Option<&str>)>,
+) -> HashMap<String, Vec<(String, u16, Option<String>)>> {
+    HashMap::from([(
+        TEST_STACK.to_string(),
+        entries
+            .into_iter()
+            .map(|(n, p, d)| (n.to_string(), p, d.map(ToString::to_string)))
+            .collect(),
+    )])
+}
+
+#[tokio::test]
+async fn trigger_carries_the_containers_that_own_it() {
+    let services = load_fixture(TRIGGER_SCOPING).await;
+    let declared = declared_by_stack(vec![
+        ("S", 3000, Some("stack_s.1.abc")),
+        ("P", 8932, Some("stack_p.1.xyz")),
+    ]);
+
+    let triggers = build_service_triggers(&services, &declared);
+
+    assert_eq!(triggers.len(), 1, "only S declares a trigger");
+    assert_eq!(triggers[0].service_name, "S");
+    assert_eq!(triggers[0].ports, vec![8932]);
+    assert_eq!(
+        triggers[0].containers,
+        vec!["stack_s.1.abc"],
+        "P's container hosts the callee, not the trigger — it must not be listed, \
+         or P's own traffic on 8932 would be attributed to S's trigger"
+    );
+}
+
+/// Swarm: every replica of the declaring service on this node owns the trigger.
+#[tokio::test]
+async fn trigger_lists_every_colocated_replica() {
+    let services = load_fixture(TRIGGER_SCOPING).await;
+    let declared = declared_by_stack(vec![
+        ("S", 3000, Some("stack_s.2.def")),
+        ("S", 3000, Some("stack_s.1.abc")),
+        ("S", 3000, Some("stack_s.1.abc")),
+    ]);
+
+    let triggers = build_service_triggers(&services, &declared);
+
+    assert_eq!(triggers.len(), 1);
+    assert_eq!(
+        triggers[0].containers,
+        vec!["stack_s.1.abc", "stack_s.2.def"],
+        "sorted and de-duplicated"
+    );
+}
+
+/// A bare-process service's trigger can never fire — the NFQUEUE path resolves
+/// an initiator container and passes host traffic straight through. Shipping it
+/// would claim the port with an owner matching every container instead of none,
+/// which is exactly the bug being fixed.
+#[tokio::test]
+async fn bare_process_service_ships_no_trigger() {
+    let services = load_fixture(TRIGGER_SCOPING).await;
+    let declared = declared_by_stack(vec![("HostSvc", 4000, None)]);
+
+    assert!(build_service_triggers(&services, &declared).is_empty());
+}
+
+/// A node hosting neither declares nothing.
+#[tokio::test]
+async fn node_hosting_no_trigger_service_gets_nothing() {
+    let services = load_fixture(TRIGGER_SCOPING).await;
+    let declared = declared_by_stack(vec![("P", 8932, Some("stack_p.1.xyz"))]);
+
+    assert!(build_service_triggers(&services, &declared).is_empty());
 }

@@ -144,10 +144,18 @@ pub(crate) fn init() {
     println!("[egress] init: NFQUEUE queue {QUEUE_NUM} + ip_forward ready");
 }
 
+/// Table numbers start here, clear of the reserved 0/253-255 and of anything
+/// an operator is realistically using by hand.
+const TABLE_OFFSET: u32 = 10_000;
+
+/// Lowest id the server's NET ID pool hands out. Below it, a `lookup <N>` in
+/// `ip rule` isn't one of ours.
+const MIN_NET_ID: u32 = 101;
+
 /// Per-edge routing table / rule-priority base, derived from the net id so
 /// concurrent edges don't collide and teardown can reconstruct them.
 fn table_for(net_id: u32) -> u32 {
-    10_000 + net_id
+    TABLE_OFFSET + net_id
 }
 fn prio_base(net_id: u32) -> u32 {
     // 16 priorities reserved per edge: internal bypasses then the catch-all.
@@ -156,6 +164,13 @@ fn prio_base(net_id: u32) -> u32 {
     // route match first and the egress steer never fires. 1000 + net_id*16
     // keeps every edge's rules (net_id up to ~1900) under 32766.
     1_000 + net_id * 16
+}
+
+/// Whether a steer for `net_id` can exist at all: the pool never hands out an
+/// id below [`MIN_NET_ID`], and `install_steer` refuses one whose priority band
+/// would reach `main`. Bounds what `purge_stale_steers` may claim as ours.
+fn steerable(net_id: u32) -> bool {
+    net_id >= MIN_NET_ID && prio_base(net_id) + 15 < 32_766
 }
 
 /// Initiator side: steer `container_ip`'s external traffic into the overlay
@@ -172,7 +187,7 @@ pub(crate) fn install_steer(
     // or the catch-all lands above main and its default route wins — the steer
     // silently never fires. net_id is bounded only by the (2M-wide) NET ID pool,
     // so guard here and fail loud instead of installing rules that can't match.
-    if prio_base(net_id) + 15 >= 32_766 {
+    if !steerable(net_id) {
         eprintln!(
             "[egress] net_id {net_id} exceeds steer priority range (base {} >= main 32766); refusing steer",
             prio_base(net_id)
@@ -282,6 +297,109 @@ pub(crate) fn remove_steer(net_id: u32, br_dev: &str, snat_src: Ipv4Addr, contai
         "--to-source",
         &snat_src.to_string(),
     ]);
+}
+
+/// Drop policy-routing state left behind by a previous run.
+///
+/// `remove_steer` runs per edge on `VxlanTeardown`, but a client that was
+/// killed never got one, and the `EgressState` that maps a net id to its
+/// bridge/container dies with the process — so the usual reconstruction isn't
+/// available. `install_steer` self-heals a net id that happens to be reused,
+/// but one that isn't keeps its 16 rules and route table indefinitely.
+///
+/// Discovery is by shape, so unrelated policy routing is untouched: rule bands
+/// come from the tables named in `ip rule`, and SNAT rules from the overlay
+/// bridges they leave by.
+pub(crate) fn purge_stale_steers() {
+    let mut tables = 0usize;
+    for net_id in stale_steer_net_ids() {
+        let table = table_for(net_id).to_string();
+        let base = prio_base(net_id);
+        for i in 0..16u32 {
+            // Most of the band is legitimately absent — a steer only ever uses
+            // the internal bypasses plus the catch-all — so the misses are the
+            // expected case, not something to spell out on every startup.
+            let _ = sudo_quiet(&["ip", "rule", "del", "priority", &(base + i).to_string()]);
+        }
+        let _ = sudo(&["ip", "route", "flush", "table", &table]);
+        tables += 1;
+    }
+
+    let mut snats = 0usize;
+    for spec in stale_overlay_snat_rules() {
+        let mut args: Vec<&str> = vec!["iptables", "-t", "nat"];
+        args.extend(spec.iter().map(String::as_str));
+        if sudo(&args).map(|s| s.success()).unwrap_or(false) {
+            snats += 1;
+        }
+    }
+
+    println!("[egress] purge: dropped {tables} stale steer table(s), {snats} SNAT rule(s)");
+}
+
+/// Net ids whose steer table is still referenced by an `ip rule`. A steer's
+/// internal-bypass rules use `lookup main`, so the catch-all is what identifies
+/// the band — a partial install missing it is left for `install_steer` to heal.
+fn stale_steer_net_ids() -> Vec<u32> {
+    parse_steer_net_ids(&sudo_output(&["ip", "rule", "show"]).unwrap_or_default())
+}
+
+fn parse_steer_net_ids(out: &str) -> Vec<u32> {
+    let mut ids: Vec<u32> = out
+        .lines()
+        .filter_map(|line| {
+            let table: u32 = line
+                .split_whitespace()
+                .skip_while(|t| *t != "lookup")
+                .nth(1)?
+                .parse()
+                .ok()?;
+            table.checked_sub(TABLE_OFFSET).filter(|id| steerable(*id))
+        })
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// `-D`-ready specs for SNAT rules that send a source into one of our overlay
+/// bridges. `iptables -S` prints them as `-A POSTROUTING ...`, so flipping the
+/// verb yields the matching delete.
+fn stale_overlay_snat_rules() -> Vec<Vec<String>> {
+    parse_overlay_snat_rules(
+        &sudo_output(&["iptables", "-t", "nat", "-S", "POSTROUTING"]).unwrap_or_default(),
+    )
+}
+
+fn parse_overlay_snat_rules(out: &str) -> Vec<Vec<String>> {
+    out.lines()
+        .filter(|line| line.starts_with("-A POSTROUTING "))
+        .filter(|line| line.contains("-j SNAT"))
+        .filter(|line| {
+            line.split_whitespace()
+                .skip_while(|t| *t != "-o")
+                .nth(1)
+                .is_some_and(|dev| dev.starts_with("br_"))
+        })
+        .map(|line| {
+            std::iter::once("-D".to_string())
+                .chain(line.split_whitespace().skip(1).map(String::from))
+                .collect()
+        })
+        .collect()
+}
+
+fn sudo_output(args: &[&str]) -> Option<String> {
+    let out = Command::new("sudo").args(args).output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// `sudo` with stderr captured rather than inherited, for calls whose failure
+/// is the expected steady state (deleting a rule that isn't there).
+fn sudo_quiet(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
+    Command::new("sudo").args(args).output().map(|o| o.status)
 }
 
 /// Gateway side: forward decapsulated external-bound packets arriving on
@@ -420,4 +538,78 @@ pub(crate) fn container_ipv4(container: &str) -> Option<Ipv4Addr> {
     String::from_utf8_lossy(&out.stdout)
         .split_whitespace()
         .find_map(|tok| tok.parse::<Ipv4Addr>().ok())
+}
+
+#[cfg(test)]
+mod purge_tests {
+    use super::{parse_overlay_snat_rules, parse_steer_net_ids};
+
+    /// Real `ip rule show`: the kernel's three defaults, one steer catch-all
+    /// (net id 101 → table 10101), its internal bypasses, and an operator's own
+    /// rule pointing at a low-numbered table.
+    const RULE_SHOW: &str = "\
+0:\tfrom all lookup local
+2616:\tfrom 172.17.0.3 to 10.0.0.0/8 lookup main
+2631:\tfrom 172.17.0.3 lookup 10101
+2647:\tfrom 172.17.0.9 lookup 10102
+30000:\tfrom 10.9.0.0/24 lookup 42
+30001:\tfrom 10.9.1.0/24 lookup 20000
+32766:\tfrom all lookup main
+32767:\tfrom all lookup default
+";
+
+    const SNAT_SHOW: &str = "\
+-P POSTROUTING ACCEPT
+-A POSTROUTING -s 172.17.0.0/16 ! -o docker0 -j MASQUERADE
+-A POSTROUTING -s 172.17.0.3/32 -o br_101_c -j SNAT --to-source 10.0.3.44
+-A POSTROUTING -s 10.5.0.0/16 -o eth0 -j SNAT --to-source 203.0.113.9
+";
+
+    #[test]
+    fn net_ids_come_from_our_table_range_only() {
+        // `main`/`local`/`default` aren't numbers; table 42 is below our offset
+        // and table 20000 is above the largest id `install_steer` accepts —
+        // both are the operator's, and flushing either would break their routing
+        assert_eq!(parse_steer_net_ids(RULE_SHOW), vec![101, 102]);
+    }
+
+    #[test]
+    fn steerable_matches_what_install_steer_accepts() {
+        assert!(!super::steerable(super::MIN_NET_ID - 1));
+        assert!(super::steerable(super::MIN_NET_ID));
+        // the band must stay clear of main's rule at 32766
+        let last = (0..40_000u32)
+            .filter(|id| super::steerable(*id))
+            .max()
+            .unwrap();
+        assert!(super::prio_base(last) + 15 < 32_766);
+        assert!(!super::steerable(last + 1));
+    }
+
+    #[test]
+    fn snat_rules_scoped_to_overlay_bridges() {
+        let rules = parse_overlay_snat_rules(SNAT_SHOW);
+        assert_eq!(rules.len(), 1, "only the br_* SNAT is ours");
+        assert_eq!(
+            rules[0],
+            vec![
+                "-D",
+                "POSTROUTING",
+                "-s",
+                "172.17.0.3/32",
+                "-o",
+                "br_101_c",
+                "-j",
+                "SNAT",
+                "--to-source",
+                "10.0.3.44"
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_output_yields_nothing() {
+        assert!(parse_steer_net_ids("").is_empty());
+        assert!(parse_overlay_snat_rules("").is_empty());
+    }
 }

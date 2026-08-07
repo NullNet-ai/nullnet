@@ -85,6 +85,14 @@ pub(crate) enum Event {
         client_ip: String,
         timestamp: u64,
     },
+    /// An endpoint never confirmed a teardown, so the net id went back to the
+    /// pool unverified. Its kernel state may still exist on that node, and a
+    /// later edge reusing the id would collide with it.
+    NetTeardownUnconfirmed {
+        net_id: u32,
+        node_ip: String,
+        timestamp: u64,
+    },
     ConfigReloaded {
         stack: String,
         timestamp: u64,
@@ -120,6 +128,12 @@ pub(crate) enum Event {
         timestamp: u64,
     },
     StickySessionReused {
+        service: String,
+        client_ip: String,
+        proxy_ip: String,
+        timestamp: u64,
+    },
+    StaleSessionEvicted {
         service: String,
         client_ip: String,
         proxy_ip: String,
@@ -344,6 +358,7 @@ impl Event {
             Self::SetupTimeout { .. } => "setup_timeout",
             Self::SessionCreated { .. } => "session_created",
             Self::SessionTornDown { .. } => "session_torn_down",
+            Self::NetTeardownUnconfirmed { .. } => "net_teardown_unconfirmed",
             Self::ConfigReloaded { .. } => "config_reloaded",
             Self::ConfigStackRemoved { .. } => "config_stack_removed",
             Self::PortMappingConflict { .. } => "port_mapping_conflict",
@@ -351,6 +366,7 @@ impl Event {
             Self::ServiceReachabilityToggled { .. } => "service_reachability_toggled",
             Self::ProxyClientTimedOut { .. } => "proxy_client_timed_out",
             Self::StickySessionReused { .. } => "sticky_session_reused",
+            Self::StaleSessionEvicted { .. } => "stale_session_evicted",
             Self::MaxNetworksLimitEnforced { .. } => "max_networks_limit_enforced",
             Self::NetIdPoolExhausted { .. } => "net_id_pool_exhausted",
             Self::ProxyChainSetupFailed { .. } => "proxy_chain_setup_failed",
@@ -417,9 +433,11 @@ impl Event {
             | Self::AllReplicasRemoved { .. }
             | Self::ServiceReachabilityToggled { .. }
             | Self::ProxyClientTimedOut { .. }
+            | Self::StaleSessionEvicted { .. }
             | Self::MaxNetworksLimitEnforced { .. }
             | Self::BackendTriggerSetupBailed { .. }
             | Self::ControlChannelClosed { .. }
+            | Self::NetTeardownUnconfirmed { .. }
             | Self::CertificateRemoved { .. } => Severity::Warning,
 
             Self::SetupTimeout { .. }
@@ -541,6 +559,14 @@ impl Event {
         }
     }
 
+    pub(crate) fn net_teardown_unconfirmed(net_id: u32, node_ip: String) -> Self {
+        Self::NetTeardownUnconfirmed {
+            net_id,
+            node_ip,
+            timestamp: now_secs(),
+        }
+    }
+
     pub(crate) fn config_reloaded(stack: String) -> Self {
         Self::ConfigReloaded {
             stack,
@@ -611,6 +637,19 @@ impl Event {
         proxy_ip: String,
     ) -> Self {
         Self::StickySessionReused {
+            service,
+            client_ip,
+            proxy_ip,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn stale_session_evicted(
+        service: String,
+        client_ip: String,
+        proxy_ip: String,
+    ) -> Self {
+        Self::StaleSessionEvicted {
             service,
             client_ip,
             proxy_ip,
