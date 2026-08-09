@@ -2,7 +2,9 @@ use crate::events::Event as ServerEvent;
 use crate::orchestrator::Orchestrator;
 use crate::services::changes::{ServiceChange, apply_changes, detect_config_changes};
 use crate::services::clients::Client;
-use crate::services::service_info::{CountryPolicy, ServiceInfo};
+use crate::services::service_info::{
+    CountryPolicy, ServiceInfo, TriggerMap, placeholder_collision,
+};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use nullnet_grpc_lib::nullnet_grpc::ServiceProtocol;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
@@ -293,7 +295,43 @@ impl ServicesToml {
                 ))
                 .handle_err(location!());
             }
-            let triggers = s.triggers.into_iter().map(|t| (t.port, t.chain)).collect();
+            // Group by port: more than one chain can share a port (two
+            // dependencies reached on the same real port, e.g. two
+            // plain-HTTPS deps both 443), disambiguated at trigger time by
+            // chain[0] — so within one port, every chain's chain[0] must be
+            // distinct, or the server could never tell them apart either.
+            let mut triggers: TriggerMap = HashMap::new();
+            for t in s.triggers {
+                let chains = triggers.entry(t.port).or_default();
+                if let Some(dup) = chains
+                    .iter()
+                    .find(|c: &&Vec<String>| c.first() == t.chain.first())
+                {
+                    return Err(format!(
+                        "service '{}': two triggers on port {} both resolve as '{}' — chains \
+                         sharing a port must have distinct chain[0] names",
+                        s.name,
+                        t.port,
+                        dup.first().map(String::as_str).unwrap_or("")
+                    ))
+                    .handle_err(location!());
+                }
+                chains.push(t.chain);
+            }
+            // Distinct chain[0] names are required above, but the client
+            // disambiguates a same-port first packet by hashing chain[0] into
+            // a placeholder address (see `placeholder_collision`), and that
+            // hash isn't collision-free. Two different names landing on the
+            // same address would be just as undetectable to the client as a
+            // literal duplicate, so reject it here too.
+            if let Some((port, a, b)) = placeholder_collision(&triggers) {
+                return Err(format!(
+                    "service '{}': triggers '{a}' and '{b}' on port {port} hash to the same \
+                     placeholder address — rename one of them so the client can tell them apart",
+                    s.name
+                ))
+                .handle_err(location!());
+            }
             ret_val.insert(
                 s.name,
                 ServiceInfo::new(
@@ -696,8 +734,89 @@ chain = ["dep.b"]
         // Not proxy-reachable...
         assert_eq!(map["backend.only"].timeout(), None);
         // ...yet it carries its triggers and proxy deps verbatim.
-        assert_eq!(map["backend.only"].triggers()[&5555], vec!["dep.b"]);
+        assert_eq!(
+            map["backend.only"].triggers()[&5555],
+            vec![vec!["dep.b".to_string()]]
+        );
         assert_eq!(map["backend.only"].proxy_deps(), vec![vec!["dep.a"]]);
+    }
+
+    #[test]
+    fn two_triggers_sharing_a_port_with_distinct_targets_both_parse() {
+        // Two dependencies reached on the same real port (e.g. two
+        // plain-HTTPS deps, both 443) — distinguishable by chain[0].
+        let toml_str = r#"
+[[services]]
+name = "portal"
+
+[[services.triggers]]
+port = 443
+chain = ["auth"]
+
+[[services.triggers]]
+port = 443
+chain = ["billing"]
+"#;
+        let parsed: ServicesToml = toml::from_str(toml_str).unwrap();
+        let map = parsed.services_map().unwrap();
+
+        let mut chains = map["portal"].triggers()[&443].clone();
+        chains.sort();
+        assert_eq!(
+            chains,
+            vec![vec!["auth".to_string()], vec!["billing".to_string()]]
+        );
+    }
+
+    #[test]
+    fn two_triggers_sharing_a_port_with_same_target_is_rejected() {
+        // Same port, same chain[0] — genuinely ambiguous, nothing could ever
+        // disambiguate which chain a trigger on this port means.
+        let toml_str = r#"
+[[services]]
+name = "portal"
+
+[[services.triggers]]
+port = 443
+chain = ["auth"]
+
+[[services.triggers]]
+port = 443
+chain = ["auth"]
+"#;
+        let parsed: ServicesToml = toml::from_str(toml_str).unwrap();
+        let err = format!("{:?}", parsed.services_map().unwrap_err());
+        assert!(err.contains("port 443"), "unexpected error: {err}");
+        assert!(err.contains("auth"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn two_triggers_sharing_a_port_with_colliding_placeholder_is_rejected() {
+        // Distinct chain[0] names, but "tax" and "wallet" hash to the same
+        // placeholder octet under `last_octet_for` — the client's
+        // `resolve_target` couldn't tell these two apart on the wire any
+        // better than a literal duplicate could.
+        assert_eq!(
+            nullnet_grpc_lib::last_octet_for("tax"),
+            nullnet_grpc_lib::last_octet_for("wallet")
+        );
+        let toml_str = r#"
+[[services]]
+name = "portal"
+
+[[services.triggers]]
+port = 443
+chain = ["tax"]
+
+[[services.triggers]]
+port = 443
+chain = ["wallet"]
+"#;
+        let parsed: ServicesToml = toml::from_str(toml_str).unwrap();
+        let err = format!("{:?}", parsed.services_map().unwrap_err());
+        assert!(err.contains("port 443"), "unexpected error: {err}");
+        assert!(err.contains("tax"), "unexpected error: {err}");
+        assert!(err.contains("wallet"), "unexpected error: {err}");
     }
 
     #[test]

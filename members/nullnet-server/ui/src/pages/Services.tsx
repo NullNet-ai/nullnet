@@ -140,12 +140,14 @@ export default function Services() {
                                         <td style={{ fontFamily: "'JetBrains Mono',monospace" }}>{svc.max_networks}</td>
                                       </tr>
                                     )}
-                                    {Object.entries(svc.triggers).map(([port, chain]) => (
-                                      <tr key={port}>
-                                        <td style={{ color: 'var(--t2)' }}>Trigger :{port}</td>
-                                        <td style={{ color: 'var(--cyan)', fontSize: 10 }}>{chain.join(' → ')}</td>
-                                      </tr>
-                                    ))}
+                                    {Object.entries(svc.triggers).flatMap(([port, chains]) =>
+                                      chains.map((chain, i) => (
+                                        <tr key={`${port}-${i}`}>
+                                          <td style={{ color: 'var(--t2)' }}>Trigger :{port}</td>
+                                          <td style={{ color: 'var(--cyan)', fontSize: 10 }}>{chain.join(' → ')}</td>
+                                        </tr>
+                                      ))
+                                    )}
                                     {svc.proxy_dependencies.flat().length > 0 && (
                                       <tr>
                                         <td style={{ color: 'var(--t2)' }}>Dependencies</td>

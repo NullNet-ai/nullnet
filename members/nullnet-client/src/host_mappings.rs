@@ -197,6 +197,48 @@ fn edit_hosts_file(path: &Path, edit: impl FnOnce(&str) -> String) -> Result<boo
     Ok(true)
 }
 
+/// Upsert `name -> ip` into `content`, tagged with [`HOSTS_MARKER`] so a
+/// restarted process can sweep it later. Shared by two callers: the reactive
+/// real-mapping write once a tunnel is up (`control_channel`'s
+/// `add_host_mapping`) and the proactive placeholder seed written before any
+/// packet exists (`placeholder::seed_placeholder`) — both need identical
+/// upsert semantics and the same crash-safety (locking, tagging), just a
+/// different `ip` value and I/O wrapper.
+pub(crate) fn upsert_hosts_entry(content: &str, name: &str, entry: &str) -> String {
+    let mut lines: Vec<String> = content.lines().map(ToString::to_string).collect();
+    let mut found = false;
+    for line in &mut lines {
+        if line.split_whitespace().skip(1).any(|tok| tok == name) {
+            *line = entry.to_string();
+            found = true;
+        }
+    }
+    if !found {
+        lines.push(entry.to_string());
+    }
+    lines.join("\n") + "\n"
+}
+
+/// Drop the line mapping `name`, but only while it still points at `ip`.
+///
+/// NET IDs are recycled, so a teardown can land after a *newer* net has
+/// already re-installed the same name at a different overlay IP
+/// (`upsert_hosts_entry` keys on the name alone, which is what makes the
+/// replacement correct). Matching the IP too makes the late teardown a no-op
+/// instead of deleting a mapping that belongs to a live tunnel.
+pub(crate) fn remove_hosts_entry(content: &str, name: &str, ip: &str) -> String {
+    let lines: Vec<String> = content
+        .lines()
+        .filter(|line| {
+            let mut tokens = line.split_whitespace();
+            let line_ip = tokens.next();
+            !(line_ip == Some(ip) && tokens.any(|tok| tok == name))
+        })
+        .map(ToString::to_string)
+        .collect();
+    lines.join("\n") + "\n"
+}
+
 #[cfg(test)]
 mod edit_tests {
     use super::{HOSTS_MARKER, edit_hosts_file, strip_marked};
@@ -276,5 +318,44 @@ mod tests {
     fn leaves_unmarked_content_untouched() {
         let content = "127.0.0.1 localhost\n10.0.0.2 legacy.example.com\n";
         assert_eq!(strip_marked(content), content);
+    }
+}
+
+#[cfg(test)]
+mod hosts_entry_tests {
+    use super::*;
+
+    #[test]
+    fn upsert_appends_when_absent() {
+        let out = upsert_hosts_entry("127.0.0.1 localhost\n", "redis", "203.0.113.7 redis");
+        assert_eq!(out, "127.0.0.1 localhost\n203.0.113.7 redis\n");
+    }
+
+    #[test]
+    fn upsert_replaces_existing_line() {
+        let out = upsert_hosts_entry(
+            "127.0.0.1 localhost\n203.0.113.7 redis\n",
+            "redis",
+            "10.0.0.5 redis",
+        );
+        assert_eq!(out, "127.0.0.1 localhost\n10.0.0.5 redis\n");
+    }
+
+    #[test]
+    fn remove_drops_matching_line_only() {
+        let out = remove_hosts_entry(
+            "127.0.0.1 localhost\n10.0.0.5 redis\n10.0.0.6 billing\n",
+            "redis",
+            "10.0.0.5",
+        );
+        assert_eq!(out, "127.0.0.1 localhost\n10.0.0.6 billing\n");
+    }
+
+    #[test]
+    fn remove_is_a_noop_when_ip_no_longer_matches() {
+        // A late teardown for a torn-down tunnel landing after a newer tunnel
+        // re-mapped the same name at a different IP must not delete it.
+        let out = remove_hosts_entry("127.0.0.1 localhost\n10.0.0.9 redis\n", "redis", "10.0.0.5");
+        assert_eq!(out, "127.0.0.1 localhost\n10.0.0.9 redis\n");
     }
 }

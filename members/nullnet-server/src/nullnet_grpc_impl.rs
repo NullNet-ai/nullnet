@@ -21,7 +21,8 @@ use nullnet_grpc_lib::nullnet_grpc::{
     AgentEvent, BackendTriggerRequest, CertBundle, EgressDestinationReport, EgressPolicyCheck,
     EgressPolicyVerdict, EgressTriggerRequest, Empty, IngressPolicyCheck, IngressPolicyVerdict,
     MsgId, Net, NetMessage, NetType, PortMapping, PortMappingBundle, ProxyRequest, ServiceReport,
-    ServiceTrigger, ServicesListResponse, Upstream, agent_event::Event as AgentEventKind,
+    ServiceTrigger, ServicesListResponse, TriggerPort, Upstream,
+    agent_event::Event as AgentEventKind,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::{HashMap, HashSet};
@@ -86,13 +87,16 @@ fn build_port_mapping_bundle(stacks: &StackMap) -> PortMappingBundle {
 
 /// Build the trigger config for one node: the triggers of the services it
 /// declared as hosting, each carrying the real container names hosting that
-/// service *there*.
+/// service *there* and, per port, every dependency chain's target name.
 ///
 /// The client's NFQUEUE watch is a destination-port match, so a watched port
-/// catches every container on the node. The container list is what lets it tell
-/// the declaring service's own traffic from a co-located container that merely
-/// talks to the same port — the latter used to be attributed to the declaring
-/// service, rejected by `handle_backend_trigger`, and dropped.
+/// catches every container on the node. The container list is what lets the
+/// client tell the declaring service's own traffic from a co-located
+/// container that merely talks to the same port — the latter used to be
+/// attributed to the declaring service, rejected by `handle_backend_trigger`,
+/// and dropped. Once attributed, more than one chain can still share that
+/// port (see `TriggerPort`), disambiguated by the packet's destination
+/// against each candidate's own placeholder address.
 ///
 /// A service the node hosts as a bare process contributes no containers and is
 /// skipped: its trigger can never fire (the NFQUEUE path passes host traffic
@@ -125,12 +129,31 @@ pub(crate) fn build_service_triggers(
             if triggers.is_empty() {
                 return None;
             }
-            let mut ports: Vec<u32> = triggers.keys().map(|p| u32::from(*p)).collect();
-            ports.sort_unstable();
+            // More than one chain can share a port; emit one TriggerPort per
+            // chain so the client learns every target_name for that port and
+            // can seed a placeholder for (and later disambiguate) each one
+            // independently.
+            let mut trigger_ports: Vec<TriggerPort> = triggers
+                .iter()
+                .flat_map(|(port, chains)| {
+                    chains.iter().filter_map(move |chain| {
+                        // chain[0] is what the initiator actually resolves; a
+                        // trigger with an empty chain can't be pre-seeded
+                        // (nothing to target) and can't build a chain either,
+                        // so it's already inert — skip it here too.
+                        let target_name = chain.first()?.clone();
+                        Some(TriggerPort {
+                            port: u32::from(*port),
+                            target_name,
+                        })
+                    })
+                })
+                .collect();
+            trigger_ports.sort_unstable_by_key(|tp| tp.port);
             containers.sort_unstable();
             Some(ServiceTrigger {
                 service_name: name.to_string(),
-                ports,
+                trigger_ports,
                 containers: containers.into_iter().map(ToString::to_string).collect(),
             })
         })
@@ -663,6 +686,7 @@ impl NullnetGrpcImpl {
         service_ip: IpAddr,
         service_docker: Option<&str>,
         port: u16,
+        target_name: &str,
     ) -> Result<Option<Vec<RegisteredEdge>>, Error> {
         let guard = self.services.read().await;
         let stack_map = guard
@@ -681,6 +705,7 @@ impl NullnetGrpcImpl {
             service_ip,
             service_docker,
             port,
+            target_name,
             stack_map,
         ) else {
             return Ok(None);
@@ -737,8 +762,14 @@ impl NullnetGrpcImpl {
         } else {
             Some(req.initiator_container)
         };
-        self.handle_backend_trigger(&req.service_name, port, sender_ip, container.as_deref())
-            .await?;
+        self.handle_backend_trigger(
+            &req.service_name,
+            port,
+            sender_ip,
+            container.as_deref(),
+            &req.target_name,
+        )
+        .await?;
         Ok(Response::new(Empty {}))
     }
 
@@ -748,6 +779,7 @@ impl NullnetGrpcImpl {
         port: u16,
         sender_ip: IpAddr,
         initiator_container: Option<&str>,
+        target_name: &str,
     ) -> Result<(), Error> {
         println!(
             "Received backend trigger for '{initiator_name}' (port {port}) from {sender_ip} (container: {})",
@@ -789,13 +821,18 @@ impl NullnetGrpcImpl {
                 .handle_err(location!())?;
             let initiator_ip = replica.ip();
             let initiator_docker = replica.docker_container().map(String::from);
+            // `chain_for` picks the right chain among possibly several
+            // sharing this port, by matching `target_name` (chain[0]) — the
+            // literal name the client's placeholder resolved. A single
+            // chain on this port is used regardless (covers pre-disambiguation
+            // clients sending an empty target_name); with several sharing the
+            // port, no match means genuinely ambiguous, not a guess.
             let first_dep = reg
-                .triggers()
-                .get(&port)
-                .and_then(|chain| chain.first())
+                .chain_for(port, target_name)
+                .and_then(|c| c.first())
                 .cloned();
             println!(
-                "[trigger] triggers map for '{initiator_name}': {:?}; first_dep for port {port}: {first_dep:?}",
+                "[trigger] triggers map for '{initiator_name}': {:?}; target_name='{target_name}'; first_dep for port {port}: {first_dep:?}",
                 reg.triggers()
             );
 
@@ -829,6 +866,7 @@ impl NullnetGrpcImpl {
             initiator_ip,
             initiator_docker.as_deref(),
             port,
+            target_name,
         )
         .await
     }
@@ -840,9 +878,17 @@ impl NullnetGrpcImpl {
         initiator_ip: IpAddr,
         initiator_docker: Option<&str>,
         port: u16,
+        target_name: &str,
     ) -> Result<(), Error> {
         let Some(mut chain) = self
-            .build_backend_dep_chain(stack, initiator_name, initiator_ip, initiator_docker, port)
+            .build_backend_dep_chain(
+                stack,
+                initiator_name,
+                initiator_ip,
+                initiator_docker,
+                port,
+                target_name,
+            )
             .await?
         else {
             println!(
