@@ -14,6 +14,7 @@ interface Props {
   fill?: boolean;
   anchor?: 'center' | 'top-left';
   grow?: boolean;
+  overlay?: React.ReactNode;
   children: React.ReactNode;
 }
 
@@ -31,7 +32,7 @@ function computeHome(cw: number, ch: number, contentH: number, anchor: 'center' 
   return { scale, tx, ty };
 }
 
-export default function ZoomFrame({ height, fill, anchor = 'center', grow, children }: Props) {
+export default function ZoomFrame({ height, fill, anchor = 'center', grow, overlay, children }: Props) {
   const [zoom, setZoom] = useState<ZoomState>({ scale: 1, tx: 0, ty: 0 });
   const dragging = useRef<{ startX: number; startY: number; startTx: number; startTy: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -145,6 +146,11 @@ export default function ZoomFrame({ height, fill, anchor = 'center', grow, child
           {children}
         </div>
       </div>
+      {overlay && (
+        <div style={{ position: 'absolute', top: 10, right: 10 }}>
+          {overlay}
+        </div>
+      )}
       {!isDefault && (
         <button
           onClick={resetZoom}
