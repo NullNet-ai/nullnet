@@ -36,3 +36,9 @@ export interface TopoEdge {
   isEgress: boolean;
   originalIndices: number[];
 }
+
+// ── Layout modes ──────────────────────────────────────────────────────────────
+
+export type LayoutMode = 'layered' | 'matrix';
+
+export const LAYOUT_MODES: LayoutMode[] = ['layered', 'matrix'];

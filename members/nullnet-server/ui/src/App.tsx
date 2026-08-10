@@ -13,6 +13,7 @@ import Events from './pages/Events';
 import Certificates from './pages/Certificates';
 import Topology from './pages/Topology';
 import Users from './pages/Users';
+import DebugTopology from './pages/DebugTopology';
 
 export default function App() {
   return (
@@ -21,6 +22,9 @@ export default function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<Login />} />
+            {/* Not linked from the sidebar — dev tool, renders pasted/loaded
+                JSON with no backend involved, so it doesn't need auth. */}
+            <Route path="/debug/topology" element={<DebugTopology />} />
             <Route path="/" element={<RequireAuth><Dashboard /></RequireAuth>} />
             <Route path="/services" element={<RequireAuth><Services /></RequireAuth>} />
             <Route path="/nodes" element={<RequireAuth><Nodes /></RequireAuth>} />
