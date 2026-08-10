@@ -7,7 +7,7 @@ import MfaSetupDialog from './MfaSetupDialog';
 import type { SessionJson } from '../types';
 import { useRef, useState, useEffect } from 'react';
 
-type Page = 'dashboard' | 'topology' | 'services' | 'nodes' | 'sessions' | 'config' | 'certificates' | 'events' | 'users';
+type Page = 'dashboard' | 'topology' | 'services' | 'nodes' | 'sessions' | 'config' | 'routes' | 'certificates' | 'events' | 'users';
 
 interface Props {
   page: Page;
@@ -37,6 +37,7 @@ const NAV = [
       { id: 'events', icon: '≡', label: 'Events', to: '/events' },
       { id: 'certificates', icon: '⛨', label: 'Certificates', to: '/certificates' },
       { id: 'config', icon: '⚙', label: 'Config', to: '/config' },
+      { id: 'routes', icon: '↪', label: 'Routes', to: '/routes' },
       { id: 'users', icon: '⚉', label: 'Users', to: '/users', adminOnly: true },
     ],
   },

@@ -89,6 +89,7 @@ export type EventJson =
   | WithSeverity & { type: 'net_teardown_unconfirmed'; net_id: number; node_ip: string }
   | WithSeverity & { type: 'config_reloaded'; stack: string }
   | WithSeverity & { type: 'config_stack_removed'; stack: string }
+  | WithSeverity & { type: 'route_conflict'; stack_a: string; stack_b: string; host: string; path: string }
   | WithSeverity & { type: 'all_replicas_removed'; service: string; stack: string; ip: string }
   | WithSeverity & { type: 'service_reachability_toggled'; service: string; stack: string; reachable: boolean }
   | WithSeverity & { type: 'proxy_client_timed_out'; service: string; client_ip: string }
@@ -176,4 +177,22 @@ export interface GraphJson {
 export interface ChainJson {
   proxy_net_id: number;
   all_net_ids: number[];
+}
+
+// HTTP path-based routing — see docs/http-path-routing-design.md.
+export type RouteTargetJson =
+  | { kind: 'service'; service: string; strip_prefix: boolean }
+  | { kind: 'redirect'; to: string; status: number; preserve_path: boolean; preserve_query: boolean };
+
+export interface RouteJson {
+  host: string;
+  path: string;
+  target: RouteTargetJson;
+}
+
+export interface RoutesResponseJson {
+  routes: RouteJson[];
+  /** Declared, proxy-reachable `protocol = "http"` service names in this
+   * stack — populates the "backend service" dropdown when adding a route. */
+  http_services: string[];
 }
