@@ -1259,6 +1259,7 @@ pub mod nullnet_grpc_server {
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with NullnetGrpcServer.
+    #[allow(clippy::double_must_use)]
     #[async_trait]
     pub trait NullnetGrpc: std::marker::Send + std::marker::Sync + 'static {
         /// Network type declaration
