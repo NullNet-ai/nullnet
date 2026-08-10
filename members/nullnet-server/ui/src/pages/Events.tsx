@@ -24,6 +24,7 @@ const KIND_LABELS: Record<string, string> = {
   net_teardown_unconfirmed: 'net_teardown_unconfirmed',
   config_reloaded: 'config_reloaded',
   config_stack_removed: 'config_stack_removed',
+  route_conflict: 'route_conflict',
   all_replicas_removed: 'all_replicas_removed',
   service_reachability_toggled: 'service_reachability_toggled',
   proxy_client_timed_out: 'proxy_client_timed_out',
@@ -97,6 +98,8 @@ function eventDetail(e: EventJson): string {
     case 'config_reloaded':
     case 'config_stack_removed':
       return e.stack;
+    case 'route_conflict':
+      return `${e.host}${e.path} · ${e.stack_a} vs ${e.stack_b}`;
     case 'all_replicas_removed':
       return `${e.service} · ${e.stack} · ${e.ip}`;
     case 'service_reachability_toggled':
