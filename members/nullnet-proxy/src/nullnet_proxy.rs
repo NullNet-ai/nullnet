@@ -1,4 +1,5 @@
 use crate::env::{CONTROL_SERVICE_ADDR, CONTROL_SERVICE_CA_CERT, CONTROL_SERVICE_PORT};
+use crate::routes::RouteTable;
 use crate::tls::CertStore;
 use arc_swap::ArcSwap;
 use nullnet_grpc_lib::NullnetGrpcInterface;
@@ -14,11 +15,17 @@ use std::sync::Arc;
 pub struct NullnetProxy {
     pub(crate) server: NullnetGrpcInterface,
     pub(crate) certs: Arc<ArcSwap<CertStore>>,
+    /// Live HTTP `(host, path)` → target route table, kept in sync with the
+    /// control service. See docs/http-path-routing-design.md.
+    pub(crate) routes: Arc<ArcSwap<RouteTable>>,
     pub(crate) tls: bool,
 }
 
 impl NullnetProxy {
-    pub async fn new(certs: Arc<ArcSwap<CertStore>>) -> Result<Self, Error> {
+    pub async fn new(
+        certs: Arc<ArcSwap<CertStore>>,
+        routes: Arc<ArcSwap<RouteTable>>,
+    ) -> Result<Self, Error> {
         let host = CONTROL_SERVICE_ADDR.to_string();
         let port = *CONTROL_SERVICE_PORT;
         let server =
@@ -29,6 +36,7 @@ impl NullnetProxy {
         Ok(Self {
             server,
             certs,
+            routes,
             tls: false,
         })
     }

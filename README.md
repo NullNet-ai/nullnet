@@ -207,6 +207,31 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
     Only valid on a service with a `timeout` (an entry point) — the server rejects an ingress policy
     on a backend-only service.
 
+- `[[route]]` blocks add NGINX-`location`-style HTTP dispatch on top of `[[services]]`, matching by
+  `host` + prefix `path` (defaults to `/`) rather than by `Host` header alone:
+  ```
+  [[route]]                    # forward to a backend, stripping the matched prefix
+  host = "ops.example.com"
+  path = "/api"
+  service = "api.internal"     # must be an in-stack, http-protocol, proxy-reachable service
+  strip_prefix = true          # "api" sees "/users", not "/api/users"
+
+  [[route]]                    # redirect, no backend needed
+  host = "old.example.com"
+  path = "/old"
+  redirect_to = "/new"
+  redirect_status = 301        # optional, defaults to 301; one of 301/302/307/308
+  preserve_path = true         # /old/x?foo=bar -> /new/x?foo=bar
+  preserve_query = true
+  ```
+  `service` and `redirect_to` are mutually exclusive (exactly one required per route);
+  `strip_prefix` only applies to `service` routes, `preserve_path`/`preserve_query` only to
+  `redirect_to` routes — each is rejected on the wrong kind. All four flags default to `false`, so
+  a stack with no `[[route]]` blocks keeps today's plain per-service `Host`-header routing. A given
+  `(host, path)` pair must be claimed by exactly one route across every stack — a collision (even
+  within the same stack) is a hard config error, reported as a `route_conflict` event. Configurable
+  from the admin UI's Routes page as well as by editing the TOML directly.
+
 - run the project as a daemon (from the repo root)
   ```
   ./setup-server.sh
