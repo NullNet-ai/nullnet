@@ -229,7 +229,7 @@ fn find_service_stack<'a>(services: &'a StackMap, service_name: &str) -> Option<
 
 impl NullnetGrpcImpl {
     pub async fn new() -> Result<Self, Error> {
-        let (stacks, index, route_map) = ServicesToml::load_validated().await?;
+        let (stacks, index, route_map, startup_conflicts) = ServicesToml::load_validated().await?;
         let services = Arc::new(RwLock::new(stacks));
         let match_index = Arc::new(RwLock::new(index));
         let routes = Arc::new(RwLock::new(route_map));
@@ -241,6 +241,29 @@ impl NullnetGrpcImpl {
         });
 
         let orchestrator = Orchestrator::new();
+
+        // Conflicts detected before the event store existed: the offending
+        // stacks were dropped, so report them now that we can.
+        for c in startup_conflicts.ports {
+            orchestrator
+                .events
+                .emit(Event::port_mapping_conflict(
+                    c.stack_a,
+                    c.service_a,
+                    c.stack_b,
+                    c.service_b,
+                    format!("{:?}", c.protocol),
+                    c.listen_port,
+                ))
+                .await;
+        }
+        for c in startup_conflicts.routes {
+            orchestrator
+                .events
+                .emit(Event::route_conflict(c.stack_a, c.stack_b, c.host, c.path))
+                .await;
+        }
+
         let config_changed = Arc::new(Notify::new());
         // Separate from `config_changed`: `Notify::notify_one` wakes at most
         // one waiter, so each consumer needs its own `Notify` rather than
@@ -256,6 +279,7 @@ impl NullnetGrpcImpl {
         let config_changed_2 = config_changed.clone();
         let port_mappings_changed_2 = port_mappings_changed.clone();
         let http_routes_changed_2 = http_routes_changed.clone();
+        let events_2 = orchestrator.events.clone();
         tokio::spawn(async move {
             if let Err(e) = ServicesToml::watch(
                 &services_2,
@@ -268,7 +292,15 @@ impl NullnetGrpcImpl {
             )
             .await
             {
+                // Config hot-reload is dead for the rest of this process: every
+                // later edit is silently ignored.
                 eprintln!("failed to watch services.toml for changes: {e:?}");
+                events_2
+                    .emit(Event::file_watch_failed(
+                        "services.toml".to_string(),
+                        format!("{e:?}"),
+                    ))
+                    .await;
             }
         });
 
@@ -313,9 +345,18 @@ impl NullnetGrpcImpl {
 
         // load TLS certificates and keep them in sync with the ./certs dir
         let (certs_tx, certs_rx) = watch::channel(crate::certs::load_certificates().await);
+        let events_3 = orchestrator.events.clone();
         tokio::spawn(async move {
             if let Err(e) = crate::certs::watch(certs_tx).await {
+                // Renewals still write to disk but never reach the proxies, so
+                // they keep serving the old cert until it expires.
                 eprintln!("failed to watch certs for changes: {e:?}");
+                events_3
+                    .emit(Event::file_watch_failed(
+                        "certs".to_string(),
+                        format!("{e:?}"),
+                    ))
+                    .await;
             }
         });
 
@@ -1449,6 +1490,13 @@ impl NullnetGrpcImpl {
                         Some(port) => Some(u32::from(port)),
                         None => {
                             eprintln!("UDP port pool exhausted");
+                            orchestrator
+                                .events
+                                .emit(Event::udp_port_pool_exhausted(
+                                    server.name().to_string(),
+                                    client_ethernet.to_string(),
+                                ))
+                                .await;
                             orchestrator.free_net_id(net_id).await;
                             if let Some(stack_map) = services.write().await.get_mut(&stack)
                                 && let Some(ServiceInfo::Registered(reg)) =
@@ -1795,22 +1843,29 @@ impl NullnetGrpc for NullnetGrpcImpl {
 
     async fn watch_certificates(
         &self,
-        _: Request<Empty>,
+        req: Request<Empty>,
     ) -> Result<Response<Self::WatchCertificatesStream>, Status> {
         let mut certs = self.certs.clone();
         let (tx, rx) = mpsc::channel(4);
+        // Every proxy opens this stream once at startup and exits when it drops,
+        // so its lifetime is the proxy's — the node events' counterpart.
+        let proxy_ip = req
+            .remote_addr()
+            .map_or_else(|| "unknown".to_string(), |a| a.ip().to_string());
+        let events = self.orchestrator.events.clone();
+        events.emit(Event::proxy_connected(proxy_ip.clone())).await;
         tokio::spawn(async move {
             // send the current set immediately, then one snapshot per change
             let initial = certs.borrow_and_update().clone();
-            if tx.send(Ok(initial)).await.is_err() {
-                return;
-            }
-            while certs.changed().await.is_ok() {
-                let snapshot = certs.borrow_and_update().clone();
-                if tx.send(Ok(snapshot)).await.is_err() {
-                    break;
+            if tx.send(Ok(initial)).await.is_ok() {
+                while certs.changed().await.is_ok() {
+                    let snapshot = certs.borrow_and_update().clone();
+                    if tx.send(Ok(snapshot)).await.is_err() {
+                        break;
+                    }
                 }
             }
+            events.emit(Event::proxy_disconnected(proxy_ip)).await;
         });
         Ok(Response::new(ReceiverStream::new(rx)))
     }
@@ -1907,6 +1962,35 @@ impl NullnetGrpc for NullnetGrpcImpl {
             ),
             AgentEventKind::GatewayForwardInstallFailed(e) => {
                 Event::gateway_forward_install_failed(e.vxlan_id, e.br_net)
+            }
+            AgentEventKind::BackendTriggerSetupTimedOut(e) => {
+                Event::backend_trigger_setup_timed_out(
+                    e.service_name,
+                    e.port as u16,
+                    e.docker_container,
+                    e.error_message,
+                )
+            }
+            AgentEventKind::EgressSteerSetupTimedOut(e) => Event::egress_steer_setup_timed_out(
+                e.docker_container,
+                e.dst_ip,
+                e.dst_port,
+                e.error_message,
+            ),
+            AgentEventKind::EgressSteerInstallFailed(e) => {
+                Event::egress_steer_install_failed(e.vxlan_id, e.docker_container, e.error_message)
+            }
+            AgentEventKind::NfqueueBindFailed(e) => {
+                Event::nfqueue_bind_failed(e.queue_id, e.error_message)
+            }
+            AgentEventKind::MssClampInstallFailed(e) => {
+                Event::mss_clamp_install_failed(e.error_message)
+            }
+            AgentEventKind::EgressPolicyCheckFailed(e) => {
+                Event::egress_policy_check_failed(e.docker_container, e.dst_ip, e.error_message)
+            }
+            AgentEventKind::ConntrackFlushFailed(e) => {
+                Event::conntrack_flush_failed(e.ip, e.error_message)
             }
             AgentEventKind::FirewallRulesLoadFailed(e) => {
                 Event::firewall_rules_load_failed(e.path, e.error_message)

@@ -186,6 +186,13 @@ pub(crate) struct RouteConflict {
     pub(crate) path: String,
 }
 
+/// Both conflict kinds found by the initial load, for the caller to report
+/// once the event store exists.
+pub(crate) struct StartupConflicts {
+    pub(crate) ports: Vec<PortConflict>,
+    pub(crate) routes: Vec<RouteConflict>,
+}
+
 /// Scan every stack for `(host, path)` pairs claimed by more than one route,
 /// including two routes within the same stack.
 pub(crate) fn detect_route_conflicts(routes: &RouteMap) -> Vec<RouteConflict> {
@@ -291,7 +298,12 @@ impl ServicesToml {
     /// or `(host, path)` route pair is claimed by more than one service/route
     /// — both are global on the proxy, unlike service names which only need
     /// to be unique within a stack.
-    pub(crate) async fn load_validated() -> Result<(StackMap, MatchIndex, RouteMap), Error> {
+    ///
+    /// The conflicts are returned rather than reported here: the event store
+    /// doesn't exist yet this early in startup, so the caller emits them once
+    /// the orchestrator is up (the reload path emits its own directly).
+    pub(crate) async fn load_validated()
+    -> Result<(StackMap, MatchIndex, RouteMap, StartupConflicts), Error> {
         let (mut stacks, mut index, mut routes) = Self::load().await?;
         // Don't brick the control plane on a conflict (e.g. a bad UI edit or
         // hand-edited file left two stacks claiming the same listen_port/route).
@@ -324,7 +336,15 @@ impl ServicesToml {
             index.remove(stack);
             routes.remove(stack);
         }
-        Ok((stacks, index, routes))
+        Ok((
+            stacks,
+            index,
+            routes,
+            StartupConflicts {
+                ports: conflicts,
+                routes: route_conflicts,
+            },
+        ))
     }
 
     /// `config_changed`, `port_mappings_changed`, and `http_routes_changed`
@@ -418,7 +438,15 @@ impl ServicesToml {
                                 }
                             }
                         }
-                        Err(e) => eprintln!("Failed to reload services.toml: {e:?}"),
+                        // Unparseable file: the previous config stays in force,
+                        // which looks identical to "nothing changed" from the UI.
+                        Err(e) => {
+                            eprintln!("Failed to reload services.toml: {e:?}");
+                            orchestrator
+                                .events
+                                .emit(ServerEvent::config_reload_failed(format!("{e:?}")))
+                                .await;
+                        }
                     }
                     last_update_time = Instant::now();
                 }

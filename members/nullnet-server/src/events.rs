@@ -168,6 +168,26 @@ pub(crate) enum Event {
         port: u16,
         timestamp: u64,
     },
+    /// A `services/*.toml` change was picked up but could not be parsed, so the
+    /// previous configuration is still in force.
+    ConfigReloadFailed {
+        error_message: String,
+        timestamp: u64,
+    },
+    /// A file watcher never started (or died), so changes to what it watched are
+    /// no longer picked up for the lifetime of this process.
+    FileWatchFailed {
+        target: String,
+        error_message: String,
+        timestamp: u64,
+    },
+    /// The dedicated-UDP-port pool for encrypted cross-host tunnels ran dry; the
+    /// edge that needed one failed. Mirrors [`Self::NetIdPoolExhausted`].
+    UdpPortPoolExhausted {
+        service: String,
+        client_ip: String,
+        timestamp: u64,
+    },
 
     // --- Client error events ---
     VxlanSetupFailed {
@@ -255,6 +275,61 @@ pub(crate) enum Event {
         error_message: String,
         timestamp: u64,
     },
+    /// A held first packet was dropped because the chain never became active in
+    /// time. The trigger itself was accepted — this is the setup not landing,
+    /// not the RPC failing (see [`Self::BackendTriggerSendFailed`]).
+    BackendTriggerSetupTimedOut {
+        service_name: String,
+        port: u16,
+        docker_container: String,
+        error_message: String,
+        timestamp: u64,
+    },
+    /// Egress counterpart of [`Self::BackendTriggerSetupTimedOut`]: the held
+    /// packet was dropped because steering never went live.
+    EgressSteerSetupTimedOut {
+        docker_container: String,
+        dst_ip: String,
+        dst_port: u32,
+        error_message: String,
+        timestamp: u64,
+    },
+    /// Egress steering rules could not be installed for a new edge, so the
+    /// initiator's held packet will time out and drop.
+    EgressSteerInstallFailed {
+        vxlan_id: u32,
+        docker_container: Option<String>,
+        error_message: String,
+        timestamp: u64,
+    },
+    /// An NFQUEUE consumer never started. Trigger detection and egress policy
+    /// enforcement are both off on that queue for the rest of the process.
+    NfqueueBindFailed {
+        queue_id: u32,
+        error_message: String,
+        timestamp: u64,
+    },
+    /// The TCP MSS clamp could not be installed, so oversized segments can be
+    /// silently black-holed once they enter an overlay tunnel.
+    MssClampInstallFailed {
+        error_message: String,
+        timestamp: u64,
+    },
+    /// An egress country-policy check could not be resolved. The flow is denied
+    /// (fail-closed), so this is a drop the operator should see.
+    EgressPolicyCheckFailed {
+        docker_container: String,
+        dst_ip: String,
+        error_message: String,
+        timestamp: u64,
+    },
+    /// Conntrack could not be flushed after a policy change, so flows the new
+    /// policy denies may keep running until they close on their own.
+    ConntrackFlushFailed {
+        ip: String,
+        error_message: String,
+        timestamp: u64,
+    },
 
     // --- Client info events ---
     VxlanSetupCompleted {
@@ -328,6 +403,17 @@ pub(crate) enum Event {
         timestamp: u64,
     },
 
+    /// A proxy opened its certificate stream — i.e. a proxy came up. Paired
+    /// with [`Self::ProxyDisconnected`], mirroring the node events.
+    ProxyConnected {
+        ip: String,
+        timestamp: u64,
+    },
+    ProxyDisconnected {
+        ip: String,
+        timestamp: u64,
+    },
+
     // --- Proxy info events ---
     ProxyRequestRouted {
         service_name: String,
@@ -348,6 +434,21 @@ pub(crate) enum Event {
     },
     CertificateRemoved {
         domain: String,
+        timestamp: u64,
+    },
+    /// Unattended renewal did not produce a usable certificate. Left unattended
+    /// this ends in an expired cert, so it is an error even though the current
+    /// one is still serving.
+    CertificateRenewalFailed {
+        domain: String,
+        error_message: String,
+        timestamp: u64,
+    },
+    /// A certificate was issued but its DNS credentials could not be stored, so
+    /// unattended renewal will never run for it.
+    CertificateCredentialsStoreFailed {
+        domain: String,
+        error_message: String,
         timestamp: u64,
     },
 }
@@ -379,6 +480,22 @@ impl Event {
             Self::NetIdPoolExhausted { .. } => "net_id_pool_exhausted",
             Self::ProxyChainSetupFailed { .. } => "proxy_chain_setup_failed",
             Self::BackendTriggerSetupBailed { .. } => "backend_trigger_setup_bailed",
+            Self::ConfigReloadFailed { .. } => "config_reload_failed",
+            Self::FileWatchFailed { .. } => "file_watch_failed",
+            Self::UdpPortPoolExhausted { .. } => "udp_port_pool_exhausted",
+            Self::BackendTriggerSetupTimedOut { .. } => "backend_trigger_setup_timed_out",
+            Self::EgressSteerSetupTimedOut { .. } => "egress_steer_setup_timed_out",
+            Self::EgressSteerInstallFailed { .. } => "egress_steer_install_failed",
+            Self::NfqueueBindFailed { .. } => "nfqueue_bind_failed",
+            Self::MssClampInstallFailed { .. } => "mss_clamp_install_failed",
+            Self::EgressPolicyCheckFailed { .. } => "egress_policy_check_failed",
+            Self::ConntrackFlushFailed { .. } => "conntrack_flush_failed",
+            Self::ProxyConnected { .. } => "proxy_connected",
+            Self::ProxyDisconnected { .. } => "proxy_disconnected",
+            Self::CertificateRenewalFailed { .. } => "certificate_renewal_failed",
+            Self::CertificateCredentialsStoreFailed { .. } => {
+                "certificate_credentials_store_failed"
+            }
             Self::VxlanSetupFailed { .. } => "vxlan_setup_failed",
             Self::VlanSetupFailed { .. } => "vlan_setup_failed",
             Self::VxlanTeardownFailed { .. } => "vxlan_teardown_failed",
@@ -431,6 +548,7 @@ impl Event {
             | Self::ControlChannelEstablished { .. }
             | Self::ServicesListUpdated { .. }
             | Self::ProxyRequestRouted { .. }
+            | Self::ProxyConnected { .. }
             | Self::CertificateInstalled { .. }
             | Self::CertificateRenewed { .. } => Severity::Info,
 
@@ -446,10 +564,23 @@ impl Event {
             | Self::BackendTriggerSetupBailed { .. }
             | Self::ControlChannelClosed { .. }
             | Self::NetTeardownUnconfirmed { .. }
+            | Self::ConntrackFlushFailed { .. }
+            | Self::ProxyDisconnected { .. }
+            | Self::CertificateCredentialsStoreFailed { .. }
             | Self::CertificateRemoved { .. } => Severity::Warning,
 
             Self::SetupTimeout { .. }
             | Self::NetIdPoolExhausted { .. }
+            | Self::UdpPortPoolExhausted { .. }
+            | Self::ConfigReloadFailed { .. }
+            | Self::FileWatchFailed { .. }
+            | Self::BackendTriggerSetupTimedOut { .. }
+            | Self::EgressSteerSetupTimedOut { .. }
+            | Self::EgressSteerInstallFailed { .. }
+            | Self::NfqueueBindFailed { .. }
+            | Self::MssClampInstallFailed { .. }
+            | Self::EgressPolicyCheckFailed { .. }
+            | Self::CertificateRenewalFailed { .. }
             | Self::ProxyChainSetupFailed { .. }
             | Self::VxlanSetupFailed { .. }
             | Self::VlanSetupFailed { .. }
@@ -1035,6 +1166,141 @@ impl Event {
     pub(crate) fn certificate_removed(domain: String) -> Self {
         Self::CertificateRemoved {
             domain,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn certificate_renewal_failed(domain: String, error_message: String) -> Self {
+        Self::CertificateRenewalFailed {
+            domain,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn certificate_credentials_store_failed(
+        domain: String,
+        error_message: String,
+    ) -> Self {
+        Self::CertificateCredentialsStoreFailed {
+            domain,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn config_reload_failed(error_message: String) -> Self {
+        Self::ConfigReloadFailed {
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn file_watch_failed(target: String, error_message: String) -> Self {
+        Self::FileWatchFailed {
+            target,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn udp_port_pool_exhausted(service: String, client_ip: String) -> Self {
+        Self::UdpPortPoolExhausted {
+            service,
+            client_ip,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn proxy_connected(ip: String) -> Self {
+        Self::ProxyConnected {
+            ip,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn proxy_disconnected(ip: String) -> Self {
+        Self::ProxyDisconnected {
+            ip,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn backend_trigger_setup_timed_out(
+        service_name: String,
+        port: u16,
+        docker_container: String,
+        error_message: String,
+    ) -> Self {
+        Self::BackendTriggerSetupTimedOut {
+            service_name,
+            port,
+            docker_container,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn egress_steer_setup_timed_out(
+        docker_container: String,
+        dst_ip: String,
+        dst_port: u32,
+        error_message: String,
+    ) -> Self {
+        Self::EgressSteerSetupTimedOut {
+            docker_container,
+            dst_ip,
+            dst_port,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn egress_steer_install_failed(
+        vxlan_id: u32,
+        docker_container: Option<String>,
+        error_message: String,
+    ) -> Self {
+        Self::EgressSteerInstallFailed {
+            vxlan_id,
+            docker_container,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn nfqueue_bind_failed(queue_id: u32, error_message: String) -> Self {
+        Self::NfqueueBindFailed {
+            queue_id,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn mss_clamp_install_failed(error_message: String) -> Self {
+        Self::MssClampInstallFailed {
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn egress_policy_check_failed(
+        docker_container: String,
+        dst_ip: String,
+        error_message: String,
+    ) -> Self {
+        Self::EgressPolicyCheckFailed {
+            docker_container,
+            dst_ip,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn conntrack_flush_failed(ip: String, error_message: String) -> Self {
+        Self::ConntrackFlushFailed {
+            ip,
+            error_message,
             timestamp: now_secs(),
         }
     }
