@@ -159,7 +159,7 @@ fn vlan_setup(
     });
 
     Some((
-        server_veth,
+        local_veth,
         NetMessage {
             message: Some(net_message::Message::VlanSetup(VlanSetup {
                 msg_id: Some(MsgId { id: msg_id }),
@@ -226,6 +226,16 @@ fn vxlan_setup(
         br_net_server.ip()
     };
 
+    // The address this call's own side should report as its tunnel IP, as
+    // opposed to server_net_ip above which is always the server's (used only
+    // for host_mapping). ns_net/br_net/docker_container are already the
+    // per-side values picked by the branch above.
+    let local_net_ip = if docker_container.is_some() {
+        ns_net.ip()
+    } else {
+        br_net.ip()
+    };
+
     let host_mapping = remote_server_name.map(|name| HostMapping {
         ip: server_net_ip.to_string(),
         name,
@@ -240,7 +250,7 @@ fn vxlan_setup(
     };
 
     Some((
-        server_net_ip,
+        local_net_ip,
         NetMessage {
             message: Some(net_message::Message::VxlanSetup(VxlanSetup {
                 msg_id: Some(MsgId { id: msg_id }),
@@ -262,4 +272,74 @@ fn vxlan_setup(
             })),
         },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression test for a bug where the client-side and server-side setup
+    // calls returned the same address, making session client/server IPs
+    // appear equal in the UI (Sessions/Topology pages).
+    #[test]
+    fn vlan_setup_client_and_server_addresses_differ() {
+        let dest = IpAddr::from(Ipv4Addr::new(1, 1, 1, 1));
+        let remote = IpAddr::from(Ipv4Addr::new(2, 2, 2, 2));
+        let key = [0u8; 32];
+
+        let (server_addr, _) =
+            vlan_setup("m1".to_string(), dest, None, 5, remote, key, false).unwrap();
+        let (client_addr, _) = vlan_setup(
+            "m2".to_string(),
+            dest,
+            Some("srv".to_string()),
+            5,
+            remote,
+            key,
+            false,
+        )
+        .unwrap();
+
+        assert_ne!(server_addr, client_addr);
+        assert_eq!(server_addr, Ipv4Addr::new(10, 0, 0, 21));
+        assert_eq!(client_addr, Ipv4Addr::new(10, 0, 0, 22));
+    }
+
+    #[test]
+    fn vxlan_setup_client_and_server_addresses_differ() {
+        let dest = IpAddr::from(Ipv4Addr::new(1, 1, 1, 1));
+        let remote = IpAddr::from(Ipv4Addr::new(2, 2, 2, 2));
+        let key = [0u8; 32];
+
+        let (server_addr, _) = vxlan_setup(
+            "m1".to_string(),
+            dest,
+            None,
+            5,
+            remote,
+            (None, None),
+            None,
+            key,
+            4789,
+            false,
+            EgressRole::None,
+        )
+        .unwrap();
+        let (client_addr, _) = vxlan_setup(
+            "m2".to_string(),
+            dest,
+            Some("srv".to_string()),
+            5,
+            remote,
+            (None, None),
+            None,
+            key,
+            4789,
+            false,
+            EgressRole::None,
+        )
+        .unwrap();
+
+        assert_ne!(server_addr, client_addr);
+    }
 }
