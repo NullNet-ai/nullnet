@@ -541,7 +541,12 @@ impl Event {
             | Self::SetupAck { .. }
             | Self::SessionCreated { .. }
             | Self::SessionTornDown { .. }
+            | Self::ProxyClientTimedOut { .. }
+            | Self::MaxNetworksLimitEnforced { .. }
             | Self::ConfigReloaded { .. }
+            | Self::ConfigStackRemoved { .. }
+            | Self::ServiceUnregistered { .. }
+            | Self::ServiceReachabilityToggled { .. }
             | Self::StickySessionReused { .. }
             | Self::VxlanSetupCompleted { .. }
             | Self::VlanSetupCompleted { .. }
@@ -550,26 +555,25 @@ impl Event {
             | Self::ProxyRequestRouted { .. }
             | Self::ProxyConnected { .. }
             | Self::CertificateInstalled { .. }
-            | Self::CertificateRenewed { .. } => Severity::Info,
+            | Self::CertificateRenewed { .. }
+            | Self::CertificateRemoved { .. } => Severity::Info,
 
             Self::NodeDisconnected { .. }
-            | Self::ServiceUnregistered { .. }
             | Self::ServiceDeclarationSkipped { .. }
-            | Self::ConfigStackRemoved { .. }
             | Self::AllReplicasRemoved { .. }
-            | Self::ServiceReachabilityToggled { .. }
-            | Self::ProxyClientTimedOut { .. }
             | Self::StaleSessionEvicted { .. }
-            | Self::MaxNetworksLimitEnforced { .. }
             | Self::BackendTriggerSetupBailed { .. }
             | Self::ControlChannelClosed { .. }
-            | Self::NetTeardownUnconfirmed { .. }
-            | Self::ConntrackFlushFailed { .. }
-            | Self::ProxyDisconnected { .. }
-            | Self::CertificateCredentialsStoreFailed { .. }
-            | Self::CertificateRemoved { .. } => Severity::Warning,
+            | Self::ContainerSuspendFailed { .. }
+            | Self::ProxyRequestMissingHost { .. }
+            | Self::ProxyRequestInvalidHost { .. }
+            | Self::ProxyClientNotInet { .. }
+            | Self::ProxyDisconnected { .. } => Severity::Warning,
 
             Self::SetupTimeout { .. }
+            | Self::NetTeardownUnconfirmed { .. }
+            | Self::ConntrackFlushFailed { .. }
+            | Self::CertificateCredentialsStoreFailed { .. }
             | Self::NetIdPoolExhausted { .. }
             | Self::UdpPortPoolExhausted { .. }
             | Self::ConfigReloadFailed { .. }
@@ -595,13 +599,9 @@ impl Event {
             | Self::EgressTriggerSendFailed { .. }
             | Self::GatewayForwardInstallFailed { .. }
             | Self::FirewallRulesLoadFailed { .. }
-            | Self::ContainerSuspendFailed { .. }
             | Self::ContainerResumeFailed { .. }
             | Self::UpstreamLookupFailed { .. }
-            | Self::ProxyRequestMissingHost { .. }
-            | Self::ProxyRequestInvalidHost { .. }
             | Self::UpstreamIpParseFailed { .. }
-            | Self::ProxyClientNotInet { .. }
             | Self::TlsCertificateInvalid { .. }
             | Self::PortMappingConflict { .. }
             | Self::RouteConflict { .. }
