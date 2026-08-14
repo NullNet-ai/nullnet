@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Layout from '../components/Layout';
-import type { EventJson, Severity } from '../types';
+import { apiFetch } from '../lib/apiFetch';
+import type { EventJson, EventsPage, Severity } from '../types';
 
 const SEVERITY_COLOR: Record<Severity, string> = {
   info: 'var(--green)',
@@ -235,7 +236,24 @@ function formatTs(unix: number): string {
 }
 
 const MAX_EVENTS = 500;
+const PAGE_SIZE = 100;
 const SEVERITIES: Severity[] = ['info', 'warning', 'error'];
+
+/// Fetch one most-recent-first page of persisted events matching the given filters.
+async function fetchEventsPage(
+  kind: string,
+  severity: Severity | '',
+  beforeId: number | null,
+): Promise<EventsPage> {
+  const params = new URLSearchParams();
+  if (kind) params.set('kind', kind);
+  if (severity) params.set('severity', severity);
+  if (beforeId != null) params.set('before_id', String(beforeId));
+  params.set('limit', String(PAGE_SIZE));
+  const res = await apiFetch(`/api/events?${params.toString()}`);
+  if (!res.ok) throw new Error(`GET /api/events failed: ${res.status}`);
+  return res.json();
+}
 
 export default function Events() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -258,12 +276,58 @@ export default function Events() {
     }, { replace: true });
   }
 
+  // Oldest-first, matching the order live events arrive in. History (server-
+  // paginated, filtered by kind/severity) is prepended to the front; live SSE
+  // events are appended to the back.
   const [events, setEvents] = useState<EventJson[]>([]);
+  const [nextBeforeId, setNextBeforeId] = useState<number | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [paused, setPaused] = useState(false);
   const [liveCount, setLiveCount] = useState(0);
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
 
+  // Reload the first page whenever the kind/severity filter changes (and on mount).
+  useEffect(() => {
+    let cancelled = false;
+    setInitialLoading(true);
+    fetchEventsPage(kindFilter, severityFilter, null)
+      .then(page => {
+        if (cancelled) return;
+        setEvents(page.events.slice().reverse());
+        setNextBeforeId(page.next_before_id);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setEvents([]);
+          setNextBeforeId(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setInitialLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [kindFilter, severityFilter]);
+
+  const loadOlder = useCallback(async () => {
+    if (nextBeforeId == null || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const page = await fetchEventsPage(kindFilter, severityFilter, nextBeforeId);
+      setEvents(prev => [...page.events.slice().reverse(), ...prev]);
+      setNextBeforeId(page.next_before_id);
+    } catch {
+      // leave the cursor as-is; the button just stays clickable to retry
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [kindFilter, severityFilter, nextBeforeId, loadingOlder]);
+
+  // Live tail: the stream carries no backfill (history comes from the
+  // paginated fetch above), so every message here is genuinely new.
   useEffect(() => {
     const es = new EventSource('/api/events/stream');
 
@@ -316,7 +380,7 @@ export default function Events() {
         <div className="hero-row">
           <span className="hero-num">{filtered.length}</span>
           <span className="hero-label">
-            {kindFilter ? `${kindFilter} events` : severityFilter ? `${severityFilter} events` : 'events in buffer'}
+            {kindFilter ? `${kindFilter} events` : severityFilter ? `${severityFilter} events` : 'events loaded'}
           </span>
         </div>
 
@@ -404,7 +468,7 @@ export default function Events() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.length === 0 && (
+                {filtered.length === 0 && !initialLoading && (
                   <tr>
                     <td colSpan={3} style={{ color: 'var(--t2)', padding: '20px 16px' }}>
                       {kindFilter || severityFilter
@@ -435,6 +499,27 @@ export default function Events() {
                     </td>
                   </tr>
                 ))}
+                {nextBeforeId != null && (
+                  <tr>
+                    <td colSpan={3} style={{ padding: '10px 16px', textAlign: 'center' }}>
+                      <button
+                        onClick={loadOlder}
+                        disabled={loadingOlder}
+                        style={{
+                          background: 'var(--s1)',
+                          border: '1px solid var(--border)',
+                          color: 'var(--t2)',
+                          borderRadius: 4,
+                          padding: '4px 14px',
+                          fontSize: 11,
+                          cursor: loadingOlder ? 'default' : 'pointer',
+                        }}
+                      >
+                        {loadingOlder ? 'Loading…' : 'Load older'}
+                      </button>
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

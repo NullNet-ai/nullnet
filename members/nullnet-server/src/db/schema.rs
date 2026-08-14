@@ -65,6 +65,16 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    events (id) {
+        id -> BigInt,
+        kind -> Text,
+        severity -> Text,
+        timestamp -> BigInt,
+        payload -> Text,
+    }
+}
+
 diesel::joinable!(dns_credentials -> certificates (domain));
 diesel::joinable!(user_scopes -> users (user_id));
 diesel::joinable!(refresh_tokens -> users (user_id));
@@ -75,4 +85,5 @@ diesel::allow_tables_to_appear_in_same_query!(
     user_scopes,
     refresh_tokens,
     login_attempts,
+    events,
 );

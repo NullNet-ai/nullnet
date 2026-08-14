@@ -1,5 +1,6 @@
 use crate::db::schema::{
-    certificates, dns_credentials, login_attempts, refresh_tokens, services, user_scopes, users,
+    certificates, dns_credentials, events, login_attempts, refresh_tokens, services, user_scopes,
+    users,
 };
 use diesel::prelude::*;
 
@@ -162,4 +163,30 @@ pub(crate) struct NewLoginAttempt<'a> {
     pub(crate) failed_count: i32,
     pub(crate) locked_until: Option<i64>,
     pub(crate) updated_at: i64,
+}
+
+/// One persisted event row. `payload` is the event's own JSON serialization
+/// (via `crate::events::Event`'s `Serialize` impl) — `kind`/`severity`/
+/// `timestamp` are pulled out as real columns purely so they're indexable;
+/// everything else stays in `payload` rather than one column per variant field.
+#[derive(Queryable, Selectable, Identifiable, Debug, Clone)]
+#[diesel(table_name = events)]
+#[diesel(primary_key(id))]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub(crate) struct EventRow {
+    pub(crate) id: i64,
+    pub(crate) kind: String,
+    pub(crate) severity: String,
+    pub(crate) timestamp: i64,
+    pub(crate) payload: String,
+}
+
+#[derive(Insertable, Debug, Clone)]
+#[diesel(table_name = events)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub(crate) struct NewEventRow<'a> {
+    pub(crate) kind: &'a str,
+    pub(crate) severity: &'a str,
+    pub(crate) timestamp: i64,
+    pub(crate) payload: &'a str,
 }

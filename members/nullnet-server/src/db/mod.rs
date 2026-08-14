@@ -6,10 +6,12 @@
 //! always have; nothing calls into those two repositories yet, so that part
 //! of this module's API surface is unused until that migration happens. The
 //! auth repositories (`users`/`user_scopes`/`refresh_tokens`/`login_attempts`)
-//! back the server's JWT auth system and are fully wired up.
+//! back the server's JWT auth system and are fully wired up, as is `events`
+//! (durable storage for `crate::events::Event`, pruned by `events_retention.rs`).
 #![allow(dead_code)]
 
 mod certs;
+mod events;
 mod login_attempts;
 mod models;
 mod refresh_tokens;
@@ -19,6 +21,7 @@ mod user_scopes;
 mod users;
 
 pub(crate) use certs::CertRepository;
+pub(crate) use events::EventRepository;
 pub(crate) use login_attempts::LoginAttemptRepository;
 pub(crate) use refresh_tokens::RefreshTokenRepository;
 pub(crate) use services::ServiceRepository;
@@ -113,6 +116,10 @@ impl Db {
 
     pub(crate) fn login_attempts(&self) -> LoginAttemptRepository {
         LoginAttemptRepository::new(self.conn.clone())
+    }
+
+    pub(crate) fn events(&self) -> EventRepository {
+        EventRepository::new(self.conn.clone())
     }
 }
 

@@ -1,9 +1,9 @@
-use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::db::Db;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::broadcast;
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -18,6 +18,16 @@ pub(crate) enum Severity {
     Info,
     Warning,
     Error,
+}
+
+impl Severity {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Warning => "warning",
+            Self::Error => "error",
+        }
+    }
 }
 
 /// Wraps an event with its severity for serialization. Produces a flat JSON
@@ -1306,59 +1316,127 @@ impl Event {
     }
 }
 
-/// Shared event store: ring buffer + broadcast channel for SSE subscribers.
-#[derive(Clone, Debug)]
+/// One page of persisted events: each entry is the flat envelope JSON
+/// (`{"severity":...,"type":...,...fields}`, matching what `EventEnvelope`
+/// used to produce) built straight from the stored payload, so callers never
+/// need to deserialize back into an `Event`. `next_before_id`, when present,
+/// is the cursor for fetching the next (older) page.
+pub(crate) struct EventPage {
+    pub(crate) events: Vec<serde_json::Value>,
+    pub(crate) next_before_id: Option<i64>,
+}
+
+/// Shared event store: durably backed by the `events` DB table (pruned on a
+/// retention timer — see `events_retention.rs`), plus a broadcast channel for
+/// live SSE subscribers. `db` is filled in once via [`Self::attach_db`] —
+/// the many in-process unit tests that build an `Orchestrator` directly never
+/// call it, so their events still broadcast live but aren't persisted, which
+/// is all those tests need.
+#[derive(Clone)]
 pub(crate) struct EventStore {
-    buffer: Arc<Mutex<VecDeque<Event>>>,
-    capacity: usize,
+    db: Arc<OnceLock<Db>>,
     tx: broadcast::Sender<Event>,
+}
+
+impl std::fmt::Debug for EventStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventStore")
+            .field("db_attached", &self.db.get().is_some())
+            .finish()
+    }
 }
 
 impl EventStore {
     pub(crate) fn new() -> Self {
-        let capacity = std::env::var("EVENT_BUFFER_SIZE")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1000_usize);
         let (tx, _) = broadcast::channel(512);
         Self {
-            buffer: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
-            capacity,
+            db: Arc::new(OnceLock::new()),
             tx,
         }
     }
 
+    /// Wire in DB-backed persistence. A no-op after the first call.
+    pub(crate) fn attach_db(&self, db: Db) {
+        let _ = self.db.set(db);
+    }
+
     pub(crate) async fn emit(&self, event: Event) {
-        let mut buf = self.buffer.lock().await;
-        if buf.len() >= self.capacity {
-            buf.pop_front();
+        if let Some(db) = self.db.get() {
+            let kind = event.kind();
+            match serde_json::to_value(&event) {
+                Ok(payload) => {
+                    let timestamp = payload
+                        .get("timestamp")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or_else(|| now_secs() as i64);
+                    if let Err(e) = db
+                        .events()
+                        .insert(
+                            kind,
+                            event.severity().as_str(),
+                            timestamp,
+                            &payload.to_string(),
+                        )
+                        .await
+                    {
+                        eprintln!("Failed to persist event '{kind}': {e:?}");
+                    }
+                }
+                Err(e) => eprintln!("Failed to serialize event '{kind}' for persistence: {e:#}"),
+            }
         }
-        buf.push_back(event.clone());
-        drop(buf);
         let _ = self.tx.send(event);
     }
 
-    /// Return stored events, optionally filtered by kind and/or severity, capped at limit.
-    /// `limit` takes the most recent N events.
-    pub(crate) async fn snapshot(
+    /// Most-recent-first page of persisted events, optionally filtered by
+    /// kind/severity/time range and cursor-paginated via `before_id`. Returns
+    /// an empty page (no error) if no DB has been attached yet.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn query(
         &self,
-        limit: Option<usize>,
         kind: Option<&str>,
         severity: Option<Severity>,
-    ) -> Vec<Event> {
-        let buf = self.buffer.lock().await;
-        let filtered: Vec<Event> = buf
-            .iter()
-            .filter(|e| kind.is_none_or(|k| e.kind() == k))
-            .filter(|e| severity.is_none_or(|s| e.severity() == s))
-            .cloned()
+        since: Option<i64>,
+        until: Option<i64>,
+        before_id: Option<i64>,
+        limit: i64,
+    ) -> EventPage {
+        let Some(db) = self.db.get() else {
+            return EventPage {
+                events: vec![],
+                next_before_id: None,
+            };
+        };
+        let severity_str = severity.map(Severity::as_str);
+        let rows = db
+            .events()
+            .query(kind, severity_str, since, until, before_id, limit)
+            .await
+            .unwrap_or_default();
+        // Another row exists past this page only if it came back full.
+        let next_before_id = (rows.len() as i64 >= limit)
+            .then(|| rows.last().map(|r| r.id))
+            .flatten();
+        let events = rows
+            .into_iter()
+            .map(|row| {
+                let mut obj = serde_json::from_str::<serde_json::Value>(&row.payload)
+                    .ok()
+                    .and_then(|v| match v {
+                        serde_json::Value::Object(map) => Some(map),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                obj.insert(
+                    "severity".to_string(),
+                    serde_json::Value::String(row.severity),
+                );
+                serde_json::Value::Object(obj)
+            })
             .collect();
-        match limit {
-            Some(n) => {
-                let start = filtered.len().saturating_sub(n);
-                filtered[start..].to_vec()
-            }
-            None => filtered,
+        EventPage {
+            events,
+            next_before_id,
         }
     }
 
