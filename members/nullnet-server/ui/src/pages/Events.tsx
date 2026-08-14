@@ -356,8 +356,8 @@ export default function Events() {
     .reverse();
 
   const chipStyle = (active: boolean, color: string) => ({
-    background: active ? color : 'var(--s1)',
-    border: `1px solid ${active ? color : 'var(--border)'}`,
+    background: active ? color : 'var(--g1)',
+    border: `1px solid ${active ? color : 'var(--gb)'}`,
     color: active ? 'var(--bg, #0a0a0a)' : 'var(--t2)',
     borderRadius: 4,
     padding: '2px 10px',
@@ -403,15 +403,18 @@ export default function Events() {
               ))}
 
               {/* Divider */}
-              <span style={{ width: 1, height: 16, background: 'var(--border)', margin: '0 2px' }} />
+              <span style={{ width: 1, height: 16, background: 'var(--gb)', margin: '0 2px' }} />
 
-              {/* Kind dropdown */}
+              {/* Kind dropdown. The popup list is a native surface, not composited
+                  over the page — it needs an explicit opaque background (the
+                  translucent --g1 wash the closed box uses would render as the
+                  browser's own default, i.e. white). */}
               <select
                 value={kindFilter}
                 onChange={e => setKindFilter(e.target.value)}
                 style={{
-                  background: 'var(--s1)',
-                  border: '1px solid var(--border)',
+                  background: 'var(--g1)',
+                  border: '1px solid var(--gb)',
                   color: 'var(--t1)',
                   borderRadius: 4,
                   padding: '2px 6px',
@@ -419,17 +422,17 @@ export default function Events() {
                   cursor: 'pointer',
                 }}
               >
-                <option value="">All types</option>
+                <option value="" style={{ background: 'var(--bg)', color: 'var(--t0)' }}>All types</option>
                 {ALL_KINDS.map(k => (
-                  <option key={k} value={k}>{KIND_LABELS[k]}</option>
+                  <option key={k} value={k} style={{ background: 'var(--bg)', color: 'var(--t0)' }}>{KIND_LABELS[k]}</option>
                 ))}
               </select>
 
               <button
                 onClick={() => setPaused(p => !p)}
                 style={{
-                  background: paused ? 'var(--blue)' : 'var(--s1)',
-                  border: '1px solid var(--border)',
+                  background: paused ? 'var(--blue)' : 'var(--g1)',
+                  border: '1px solid var(--gb)',
                   color: 'var(--t1)',
                   borderRadius: 4,
                   padding: '2px 10px',
@@ -490,8 +493,8 @@ export default function Events() {
                         onClick={loadOlder}
                         disabled={loadingOlder}
                         style={{
-                          background: 'var(--s1)',
-                          border: '1px solid var(--border)',
+                          background: 'var(--g1)',
+                          border: '1px solid var(--gb)',
                           color: 'var(--t2)',
                           borderRadius: 4,
                           padding: '4px 14px',
