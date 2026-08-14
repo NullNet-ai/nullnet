@@ -439,22 +439,6 @@ export default function Events() {
               >
                 {paused ? 'Resume' : 'Pause'}
               </button>
-              {filtered.length > 0 && (
-                <button
-                  onClick={() => setEvents([])}
-                  style={{
-                    background: 'var(--s1)',
-                    border: '1px solid var(--border)',
-                    color: 'var(--t2)',
-                    borderRadius: 4,
-                    padding: '2px 10px',
-                    fontSize: 11,
-                    cursor: 'pointer',
-                  }}
-                >
-                  Clear
-                </button>
-              )}
             </div>
           </div>
 
