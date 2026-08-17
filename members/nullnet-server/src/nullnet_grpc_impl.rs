@@ -228,7 +228,7 @@ fn find_service_stack<'a>(services: &'a StackMap, service_name: &str) -> Option<
 }
 
 impl NullnetGrpcImpl {
-    pub async fn new() -> Result<Self, Error> {
+    pub async fn new(db: crate::db::Db) -> Result<Self, Error> {
         let (stacks, index, route_map, startup_conflicts) = ServicesToml::load_validated().await?;
         let services = Arc::new(RwLock::new(stacks));
         let match_index = Arc::new(RwLock::new(index));
@@ -241,6 +241,10 @@ impl NullnetGrpcImpl {
         });
 
         let orchestrator = Orchestrator::new();
+        // Wired in before anything below emits, so even the startup-conflict
+        // events just below are persisted, not just broadcast to (currently
+        // nonexistent) live subscribers.
+        orchestrator.events.attach_db(db);
 
         // Conflicts detected before the event store existed: the offending
         // stacks were dropped, so report them now that we can.

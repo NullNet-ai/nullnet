@@ -2,6 +2,12 @@
 
 /* ── Custom Properties ── */
 :root {
+  /* This app is dark-only (no light variant). Without this, the browser
+     renders native widget chrome — like a <select>'s popup list — with its
+     default light background, so our light (--t0/--t1/--t2) option text
+     ends up white-on-white. This tells it to use its dark form-control
+     palette instead, everywhere in the app, not just on one <select>. */
+  color-scheme: dark;
   --bg: #030508;
   --g1: rgba(255,255,255,.04);
   --g2: rgba(255,255,255,.07);

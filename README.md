@@ -103,6 +103,15 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   CERT_RENEWAL_DNS_PROPAGATION_SECS=30     # wait after writing the TXT record
   ```
 
+- events (UI: *Events* page) are persisted to the SQLite database rather than kept in a
+  bounded in-memory buffer, so a burst of routine events can no longer evict a warning/error
+  before anyone sees it. They're pruned automatically past a retention window, tunable via
+  optional env vars (defaults shown):
+  ```
+  EVENT_RETENTION_DAYS=7                       # how long an event is kept
+  EVENT_RETENTION_SWEEP_INTERVAL_SECS=3600     # how often the deletion sweep runs (1h)
+  ```
+
 - the gRPC control channel itself (nullnet-client/nullnet-proxy ↔ nullnet-server) is TLS-only,
   authenticated by a private CA. On first boot the server generates its own CA
   (`members/nullnet-server/grpc-tls/ca-cert.pem` + `ca-key.pem`, created once and never

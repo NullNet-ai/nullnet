@@ -6,6 +6,7 @@ mod crypto;
 mod db;
 mod env;
 mod events;
+mod events_retention;
 mod geo;
 mod graphviz;
 mod grpc_tls;
@@ -98,7 +99,7 @@ async fn main() -> Result<(), Error> {
         .tls_config(tls_config)
         .handle_err(location!())?;
 
-    let nullnet = init_nullnet().await?;
+    let nullnet = init_nullnet(db.clone()).await?;
     let app_state = http_server::AppState {
         services: nullnet.services().clone(),
         routes: nullnet.routes().clone(),
@@ -111,6 +112,11 @@ async fn main() -> Result<(), Error> {
     cert_renewal::start(
         app_state.events.clone(),
         cert_renewal::RenewalConfig::from_env(),
+    );
+    // prune persisted events past the retention window (issue #151)
+    events_retention::start(
+        app_state.db.clone(),
+        events_retention::RetentionConfig::from_env(),
     );
 
     tokio::select! {
@@ -128,7 +134,7 @@ async fn main() -> Result<(), Error> {
     Ok(())
 }
 
-async fn init_nullnet() -> Result<NullnetGrpcImpl, Error> {
+async fn init_nullnet(db: db::Db) -> Result<NullnetGrpcImpl, Error> {
     if cfg!(not(debug_assertions)) {
         // custom panic hook to correctly clean up the server, even in case a secondary thread fails
         let orig_hook = panic::take_hook();
@@ -145,7 +151,7 @@ async fn init_nullnet() -> Result<NullnetGrpcImpl, Error> {
     })
     .handle_err(location!())?;
 
-    NullnetGrpcImpl::new().await
+    NullnetGrpcImpl::new(db).await
 }
 
 // fn redirect_stdout_stderr_to_file()

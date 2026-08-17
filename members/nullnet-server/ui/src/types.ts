@@ -154,6 +154,14 @@ export type EventJson =
   | WithSeverity & { type: 'certificate_renewal_failed'; domain: string; error_message: string }
   | WithSeverity & { type: 'certificate_credentials_store_failed'; domain: string; error_message: string };
 
+/// Response shape of `GET /api/events` — a most-recent-first page of
+/// persisted events. `next_before_id`, when present, is the cursor to pass
+/// back as `before_id` to fetch the next (older) page.
+export interface EventsPage {
+  events: EventJson[];
+  next_before_id: number | null;
+}
+
 export interface GraphNodeJson {
   id: string;
   registered: boolean;
