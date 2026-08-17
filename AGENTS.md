@@ -73,6 +73,8 @@ A change that is invisible when it misbehaves is not finished.
   Otherwise, the event is emitted and silently never shown.
 - Update `README.md` when the change alters set up and configuration,
   but only include the essential info without being verbose.
+- Update `CHANGELOG.md` with a one-line description of the change, following the existing format,
+  and including a link to the PR and the issue it fixes (if any).
 
 ## Definition of done
 
