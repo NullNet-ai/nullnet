@@ -2,10 +2,7 @@ import { useMemo } from 'react';
 import { spRow, spKey, SpSep } from './panelStyles';
 import { useTopologyData, useTopologyUI } from './TopologyContext';
 import { flagEmoji, countryName } from '../../geo';
-
-function formatTime(unix: number): string {
-  return new Date(unix * 1000).toLocaleTimeString([], { hour12: false });
-}
+import { formatTimestamp, formatTimestampFull } from '../../lib/time';
 
 export default function InternetPanel() {
   const { sessions, chains } = useTopologyData();
@@ -84,7 +81,9 @@ export default function InternetPanel() {
               >
                 {netIdsLabel}
               </div>
-              <div style={{ fontSize: 9, color: 'var(--t2)' }}>{formatTime(s.created_at)}</div>
+              <div style={{ fontSize: 9, color: 'var(--t2)' }} title={formatTimestampFull(s.created_at)}>
+                {formatTimestamp(s.created_at)}
+              </div>
             </div>
           </div>
         );
