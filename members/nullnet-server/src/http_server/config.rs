@@ -3,14 +3,55 @@ use super::auth::{AuthContext, require_scope};
 use crate::auth::Scope;
 use crate::events::Event as ServerEvent;
 use crate::services::input::{
-    ServicesToml, apply_config_update, detect_port_conflicts, detect_route_conflicts,
-    validate_stack_toml,
+    RouteMap, ServicesToml, StackMap, apply_config_update, detect_port_conflicts,
+    detect_route_conflicts, validate_stack_toml,
 };
 use axum::extract::{Extension, Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use nullnet_liberror::Error;
 use serde::Serialize;
+
+/// Cross-stack `(protocol, listen_port)` conflict pre-check, shared by every
+/// save path that can introduce one (raw-TOML, structured service config):
+/// look for a conflict `stack` is party to in `candidate` (the live set with
+/// `stack`'s new services already swapped in) and format it for the UI.
+pub(super) fn port_conflict_message(candidate: &StackMap, stack: &str) -> Option<String> {
+    detect_port_conflicts(candidate)
+        .into_iter()
+        .find(|c| c.stack_a == stack || c.stack_b == stack)
+        .map(|c| {
+            let (other_stack, other_service) = if c.stack_a == stack {
+                (c.stack_b, c.service_b)
+            } else {
+                (c.stack_a, c.service_a)
+            };
+            format!(
+                "listen_port {} ({:?}) already used by service '{other_service}' in stack '{other_stack}'",
+                c.listen_port, c.protocol
+            )
+        })
+}
+
+/// Same idea as [`port_conflict_message`], for this stack's `[[route]]`
+/// `(host, path)` pairs — including its own explicit routes clashing with
+/// each other.
+pub(super) fn route_conflict_message(candidate: &RouteMap, stack: &str) -> Option<String> {
+    detect_route_conflicts(candidate)
+        .into_iter()
+        .find(|c| c.stack_a == stack || c.stack_b == stack)
+        .map(|c| {
+            let other_stack = if c.stack_a == stack {
+                c.stack_b
+            } else {
+                c.stack_a
+            };
+            format!(
+                "route '{} {}' already claimed by stack '{other_stack}'",
+                c.host, c.path
+            )
+        })
+}
 
 /// A stack name must be a single bare identifier so it maps to exactly one
 /// `stack_configs` row, matching the charset the UI enforces
@@ -164,22 +205,8 @@ pub(super) async fn save_handler(
     //    the post-write DB state, which is what actually gets applied.
     let mut candidate = state.services.read().await.clone();
     candidate.insert(stack.clone(), parsed);
-    if let Some(c) = detect_port_conflicts(&candidate)
-        .into_iter()
-        .find(|c| c.stack_a == stack || c.stack_b == stack)
-    {
-        let (other_stack, other_service) = if c.stack_a == stack {
-            (c.stack_b, c.service_b)
-        } else {
-            (c.stack_a, c.service_a)
-        };
-        return rejected(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            format!(
-                "listen_port {} ({:?}) already used by service '{other_service}' in stack '{other_stack}'",
-                c.listen_port, c.protocol
-            ),
-        );
+    if let Some(msg) = port_conflict_message(&candidate, &stack) {
+        return rejected(StatusCode::UNPROCESSABLE_ENTITY, msg);
     }
 
     // 2b. Cross-stack route conflicts: same idea, for this stack's `[[route]]`
@@ -187,22 +214,8 @@ pub(super) async fn save_handler(
     //     with each other.
     let mut candidate_routes = state.routes.read().await.clone();
     candidate_routes.insert(stack.clone(), parsed_routes);
-    if let Some(c) = detect_route_conflicts(&candidate_routes)
-        .into_iter()
-        .find(|c| c.stack_a == stack || c.stack_b == stack)
-    {
-        let other_stack = if c.stack_a == stack {
-            c.stack_b
-        } else {
-            c.stack_a
-        };
-        return rejected(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            format!(
-                "route '{} {}' already claimed by stack '{other_stack}'",
-                c.host, c.path
-            ),
-        );
+    if let Some(msg) = route_conflict_message(&candidate_routes, &stack) {
+        return rejected(StatusCode::UNPROCESSABLE_ENTITY, msg);
     }
 
     // 3. Valid → persist to the DB.

@@ -18,6 +18,7 @@ mod graph;
 mod health;
 mod nodes;
 mod routes;
+mod service_config;
 mod services;
 mod sessions;
 mod stacks;
@@ -65,6 +66,10 @@ pub async fn serve(state: AppState) {
         .route(
             "/api/routes/{stack}",
             get(routes::routes_handler).post(routes::save_handler),
+        )
+        .route(
+            "/api/service-config/{stack}",
+            get(service_config::service_config_handler).post(service_config::save_handler),
         )
         .route("/api/graph/{stack}", get(graph::graph_handler))
         .route("/api/sessions/{stack}", get(sessions::list_handler))

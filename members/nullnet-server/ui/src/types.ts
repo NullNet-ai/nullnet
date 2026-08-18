@@ -206,6 +206,36 @@ export interface ChainJson {
   all_net_ids: number[];
 }
 
+// Structured stack service config — the widget-based Config page.
+// Field-for-field mirror of the server's `ServiceToml`/`TriggerToml`
+// (members/nullnet-server/src/services/input.rs), which is reused directly
+// as this endpoint's wire format.
+export interface TriggerConfigJson {
+  port: number;
+  chain: string[];
+}
+
+export interface ServiceConfigJson {
+  name: string;
+  docker_container?: string | null;
+  process_path?: string | null;
+  port?: number | null;
+  timeout?: number | null;
+  proxy_dependencies: string[][];
+  triggers: TriggerConfigJson[];
+  max_networks?: number | null;
+  protocol?: 'http' | 'tcp' | 'udp' | null;
+  listen_port?: number | null;
+  egress_blocked_countries?: string[] | null;
+  egress_allowed_countries?: string[] | null;
+  ingress_blocked_countries?: string[] | null;
+  ingress_allowed_countries?: string[] | null;
+}
+
+export interface ServiceConfigListJson {
+  services: ServiceConfigJson[];
+}
+
 // HTTP path-based routing — see docs/http-path-routing-design.md.
 export type RouteTargetJson =
   | { kind: 'service'; service: string; strip_prefix: boolean }

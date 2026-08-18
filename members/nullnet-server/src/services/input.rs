@@ -6,7 +6,7 @@ use crate::services::clients::Client;
 use crate::services::service_info::{CountryPolicy, ServiceInfo};
 use nullnet_grpc_lib::nullnet_grpc::ServiceProtocol;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::Ipv4Addr;
 #[cfg(test)]
@@ -554,6 +554,121 @@ pub(crate) fn validate_stack_toml(content: &str) -> Result<ParsedStack, String> 
     parse_stack_content(content).map_err(|e| e.to_str().to_string())
 }
 
+/// Parse a stack's current TOML and return its declared `[[services]]`, in
+/// order — the widget-config UI (`http_server::service_config`) reads this
+/// shape directly. Unlike `ParsedStack`'s `ServiceInfo` map, this keeps
+/// exactly what was declared (no auto-registered dependency placeholders
+/// merged in), which is what re-editing needs.
+pub(crate) fn stack_services(content: &str) -> Result<Vec<ServiceToml>, String> {
+    toml::from_str::<ServicesToml>(content)
+        .map(|parsed| parsed.services)
+        .map_err(|e| e.to_string())
+}
+
+fn toml_string_array(items: &[String]) -> toml_edit::Array {
+    let mut array = toml_edit::Array::new();
+    for item in items {
+        array.push(item.clone());
+    }
+    array
+}
+
+/// Replace the `[[services]]` array (including each service's nested
+/// `[[services.triggers]]`) in `content` with `services`, leaving
+/// `[[route]]`, comments, and formatting untouched — the services-side
+/// counterpart to `http_server::routes::merge_routes_into_toml`.
+pub(crate) fn merge_services_into_toml(
+    content: &str,
+    services: &[ServiceToml],
+) -> Result<String, String> {
+    let mut doc: toml_edit::DocumentMut = content
+        .parse()
+        .map_err(|e: toml_edit::TomlError| e.to_string())?;
+
+    let mut array = toml_edit::ArrayOfTables::new();
+    for s in services {
+        let mut table = toml_edit::Table::new();
+        table.insert("name", toml_edit::value(s.name.clone()));
+        if let Some(v) = &s.docker_container {
+            table.insert("docker_container", toml_edit::value(v.clone()));
+        }
+        if let Some(v) = &s.process_path {
+            table.insert("process_path", toml_edit::value(v.clone()));
+        }
+        if let Some(v) = s.port {
+            table.insert("port", toml_edit::value(i64::from(v)));
+        }
+        if let Some(v) = s.timeout {
+            table.insert(
+                "timeout",
+                toml_edit::value(i64::try_from(v).unwrap_or(i64::MAX)),
+            );
+        }
+        if !s.proxy_dependencies.is_empty() {
+            let mut branches = toml_edit::Array::new();
+            for branch in &s.proxy_dependencies {
+                branches.push(toml_string_array(branch));
+            }
+            table.insert(
+                "proxy_dependencies",
+                toml_edit::Item::Value(toml_edit::Value::Array(branches)),
+            );
+        }
+        if !s.triggers.is_empty() {
+            let mut trig_array = toml_edit::ArrayOfTables::new();
+            for t in &s.triggers {
+                let mut trig_table = toml_edit::Table::new();
+                trig_table.insert("port", toml_edit::value(i64::from(t.port)));
+                if !t.chain.is_empty() {
+                    trig_table.insert(
+                        "chain",
+                        toml_edit::Item::Value(toml_edit::Value::Array(toml_string_array(
+                            &t.chain,
+                        ))),
+                    );
+                }
+                trig_array.push(trig_table);
+            }
+            table["triggers"] = toml_edit::Item::ArrayOfTables(trig_array);
+        }
+        if let Some(v) = s.max_networks {
+            table.insert("max_networks", toml_edit::value(i64::from(v)));
+        }
+        if let Some(p) = s.protocol {
+            let name = match p {
+                ProtocolToml::Http => "http",
+                ProtocolToml::Tcp => "tcp",
+                ProtocolToml::Udp => "udp",
+            };
+            table.insert("protocol", toml_edit::value(name));
+        }
+        if let Some(v) = s.listen_port {
+            table.insert("listen_port", toml_edit::value(i64::from(v)));
+        }
+        for (key, list) in [
+            ("egress_blocked_countries", &s.egress_blocked_countries),
+            ("egress_allowed_countries", &s.egress_allowed_countries),
+            ("ingress_blocked_countries", &s.ingress_blocked_countries),
+            ("ingress_allowed_countries", &s.ingress_allowed_countries),
+        ] {
+            if let Some(list) = list {
+                table.insert(
+                    key,
+                    toml_edit::Item::Value(toml_edit::Value::Array(toml_string_array(list))),
+                );
+            }
+        }
+        array.push(table);
+    }
+
+    if array.is_empty() {
+        doc.remove("services");
+    } else {
+        doc["services"] = toml_edit::Item::ArrayOfTables(array);
+    }
+    Ok(doc.to_string())
+}
+
 #[cfg(test)]
 async fn parse_file(path: &Path) -> Result<ParsedStack, Error> {
     let str_repr = tokio::fs::read_to_string(path)
@@ -721,8 +836,12 @@ pub(crate) async fn apply_config_update(
     }
 }
 
-#[derive(Deserialize)]
-struct ServiceToml {
+/// One `[[services]]` entry, exactly as declared. Also doubles as the
+/// widget-config UI's wire format (`http_server::service_config`) — its
+/// field names and `ProtocolToml`'s `"http"/"tcp"/"udp"` already are the
+/// JSON shape we want, so there's no separate JSON type to keep in sync.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct ServiceToml {
     name: String,
     /// Host-match key for a Docker service: the Swarm service label
     /// (`com.docker.swarm.service.name`) or, in standalone mode, the container
@@ -772,9 +891,9 @@ struct ServiceToml {
     ingress_allowed_countries: Option<Vec<String>>,
 }
 
-#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-enum ProtocolToml {
+pub(crate) enum ProtocolToml {
     Http,
     Tcp,
     Udp,
@@ -790,8 +909,8 @@ impl From<ProtocolToml> for ServiceProtocol {
     }
 }
 
-#[derive(Deserialize)]
-struct TriggerToml {
+#[derive(Serialize, Deserialize)]
+pub(crate) struct TriggerToml {
     port: u16,
     #[serde(default)]
     chain: Vec<String>,
@@ -1431,5 +1550,107 @@ redirect_status = 200
         let routes: RouteMap = HashMap::from([("alpha".to_string(), alpha)]);
 
         assert!(detect_route_conflicts(&routes).is_empty());
+    }
+
+    fn empty_service(name: &str) -> ServiceToml {
+        ServiceToml {
+            name: name.to_string(),
+            docker_container: None,
+            process_path: None,
+            port: None,
+            timeout: None,
+            proxy_dependencies: Vec::new(),
+            triggers: Vec::new(),
+            max_networks: None,
+            protocol: None,
+            listen_port: None,
+            egress_blocked_countries: None,
+            egress_allowed_countries: None,
+            ingress_blocked_countries: None,
+            ingress_allowed_countries: None,
+        }
+    }
+
+    #[test]
+    fn merge_services_replaces_services_and_round_trips_every_field() {
+        let services = vec![ServiceToml {
+            docker_container: Some("my-app_color".to_string()),
+            port: Some(3001),
+            timeout: Some(0),
+            proxy_dependencies: vec![vec!["a.dep".to_string(), "b.dep".to_string()]],
+            triggers: vec![TriggerToml {
+                port: 5555,
+                chain: vec!["ts.color.com".to_string()],
+            }],
+            max_networks: Some(2),
+            protocol: Some(ProtocolToml::Tcp),
+            listen_port: Some(6379),
+            egress_blocked_countries: Some(vec!["RU".to_string(), "CN".to_string()]),
+            ingress_allowed_countries: Some(vec!["US".to_string()]),
+            ..empty_service("color.com")
+        }];
+
+        let merged = merge_services_into_toml("", &services).expect("merge");
+        let parsed = stack_services(&merged).expect("re-parse");
+
+        assert_eq!(parsed.len(), 1);
+        let s = &parsed[0];
+        assert_eq!(s.name, "color.com");
+        assert_eq!(s.docker_container.as_deref(), Some("my-app_color"));
+        assert_eq!(s.port, Some(3001));
+        assert_eq!(s.timeout, Some(0));
+        assert_eq!(
+            s.proxy_dependencies,
+            vec![vec!["a.dep".to_string(), "b.dep".to_string()]]
+        );
+        assert_eq!(s.triggers.len(), 1);
+        assert_eq!(s.triggers[0].port, 5555);
+        assert_eq!(s.triggers[0].chain, vec!["ts.color.com".to_string()]);
+        assert_eq!(s.max_networks, Some(2));
+        assert_eq!(s.protocol, Some(ProtocolToml::Tcp));
+        assert_eq!(s.listen_port, Some(6379));
+        assert_eq!(
+            s.egress_blocked_countries,
+            Some(vec!["RU".to_string(), "CN".to_string()])
+        );
+        assert_eq!(s.egress_allowed_countries, None);
+        assert_eq!(s.ingress_allowed_countries, Some(vec!["US".to_string()]));
+    }
+
+    #[test]
+    fn merge_services_leaves_routes_and_their_comments_untouched() {
+        // The comment directly precedes `[[route]]` (the untouched section),
+        // not `[[services]]` (the section being replaced) — a comment
+        // decorating the replaced section itself is expected to go with it,
+        // the same limitation `merge_routes_into_toml` has in reverse.
+        let content = r#"
+[[services]]
+name = "old"
+timeout = 0
+
+# a hand-written comment on this route
+[[route]]
+host = "ops.example.com"
+path = "/"
+service = "old"
+"#;
+        let services = vec![empty_service("new")];
+        let merged = merge_services_into_toml(content, &services).expect("merge");
+
+        assert!(merged.contains("# a hand-written comment on this route"));
+        assert!(merged.contains("host = \"ops.example.com\""));
+        assert!(!merged.contains("name = \"old\""));
+
+        let parsed = stack_services(&merged).expect("re-parse");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "new");
+    }
+
+    #[test]
+    fn merge_services_with_empty_list_removes_the_services_key() {
+        let content = "[[services]]\nname = \"old\"\n";
+        let merged = merge_services_into_toml(content, &[]).expect("merge");
+        assert!(!merged.contains("[[services]]"));
+        assert!(stack_services(&merged).expect("re-parse").is_empty());
     }
 }

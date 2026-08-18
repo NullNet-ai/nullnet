@@ -275,10 +275,6 @@ body {
 /* ── Pool ── */
 
 /* ── Config ── */
-.cfg-pre { font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.7; color: var(--t1); background: rgba(0,0,0,.3); border: 1px solid var(--gb); border-radius: 12px; padding: 20px 24px; overflow-x: auto; white-space: pre; }
-.cfg-edit { display: block; width: 100%; box-sizing: border-box; min-height: 460px; resize: vertical; font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.7; color: var(--t1); background: rgba(0,0,0,.3); border: 1px solid var(--gb); border-radius: 12px; padding: 20px 24px; white-space: pre; tab-size: 2; outline: none; transition: border-color .12s; }
-.cfg-edit:focus { border-color: rgba(91,156,246,.5); }
-.cfg-actions { display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
 .save-btn { padding: 6px 16px; background: var(--green-g); border: 1px solid rgba(52,211,153,.3); color: var(--green); font-family: 'Plus Jakarta Sans', sans-serif; font-size: 12px; font-weight: 600; border-radius: 8px; cursor: pointer; transition: background .12s; }
 .save-btn:hover:not(:disabled) { background: rgba(52,211,153,.18); }
 .save-btn:disabled { opacity: .4; cursor: default; }
