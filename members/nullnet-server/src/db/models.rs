@@ -1,6 +1,6 @@
 use crate::db::schema::{
-    certificates, dns_credentials, events, login_attempts, refresh_tokens, services, user_scopes,
-    users,
+    certificates, dns_credentials, events, login_attempts, refresh_tokens, stack_configs,
+    user_scopes, users,
 };
 use diesel::prelude::*;
 
@@ -45,21 +45,21 @@ pub(crate) struct NewDnsCredential<'a> {
 }
 
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone)]
-#[diesel(table_name = services)]
+#[diesel(table_name = stack_configs)]
 #[diesel(primary_key(stack))]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-pub(crate) struct Service {
+pub(crate) struct StackConfig {
     pub(crate) stack: String,
-    pub(crate) service_json: String,
+    pub(crate) config_toml: String,
     pub(crate) updated_at: i64,
 }
 
 #[derive(Insertable, AsChangeset, Debug, Clone)]
-#[diesel(table_name = services)]
+#[diesel(table_name = stack_configs)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-pub(crate) struct NewService<'a> {
+pub(crate) struct NewStackConfig<'a> {
     pub(crate) stack: &'a str,
-    pub(crate) service_json: &'a str,
+    pub(crate) config_toml: &'a str,
     pub(crate) updated_at: i64,
 }
 

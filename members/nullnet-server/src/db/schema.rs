@@ -19,9 +19,9 @@ diesel::table! {
 }
 
 diesel::table! {
-    services (stack) {
+    stack_configs (stack) {
         stack -> Text,
-        service_json -> Text,
+        config_toml -> Text,
         updated_at -> BigInt,
     }
 }

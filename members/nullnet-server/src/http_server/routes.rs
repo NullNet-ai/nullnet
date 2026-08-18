@@ -115,10 +115,10 @@ pub(super) async fn routes_handler(
 /// config save). Re-runs the same validation the TOML loader enforces
 /// (mutual exclusion, redirect status code, service exists/is
 /// http/proxy-reachable, cross-stack `(host, path)` uniqueness), then merges
-/// the new `[[route]]` array into the stack's existing TOML file — leaving
-/// its `[[services]]` entries, comments, and formatting untouched — and
-/// writes it. The `./services` watcher picks up the write and applies it the
-/// same way any other config edit is applied.
+/// the new `[[route]]` array into the stack's stored TOML — leaving its
+/// `[[services]]` entries, comments, and formatting untouched — and persists
+/// it to the DB. Applied live immediately, the same way `config.rs`'s save
+/// handler applies any other config edit.
 pub(super) async fn save_handler(
     Extension(ctx): Extension<AuthContext>,
     Path(stack): Path<String>,
@@ -232,22 +232,41 @@ pub(super) async fn save_handler(
         );
     }
 
-    // 3. Valid → merge into the stack's TOML file and persist.
-    let path = format!("./services/{stack}.toml");
-    let content = match tokio::fs::read_to_string(&path).await {
-        Ok(c) => c,
-        Err(_) => return rejected(StatusCode::NOT_FOUND, "stack not found"),
+    // 3. Valid → merge into the stack's stored TOML and persist to the DB.
+    let content = match state.db.stack_configs().get(&stack).await {
+        Ok(Some(row)) => row.config_toml,
+        Ok(None) => return rejected(StatusCode::NOT_FOUND, "stack not found"),
+        Err(_) => {
+            return rejected(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load configuration",
+            );
+        }
     };
     let new_content = match merge_routes_into_toml(&content, &body) {
         Ok(c) => c,
         Err(e) => return rejected(StatusCode::INTERNAL_SERVER_ERROR, e),
     };
-    if tokio::fs::write(&path, new_content).await.is_err() {
+    if state
+        .db
+        .stack_configs()
+        .put(&stack, &new_content)
+        .await
+        .is_err()
+    {
         return rejected(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to write configuration file",
+            "failed to write configuration",
         );
     }
+
+    // 4. Apply live via the same DB-reload path `config.rs`'s save handler
+    //    uses — see its doc comment for why a fresh reload, not this
+    //    request's `candidate` snapshot, is what gets applied.
+    if let Err(e) = super::config::reload_and_apply(&state).await {
+        eprintln!("failed to reload config after saving routes for '{stack}': {e:?}");
+    }
+
     saved_ok()
 }
 

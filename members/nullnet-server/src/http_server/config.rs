@@ -1,17 +1,20 @@
 use super::AppState;
 use super::auth::{AuthContext, require_scope};
 use crate::auth::Scope;
-use crate::services::input::{detect_port_conflicts, detect_route_conflicts, validate_stack_toml};
+use crate::events::Event as ServerEvent;
+use crate::services::input::{
+    ServicesToml, apply_config_update, detect_port_conflicts, detect_route_conflicts,
+    validate_stack_toml,
+};
 use axum::extract::{Extension, Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use nullnet_liberror::Error;
 use serde::Serialize;
 
-/// A stack name must be a single bare identifier so it maps to exactly
-/// `./services/<stack>.toml` with no traversal. Restricted to the same charset
-/// the UI enforces (`[A-Za-z0-9_-]+`) — this also rejects path separators, dots,
-/// NUL, whitespace, and control characters, which would traverse, fail the write
-/// with a 500, or create ghost files.
+/// A stack name must be a single bare identifier so it maps to exactly one
+/// `stack_configs` row, matching the charset the UI enforces
+/// (`[A-Za-z0-9_-]+`).
 pub(super) fn valid_stack_name(stack: &str) -> bool {
     !stack.is_empty()
         && stack
@@ -23,6 +26,7 @@ pub(super) fn valid_stack_name(stack: &str) -> bool {
 pub(super) async fn config_handler(
     Extension(ctx): Extension<AuthContext>,
     Path(stack): Path<String>,
+    State(state): State<AppState>,
 ) -> Response {
     if let Err(resp) = require_scope(&ctx, Scope::ConfigRead) {
         return resp;
@@ -33,15 +37,18 @@ pub(super) async fn config_handler(
             .body(axum::body::Body::empty())
             .unwrap();
     }
-    let path = format!("./services/{stack}.toml");
-    match tokio::fs::read_to_string(&path).await {
-        Ok(content) => Response::builder()
+    match state.db.stack_configs().get(&stack).await {
+        Ok(Some(row)) => Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(axum::body::Body::from(content))
+            .body(axum::body::Body::from(row.config_toml))
+            .unwrap(),
+        Ok(None) => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(axum::body::Body::empty())
             .unwrap(),
         Err(_) => Response::builder()
-            .status(StatusCode::NOT_FOUND)
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
             .body(axum::body::Body::empty())
             .unwrap(),
     }
@@ -73,11 +80,64 @@ pub(super) fn rejected(status: StatusCode, error: impl Into<String>) -> Response
         .into_response()
 }
 
-/// POST a new raw TOML for a stack. The body is validated the same way the loader
-/// validates on reload (syntax + semantic rules + cross-stack port conflicts). On
-/// success the file is written and the existing `./services` watcher hot-reloads
-/// it live; on failure nothing is written, so the last valid config keeps running
-/// and the response carries the parse error for the UI's status indicator.
+/// Re-read every stack from the DB and apply it live — the in-process,
+/// synchronous equivalent of what the removed `services.toml` file watcher
+/// did on a debounced reload. Reloading the full authoritative DB state
+/// (rather than patching the one changed stack into an in-memory snapshot
+/// taken before the write) is deliberate: it's what keeps a concurrent save
+/// to a *different* stack from being clobbered by a stale snapshot, the same
+/// way the old watcher's full-directory reload self-healed concurrent file
+/// writes. Conflicts are rechecked here too — a save's own pre-write check
+/// only rules out conflicts against the snapshot it read; this is the
+/// authoritative backstop, exactly like the watcher's reload branch.
+pub(super) async fn reload_and_apply(state: &AppState) -> Result<(), Error> {
+    let (loaded_services, loaded_index, loaded_routes) = ServicesToml::load(&state.db).await?;
+    let conflicts = detect_port_conflicts(&loaded_services);
+    let route_conflicts = detect_route_conflicts(&loaded_routes);
+    if conflicts.is_empty() && route_conflicts.is_empty() {
+        {
+            let mut services_mut = state.services.write().await;
+            apply_config_update(&mut services_mut, loaded_services, &state.orchestrator).await;
+        }
+        *state.match_index.write().await = loaded_index;
+        *state.routes.write().await = loaded_routes;
+        state.config_changed.notify_one();
+        state.port_mappings_changed.notify_one();
+        state.http_routes_changed.notify_one();
+    } else {
+        for c in conflicts {
+            state
+                .orchestrator
+                .events
+                .emit(ServerEvent::port_mapping_conflict(
+                    c.stack_a,
+                    c.service_a,
+                    c.stack_b,
+                    c.service_b,
+                    format!("{:?}", c.protocol),
+                    c.listen_port,
+                ))
+                .await;
+        }
+        for c in route_conflicts {
+            state
+                .orchestrator
+                .events
+                .emit(ServerEvent::route_conflict(
+                    c.stack_a, c.stack_b, c.host, c.path,
+                ))
+                .await;
+        }
+    }
+    Ok(())
+}
+
+/// POST a new raw TOML for a stack. The body is validated the same way the
+/// loader validates on startup (syntax + semantic rules + cross-stack port
+/// conflicts) before anything is written, so a bad edit gets an immediate,
+/// specific rejection rather than silently failing later. On success it's
+/// written to the DB and applied live via [`reload_and_apply`] — no restart,
+/// no filesystem round-trip.
 pub(super) async fn save_handler(
     Extension(ctx): Extension<AuthContext>,
     Path(stack): Path<String>,
@@ -92,13 +152,16 @@ pub(super) async fn save_handler(
     }
 
     // 1. Syntax + semantic validation (mirrors the loader).
-    let (parsed, parsed_routes) = match validate_stack_toml(&body) {
+    let (parsed, _match_entries, parsed_routes) = match validate_stack_toml(&body) {
         Ok(parsed) => parsed,
         Err(e) => return rejected(StatusCode::UNPROCESSABLE_ENTITY, e),
     };
 
     // 2. Cross-stack port conflicts: check against the live set with this stack
     //    swapped in, so an edit can't collide with a listen_port owned elsewhere.
+    //    This is a fast, friendly pre-check against the snapshot this request
+    //    read — `reload_and_apply` below is the authoritative recheck against
+    //    the post-write DB state, which is what actually gets applied.
     let mut candidate = state.services.read().await.clone();
     candidate.insert(stack.clone(), parsed);
     if let Some(c) = detect_port_conflicts(&candidate)
@@ -142,27 +205,32 @@ pub(super) async fn save_handler(
         );
     }
 
-    // 3. Valid → persist. The services watcher picks up the write and applies it.
-    let path = format!("./services/{stack}.toml");
-    if tokio::fs::write(&path, body).await.is_err() {
+    // 3. Valid → persist to the DB.
+    if state.db.stack_configs().put(&stack, &body).await.is_err() {
         return rejected(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to write configuration file",
+            "failed to write configuration",
         );
     }
-    axum::Json(SaveResult {
-        ok: true,
-        error: None,
-    })
-    .into_response()
+
+    // 4. Apply live. The DB write already succeeded — a reload failure here
+    //    just means the running config lags the DB until the next change, so
+    //    it's logged rather than turned into a failure response.
+    if let Err(e) = reload_and_apply(&state).await {
+        eprintln!("failed to reload config after saving '{stack}': {e:?}");
+    }
+
+    saved_ok()
 }
 
-/// DELETE a stack's config file. The `./services` watcher sees the removal and
-/// tears the stack's services down (`apply_config_update`). Creating a stack is
-/// just a `save_handler` POST to a name that has no file yet.
+/// DELETE a stack's config. Tears its services down immediately and drops it
+/// from every live map via the same [`reload_and_apply`] path `save_handler`
+/// uses. Creating a stack is just a `save_handler` POST to a name with no
+/// existing row yet.
 pub(super) async fn delete_handler(
     Extension(ctx): Extension<AuthContext>,
     Path(stack): Path<String>,
+    State(state): State<AppState>,
 ) -> Response {
     if let Err(resp) = require_scope(&ctx, Scope::ConfigWrite) {
         return resp;
@@ -170,19 +238,27 @@ pub(super) async fn delete_handler(
     if !valid_stack_name(&stack) {
         return rejected(StatusCode::BAD_REQUEST, "invalid stack name");
     }
-    let path = format!("./services/{stack}.toml");
-    match tokio::fs::remove_file(&path).await {
-        Ok(()) => axum::Json(SaveResult {
-            ok: true,
-            error: None,
-        })
-        .into_response(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            rejected(StatusCode::NOT_FOUND, "stack not found")
+
+    match state.db.stack_configs().get(&stack).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return rejected(StatusCode::NOT_FOUND, "stack not found"),
+        Err(_) => {
+            return rejected(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to delete configuration",
+            );
         }
-        Err(_) => rejected(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to delete configuration file",
-        ),
     }
+    if state.db.stack_configs().delete(&stack).await.is_err() {
+        return rejected(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to delete configuration",
+        );
+    }
+
+    if let Err(e) = reload_and_apply(&state).await {
+        eprintln!("failed to reload config after deleting '{stack}': {e:?}");
+    }
+
+    saved_ok()
 }

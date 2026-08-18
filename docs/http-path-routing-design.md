@@ -234,7 +234,7 @@ message HttpRouteBundle {
 }
 
 // Long-lived stream, mirrors WatchCertificates/WatchPortMappings: full table
-// on subscribe, one push per services.toml change.
+// on subscribe, one push per config change.
 rpc WatchHttpRoutes(Empty) returns (stream HttpRouteBundle);
 ```
 

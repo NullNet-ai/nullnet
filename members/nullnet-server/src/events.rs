@@ -178,9 +178,12 @@ pub(crate) enum Event {
         port: u16,
         timestamp: u64,
     },
-    /// A `services/*.toml` change was picked up but could not be parsed, so the
-    /// previous configuration is still in force.
-    ConfigReloadFailed {
+    /// A legacy `services/<stack>.toml` file was found on startup but failed
+    /// validation, so it was left on disk (not imported into the DB, not
+    /// backed up) rather than silently dropped. See
+    /// `services::migrate::migrate_legacy_toml`.
+    LegacyConfigImportFailed {
+        stack: String,
         error_message: String,
         timestamp: u64,
     },
@@ -490,7 +493,7 @@ impl Event {
             Self::NetIdPoolExhausted { .. } => "net_id_pool_exhausted",
             Self::ProxyChainSetupFailed { .. } => "proxy_chain_setup_failed",
             Self::BackendTriggerSetupBailed { .. } => "backend_trigger_setup_bailed",
-            Self::ConfigReloadFailed { .. } => "config_reload_failed",
+            Self::LegacyConfigImportFailed { .. } => "legacy_config_import_failed",
             Self::FileWatchFailed { .. } => "file_watch_failed",
             Self::UdpPortPoolExhausted { .. } => "udp_port_pool_exhausted",
             Self::BackendTriggerSetupTimedOut { .. } => "backend_trigger_setup_timed_out",
@@ -586,7 +589,7 @@ impl Event {
             | Self::CertificateCredentialsStoreFailed { .. }
             | Self::NetIdPoolExhausted { .. }
             | Self::UdpPortPoolExhausted { .. }
-            | Self::ConfigReloadFailed { .. }
+            | Self::LegacyConfigImportFailed { .. }
             | Self::FileWatchFailed { .. }
             | Self::BackendTriggerSetupTimedOut { .. }
             | Self::EgressSteerSetupTimedOut { .. }
@@ -1199,8 +1202,9 @@ impl Event {
         }
     }
 
-    pub(crate) fn config_reload_failed(error_message: String) -> Self {
-        Self::ConfigReloadFailed {
+    pub(crate) fn legacy_config_import_failed(stack: String, error_message: String) -> Self {
+        Self::LegacyConfigImportFailed {
+            stack,
             error_message,
             timestamp: now_secs(),
         }

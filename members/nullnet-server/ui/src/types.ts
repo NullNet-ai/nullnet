@@ -100,7 +100,7 @@ export type EventJson =
   | WithSeverity & { type: 'proxy_chain_setup_failed'; service: string; client_ip: string }
   | WithSeverity & { type: 'backend_trigger_setup_bailed'; service: string; port: number }
   | WithSeverity & { type: 'udp_port_pool_exhausted'; service: string; client_ip: string }
-  | WithSeverity & { type: 'config_reload_failed'; error_message: string }
+  | WithSeverity & { type: 'legacy_config_import_failed'; stack: string; error_message: string }
   | WithSeverity & { type: 'file_watch_failed'; target: string; error_message: string }
   | WithSeverity & { type: 'port_mapping_conflict'; stack_a: string; service_a: string; stack_b: string; service_b: string; protocol: string; listen_port: number }
   // Client error events

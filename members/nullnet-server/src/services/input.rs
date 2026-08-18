@@ -1,23 +1,16 @@
+use crate::db::Db;
 use crate::events::Event as ServerEvent;
 use crate::orchestrator::Orchestrator;
 use crate::services::changes::{ServiceChange, apply_changes, detect_config_changes};
 use crate::services::clients::Client;
 use crate::services::service_info::{CountryPolicy, ServiceInfo};
-use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use nullnet_grpc_lib::nullnet_grpc::ServiceProtocol;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::Ipv4Addr;
-use std::ops::Sub;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc as tokio_mpsc;
-use tokio::sync::{Notify, RwLock};
-use tokio::time::Instant;
-
-const SERVICES_DIR: &str = "./services";
+#[cfg(test)]
+use std::path::Path;
 
 /// Top-level state: stack name → per-stack service map.
 pub(crate) type StackMap = HashMap<String, HashMap<String, ServiceInfo>>;
@@ -253,13 +246,31 @@ pub(crate) struct ServicesToml {
 }
 
 impl ServicesToml {
-    pub(crate) async fn load() -> Result<(StackMap, MatchIndex, RouteMap), Error> {
-        Self::load_from_dir(SERVICES_DIR).await
+    /// Load every stack's config from the `stack_configs` table (issue #140 —
+    /// this replaces the old `./services/*.toml` directory scan; legacy files
+    /// are imported into this table on startup by
+    /// `services::migrate::migrate_legacy_toml` before this ever runs).
+    /// Returns the service map, the parallel host-match index, and the
+    /// parallel route map.
+    pub(crate) async fn load(db: &Db) -> Result<(StackMap, MatchIndex, RouteMap), Error> {
+        let mut stacks: StackMap = HashMap::new();
+        let mut index: MatchIndex = HashMap::new();
+        let mut routes: RouteMap = HashMap::new();
+        for row in db.stack_configs().list().await? {
+            let (services, match_entries, route_entries) = parse_stack_content(&row.config_toml)?;
+            println!("Loaded stack '{}': {services:?}", row.stack);
+            index.insert(row.stack.clone(), match_entries);
+            routes.insert(row.stack.clone(), route_entries);
+            stacks.insert(row.stack, services);
+        }
+        Ok((stacks, index, routes))
     }
 
     /// Load every `*.toml` file under `dir`; the file stem is the stack name.
     /// Returns the service map, the parallel host-match index, and the
-    /// parallel route map.
+    /// parallel route map. Test-only: the production loader is [`Self::load`],
+    /// which reads from the `stack_configs` table instead of the filesystem.
+    #[cfg(test)]
     pub(crate) async fn load_from_dir(
         dir: &str,
     ) -> Result<(StackMap, MatchIndex, RouteMap), Error> {
@@ -302,9 +313,10 @@ impl ServicesToml {
     /// The conflicts are returned rather than reported here: the event store
     /// doesn't exist yet this early in startup, so the caller emits them once
     /// the orchestrator is up (the reload path emits its own directly).
-    pub(crate) async fn load_validated()
-    -> Result<(StackMap, MatchIndex, RouteMap, StartupConflicts), Error> {
-        let (mut stacks, mut index, mut routes) = Self::load().await?;
+    pub(crate) async fn load_validated(
+        db: &Db,
+    ) -> Result<(StackMap, MatchIndex, RouteMap, StartupConflicts), Error> {
+        let (mut stacks, mut index, mut routes) = Self::load(db).await?;
         // Don't brick the control plane on a conflict (e.g. a bad UI edit or
         // hand-edited file left two stacks claiming the same listen_port/route).
         // Drop the offending stacks and start anyway, logging loudly — the
@@ -345,115 +357,6 @@ impl ServicesToml {
                 routes: route_conflicts,
             },
         ))
-    }
-
-    /// `config_changed`, `port_mappings_changed`, and `http_routes_changed`
-    /// are separate `Notify`s — each has exactly one consumer (`check_timeouts`,
-    /// the port-mapping refresh task, and the route-table refresh task,
-    /// respectively). `Notify::notify_one` wakes at most one waiter, so
-    /// sharing a single `Notify` across consumers would have them race for
-    /// each wake-up instead of all reliably observing it.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn watch(
-        services: &Arc<RwLock<StackMap>>,
-        match_index: &Arc<RwLock<MatchIndex>>,
-        routes: &Arc<RwLock<RouteMap>>,
-        orchestrator: Orchestrator,
-        config_changed: Arc<Notify>,
-        port_mappings_changed: Arc<Notify>,
-        http_routes_changed: Arc<Notify>,
-    ) -> Result<(), Error> {
-        let services_directory = PathBuf::from(SERVICES_DIR);
-
-        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
-        let mut watcher = RecommendedWatcher::new(
-            move |event| {
-                let _ = tx.send(event);
-            },
-            Config::default(),
-        )
-        .handle_err(location!())?;
-        watcher
-            .watch(&services_directory, RecursiveMode::Recursive)
-            .handle_err(location!())?;
-
-        let mut last_update_time = Instant::now().sub(Duration::from_mins(1));
-
-        loop {
-            let event = rx.recv().await;
-            if event.is_none() {
-                println!("File watcher channel closed, stopping watch");
-                break;
-            }
-            if let Some(Ok(Event { kind, .. })) = event
-                && matches!(
-                    kind,
-                    EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
-                )
-            {
-                // debounce duplicated events
-                if last_update_time.elapsed().as_millis() > 100 {
-                    // ensure file changes are propagated
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    match ServicesToml::load().await {
-                        Ok((loaded_services, loaded_index, loaded_routes)) => {
-                            let conflicts = detect_port_conflicts(&loaded_services);
-                            let route_conflicts = detect_route_conflicts(&loaded_routes);
-                            if conflicts.is_empty() && route_conflicts.is_empty() {
-                                let services_mut = &mut *services.write().await;
-                                apply_config_update(services_mut, loaded_services, &orchestrator)
-                                    .await;
-                                *match_index.write().await = loaded_index;
-                                *routes.write().await = loaded_routes;
-                                config_changed.notify_one();
-                                port_mappings_changed.notify_one();
-                                http_routes_changed.notify_one();
-                            } else {
-                                eprintln!(
-                                    "Rejecting services.toml reload: {} port mapping conflict(s), \
-                                     {} route conflict(s)",
-                                    conflicts.len(),
-                                    route_conflicts.len()
-                                );
-                                for c in conflicts {
-                                    orchestrator
-                                        .events
-                                        .emit(ServerEvent::port_mapping_conflict(
-                                            c.stack_a,
-                                            c.service_a,
-                                            c.stack_b,
-                                            c.service_b,
-                                            format!("{:?}", c.protocol),
-                                            c.listen_port,
-                                        ))
-                                        .await;
-                                }
-                                for c in route_conflicts {
-                                    orchestrator
-                                        .events
-                                        .emit(ServerEvent::route_conflict(
-                                            c.stack_a, c.stack_b, c.host, c.path,
-                                        ))
-                                        .await;
-                                }
-                            }
-                        }
-                        // Unparseable file: the previous config stays in force,
-                        // which looks identical to "nothing changed" from the UI.
-                        Err(e) => {
-                            eprintln!("Failed to reload services.toml: {e:?}");
-                            orchestrator
-                                .events
-                                .emit(ServerEvent::config_reload_failed(format!("{e:?}")))
-                                .await;
-                        }
-                    }
-                    last_update_time = Instant::now();
-                }
-            }
-        }
-
-        Ok(())
     }
 
     pub(crate) fn services_map(self) -> Result<HashMap<String, ServiceInfo>, Error> {
@@ -625,7 +528,7 @@ fn country_policy(
 
 /// One stack file's parsed, validated contents: its service map, host-match
 /// index entries, and route entries.
-type ParsedStack = (
+pub(crate) type ParsedStack = (
     HashMap<String, ServiceInfo>,
     Vec<MatchEntry>,
     Vec<RouteEntry>,
@@ -644,16 +547,14 @@ fn parse_stack_content(content: &str) -> Result<ParsedStack, Error> {
 }
 
 /// Validate raw TOML the same way the loader does, returning the per-service
-/// map and route list on success or a human-readable error for the UI's
-/// parse-status indicator.
-pub(crate) fn validate_stack_toml(
-    content: &str,
-) -> Result<(HashMap<String, ServiceInfo>, Vec<RouteEntry>), String> {
-    parse_stack_content(content)
-        .map(|(services, _match_entries, routes)| (services, routes))
-        .map_err(|e| e.to_str().to_string())
+/// map, host-match entries (so a live-apply can merge them into the match
+/// index without a full reload), and route list on success — or a
+/// human-readable error for the UI's parse-status indicator.
+pub(crate) fn validate_stack_toml(content: &str) -> Result<ParsedStack, String> {
+    parse_stack_content(content).map_err(|e| e.to_str().to_string())
 }
 
+#[cfg(test)]
 async fn parse_file(path: &Path) -> Result<ParsedStack, Error> {
     let str_repr = tokio::fs::read_to_string(path)
         .await

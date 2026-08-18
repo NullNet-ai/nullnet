@@ -1,12 +1,12 @@
 use crate::db::Db;
 use crate::events::EventStore;
 use crate::orchestrator::Orchestrator;
-use crate::services::input::{RouteMap, StackMap};
+use crate::services::input::{MatchIndex, RouteMap, StackMap};
 use axum::Router;
 use axum::routing::{delete, get, patch, post};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
 
 mod auth;
 mod certificates;
@@ -32,9 +32,20 @@ pub(crate) struct AppState {
     /// cross-stack `(host, path)` conflict checks on config/route saves. See
     /// docs/http-path-routing-design.md.
     pub(crate) routes: Arc<RwLock<RouteMap>>,
+    /// Host-match index, rebuilt alongside `services`. The config/route save
+    /// handlers merge their stack's freshly-validated entries into this
+    /// directly — see `nullnet_grpc_impl::NullnetGrpcImpl`'s field docs.
+    pub(crate) match_index: Arc<RwLock<MatchIndex>>,
     pub(crate) orchestrator: Orchestrator,
     pub(crate) events: EventStore,
     pub(crate) db: Db,
+    /// Notified by the config/route save/delete handlers after a successful
+    /// DB write — the in-process replacement for what the removed
+    /// `services.toml` file watcher used to trigger. See
+    /// `nullnet_grpc_impl::NullnetGrpcImpl`'s field docs for what each wakes.
+    pub(crate) config_changed: Arc<Notify>,
+    pub(crate) port_mappings_changed: Arc<Notify>,
+    pub(crate) http_routes_changed: Arc<Notify>,
 }
 
 pub async fn serve(state: AppState) {
