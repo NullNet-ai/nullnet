@@ -1,5 +1,4 @@
-use aes_gcm::aead::OsRng;
-use aes_gcm::aead::rand_core::RngCore;
+use aes_gcm::aead::Generate;
 use std::collections::{HashSet, VecDeque};
 use std::sync::LazyLock;
 
@@ -144,9 +143,7 @@ impl UdpPortPool {
 /// per net_id allocation; the same bytes are sent to both endpoints so they
 /// share a single symmetric key for that tunnel only.
 pub(crate) fn generate_key() -> [u8; 32] {
-    let mut key = [0u8; 32];
-    OsRng.fill_bytes(&mut key);
-    key
+    Generate::generate()
 }
 
 #[cfg(test)]

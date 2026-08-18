@@ -200,9 +200,9 @@ pub fn enable(iface: &str, cfg: &FirewallConfig) -> Result<Firewall, Error> {
     let control_port = cfg.control_port;
     let gateway_u8: u8 = u8::from(cfg.egress_gateway);
     let mut loader = EbpfLoader::new();
-    loader.set_global("SERVER_IP", &server_ip_be, true);
-    loader.set_global("CONTROL_PORT", &control_port, true);
-    loader.set_global("EGRESS_GATEWAY", &gateway_u8, true);
+    loader.override_global("SERVER_IP", &server_ip_be, true);
+    loader.override_global("CONTROL_PORT", &control_port, true);
+    loader.override_global("EGRESS_GATEWAY", &gateway_u8, true);
     let mut bpf = loader
         .load(aya::include_bytes_aligned!(env!(
             "NULLNET_BIN_PATH",

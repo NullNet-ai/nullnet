@@ -1,5 +1,4 @@
-use aes_gcm::aead::OsRng;
-use aes_gcm::aead::rand_core::RngCore;
+use aes_gcm::aead::Generate;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
@@ -11,8 +10,7 @@ pub(crate) const REFRESH_TOKEN_TTL_SECS: i64 = 30 * 24 * 60 * 60;
 /// the raw value that goes in the cookie — only its hash is ever stored).
 /// Reuses the same CSPRNG source `crypto.rs` already relies on for nonces.
 pub(crate) fn generate_raw_token() -> String {
-    let mut bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut bytes);
+    let bytes: [u8; 32] = Generate::generate();
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
