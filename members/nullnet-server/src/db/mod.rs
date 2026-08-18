@@ -4,9 +4,10 @@
 //!
 //! `certs.rs` still owns the on-disk file storage it always has; nothing
 //! calls into `CertRepository` yet, so that part of this module's API
-//! surface is unused until that migration happens. `stack_configs` backs
-//! per-stack service config (issue #140) — the on-disk `./services/*.toml`
-//! files are now legacy, auto-imported into this table on startup by
+//! surface is unused until that migration happens. `stacks`/`services`/
+//! `service_triggers`/`service_dependencies`/`routes` back per-stack
+//! service config (issue #140) as normalized rows — the on-disk
+//! `./services/*.toml` files are now legacy, auto-imported on startup by
 //! `services::migrate::migrate_legacy_toml`. The auth repositories
 //! (`users`/`user_scopes`/`refresh_tokens`/`login_attempts`) back the
 //! server's JWT auth system and are fully wired up, as is `events` (durable
@@ -19,15 +20,16 @@ mod login_attempts;
 mod models;
 mod refresh_tokens;
 mod schema;
-mod stack_configs;
+mod stacks;
 mod user_scopes;
 mod users;
 
 pub(crate) use certs::CertRepository;
 pub(crate) use events::EventRepository;
 pub(crate) use login_attempts::LoginAttemptRepository;
+pub(crate) use models::{RouteRow, ServiceDependencyRow, ServiceRow, ServiceTriggerRow};
 pub(crate) use refresh_tokens::RefreshTokenRepository;
-pub(crate) use stack_configs::StackConfigRepository;
+pub(crate) use stacks::{RouteInsert, ServiceInsert, StackRepository};
 pub(crate) use user_scopes::ScopeRepository;
 pub(crate) use users::UserRepository;
 
@@ -46,7 +48,7 @@ type AsyncSqlite = SyncConnectionWrapper<SqliteConnection>;
 
 /// Shared handle to the server's SQLite database. Cloning is cheap (an
 /// `Arc` around a single mutex-guarded connection) and hands out
-/// [`CertRepository`]/[`StackConfigRepository`] instances for typed access.
+/// [`CertRepository`]/[`StackRepository`] instances for typed access.
 #[derive(Clone)]
 pub(crate) struct Db {
     conn: Arc<Mutex<AsyncSqlite>>,
@@ -101,8 +103,8 @@ impl Db {
         CertRepository::new(self.conn.clone())
     }
 
-    pub(crate) fn stack_configs(&self) -> StackConfigRepository {
-        StackConfigRepository::new(self.conn.clone())
+    pub(crate) fn stacks(&self) -> StackRepository {
+        StackRepository::new(self.conn.clone())
     }
 
     pub(crate) fn users(&self) -> UserRepository {

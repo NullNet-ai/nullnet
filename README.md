@@ -128,20 +128,22 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   same address clients are told to connect to) → `localhost`. Set `CONTROL_SERVICE_TLS_SAN`
   explicitly if the server's address isn't in its own `.env` or differs from what clients use.
 
-- service configuration is split per **stack** and lives in the server's SQLite database (the
-  `stack_configs` table), one row per stack holding its TOML text. The admin UI's Config page edits
-  it through per-service widgets (`GET`/`POST /api/service-config/{stack}`, structured JSON) rather
-  than raw text; `GET`/`POST`/`DELETE /api/config/{stack}` still serve/accept the same config as raw
-  TOML, for scripting or backup. Either path validates and applies live, no restart needed.
+- service configuration is split per **stack** and lives in the server's SQLite database as
+  normalized rows (`stacks`/`services`/`service_triggers`/`service_dependencies`/`routes` — one
+  service's triggers/dependency branches are child rows of its own row, keyed by an autoincrement
+  id). Edit it through the admin UI's Config page (per-service widgets) or directly via
+  `GET`/`POST`/`DELETE /api/service-config/{stack}` (services, structured JSON) and
+  `GET`/`POST /api/routes/{stack}` (routes) — both validate and apply live, no restart needed.
   Pre-`v0.2` deployments that used one `services/<stack>.toml` file per stack are migrated
-  automatically on first startup after upgrading: each file is imported into the DB (a stack already
-  in the DB is left alone) and moved to `services/.migrated-toml-backup/` as a plain-text safety
-  copy — editing a file there, or recreating one at its original path, no longer has any effect. A
-  file that fails validation is left where it was, not imported, and reported as a
+  automatically on first startup after upgrading: each file is parsed and imported as normalized
+  rows (a stack already in the DB is left alone) and moved to `services/.migrated-toml-backup/` as a
+  plain-text safety copy — editing a file there, or recreating one at its original path, no longer
+  has any effect. A file that fails validation is left where it was, not imported, and reported as a
   `legacy_config_import_failed` event.
 
-  For example, to define a stack called `my-app`, `POST` this to `/api/config/my-app` (or build the
-  same thing with the Config page's widgets):
+  The TOML shown below is no longer a literal API payload (there's no raw-text endpoint) — it's the
+  clearest way to document the field set, which the JSON wire format (and the widget UI) mirrors
+  field-for-field. For example, this defines a stack called `my-app`:
   ```
   [[services]]                 # http entry point, backed by a Docker container
   name = "color.com"

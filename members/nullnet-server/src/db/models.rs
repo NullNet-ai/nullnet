@@ -1,6 +1,6 @@
 use crate::db::schema::{
-    certificates, dns_credentials, events, login_attempts, refresh_tokens, stack_configs,
-    user_scopes, users,
+    certificates, dns_credentials, events, login_attempts, refresh_tokens, routes,
+    service_dependencies, service_triggers, services, stacks, user_scopes, users,
 };
 use diesel::prelude::*;
 
@@ -45,22 +45,134 @@ pub(crate) struct NewDnsCredential<'a> {
 }
 
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone)]
-#[diesel(table_name = stack_configs)]
-#[diesel(primary_key(stack))]
+#[diesel(table_name = stacks)]
+#[diesel(primary_key(name))]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-pub(crate) struct StackConfig {
-    pub(crate) stack: String,
-    pub(crate) config_toml: String,
+pub(crate) struct Stack {
+    pub(crate) name: String,
     pub(crate) updated_at: i64,
 }
 
 #[derive(Insertable, AsChangeset, Debug, Clone)]
-#[diesel(table_name = stack_configs)]
+#[diesel(table_name = stacks)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-pub(crate) struct NewStackConfig<'a> {
-    pub(crate) stack: &'a str,
-    pub(crate) config_toml: &'a str,
+pub(crate) struct NewStack<'a> {
+    pub(crate) name: &'a str,
     pub(crate) updated_at: i64,
+}
+
+#[derive(Queryable, Selectable, Identifiable, Debug, Clone)]
+#[diesel(table_name = services)]
+#[diesel(primary_key(id))]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub(crate) struct ServiceRow {
+    pub(crate) id: i32,
+    pub(crate) stack: String,
+    pub(crate) name: String,
+    pub(crate) docker_container: Option<String>,
+    pub(crate) process_path: Option<String>,
+    pub(crate) port: Option<i32>,
+    pub(crate) timeout: Option<i64>,
+    pub(crate) max_networks: Option<i32>,
+    pub(crate) protocol: Option<String>,
+    pub(crate) listen_port: Option<i32>,
+    pub(crate) egress_blocked_countries: Option<String>,
+    pub(crate) egress_allowed_countries: Option<String>,
+    pub(crate) ingress_blocked_countries: Option<String>,
+    pub(crate) ingress_allowed_countries: Option<String>,
+}
+
+#[derive(Insertable, Debug, Clone)]
+#[diesel(table_name = services)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub(crate) struct NewServiceRow<'a> {
+    pub(crate) stack: &'a str,
+    pub(crate) name: &'a str,
+    pub(crate) docker_container: Option<&'a str>,
+    pub(crate) process_path: Option<&'a str>,
+    pub(crate) port: Option<i32>,
+    pub(crate) timeout: Option<i64>,
+    pub(crate) max_networks: Option<i32>,
+    pub(crate) protocol: Option<&'a str>,
+    pub(crate) listen_port: Option<i32>,
+    pub(crate) egress_blocked_countries: Option<String>,
+    pub(crate) egress_allowed_countries: Option<String>,
+    pub(crate) ingress_blocked_countries: Option<String>,
+    pub(crate) ingress_allowed_countries: Option<String>,
+}
+
+#[derive(Queryable, Selectable, Identifiable, Debug, Clone)]
+#[diesel(table_name = service_triggers)]
+#[diesel(primary_key(id))]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub(crate) struct ServiceTriggerRow {
+    pub(crate) id: i32,
+    pub(crate) service_id: i32,
+    pub(crate) port: i32,
+    pub(crate) chain: String,
+}
+
+#[derive(Insertable, Debug, Clone)]
+#[diesel(table_name = service_triggers)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub(crate) struct NewServiceTriggerRow {
+    pub(crate) service_id: i32,
+    pub(crate) port: i32,
+    pub(crate) chain: String,
+}
+
+#[derive(Queryable, Selectable, Identifiable, Debug, Clone)]
+#[diesel(table_name = service_dependencies)]
+#[diesel(primary_key(id))]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub(crate) struct ServiceDependencyRow {
+    pub(crate) id: i32,
+    pub(crate) service_id: i32,
+    pub(crate) branch_index: i32,
+    pub(crate) chain: String,
+}
+
+#[derive(Insertable, Debug, Clone)]
+#[diesel(table_name = service_dependencies)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub(crate) struct NewServiceDependencyRow {
+    pub(crate) service_id: i32,
+    pub(crate) branch_index: i32,
+    pub(crate) chain: String,
+}
+
+#[derive(Queryable, Selectable, Identifiable, Debug, Clone)]
+#[diesel(table_name = routes)]
+#[diesel(primary_key(id))]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub(crate) struct RouteRow {
+    pub(crate) id: i32,
+    pub(crate) stack: String,
+    pub(crate) host: String,
+    pub(crate) path: String,
+    pub(crate) target_kind: String,
+    pub(crate) target_service: Option<String>,
+    pub(crate) strip_prefix: bool,
+    pub(crate) redirect_to: Option<String>,
+    pub(crate) redirect_status: Option<i32>,
+    pub(crate) preserve_path: bool,
+    pub(crate) preserve_query: bool,
+}
+
+#[derive(Insertable, Debug, Clone)]
+#[diesel(table_name = routes)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub(crate) struct NewRouteRow<'a> {
+    pub(crate) stack: &'a str,
+    pub(crate) host: &'a str,
+    pub(crate) path: &'a str,
+    pub(crate) target_kind: &'a str,
+    pub(crate) target_service: Option<&'a str>,
+    pub(crate) strip_prefix: bool,
+    pub(crate) redirect_to: Option<&'a str>,
+    pub(crate) redirect_status: Option<i32>,
+    pub(crate) preserve_path: bool,
+    pub(crate) preserve_query: bool,
 }
 
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone)]

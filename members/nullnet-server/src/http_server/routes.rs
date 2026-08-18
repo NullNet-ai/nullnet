@@ -2,7 +2,9 @@ use super::AppState;
 use super::auth::{AuthContext, require_scope};
 use super::config::{rejected, saved_ok, valid_stack_name};
 use crate::auth::Scope;
-use crate::services::input::{RouteEntry, RouteTarget, detect_route_conflicts};
+use crate::services::input::{
+    RouteEntry, RouteTarget, detect_route_conflicts, route_entries_to_inserts,
+};
 use axum::Json;
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
@@ -111,14 +113,12 @@ pub(super) async fn routes_handler(
     .into_response()
 }
 
-/// POST the stack's full route list (whole-list replace, like the raw-TOML
-/// config save). Re-runs the same validation the TOML loader enforces
-/// (mutual exclusion, redirect status code, service exists/is
-/// http/proxy-reachable, cross-stack `(host, path)` uniqueness), then merges
-/// the new `[[route]]` array into the stack's stored TOML — leaving its
-/// `[[services]]` entries, comments, and formatting untouched — and persists
-/// it to the DB. Applied live immediately, the same way `config.rs`'s save
-/// handler applies any other config edit.
+/// POST the stack's full route list (whole-list replace, like the services
+/// editor). Re-runs the same validation the loader always enforced (mutual
+/// exclusion, redirect status code, service exists/is http/proxy-reachable,
+/// cross-stack `(host, path)` uniqueness), persists via
+/// `StackRepository::put_routes`, and applies live immediately via
+/// `config::reload_and_apply`.
 pub(super) async fn save_handler(
     Extension(ctx): Extension<AuthContext>,
     Path(stack): Path<String>,
@@ -212,8 +212,9 @@ pub(super) async fn save_handler(
     drop(services);
 
     // 2. Cross-stack (host, path) conflicts — same check the raw-TOML save uses.
+    let route_inserts = route_entries_to_inserts(&entries);
     let mut candidate = state.routes.read().await.clone();
-    candidate.insert(stack.clone(), entries);
+    candidate.insert(stack.clone(), entries.clone());
     if let Some(c) = detect_route_conflicts(&candidate)
         .into_iter()
         .find(|c| c.stack_a == stack || c.stack_b == stack)
@@ -232,25 +233,11 @@ pub(super) async fn save_handler(
         );
     }
 
-    // 3. Valid → merge into the stack's stored TOML and persist to the DB.
-    let content = match state.db.stack_configs().get(&stack).await {
-        Ok(Some(row)) => row.config_toml,
-        Ok(None) => return rejected(StatusCode::NOT_FOUND, "stack not found"),
-        Err(_) => {
-            return rejected(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to load configuration",
-            );
-        }
-    };
-    let new_content = match merge_routes_into_toml(&content, &body) {
-        Ok(c) => c,
-        Err(e) => return rejected(StatusCode::INTERNAL_SERVER_ERROR, e),
-    };
+    // 3. Valid → persist and apply live.
     if state
         .db
-        .stack_configs()
-        .put(&stack, &new_content)
+        .stacks()
+        .put_routes(&stack, &route_inserts)
         .await
         .is_err()
     {
@@ -260,63 +247,9 @@ pub(super) async fn save_handler(
         );
     }
 
-    // 4. Apply live via the same DB-reload path `config.rs`'s save handler
-    //    uses — see its doc comment for why a fresh reload, not this
-    //    request's `candidate` snapshot, is what gets applied.
     if let Err(e) = super::config::reload_and_apply(&state).await {
         eprintln!("failed to reload config after saving routes for '{stack}': {e:?}");
     }
 
     saved_ok()
-}
-
-/// Replace the `[[route]]` array in `content` with `routes`, leaving every
-/// other table — `[[services]]`, comments, formatting — untouched.
-/// `toml_edit`'s structural editing (rather than a plain `toml`/serde
-/// round-trip of the whole document) is what makes that possible.
-fn merge_routes_into_toml(content: &str, routes: &[RouteJson]) -> Result<String, String> {
-    let mut doc: toml_edit::DocumentMut = content
-        .parse()
-        .map_err(|e: toml_edit::TomlError| e.to_string())?;
-
-    let mut array = toml_edit::ArrayOfTables::new();
-    for r in routes {
-        let mut table = toml_edit::Table::new();
-        table.insert("host", toml_edit::value(r.host.clone()));
-        table.insert("path", toml_edit::value(r.path.clone()));
-        match &r.target {
-            RouteTargetJson::Service {
-                service,
-                strip_prefix,
-            } => {
-                table.insert("service", toml_edit::value(service.clone()));
-                if *strip_prefix {
-                    table.insert("strip_prefix", toml_edit::value(true));
-                }
-            }
-            RouteTargetJson::Redirect {
-                to,
-                status,
-                preserve_path,
-                preserve_query,
-            } => {
-                table.insert("redirect_to", toml_edit::value(to.clone()));
-                table.insert("redirect_status", toml_edit::value(i64::from(*status)));
-                if *preserve_path {
-                    table.insert("preserve_path", toml_edit::value(true));
-                }
-                if *preserve_query {
-                    table.insert("preserve_query", toml_edit::value(true));
-                }
-            }
-        }
-        array.push(table);
-    }
-
-    if array.is_empty() {
-        doc.remove("route");
-    } else {
-        doc["route"] = toml_edit::Item::ArrayOfTables(array);
-    }
-    Ok(doc.to_string())
 }

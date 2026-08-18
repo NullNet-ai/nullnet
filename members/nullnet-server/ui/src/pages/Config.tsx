@@ -232,7 +232,7 @@ export default function Config() {
 
   async function removeStack() {
     if (!confirm(`Delete stack "${stack}"? Its services are torn down immediately.`)) return;
-    const res = await apiFetch(`/api/config/${stack}`, { method: 'DELETE' });
+    const res = await apiFetch(`/api/service-config/${stack}`, { method: 'DELETE' });
     if (res.ok) {
       const others = (stacks ?? []).filter(s => s !== stack);
       refetchStacks();

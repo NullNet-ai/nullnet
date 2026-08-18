@@ -58,18 +58,14 @@ pub async fn serve(state: AppState) {
         .route("/api/services/{stack}", get(services::services_handler))
         .route("/api/nodes/{stack}", get(nodes::nodes_handler))
         .route(
-            "/api/config/{stack}",
-            get(config::config_handler)
-                .post(config::save_handler)
-                .delete(config::delete_handler),
-        )
-        .route(
             "/api/routes/{stack}",
             get(routes::routes_handler).post(routes::save_handler),
         )
         .route(
             "/api/service-config/{stack}",
-            get(service_config::service_config_handler).post(service_config::save_handler),
+            get(service_config::service_config_handler)
+                .post(service_config::save_handler)
+                .delete(service_config::delete_handler),
         )
         .route("/api/graph/{stack}", get(graph::graph_handler))
         .route("/api/sessions/{stack}", get(sessions::list_handler))

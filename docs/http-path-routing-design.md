@@ -373,14 +373,16 @@ initial implementation landed:
 ## Admin UI
 
 The UI (`members/nullnet-server/ui`, React 19 + TS + Vite, embedded into the
-server binary via `rust-embed`) has no structured form anywhere today —
-`Config.tsx` is a raw `<textarea>` bound 1:1 to the stack's TOML text
-(GET/POST/DELETE `/api/config/{stack}`), and the services list
-(`Services.tsx` / `services.rs` `ServiceJson`) doesn't even surface
-`protocol`/`listen_port`. Routes get a real form, following the one existing
-CRUD+modal precedent in this codebase (`pages/Users.tsx`: table + "+ Add"
-button opening a shared `Modal`, per-field `useState`, busy/error state,
-disabled-until-valid submit) rather than raw TOML editing or a new pattern.
+server binary via `rust-embed`) had no structured form anywhere at the time
+this doc was written — `Config.tsx` was a raw `<textarea>` bound 1:1 to the
+stack's TOML text, and the services list (`Services.tsx` / `services.rs`
+`ServiceJson`) doesn't even surface `protocol`/`listen_port`. Routes got a
+real form, following the one existing CRUD+modal precedent in this codebase
+(`pages/Users.tsx`: table + "+ Add" button opening a shared `Modal`,
+per-field `useState`, busy/error state, disabled-until-valid submit) rather
+than raw TOML editing or a new pattern. (Issue #140 has since reworked
+`Config.tsx` the same way, over a new `/api/service-config/{stack}`
+structured endpoint; `/api/config` no longer exists.)
 
 ### New endpoints (`nullnet-server`, alongside `config.rs`/`services.rs`)
 

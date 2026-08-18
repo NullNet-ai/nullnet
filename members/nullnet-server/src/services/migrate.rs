@@ -1,15 +1,15 @@
 //! One-time import of legacy `./services/<stack>.toml` files into the
-//! `stack_configs` table (issue #140 — config moves from files to the DB).
-//! Mirrors `auth::bootstrap::ensure_admin_exists`'s idempotent-on-every-
-//! startup pattern, but checked per stack rather than with a single
-//! "any rows exist" gate: a stack already in the DB (imported on a previous
-//! boot, or created directly through the UI/API) is left untouched, so this
-//! is safe to run on every restart and never clobbers a DB-side edit with a
-//! stale file.
+//! normalized `stacks`/`services`/... tables (issue #140 — config moves
+//! from files to the DB). Mirrors `auth::bootstrap::ensure_admin_exists`'s
+//! idempotent-on-every-startup pattern, but checked per stack rather than
+//! with a single "any rows exist" gate: a stack already in the DB (imported
+//! on a previous boot, or created directly through the UI/API) is left
+//! untouched, so this is safe to run on every restart and never clobbers a
+//! DB-side edit with a stale file.
 
 use crate::db::Db;
 use crate::events::{Event, EventStore};
-use crate::services::input::validate_stack_toml;
+use crate::services::input::{route_entries_to_inserts, services_to_inserts, validate_stack_toml};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::path::Path;
 
@@ -54,7 +54,7 @@ pub(crate) async fn migrate_legacy_toml(
             continue;
         };
 
-        if db.stack_configs().get(&stack).await?.is_some() {
+        if db.stacks().exists(&stack).await? {
             continue; // already migrated (or created directly in the DB)
         }
 
@@ -69,18 +69,31 @@ pub(crate) async fn migrate_legacy_toml(
                 continue;
             }
         };
-        if let Err(e) = validate_stack_toml(&content) {
-            eprintln!(
-                "[config migration] '{stack}' failed validation, left on disk for manual fix: {e}"
-            );
-            events
-                .emit(Event::legacy_config_import_failed(stack, e))
-                .await;
-            skipped += 1;
-            continue;
-        }
+        let (_, _, route_entries) = match validate_stack_toml(&content) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!(
+                    "[config migration] '{stack}' failed validation, left on disk for manual fix: {e}"
+                );
+                events
+                    .emit(Event::legacy_config_import_failed(stack, e))
+                    .await;
+                skipped += 1;
+                continue;
+            }
+        };
+        // `validate_stack_toml` already confirmed the TOML parses and is
+        // semantically valid; this is a second, independent parse purely to
+        // get the exact-as-declared service list (rather than the derived
+        // `ServiceInfo` map) to persist — see `stack_services`'s doc comment.
+        let services = crate::services::input::stack_services(&content)
+            .expect("stack_services can't fail content validate_stack_toml already parsed");
 
-        db.stack_configs().put(&stack, &content).await?;
+        let service_inserts = services_to_inserts(&services);
+        db.stacks().put_services(&stack, &service_inserts).await?;
+        let route_inserts = route_entries_to_inserts(&route_entries);
+        db.stacks().put_routes(&stack, &route_inserts).await?;
+
         if let Err(e) = move_to_backup(&path, &stack, &backup_dir).await {
             eprintln!(
                 "[config migration] imported '{stack}' but failed to back up its file: {e:?}"
@@ -140,7 +153,7 @@ mod tests {
         migrate_legacy_toml(&db, &events, "./no-such-dir-for-this-test")
             .await
             .unwrap();
-        assert!(db.stack_configs().list().await.unwrap().is_empty());
+        assert!(db.stacks().list_stacks().await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -159,8 +172,9 @@ mod tests {
             .await
             .unwrap();
 
-        let row = db.stack_configs().get("alpha").await.unwrap().unwrap();
-        assert!(row.config_toml.contains("name = \"a\""));
+        let services = db.stacks().services_for("alpha").await.unwrap();
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].name, "a");
         assert!(!dir.join("alpha.toml").exists());
         assert!(dir.join(".migrated-toml-backup/alpha.toml").exists());
 
@@ -180,7 +194,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(db.stack_configs().get("broken").await.unwrap().is_none());
+        assert!(!db.stacks().exists("broken").await.unwrap());
         assert!(dir.join("broken.toml").exists());
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
@@ -197,8 +211,24 @@ mod tests {
         .unwrap();
 
         let db = test_db().await;
-        db.stack_configs()
-            .put("alpha", "[[services]]\nname = \"from-db\"\ntimeout = 0\n")
+        let existing = crate::db::ServiceInsert {
+            name: "from-db",
+            docker_container: None,
+            process_path: None,
+            port: None,
+            timeout: Some(0),
+            max_networks: None,
+            protocol: None,
+            listen_port: None,
+            egress_blocked_countries: None,
+            egress_allowed_countries: None,
+            ingress_blocked_countries: None,
+            ingress_allowed_countries: None,
+            triggers: Vec::new(),
+            dependencies: Vec::new(),
+        };
+        db.stacks()
+            .put_services("alpha", &[existing])
             .await
             .unwrap();
 
@@ -207,8 +237,9 @@ mod tests {
             .await
             .unwrap();
 
-        let row = db.stack_configs().get("alpha").await.unwrap().unwrap();
-        assert!(row.config_toml.contains("from-db"));
+        let services = db.stacks().services_for("alpha").await.unwrap();
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].name, "from-db");
         // left on disk untouched — it was never a candidate for import
         assert!(dir.join("alpha.toml").exists());
 

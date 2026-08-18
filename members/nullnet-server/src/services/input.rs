@@ -246,9 +246,10 @@ pub(crate) struct ServicesToml {
 }
 
 impl ServicesToml {
-    /// Load every stack's config from the `stack_configs` table (issue #140 —
-    /// this replaces the old `./services/*.toml` directory scan; legacy files
-    /// are imported into this table on startup by
+    /// Load every stack's config from the normalized `stacks`/`services`/
+    /// `service_triggers`/`service_dependencies`/`routes` tables (issue
+    /// #140 — this replaces the old `./services/*.toml` directory scan;
+    /// legacy files are imported on startup by
     /// `services::migrate::migrate_legacy_toml` before this ever runs).
     /// Returns the service map, the parallel host-match index, and the
     /// parallel route map.
@@ -256,14 +257,60 @@ impl ServicesToml {
         let mut stacks: StackMap = HashMap::new();
         let mut index: MatchIndex = HashMap::new();
         let mut routes: RouteMap = HashMap::new();
-        for row in db.stack_configs().list().await? {
-            let (services, match_entries, route_entries) = parse_stack_content(&row.config_toml)?;
-            println!("Loaded stack '{}': {services:?}", row.stack);
-            index.insert(row.stack.clone(), match_entries);
-            routes.insert(row.stack.clone(), route_entries);
-            stacks.insert(row.stack, services);
+        for stack_name in db.stacks().list_stacks().await? {
+            let service_rows = db.stacks().services_for(&stack_name).await?;
+            let service_ids: Vec<i32> = service_rows.iter().map(|r| r.id).collect();
+            let trigger_rows = db.stacks().triggers_for(&service_ids).await?;
+            let dependency_rows = db.stacks().dependencies_for(&service_ids).await?;
+            let route_rows = db.stacks().routes_for(&stack_name).await?;
+
+            let services_toml = services_from_rows(service_rows, trigger_rows, dependency_rows);
+            let routes_toml: Vec<RouteToml> = route_rows.iter().map(route_toml_from_row).collect();
+
+            let (services, match_entries, route_entries) =
+                validate_stack(services_toml, routes_toml)?;
+            println!("Loaded stack '{stack_name}': {services:?}");
+            index.insert(stack_name.clone(), match_entries);
+            routes.insert(stack_name.clone(), route_entries);
+            stacks.insert(stack_name, services);
         }
         Ok((stacks, index, routes))
+    }
+
+    /// Fetch and convert one stack's declared services from the DB — used by
+    /// `http_server::service_config`'s GET handler. `None` if the stack
+    /// doesn't exist (as opposed to existing with zero services).
+    pub(crate) async fn stack_services_from_db(
+        db: &Db,
+        stack: &str,
+    ) -> Result<Option<Vec<ServiceToml>>, Error> {
+        if !db.stacks().exists(stack).await? {
+            return Ok(None);
+        }
+        let service_rows = db.stacks().services_for(stack).await?;
+        let service_ids: Vec<i32> = service_rows.iter().map(|r| r.id).collect();
+        let trigger_rows = db.stacks().triggers_for(&service_ids).await?;
+        let dependency_rows = db.stacks().dependencies_for(&service_ids).await?;
+        Ok(Some(services_from_rows(
+            service_rows,
+            trigger_rows,
+            dependency_rows,
+        )))
+    }
+
+    /// Validate a new services list for `stack` against its *current* routes
+    /// (read fresh from the DB) — used by `http_server::service_config`'s
+    /// save handler, so a service delete/rename that would orphan an
+    /// existing route is still caught, the same way the old raw-TOML path
+    /// validated services and routes together from one file.
+    pub(crate) async fn validate_new_services(
+        db: &Db,
+        stack: &str,
+        services: Vec<ServiceToml>,
+    ) -> Result<ParsedStack, Error> {
+        let route_rows = db.stacks().routes_for(stack).await?;
+        let routes = route_rows.iter().map(route_toml_from_row).collect();
+        validate_stack(services, routes)
     }
 
     /// Load every `*.toml` file under `dir`; the file stem is the stack name.
@@ -534,139 +581,202 @@ pub(crate) type ParsedStack = (
     Vec<RouteEntry>,
 );
 
-/// Single source of truth for "is this stack file valid?": TOML syntax, then the
-/// host-match/port, protocol/listen_port, route, and country-list rules. Shared
-/// by the disk loader ([`parse_file`]) and the UI save handlers
-/// ([`validate_stack_toml`]). Cross-stack port/route conflicts are separate —
-/// see [`detect_port_conflicts`]/[`detect_route_conflicts`].
-fn parse_stack_content(content: &str) -> Result<ParsedStack, Error> {
-    let parsed: ServicesToml = toml::from_str(content).handle_err(location!())?;
-    let match_entries = build_match_entries(&parsed.services)?;
-    let route_entries = build_route_entries(&parsed.services, &parsed.routes)?;
+/// Single source of truth for "is this stack valid?": the host-match/port,
+/// protocol/listen_port, route, and country-list rules — shared by the DB
+/// loader ([`ServicesToml::load`]) and every save path (`validate_stack_toml`
+/// for legacy-file migration, `http_server::service_config`/`routes` for the
+/// widget UI). Cross-stack port/route conflicts are separate — see
+/// [`detect_port_conflicts`]/[`detect_route_conflicts`].
+pub(crate) fn validate_stack(
+    services: Vec<ServiceToml>,
+    routes: Vec<RouteToml>,
+) -> Result<ParsedStack, Error> {
+    let match_entries = build_match_entries(&services)?;
+    let route_entries = build_route_entries(&services, &routes)?;
+    let parsed = ServicesToml { services, routes };
     Ok((parsed.services_map()?, match_entries, route_entries))
 }
 
+fn parse_stack_content(content: &str) -> Result<ParsedStack, Error> {
+    let parsed: ServicesToml = toml::from_str(content).handle_err(location!())?;
+    validate_stack(parsed.services, parsed.routes)
+}
+
 /// Validate raw TOML the same way the loader does, returning the per-service
-/// map, host-match entries (so a live-apply can merge them into the match
-/// index without a full reload), and route list on success — or a
-/// human-readable error for the UI's parse-status indicator.
+/// map, host-match entries, and route list on success — or a human-readable
+/// error. Used by `services::migrate::migrate_legacy_toml` to validate a
+/// legacy file before importing it (and, via the route list, to get the
+/// `RouteEntry`s to persist — see [`route_entries_to_inserts`]).
 pub(crate) fn validate_stack_toml(content: &str) -> Result<ParsedStack, String> {
     parse_stack_content(content).map_err(|e| e.to_str().to_string())
 }
 
-/// Parse a stack's current TOML and return its declared `[[services]]`, in
-/// order — the widget-config UI (`http_server::service_config`) reads this
-/// shape directly. Unlike `ParsedStack`'s `ServiceInfo` map, this keeps
-/// exactly what was declared (no auto-registered dependency placeholders
-/// merged in), which is what re-editing needs.
+/// Parse a legacy TOML file's content and return its declared
+/// `[[services]]`, in order — used only by `services::migrate::migrate_legacy_toml`
+/// to get the exact declared shape (no auto-registered dependency
+/// placeholders merged in) to persist as normalized rows.
 pub(crate) fn stack_services(content: &str) -> Result<Vec<ServiceToml>, String> {
     toml::from_str::<ServicesToml>(content)
         .map(|parsed| parsed.services)
         .map_err(|e| e.to_string())
 }
 
-fn toml_string_array(items: &[String]) -> toml_edit::Array {
-    let mut array = toml_edit::Array::new();
-    for item in items {
-        array.push(item.clone());
-    }
-    array
+fn encode_list(list: &Option<Vec<String>>) -> Option<String> {
+    list.as_ref()
+        .map(|l| serde_json::to_string(l).unwrap_or_default())
 }
 
-/// Replace the `[[services]]` array (including each service's nested
-/// `[[services.triggers]]`) in `content` with `services`, leaving
-/// `[[route]]`, comments, and formatting untouched — the services-side
-/// counterpart to `http_server::routes::merge_routes_into_toml`.
-pub(crate) fn merge_services_into_toml(
-    content: &str,
-    services: &[ServiceToml],
-) -> Result<String, String> {
-    let mut doc: toml_edit::DocumentMut = content
-        .parse()
-        .map_err(|e: toml_edit::TomlError| e.to_string())?;
+fn decode_list(json: Option<String>) -> Option<Vec<String>> {
+    json.and_then(|j| serde_json::from_str(&j).ok())
+}
 
-    let mut array = toml_edit::ArrayOfTables::new();
-    for s in services {
-        let mut table = toml_edit::Table::new();
-        table.insert("name", toml_edit::value(s.name.clone()));
-        if let Some(v) = &s.docker_container {
-            table.insert("docker_container", toml_edit::value(v.clone()));
-        }
-        if let Some(v) = &s.process_path {
-            table.insert("process_path", toml_edit::value(v.clone()));
-        }
-        if let Some(v) = s.port {
-            table.insert("port", toml_edit::value(i64::from(v)));
-        }
-        if let Some(v) = s.timeout {
-            table.insert(
-                "timeout",
-                toml_edit::value(i64::try_from(v).unwrap_or(i64::MAX)),
-            );
-        }
-        if !s.proxy_dependencies.is_empty() {
-            let mut branches = toml_edit::Array::new();
-            for branch in &s.proxy_dependencies {
-                branches.push(toml_string_array(branch));
-            }
-            table.insert(
-                "proxy_dependencies",
-                toml_edit::Item::Value(toml_edit::Value::Array(branches)),
-            );
-        }
-        if !s.triggers.is_empty() {
-            let mut trig_array = toml_edit::ArrayOfTables::new();
-            for t in &s.triggers {
-                let mut trig_table = toml_edit::Table::new();
-                trig_table.insert("port", toml_edit::value(i64::from(t.port)));
-                if !t.chain.is_empty() {
-                    trig_table.insert(
-                        "chain",
-                        toml_edit::Item::Value(toml_edit::Value::Array(toml_string_array(
-                            &t.chain,
-                        ))),
-                    );
-                }
-                trig_array.push(trig_table);
-            }
-            table["triggers"] = toml_edit::Item::ArrayOfTables(trig_array);
-        }
-        if let Some(v) = s.max_networks {
-            table.insert("max_networks", toml_edit::value(i64::from(v)));
-        }
-        if let Some(p) = s.protocol {
-            let name = match p {
+/// Group `service_triggers`/`service_dependencies` rows by `service_id` and
+/// rebuild each service's declared TOML shape — the inverse of
+/// [`services_to_inserts`]. Order among a service's `service_dependencies`
+/// rows is already `service_id, branch_index` from the query
+/// (`StackRepository::dependencies_for`); trigger order doesn't matter
+/// (each is independently keyed by its own `port`).
+fn services_from_rows(
+    service_rows: Vec<crate::db::ServiceRow>,
+    trigger_rows: Vec<crate::db::ServiceTriggerRow>,
+    dependency_rows: Vec<crate::db::ServiceDependencyRow>,
+) -> Vec<ServiceToml> {
+    let mut triggers_by_service: HashMap<i32, Vec<TriggerToml>> = HashMap::new();
+    for t in trigger_rows {
+        triggers_by_service
+            .entry(t.service_id)
+            .or_default()
+            .push(TriggerToml {
+                port: u16::try_from(t.port).unwrap_or_default(),
+                chain: serde_json::from_str(&t.chain).unwrap_or_default(),
+            });
+    }
+    let mut dependencies_by_service: HashMap<i32, Vec<Vec<String>>> = HashMap::new();
+    for d in dependency_rows {
+        dependencies_by_service
+            .entry(d.service_id)
+            .or_default()
+            .push(serde_json::from_str(&d.chain).unwrap_or_default());
+    }
+
+    service_rows
+        .into_iter()
+        .map(|row| ServiceToml {
+            triggers: triggers_by_service.remove(&row.id).unwrap_or_default(),
+            proxy_dependencies: dependencies_by_service.remove(&row.id).unwrap_or_default(),
+            name: row.name,
+            docker_container: row.docker_container,
+            process_path: row.process_path,
+            port: row.port.and_then(|p| u16::try_from(p).ok()),
+            timeout: row.timeout.and_then(|t| u64::try_from(t).ok()),
+            max_networks: row.max_networks.and_then(|m| u32::try_from(m).ok()),
+            protocol: row.protocol.as_deref().map(|p| match p {
+                "tcp" => ProtocolToml::Tcp,
+                "udp" => ProtocolToml::Udp,
+                _ => ProtocolToml::Http,
+            }),
+            listen_port: row.listen_port.and_then(|p| u16::try_from(p).ok()),
+            egress_blocked_countries: decode_list(row.egress_blocked_countries),
+            egress_allowed_countries: decode_list(row.egress_allowed_countries),
+            ingress_blocked_countries: decode_list(row.ingress_blocked_countries),
+            ingress_allowed_countries: decode_list(row.ingress_allowed_countries),
+        })
+        .collect()
+}
+
+/// Convert already-validated services into the row shape
+/// `StackRepository::put_services` persists — used by both
+/// `services::migrate::migrate_legacy_toml` (importing a legacy file) and
+/// `http_server::service_config`'s save handler (the widget UI).
+pub(crate) fn services_to_inserts(services: &[ServiceToml]) -> Vec<crate::db::ServiceInsert<'_>> {
+    services
+        .iter()
+        .map(|s| crate::db::ServiceInsert {
+            name: &s.name,
+            docker_container: s.docker_container.as_deref(),
+            process_path: s.process_path.as_deref(),
+            port: s.port.map(i32::from),
+            timeout: s.timeout.and_then(|t| i64::try_from(t).ok()),
+            max_networks: s.max_networks.and_then(|m| i32::try_from(m).ok()),
+            protocol: s.protocol.map(|p| match p {
                 ProtocolToml::Http => "http",
                 ProtocolToml::Tcp => "tcp",
                 ProtocolToml::Udp => "udp",
-            };
-            table.insert("protocol", toml_edit::value(name));
-        }
-        if let Some(v) = s.listen_port {
-            table.insert("listen_port", toml_edit::value(i64::from(v)));
-        }
-        for (key, list) in [
-            ("egress_blocked_countries", &s.egress_blocked_countries),
-            ("egress_allowed_countries", &s.egress_allowed_countries),
-            ("ingress_blocked_countries", &s.ingress_blocked_countries),
-            ("ingress_allowed_countries", &s.ingress_allowed_countries),
-        ] {
-            if let Some(list) = list {
-                table.insert(
-                    key,
-                    toml_edit::Item::Value(toml_edit::Value::Array(toml_string_array(list))),
-                );
-            }
-        }
-        array.push(table);
-    }
+            }),
+            listen_port: s.listen_port.map(i32::from),
+            egress_blocked_countries: encode_list(&s.egress_blocked_countries),
+            egress_allowed_countries: encode_list(&s.egress_allowed_countries),
+            ingress_blocked_countries: encode_list(&s.ingress_blocked_countries),
+            ingress_allowed_countries: encode_list(&s.ingress_allowed_countries),
+            triggers: s
+                .triggers
+                .iter()
+                .map(|t| {
+                    (
+                        i32::from(t.port),
+                        serde_json::to_string(&t.chain).unwrap_or_default(),
+                    )
+                })
+                .collect(),
+            dependencies: s
+                .proxy_dependencies
+                .iter()
+                .map(|branch| serde_json::to_string(branch).unwrap_or_default())
+                .collect(),
+        })
+        .collect()
+}
 
-    if array.is_empty() {
-        doc.remove("services");
-    } else {
-        doc["services"] = toml_edit::Item::ArrayOfTables(array);
+fn route_toml_from_row(row: &crate::db::RouteRow) -> RouteToml {
+    RouteToml {
+        host: row.host.clone(),
+        path: row.path.clone(),
+        service: row.target_service.clone(),
+        strip_prefix: row.strip_prefix,
+        redirect_to: row.redirect_to.clone(),
+        redirect_status: row.redirect_status.and_then(|s| u16::try_from(s).ok()),
+        preserve_path: row.preserve_path,
+        preserve_query: row.preserve_query,
     }
-    Ok(doc.to_string())
+}
+
+/// Convert already-validated route entries into the row shape
+/// `StackRepository::put_routes` persists — used by both
+/// `services::migrate::migrate_legacy_toml` and `http_server::routes`'s save
+/// handler.
+pub(crate) fn route_entries_to_inserts(routes: &[RouteEntry]) -> Vec<crate::db::RouteInsert<'_>> {
+    routes
+        .iter()
+        .map(|r| match &r.target {
+            RouteTarget::Service { name, strip_prefix } => crate::db::RouteInsert {
+                host: &r.host,
+                path: &r.path,
+                target_kind: "service",
+                target_service: Some(name.as_str()),
+                strip_prefix: *strip_prefix,
+                redirect_to: None,
+                redirect_status: None,
+                preserve_path: false,
+                preserve_query: false,
+            },
+            RouteTarget::Redirect {
+                to,
+                status,
+                preserve_path,
+                preserve_query,
+            } => crate::db::RouteInsert {
+                host: &r.host,
+                path: &r.path,
+                target_kind: "redirect",
+                target_service: None,
+                strip_prefix: false,
+                redirect_to: Some(to.as_str()),
+                redirect_status: Some(i32::from(*status)),
+                preserve_path: *preserve_path,
+                preserve_query: *preserve_query,
+            },
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -840,7 +950,7 @@ pub(crate) async fn apply_config_update(
 /// widget-config UI's wire format (`http_server::service_config`) — its
 /// field names and `ProtocolToml`'s `"http"/"tcp"/"udp"` already are the
 /// JSON shape we want, so there's no separate JSON type to keep in sync.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct ServiceToml {
     name: String,
     /// Host-match key for a Docker service: the Swarm service label
@@ -909,7 +1019,7 @@ impl From<ProtocolToml> for ServiceProtocol {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct TriggerToml {
     port: u16,
     #[serde(default)]
@@ -921,7 +1031,7 @@ pub(crate) struct TriggerToml {
 /// `redirect_status`) in [`build_route_entries`], not here, so a raw parse
 /// error and a semantic one both surface through the same caller.
 #[derive(Deserialize)]
-struct RouteToml {
+pub(crate) struct RouteToml {
     host: String,
     #[serde(default = "default_route_path")]
     path: String,
@@ -1571,8 +1681,15 @@ redirect_status = 200
         }
     }
 
+    /// `services_to_inserts` (ServiceToml → row data) and `services_from_rows`
+    /// (rows → ServiceToml) must be inverses of each other — this is what
+    /// the DB now does instead of the old TOML-text merge/re-parse. Feeds
+    /// `services_to_inserts`' output back through hand-built rows (mirroring
+    /// what `StackRepository::put_services`/`services_for`/`triggers_for`/
+    /// `dependencies_for` would actually produce) rather than hitting a real
+    /// DB — `db::stacks::tests` covers the real round trip through SQLite.
     #[test]
-    fn merge_services_replaces_services_and_round_trips_every_field() {
+    fn service_row_conversion_round_trips_every_field() {
         let services = vec![ServiceToml {
             docker_container: Some("my-app_color".to_string()),
             port: Some(3001),
@@ -1590,9 +1707,51 @@ redirect_status = 200
             ..empty_service("color.com")
         }];
 
-        let merged = merge_services_into_toml("", &services).expect("merge");
-        let parsed = stack_services(&merged).expect("re-parse");
+        let inserts = services_to_inserts(&services);
+        assert_eq!(inserts.len(), 1);
+        let insert = &inserts[0];
 
+        // Simulate what the DB would hand back: one `ServiceRow` (id 1) plus
+        // its trigger/dependency rows, built straight from the insert data.
+        let row = crate::db::ServiceRow {
+            id: 1,
+            stack: "my-app".to_string(),
+            name: insert.name.to_string(),
+            docker_container: insert.docker_container.map(str::to_string),
+            process_path: insert.process_path.map(str::to_string),
+            port: insert.port,
+            timeout: insert.timeout,
+            max_networks: insert.max_networks,
+            protocol: insert.protocol.map(str::to_string),
+            listen_port: insert.listen_port,
+            egress_blocked_countries: insert.egress_blocked_countries.clone(),
+            egress_allowed_countries: insert.egress_allowed_countries.clone(),
+            ingress_blocked_countries: insert.ingress_blocked_countries.clone(),
+            ingress_allowed_countries: insert.ingress_allowed_countries.clone(),
+        };
+        let trigger_rows: Vec<crate::db::ServiceTriggerRow> = insert
+            .triggers
+            .iter()
+            .map(|(port, chain)| crate::db::ServiceTriggerRow {
+                id: 1,
+                service_id: 1,
+                port: *port,
+                chain: chain.clone(),
+            })
+            .collect();
+        let dependency_rows: Vec<crate::db::ServiceDependencyRow> = insert
+            .dependencies
+            .iter()
+            .enumerate()
+            .map(|(i, chain)| crate::db::ServiceDependencyRow {
+                id: i32::try_from(i).unwrap() + 1,
+                service_id: 1,
+                branch_index: i32::try_from(i).unwrap(),
+                chain: chain.clone(),
+            })
+            .collect();
+
+        let parsed = services_from_rows(vec![row], trigger_rows, dependency_rows);
         assert_eq!(parsed.len(), 1);
         let s = &parsed[0];
         assert_eq!(s.name, "color.com");
@@ -1618,39 +1777,58 @@ redirect_status = 200
     }
 
     #[test]
-    fn merge_services_leaves_routes_and_their_comments_untouched() {
-        // The comment directly precedes `[[route]]` (the untouched section),
-        // not `[[services]]` (the section being replaced) — a comment
-        // decorating the replaced section itself is expected to go with it,
-        // the same limitation `merge_routes_into_toml` has in reverse.
-        let content = r#"
-[[services]]
-name = "old"
-timeout = 0
+    fn route_entry_row_conversion_round_trips_both_target_kinds() {
+        let entries = vec![
+            RouteEntry {
+                host: "ops.example.com".to_string(),
+                path: "/".to_string(),
+                target: RouteTarget::Service {
+                    name: "grafana".to_string(),
+                    strip_prefix: true,
+                },
+            },
+            RouteEntry {
+                host: "old.example.com".to_string(),
+                path: "/legacy".to_string(),
+                target: RouteTarget::Redirect {
+                    to: "https://new.example.com".to_string(),
+                    status: 308,
+                    preserve_path: true,
+                    preserve_query: true,
+                },
+            },
+        ];
+        let inserts = route_entries_to_inserts(&entries);
+        assert_eq!(inserts.len(), 2);
 
-# a hand-written comment on this route
-[[route]]
-host = "ops.example.com"
-path = "/"
-service = "old"
-"#;
-        let services = vec![empty_service("new")];
-        let merged = merge_services_into_toml(content, &services).expect("merge");
+        let rows: Vec<crate::db::RouteRow> = inserts
+            .iter()
+            .enumerate()
+            .map(|(i, ins)| crate::db::RouteRow {
+                id: i32::try_from(i).unwrap() + 1,
+                stack: "my-app".to_string(),
+                host: ins.host.to_string(),
+                path: ins.path.to_string(),
+                target_kind: ins.target_kind.to_string(),
+                target_service: ins.target_service.map(str::to_string),
+                strip_prefix: ins.strip_prefix,
+                redirect_to: ins.redirect_to.map(str::to_string),
+                redirect_status: ins.redirect_status,
+                preserve_path: ins.preserve_path,
+                preserve_query: ins.preserve_query,
+            })
+            .collect();
 
-        assert!(merged.contains("# a hand-written comment on this route"));
-        assert!(merged.contains("host = \"ops.example.com\""));
-        assert!(!merged.contains("name = \"old\""));
-
-        let parsed = stack_services(&merged).expect("re-parse");
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].name, "new");
-    }
-
-    #[test]
-    fn merge_services_with_empty_list_removes_the_services_key() {
-        let content = "[[services]]\nname = \"old\"\n";
-        let merged = merge_services_into_toml(content, &[]).expect("merge");
-        assert!(!merged.contains("[[services]]"));
-        assert!(stack_services(&merged).expect("re-parse").is_empty());
+        let toml_routes: Vec<RouteToml> = rows.iter().map(route_toml_from_row).collect();
+        assert_eq!(toml_routes[0].host, "ops.example.com");
+        assert_eq!(toml_routes[0].service.as_deref(), Some("grafana"));
+        assert!(toml_routes[0].strip_prefix);
+        assert_eq!(
+            toml_routes[1].redirect_to.as_deref(),
+            Some("https://new.example.com")
+        );
+        assert_eq!(toml_routes[1].redirect_status, Some(308));
+        assert!(toml_routes[1].preserve_path);
+        assert!(toml_routes[1].preserve_query);
     }
 }
