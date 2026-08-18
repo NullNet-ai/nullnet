@@ -1,5 +1,4 @@
-use aes_gcm::aead::rand_core::RngCore;
-use aes_gcm::aead::{Aead, KeyInit, OsRng};
+use aes_gcm::aead::{Aead, Generate, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
@@ -16,17 +15,16 @@ pub(crate) struct Encryptor {
 impl Encryptor {
     pub(crate) fn new(key: &[u8; 32]) -> Self {
         Self {
-            cipher: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key)),
+            cipher: Aes256Gcm::new(<&Key<Aes256Gcm>>::from(key)),
         }
     }
 
     pub(crate) fn encrypt(&self, plaintext: &str) -> Result<String, Error> {
-        let mut nonce_bytes = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce_bytes);
+        let nonce_bytes: [u8; 12] = Generate::generate();
         let mut combined = nonce_bytes.to_vec();
         combined.extend(
             self.cipher
-                .encrypt(Nonce::from_slice(&nonce_bytes), plaintext.as_bytes())
+                .encrypt(&Nonce::from(nonce_bytes), plaintext.as_bytes())
                 .handle_err(location!())?,
         );
         Ok(STANDARD.encode(combined))
@@ -39,9 +37,10 @@ impl Encryptor {
                 .handle_err(location!());
         }
         let (nonce_bytes, ciphertext) = combined.split_at(12);
+        let nonce = Nonce::try_from(nonce_bytes).handle_err(location!())?;
         let plaintext = self
             .cipher
-            .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
+            .decrypt(&nonce, ciphertext)
             .handle_err(location!())?;
         String::from_utf8(plaintext).handle_err(location!())
     }

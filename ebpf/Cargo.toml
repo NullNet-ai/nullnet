@@ -7,10 +7,8 @@ edition = "2024"
 repository = "https://github.com/NullNet-ai/nullnet"
 
 [dependencies]
-aya-ebpf = "0.1.1"
+aya-ebpf = "0.2.1"
 network-types = { git = "https://github.com/vadorovsky/network-types", rev = "b78424c" }
-#nullnet-common = { path = "../nullnet-common" }
-#aya-log-ebpf = { git = "https://github.com/aya-rs/aya", branch = "main" }
 
 [[bin]]
 name = "nullnet"

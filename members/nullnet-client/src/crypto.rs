@@ -1,5 +1,4 @@
-use aes_gcm::aead::rand_core::RngCore;
-use aes_gcm::aead::{Aead, KeyInit, OsRng};
+use aes_gcm::aead::{Aead, Generate, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 
 /// AES-256-GCM cipher for one VLAN tunnel's traffic. Wire format produced by
@@ -14,17 +13,16 @@ pub(crate) struct TunnelCipher {
 impl TunnelCipher {
     pub(crate) fn new(key: &[u8; 32]) -> Self {
         Self {
-            cipher: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key)),
+            cipher: Aes256Gcm::new(<&Key<Aes256Gcm>>::from(key)),
         }
     }
 
     pub(crate) fn encrypt(&self, plaintext: &[u8]) -> Option<Vec<u8>> {
-        let mut nonce_bytes = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce_bytes);
+        let nonce_bytes: [u8; 12] = Generate::generate();
         let mut out = nonce_bytes.to_vec();
         out.extend(
             self.cipher
-                .encrypt(Nonce::from_slice(&nonce_bytes), plaintext)
+                .encrypt(&Nonce::from(nonce_bytes), plaintext)
                 .ok()?,
         );
         Some(out)
@@ -36,7 +34,7 @@ impl TunnelCipher {
         }
         let (nonce_bytes, ciphertext) = data.split_at(12);
         self.cipher
-            .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
+            .decrypt(&Nonce::try_from(nonce_bytes).ok()?, ciphertext)
             .ok()
     }
 }

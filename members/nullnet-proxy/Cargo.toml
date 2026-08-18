@@ -7,16 +7,14 @@ authors.workspace = true
 
 [dependencies]
 async-trait.workspace = true
-pingora-core = { version = "0.8.0", features = ["openssl"] }
-pingora-proxy = "0.8.0"
-pingora-http = "0.8.0"
-http = "1"
-pingora-openssl = "0.8.0"
-openssl = "0.10"
+pingora-core = { version = "0.8.1", features = ["openssl"] }
+pingora-proxy = "0.8.1"
+pingora-http = "0.8.1"
+http = "1.4"
+pingora-openssl = "0.8.1"
+openssl.workspace = true
 arc-swap = "1"
 nullnet-grpc-lib.workspace = true
 nullnet-liberror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
-ctrlc = { version = "3.5.2", features = ["termination"] }
-gag.workspace = true
-chrono.workspace = true
+ctrlc = { workspace = true, features = ["termination"] }

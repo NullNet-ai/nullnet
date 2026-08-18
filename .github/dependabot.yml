@@ -38,3 +38,27 @@ updates:
       # Bundle all cargo updates into a single PR to review at once
       cargo:
         patterns: ["*"]
+
+  # Maintain dependencies for the eBPF crate (its own workspace, excluded from the root one)
+  - package-ecosystem: cargo
+    directory: "/ebpf"
+    schedule:
+      interval: "weekly"
+    target-branch: "main"
+    cooldown:
+      default-days: 7
+    groups:
+      cargo-ebpf:
+        patterns: ["*"]
+
+  # Maintain dependencies for the server UI
+  - package-ecosystem: npm
+    directory: "/members/nullnet-server/ui"
+    schedule:
+      interval: "weekly"
+    target-branch: "main"
+    cooldown:
+      default-days: 7
+    groups:
+      npm:
+        patterns: ["*"]
