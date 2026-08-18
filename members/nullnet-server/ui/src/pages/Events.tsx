@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Layout from '../components/Layout';
 import { apiFetch } from '../lib/apiFetch';
+import { formatTimestamp, formatTimestampFull } from '../lib/time';
 import type { EventJson, EventsPage, Severity } from '../types';
 
 const SEVERITY_COLOR: Record<Severity, string> = {
@@ -231,10 +232,6 @@ function eventDetail(e: EventJson): string {
   }
 }
 
-function formatTs(unix: number): string {
-  return new Date(unix * 1000).toLocaleTimeString([], { hour12: false });
-}
-
 const MAX_EVENTS = 500;
 const PAGE_SIZE = 100;
 const SEVERITIES: Severity[] = ['info', 'warning', 'error'];
@@ -449,7 +446,7 @@ export default function Events() {
             <table className="tbl">
               <thead>
                 <tr>
-                  <th style={{ width: 72 }}>Time</th>
+                  <th style={{ width: 130 }}>Time</th>
                   <th style={{ width: 200 }}>Type</th>
                   <th>Detail</th>
                 </tr>
@@ -466,8 +463,11 @@ export default function Events() {
                 )}
                 {filtered.map((e, i) => (
                   <tr key={i}>
-                    <td style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: 'var(--t2)', whiteSpace: 'nowrap' }}>
-                      {formatTs(e.timestamp)}
+                    <td
+                      style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: 'var(--t2)', whiteSpace: 'nowrap' }}
+                      title={formatTimestampFull(e.timestamp)}
+                    >
+                      {formatTimestamp(e.timestamp)}
                     </td>
                     <td>
                       <span
