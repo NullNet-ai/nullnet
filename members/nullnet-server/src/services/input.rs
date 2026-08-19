@@ -316,7 +316,7 @@ impl ServicesToml {
     /// Load every `*.toml` file under `dir`; the file stem is the stack name.
     /// Returns the service map, the parallel host-match index, and the
     /// parallel route map. Test-only: the production loader is [`Self::load`],
-    /// which reads from the `stack_configs` table instead of the filesystem.
+    /// which reads from the normalized DB tables instead of the filesystem.
     #[cfg(test)]
     pub(crate) async fn load_from_dir(
         dir: &str,
