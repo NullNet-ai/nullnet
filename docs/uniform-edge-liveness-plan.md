@@ -1,6 +1,7 @@
 # Uniform Event-Driven Edge Liveness + `egress_timeout`
 
-**Status:** planned, not started. Design agreed; implementation to begin next week.
+**Status:** ready to implement. Design agreed, and re-verified against the tree on
+2026-08-19 before starting Step 1 — see §4c for what changed.
 **Scope:** server + proxy + client (Linux). Cross-cutting rework of how edges are
 kept alive / torn down on idle.
 
@@ -129,10 +130,12 @@ for close too.
    `ingress_timeout`, not just the TOML key (~30 mechanical sites).
 3. **Liveness = connection existence**, never bytes/packets.
 4. **Event-driven everywhere**, including egress close via conntrack events.
-5. **Egress conntrack events consumed via native netlink** (`neli` /
-   `netlink-sys` — already a client dependency; the reason the client is
-   Linux-only). NOT the `conntrack -E` subprocess (avoids the subprocess+parsing
-   smell flagged in `nfqueue/cache.rs`).
+5. **Egress conntrack events consumed via native netlink**, NOT the
+   `conntrack -E` subprocess (avoids the subprocess+parsing smell flagged in
+   `nfqueue/cache.rs`). ⚠️ **Crate choice corrected 2026-08-19 — see §4c.1.** The
+   original rationale ("`neli` / `netlink-sys` — already a client dependency; the
+   reason the client is Linux-only") was factually wrong. Use **`netlink-sys`**,
+   promoted to a direct `nullnet-client` dependency.
 6. **Ingress close signal = bare count delta (+1 / −1)**. Server keeps an integer
    `open_connections` per proxy client (mirrors how it already refcounts
    `active_chains`). No per-connection ids. Retry-on-close prevents leaks.
@@ -271,6 +274,96 @@ writing config for the liveness tests:
 
 ---
 
+## 4c. Currency review, 2026-08-19 (immediately pre-implementation)
+
+The plan was re-verified against the tree before starting Step 1. `main` is merged
+into `edge-liveness`; `cargo check` is green on server, proxy and
+`nullnet-grpc-lib`. **The design survives intact** — §2's structural analysis
+re-confirmed in place: the egress NFQUEUE rule is still `--ctstate NEW` only
+(`egress.rs:116`), `expired_proxy_clients` still filters `is_proxy()` so backends
+still have no independent timeout, the `tcp_relay.rs` leak paths are still at the
+documented lines, `ipv4_flow` (`parse.rs:24`) still returns only
+`(src, dst, dst_port)`, `record_destination` (`egress_listener.rs:316`) is still
+keyed `(container, dst_ip)`, and `flush_container_conntrack` is still `-D -s <ip>`
+so §4b.2's false-close hazard is live. Decisions 1, 2, 3, 4 and 6 stand unchanged.
+Four things changed.
+
+### 4c.1 Decision #5 was wrong about the crate — use `netlink-sys`
+
+Decision #5 justified native netlink with "`neli` / `netlink-sys` — already a
+client dependency; the reason the client is Linux-only." **Both halves are false:**
+
+- `neli 0.7.4` appears in `Cargo.lock` only because **`local-ip-address`** depends
+  on it — a *server*-side crate. It is not a client dependency, and is not even
+  vendored for the macOS target.
+- The client's sole netlink dependency is `rtnetlink 0.23.0`, which speaks
+  `NETLINK_ROUTE`. It cannot subscribe to conntrack events at all.
+
+The client is Linux-only because of `rtnetlink` + `aya` + `nfq` — none of which
+help here.
+
+**Corrected choice: `netlink-sys 0.9.0`**, already in the tree transitively via
+`rtnetlink`, so promoting it to a direct `nullnet-client` dependency adds no new
+crate to the graph. Verified against the vendored source, it provides everything
+Step 2 needs:
+
+| Need | API |
+|---|---|
+| netfilter protocol | `protocols::NETLINK_NETFILTER` (`constants.rs`) |
+| subscribe to the DESTROY group | `Socket::add_membership(NFNLGRP_CONNTRACK_DESTROY)` |
+| async on the existing runtime | `TokioSocket` (feature `tokio_socket`) |
+| blunt the event-drop problem | `Socket::set_rx_buf_sz()` |
+
+Cost: hand-parsing `nfgenmsg` + `CTA_TUPLE_ORIG` attributes, roughly 150 lines.
+The *intent* of Decision #5 — native netlink, never the `conntrack -E` subprocess
+— is unchanged.
+
+### 4c.2 Pingora CTX is per-request — Step 1's biggest open question resolves well
+
+Step 1 listed CTX lifetime and HTTP/2 multiplexing as "verify before coding," and
+warned a per-*session* CTX could not hold a single `counted` slot correctly.
+Verified against vendored `pingora-core-0.8.1` / `pingora-proxy-0.8.1`:
+
+- **HTTP/1.1 keep-alive:** `process_new_http` is driven by a `while` loop over the
+  reused stream (`pingora-core/src/apps/mod.rs:281-288`) and each iteration calls
+  `new_ctx()`. One CTX per *request*, not per connection.
+- **HTTP/2:** every stream is spawned into its own `process_new_http`
+  (`apps/mod.rs:258-262`), so concurrent streams get independent contexts.
+  Multiplexing is safe.
+- **`logging` fires exactly once per request.** Its three call sites are mutually
+  exclusive terminal paths: `finish` (`pingora-proxy/src/lib.rs:411`), the
+  `request_filter` short-circuit (`:786`), and `handle_error` (`:968`). The
+  `counted` guard is still required — precisely because of `:786`, where a denied
+  request reaches `logging` without ever reaching `upstream_peer`.
+
+Stale in a helpful direction: the doc says `type CTX = ()`. **`ProxyCtx` already
+exists** (`main.rs:39-52`) carrying `service_name` and `forward_path`, so Step 1
+adds fields to an existing struct rather than introducing one.
+
+### 4c.3 The sticky-placement TOCTOU is already fixed
+
+§5 Step 1 flagged, as an unconfirmed caveat the counter would sharpen, that two
+concurrent first-connections from one `client_ip` could be placed on different
+replicas and split the count. That race was closed independently since this doc
+was written.
+
+`handle_proxy_request` (`nullnet_grpc_impl.rs:430`) now serializes concurrent
+requests sharing a proxy session identity behind an `inflight_proxy` map keyed by
+`ProxyKey = (service_name, client_ip, proxy_ip)` — **exactly the key §5 chose for
+`open_connections`**. Followers re-enter `proxy_request_locked` rather than reusing
+the leader's answer. Split entries, and therefore split counts, cannot occur.
+
+Side note for the net-id work: this is also the "client serialization" fix that was
+still listed as open against issue #146. That item is closed.
+
+### 4c.4 Line references in §5 and §7 are stale
+
+The structures are all intact; only the coordinates moved, `nullnet_grpc_impl.rs`
+most of all. Corrected inline below where it matters — but treat every `file:line`
+in §5 as a hint and re-grep before editing.
+
+---
+
 ## 5. Build plan (three independently verifiable steps)
 
 ### Step 1 — `ingress_timeout` rename + ingress open-count/grace
@@ -286,8 +379,9 @@ writing config for the liveness tests:
   derived server-side from `remote_addr` (like `Proxy`/`CheckIngress`). Open
   event reuses the existing `Proxy` RPC.
 - **Server** (`clients.rs` `ClientInfo`): add `open_connections: usize`.
-  - `Proxy` handler (`nullnet_grpc_impl.rs` ~line 205-253): increment on
-    resolve / sticky reuse.
+  - `Proxy` handler — now `proxy_impl` (`nullnet_grpc_impl.rs:397`) →
+    `handle_proxy_request:430` → `proxy_request_locked:468`. Increment at both +1
+    sites: the sticky-reuse branch (`:507`) and the fresh-setup path (`:601`).
   - New close handler: decrement (saturating), set `latest = now`.
   - `expired_proxy_clients` (`service_info.rs`): reap only when
     `open_connections == 0 && now - latest() >= ingress_timeout`. Timeout is now
@@ -305,29 +399,33 @@ writing config for the liveness tests:
     Fix: arm a close-guard (RAII / deferred send) the moment the `Proxy` RPC
     returns success, so `ProxyConnectionClosed` fires on EVERY exit path — normal
     close (`:150`), relay error (`:155`), connect failure, parse failure.
-  - **HTTP** (`main.rs`): today `type CTX = ()` (`main.rs:37`) and there is **no
-    `logging` hook**. Must (a) change CTX to a small struct with `counted: bool`
-    **and the close identity `(service_name, client_ip)`**, (b) set them when
+  - **HTTP** (`main.rs`): `type CTX = ProxyCtx` **already exists**
+    (`main.rs:39-52`) and already carries `service_name: Option<String>` — half of
+    the close identity. There is still **no `logging` hook**. Must (a) add
+    `counted: bool` and `client_ip` to `ProxyCtx`, (b) set them when
     `upstream_peer` triggers the +1, (c) add a `logging` hook that −1's **only if
     `counted`**. Otherwise a request denied in `request_filter` (before
     `upstream_peer`) fires `logging` and causes an **unmatched −1**, underflowing
     the count and reaping a live network. This is the ingress analog of egress's
-    "add-only-on-Accept" rule.
+    "add-only-on-Accept" rule. §4c.2 confirms `logging` fires exactly once per
+    request across all three of its terminal paths.
   - **The close is keyed on the CLIENT identity `(service_name, client_ip)`, NOT
     on the upstream.** Under `max_networks`/sticky reuse many clients share one
     upstream (veth IP:port), so the upstream can't identify the right counter.
     Recover `(service_name, client_ip)` from the **per-request CTX** (both are
     known in `upstream_peer`), not from the resolved upstream — no proxy-side map;
     the counter is entirely server-side.
-  - **Verify before coding:** pingora CTX lifetime (per-request vs per-session —
-    a per-session CTX can't hold a single `counted` slot correctly) and **HTTP/2
-    multiplexing** (concurrent streams on one connection need genuine per-request
-    state, not one connection-wide flag). Invariant regardless: exactly one +1 and
-    one matching −1 per request.
+  - **Verify before coding — RESOLVED 2026-08-19, see §4c.2.** Pingora CTX is
+    **per-request**, not per-session, on both HTTP/1.1 keep-alive and HTTP/2
+    multiplexed streams. A single `counted` slot per CTX is therefore correct, and
+    multiplexing is safe. Invariant regardless: exactly one +1 and one matching
+    −1 per request.
 - **Counter key = `(service_name, client_ip, proxy_ip)` — sufficient, and why.**
-  The server entry is `Client::new(client_ip, Some(proxy_ip))` (`:230,284`);
-  `proxy_ip` comes from the close RPC's `remote_addr` (like `Proxy`) — keep it,
-  it disambiguates multiple proxy nodes.
+  The server entry is `Client::new(client_ip, Some(proxy_ip))`
+  (`nullnet_grpc_impl.rs:494`); `proxy_ip` comes from the close RPC's
+  `remote_addr` (like `Proxy`) — keep it, it disambiguates multiple proxy nodes.
+  It is also exactly the `ProxyKey` the inflight serialization already uses
+  (§4c.3), so the counter key and the concurrency key agree by construction.
   - **Multiple *server* replicas of the service are covered:** a proxy client is
     sticky to one backend replica (`add_client_to_replica`); lookups/decrements
     search across replicas (`client_replica`), so one entry per key regardless of
@@ -339,13 +437,10 @@ writing config for the liveness tests:
     counter — correct, not a gap.
   - **Caveats:** (1) NAT — distinct external clients behind one public IP share
     the entry/counter (pre-existing property of ingress stickiness). (2)
-    Sticky-placement TOCTOU — `is_client_setup` is checked on a *cloned* snapshot
-    with the read guard dropped, then the entry is placed under a fresh write lock
-    (`:212-218`→`:276`); two concurrent first-connections from one `client_ip`
-    could be placed on different replicas → split entries → split count → one may
-    hit 0 and reap a live network. Pre-exists (already affects teardown) but the
-    counter sharpens the consequence. Confirm single-placement is enforced or that
-    split entries are tolerated.
+    Sticky-placement TOCTOU — **FIXED since this doc was written; see §4c.3.**
+    `handle_proxy_request` (`nullnet_grpc_impl.rs:430`) serializes concurrent
+    requests on `ProxyKey = (service_name, client_ip, proxy_ip)`, so split entries
+    and split counts cannot occur. No action needed.
   - Retry-on-error on the close send (a dropped close RPC shouldn't leak), but
     retry is NOT sufficient on its own — the guaranteed-close-on-every-path
     structure above is what actually prevents leaks.
@@ -374,7 +469,10 @@ writing config for the liveness tests:
 **Touches:** client (netlink). **Needs Linux / 103–104.**
 
 - New netlink listener subscribed to the NFCT conntrack event group (DESTROY)
-  via `neli`/`netlink-sys`.
+  via **`netlink-sys`**, promoted to a direct client dependency (§4c.1 — *not*
+  `neli`, which was never a client dep): `Socket::new(NETLINK_NETFILTER)` +
+  `add_membership(NFNLGRP_CONNTRACK_DESTROY)`, driven as a `TokioSocket` under the
+  `tokio_socket` feature. Parse `nfgenmsg` + `CTA_TUPLE_ORIG` by hand.
 - Per-container **open-flow set**, keyed by the **full connection 5-tuple**
   `(src_ip, src_port, dst_ip, dst_port, proto)`: NFQUEUE `NEW` adds the tuple,
   conntrack `DESTROY` removes that exact tuple. "Container is alive" = any tuple
@@ -406,6 +504,10 @@ writing config for the liveness tests:
   `conntrack -L -s <bridge_ip>` dump (same `conntrack` CLI already used by
   `flush_container_conntrack` in `egress_policy.rs`) to correct drift. This is
   self-heal, not liveness-polling.
+  - Raise `Socket::set_rx_buf_sz()` to make drops rarer, but do **not** set
+    `NETLINK_NO_ENOBUFS` — it suppresses the *notification* while the kernel still
+    drops. We want the `ENOBUFS` error, because the cheapest correct response is to
+    treat it as an immediate reconcile trigger rather than waiting for the period.
 - **Self-inflicted `DESTROY` events (see §4b.2) — must handle, not tolerate.**
   Our own conntrack deletions emit `DESTROY` for flows that are still alive, and
   `flush_container_conntrack` deletes *every* flow from a container bridge IP —
@@ -435,7 +537,8 @@ writing config for the liveness tests:
 ## 6. Verification notes
 
 - Step 1: server + `nullnet-grpc-lib` + proxy all build on macOS; run server unit
-  tests. (Client is Linux-only — `netlink-sys`.)
+  tests. (Client is Linux-only — `rtnetlink`/`aya`/`nfq`.) Baseline confirmed green
+  on 2026-08-19 before any Step 1 edits.
 - Steps 2–3: deploy to 103/104 (build/deploy recipe in the egress/ebpf memories).
   Check: long download over proxied ingress survives past `ingress_timeout`;
   idle-but-open egress flow (e.g. `nc` held open) survives past `egress_timeout`;
@@ -456,6 +559,8 @@ writing config for the liveness tests:
   the "connection existence" framing might suggest.
 
 ## 7. Key file map
+
+⚠️ Paths are current; the `file:line` references throughout §5 are not (§4c.4).
 
 - Ingress timer: `members/nullnet-server/src/timeout.rs`
 - Client state / `latest` / `active_chains`: `members/nullnet-server/src/services/clients.rs`
