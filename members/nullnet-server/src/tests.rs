@@ -120,6 +120,10 @@ fn assert_graphviz(services: &StackMap, fixture: &str, expected_file: &str) {
     );
 }
 
+/// A *completed* request: the proxy resolves an upstream, then the connection
+/// closes. Both halves matter — the server pins a client while it has open
+/// connections, so a helper that only ever opened would leave every client
+/// unreapable and quietly disable the timeout tests below.
 async fn setup_proxy_chain(
     server: &NullnetGrpcImpl,
     service_name: &str,
@@ -130,6 +134,9 @@ async fn setup_proxy_chain(
         .handle_proxy_request(service_name, proxy_ip, client_ip)
         .await
         .expect("proxy request failed");
+    server
+        .mark_connection_closed(service_name, proxy_ip, client_ip)
+        .await;
 }
 
 /// Trigger the backend chain at `port` from `initiator_ip` (acting as the
@@ -770,6 +777,72 @@ async fn proxy_timeout_A() {
     }
     if let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] {
         assert!(!reg.has_clients());
+    }
+}
+
+/// The point of the open-connection count: a client whose connection is still
+/// open is never reaped, however long it idles. A's timeout is 1s; this holds
+/// the connection open across many multiples of it and expects A intact.
+///
+/// This is the regression that motivated the whole rework — before it, a long
+/// download or a live WebSocket was torn down mid-transfer with no self-heal.
+#[tokio::test]
+async fn open_connection_pins_client_past_timeout() {
+    let server = proxy_timeout_setup().await;
+    let proxy1 = ip(5, 5, 5, 5);
+
+    // A fresh request that does NOT close: one connection still open.
+    server
+        .handle_proxy_request("A", proxy1, "10.0.0.1")
+        .await
+        .expect("proxy request failed");
+
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    {
+        let mut guard = server.services().write().await;
+        apply_timeouts(stack_view_mut(&mut guard), server.orchestrator(), "default").await;
+        if let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] {
+            assert!(
+                reg.has_clients(),
+                "a client with an open connection must not be reaped on idle"
+            );
+        }
+    }
+
+    // Close it, and the same idle period now reaps: the timeout is a grace
+    // window measured from the last close, not a hard cap on the session.
+    server.mark_connection_closed("A", proxy1, "10.0.0.1").await;
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let mut guard = server.services().write().await;
+    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator(), "default").await;
+    if let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] {
+        assert!(
+            !reg.has_clients(),
+            "once the last connection closed, the grace window must expire normally"
+        );
+    }
+}
+
+/// A close that arrives without a matching open must not underflow the count.
+/// The proxy retries closes, so a duplicate is entirely possible; underflowing
+/// to `usize::MAX` would pin the edge forever.
+#[tokio::test]
+async fn unmatched_close_does_not_underflow() {
+    let server = proxy_timeout_setup().await;
+    let proxy1 = ip(5, 5, 5, 5);
+
+    // setup_proxy_chain already closed once; close twice more.
+    server.mark_connection_closed("A", proxy1, "10.0.0.1").await;
+    server.mark_connection_closed("A", proxy1, "10.0.0.1").await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let mut guard = server.services().write().await;
+    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator(), "default").await;
+    if let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] {
+        assert!(
+            !reg.has_clients(),
+            "a saturating close must leave the client reapable, not pinned"
+        );
     }
 }
 
@@ -3118,6 +3191,10 @@ async fn concurrent_requests_same_client_tear_down_cleanly() {
                 .handle_proxy_request("A", proxy, "10.0.0.1")
                 .await
                 .expect("proxy request failed");
+            // Each racing request closes its own connection, as the proxy does.
+            // Six opens need six closes: the client stays pinned until the last
+            // one lands, which is the behaviour being relied on below.
+            server.mark_connection_closed("A", proxy, "10.0.0.1").await;
         });
     }
     while set.join_next().await.is_some() {}

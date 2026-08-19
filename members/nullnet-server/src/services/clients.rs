@@ -10,11 +10,14 @@ pub(super) struct Clients {
 
 impl Clients {
     pub(super) fn add_client(&mut self, client: Client, mut client_info: ClientInfo) {
-        // Preserve chains accumulated on an existing entry (e.g. a placeholder a
+        // Preserve counts accumulated on an existing entry (e.g. a placeholder a
         // concurrent request already incremented) so promoting it to a live
-        // entry doesn't reset the count and cause a premature teardown.
+        // entry doesn't reset them and cause a premature teardown. Open
+        // connections matter as much as chains: dropping them would strand a
+        // live connection's close, underflowing to zero and reaping under it.
         if let Some(existing) = self.clients.get(&client) {
             client_info.set_active_chains(existing.active_chains());
+            client_info.set_open_connections(existing.open_connections());
         }
         self.clients.insert(client, client_info);
     }
@@ -97,6 +100,10 @@ pub(crate) struct ClientInfo {
     net_id: u32,
     time_ms: u128,
     active_chains: usize,
+    /// Front connections currently open through the proxy for this client.
+    /// The idle grace only starts once this reaches zero, so an edge is never
+    /// reaped under a live connection (long download, WebSocket, UDP session).
+    open_connections: usize,
     latest: Instant,
     created_at: SystemTime,
     docker_container: Option<String>,
@@ -118,6 +125,7 @@ impl ClientInfo {
             net_id,
             time_ms,
             active_chains: 0,
+            open_connections: 0,
             latest: Instant::now(),
             created_at: SystemTime::now(),
             docker_container,
@@ -132,6 +140,7 @@ impl ClientInfo {
             net_id: 0,
             time_ms: 0,
             active_chains: 0,
+            open_connections: 0,
             latest: Instant::now(),
             created_at: SystemTime::now(),
             docker_container: None,
@@ -179,8 +188,28 @@ impl ClientInfo {
         self.active_chains = num_chains;
     }
 
+    pub(super) fn set_open_connections(&mut self, num: usize) {
+        self.open_connections = num;
+    }
+
     pub(crate) fn active_chains(&self) -> usize {
         self.active_chains
+    }
+
+    pub(super) fn open_connection(&mut self) {
+        self.open_connections += 1;
+        self.set_latest_now();
+    }
+
+    /// Saturating: a close that outlives its open (client entry rebuilt under
+    /// it) must not underflow into a huge count that pins the edge forever.
+    pub(super) fn close_connection(&mut self) {
+        self.open_connections = self.open_connections.saturating_sub(1);
+        self.set_latest_now();
+    }
+
+    pub(crate) fn open_connections(&self) -> usize {
+        self.open_connections
     }
 
     pub(super) fn latest(&self) -> Instant {

@@ -1,4 +1,4 @@
-use crate::nullnet_proxy::NullnetProxy;
+use crate::nullnet_proxy::{ConnectionGuard, NullnetProxy};
 use crate::port_mappings::MappingEntry;
 use nullnet_grpc_lib::nullnet_grpc::{
     AgentEvent, AgentUdpListenerBindFailed, AgentUdpUpstreamConnectFailed,
@@ -17,7 +17,8 @@ const MAX_DATAGRAM: usize = 65536;
 
 /// A live client↔upstream relay, keyed by the client's `(ip, port)`. UDP has
 /// no connection-close signal, so unlike TCP, sessions are only ever reaped
-/// by the idle-timeout sweep below.
+/// by the idle-timeout sweep below — which is therefore what "close" means for
+/// the server's open-connection count.
 struct Session {
     /// Connected to the upstream — `send`/`recv` address themselves.
     upstream: Arc<UdpSocket>,
@@ -25,6 +26,11 @@ struct Session {
     /// socket. Aborted when the session is swept.
     relay_handle: JoinHandle<()>,
     last_active: Instant,
+    /// Reports the close when this session leaves the map, whichever path
+    /// removes it. Note `idle_timeout_secs == 0` means no session is ever
+    /// swept, so the edge stays pinned for as long as the proxy runs — the
+    /// intended reading of "this service has no idle timeout".
+    _close: ConnectionGuard,
 }
 
 /// Bind a UDP listener on `listen_port` and relay datagrams to the service
@@ -152,6 +158,15 @@ async fn handle_datagram(
         }
     };
 
+    // Armed the instant the server has counted this session. The two early
+    // returns below drop it and report the close; otherwise it moves into the
+    // `Session` and lives until the sweep removes it.
+    let close_guard = ConnectionGuard::new(
+        proxy.server.clone(),
+        entry.service_name.clone(),
+        src.ip().to_string(),
+    );
+
     let upstream_socket = match UdpSocket::bind(("0.0.0.0", 0)).await {
         Ok(s) => s,
         Err(e) => {
@@ -198,6 +213,7 @@ async fn handle_datagram(
             upstream: upstream_socket,
             relay_handle,
             last_active: Instant::now(),
+            _close: close_guard,
         },
     );
 }

@@ -14,15 +14,17 @@ use crate::services::changes::{
 use crate::services::clients::{Client, ClientInfo};
 use crate::services::edge::{Edge, RegisteredEdge};
 use crate::services::input::{MatchIndex, RouteMap, RouteTarget, ServicesToml, StackMap};
-use crate::services::service_info::{CountryPolicy, ServiceInfo, backend_involved_services};
+use crate::services::service_info::{
+    CountryPolicy, RegisteredServiceInfo, ServiceInfo, backend_involved_services,
+};
 use crate::timeout::check_timeouts;
 use nullnet_grpc_lib::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use nullnet_grpc_lib::nullnet_grpc::{
     AgentEvent, BackendTriggerRequest, CertBundle, EgressDestinationReport, EgressPolicyCheck,
     EgressPolicyVerdict, EgressTriggerRequest, Empty, HttpRedirect, HttpRoute, HttpRouteBundle,
     IngressPolicyCheck, IngressPolicyVerdict, MsgId, Net, NetMessage, NetType, PortMapping,
-    PortMappingBundle, ProxyRequest, ServiceProtocol, ServiceReport, ServiceTrigger,
-    ServicesListResponse, Upstream, agent_event::Event as AgentEventKind,
+    PortMappingBundle, ProxyConnectionEnd, ProxyRequest, ServiceProtocol, ServiceReport,
+    ServiceTrigger, ServicesListResponse, Upstream, agent_event::Event as AgentEventKind,
     http_route::Target as HttpRouteTarget,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
@@ -448,6 +450,16 @@ impl NullnetGrpcImpl {
             .proxy_request_locked(service_name, proxy_ip, client_ip)
             .await;
 
+        // +1 here, not inside `proxy_request_locked`: that function has three
+        // distinct success paths (sticky reuse, max_networks reuse, fresh
+        // chain) and this is the single point every one of them passes through.
+        // Pairs with `ProxyConnectionClosed`, which the proxy guarantees to send
+        // on every exit path once this call has returned Ok.
+        if result.is_ok() {
+            self.mark_connection_open(service_name, proxy_ip, client_ip)
+                .await;
+        }
+
         drop(guard);
         // Drop the map entry once nobody else holds it. Taken under the map
         // lock, so a request arriving now either already cloned the Arc (count
@@ -867,6 +879,74 @@ impl NullnetGrpcImpl {
             .await?
             .ok_or("No valid upstream IP found after NET chain setup")
             .handle_err(location!())
+    }
+
+    /// Resolve the proxy client entry and apply `f` to its service.
+    ///
+    /// The counter key is `(service_name, client_ip, proxy_ip)` — the same
+    /// `ProxyKey` `handle_proxy_request` serializes on, so open and close can
+    /// never land on different entries.
+    async fn with_proxy_client<F>(
+        &self,
+        service_name: &str,
+        proxy_ip: IpAddr,
+        client_ip: &str,
+        f: F,
+    ) where
+        F: FnOnce(&mut RegisteredServiceInfo, &Client),
+    {
+        let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
+        let mut guard = self.services.write().await;
+        let Some(stack) = find_service_stack(&guard, service_name).map(str::to_string) else {
+            return;
+        };
+        if let Some(stack_map) = guard.get_mut(&stack)
+            && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(service_name)
+        {
+            f(reg, &proxy_client);
+        }
+    }
+
+    pub(crate) async fn mark_connection_open(
+        &self,
+        service_name: &str,
+        proxy_ip: IpAddr,
+        client_ip: &str,
+    ) {
+        self.with_proxy_client(service_name, proxy_ip, client_ip, |reg, client| {
+            reg.open_connection(client);
+        })
+        .await;
+    }
+
+    pub(crate) async fn mark_connection_closed(
+        &self,
+        service_name: &str,
+        proxy_ip: IpAddr,
+        client_ip: &str,
+    ) {
+        self.with_proxy_client(service_name, proxy_ip, client_ip, |reg, client| {
+            reg.close_connection(client);
+        })
+        .await;
+    }
+
+    async fn proxy_connection_closed_impl(
+        &self,
+        request: Request<ProxyConnectionEnd>,
+    ) -> Result<Response<Empty>, Error> {
+        let proxy_ip = request
+            .remote_addr()
+            .ok_or("Could not get remote address for proxy connection close")
+            .handle_err(location!())?
+            .ip();
+        let req = request.into_inner();
+        let client_ip: IpAddr = req.client_ip.parse().handle_err(location!())?;
+
+        self.mark_connection_closed(&req.service_name, proxy_ip, &client_ip.to_string())
+            .await;
+
+        Ok(Response::new(Empty {}))
     }
 
     async fn backend_trigger_impl(
@@ -1794,6 +1874,15 @@ impl NullnetGrpc for NullnetGrpcImpl {
 
     async fn proxy(&self, req: Request<ProxyRequest>) -> Result<Response<Upstream>, Status> {
         self.proxy_impl(req)
+            .await
+            .map_err(|err| Status::internal(err.to_str()))
+    }
+
+    async fn proxy_connection_closed(
+        &self,
+        req: Request<ProxyConnectionEnd>,
+    ) -> Result<Response<Empty>, Status> {
+        self.proxy_connection_closed_impl(req)
             .await
             .map_err(|err| Status::internal(err.to_str()))
     }

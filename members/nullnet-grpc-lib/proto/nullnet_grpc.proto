@@ -22,6 +22,13 @@ service NullnetGrpc {
   // Proxy
   rpc Proxy(ProxyRequest) returns (Upstream);
 
+  // A front connection through the proxy closed. Pairs 1:1 with a preceding
+  // successful Proxy call: the server keeps an open-connection count per proxy
+  // client and only starts the idle grace once it reaches zero, so an edge is
+  // never reaped under a live connection. proxy_ip is taken from remote_addr,
+  // like Proxy itself.
+  rpc ProxyConnectionClosed(ProxyConnectionEnd) returns (Empty);
+
   // Backend-triggered chains APIs -------------------------------------------------------------------------------------
 
   // Backend trigger — for service-to-service chains that do not involve the proxy.
@@ -271,6 +278,14 @@ message ProxyRequest {
 message Upstream {
   string ip = 1;
   uint32 port = 2;
+}
+
+// Close half of the ingress open-connection count. Keyed on the *client*
+// identity, not the resolved upstream: under max_networks/sticky reuse many
+// clients share one upstream, so the upstream cannot identify the counter.
+message ProxyConnectionEnd {
+  string client_ip = 1;
+  string service_name = 2;
 }
 
 // Protocol a proxy-reachable service is exposed over. HTTP is routed by Host

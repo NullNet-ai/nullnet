@@ -137,7 +137,9 @@ count reaches zero.**
 
 | Edge     | Open event                                   | Close event                                              | Datapath owner | At zero |
 |----------|----------------------------------------------|----------------------------------------------------------|----------------|---------|
-| Ingress  | `Proxy` RPC (existing) at accept/request     | `copy_bidirectional` returns (TCP) / pingora `logging` (HTTP) | proxy      | arm `timeout` as a grace window, reap only if it stays 0 |
+| Ingress — TCP  | `Proxy` RPC (existing) at accept        | `copy_bidirectional` returns                             | proxy          | arm `timeout` as a grace window, reap only if it stays 0 |
+| Ingress — HTTP | `Proxy` RPC (existing) per request      | pingora `logging` hook                                   | proxy          | same |
+| Ingress — UDP  | `Proxy` RPC (existing) per new session  | session evicted from the `sessions` map (idle sweep / relay abort) | proxy | same |
 | Egress   | NFQUEUE `NEW` packet (existing)              | conntrack `DESTROY` netlink event                        | client         | **reap immediately** — no configurable grace |
 | Backend — `proxy_dependencies` | inherited from parent ingress client | inherited                       | —              | inherited |
 | Backend — `backend_trigger`    | NFQUEUE trigger-port packet (existing) | conntrack `DESTROY` netlink event | client   | **decrement immediately** (not teardown — see Step 4) |
@@ -556,13 +558,46 @@ what the timer *measures* changes: from "time since the last routing event" to
   - **HTTP** (`main.rs`): `type CTX = ProxyCtx` **already exists**
     (`main.rs:39-52`) and already carries `service_name: Option<String>` — half of
     the close identity. There is still **no `logging` hook**. Must (a) add
-    `counted: bool` and `client_ip` to `ProxyCtx`, (b) set them when
-    `upstream_peer` triggers the +1, (c) add a `logging` hook that −1's **only if
+    `counted: bool` and `client_ip` to `ProxyCtx`, (b) **+1 only if `!counted`,
+    then set `counted = true`** — the flag is an *idempotency guard*, not merely a
+    did-we-count marker, because pingora re-enters `upstream_peer` on retry (see
+    the retry bullet below), (c) add a `logging` hook that −1's **only if
     `counted`**. Otherwise a request denied in `request_filter` (before
     `upstream_peer`) fires `logging` and causes an **unmatched −1**, underflowing
     the count and reaping a live network. This is the ingress analog of egress's
     "add-only-on-Accept" rule. §4c.2 confirms `logging` fires exactly once per
     request across all three of its terminal paths.
+  - ⚠️ **Pingora re-enters `upstream_peer` on retry — verified 2026-08-19.**
+    `fail_to_connect`'s contract (`proxy_trait.rs:468`) states that a retryable
+    connect error causes `upstream_peer()` to be called **again**; the call site is
+    `proxy_to_upstream` (`lib.rs:288`), re-entered per retry. nullnet does not
+    implement `fail_to_connect`, so pingora's defaults decide retryability — this
+    *will* happen. `logging` still fires exactly once. So a naive unconditional
+    increment yields **+N / −1 per retried request**, drifting the count upward
+    until the network can never be reaped. The `!counted` guard above is what makes
+    this safe; it is load-bearing, not cosmetic.
+  - ⚠️ **UDP is a third ingress datapath and needs its own close — verified
+    2026-08-19.** `udp_relay.rs:126` calls `get_or_add_upstream`, i.e. the same
+    `Proxy` RPC, so UDP already fires the +1. But there is no `copy_bidirectional`
+    return and no pingora hook on that path — the file's own comment states "UDP
+    has no connection-close signal, so unlike TCP, sessions are only ever reaped by
+    the idle-timeout sweep." Left unhandled, UDP-mapped services leak +1 forever
+    and their networks become **unreapable**.
+    - **Close event = eviction from the `sessions` map**: `sweep_idle` removing an
+      entry, and any error path that aborts a `relay_handle`. +1 goes on session
+      *creation* (after `get_or_add_upstream` succeeds), −1 on every removal path —
+      same strict pairing as TCP.
+    - **Timers now stack.** Effective UDP reap = the mapping's `idle_timeout_secs`
+      (proxy-side sweep) **plus** the service's `timeout` (server-side grace).
+      Previously it was `timeout` alone.
+    - **`idle_timeout_secs = 0` pins the edge permanently — accepted, by design.**
+      The sweep returns early, so no session is ever evicted, so the count never
+      returns to 0. This is *correct under this plan's own definition* (a session
+      that never closes is an open connection), and it is the coherent reading of
+      an operator who explicitly asked for no UDP idle timeout. **But it is a
+      behaviour change:** today such a service is still reaped once `latest()` goes
+      stale; afterwards it never is, and `timeout` silently stops applying to it.
+      Document this in `README.md` alongside the mapping's `idle_timeout_secs`.
   - **The close is keyed on the CLIENT identity `(service_name, client_ip)`, NOT
     on the upstream.** Under `max_networks`/sticky reuse many clients share one
     upstream (veth IP:port), so the upstream can't identify the right counter.
@@ -823,6 +858,15 @@ which already walks exactly this structure via `collect_backend_chain_edges`.
   too.
 - **Test the setup window (§4d.4):** trigger a brand-new egress edge and confirm
   it is not reaped in the gap between creation and its first accepted flow.
+- **Step 1 — UDP pairing.** Drive a UDP-mapped service, let a session go idle past
+  `idle_timeout_secs`, and confirm the count returns to 0 and the service reaps
+  after `timeout`. Then repeat with `idle_timeout_secs = 0` and confirm the edge is
+  **pinned** and never reaped — the accepted behaviour change, tested so it stays
+  deliberate.
+- **Step 1 — retry pairing.** Force a retryable upstream connect failure (stop the
+  backend mid-flight) and confirm `open_connections` returns exactly to its
+  pre-request value. A leak here is invisible until the service stops reaping
+  entirely, so assert the counter directly rather than inferring from behaviour.
 - **Step 4 — the autonomous backend case (§2.5).** Build the test so no ingress
   request is involved at any point: a container dialling a watched trigger port
   directly, with the fronting service's proxy session absent or already expired.
