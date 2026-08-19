@@ -17,7 +17,7 @@
 
 use crate::egress_policy::PolicyVerdicts;
 use crate::nfqueue::cache::BridgeIpCache;
-use crate::nfqueue::parse::ipv4_flow;
+use crate::nfqueue::parse::{Flow, ipv4_flow};
 use crate::nfqueue::recv_loop::spawn_queue_loop;
 use crate::triggers::{EGRESS_TRIGGER_PORT, TriggerState, TriggersState};
 use nfq::{Message, Verdict};
@@ -138,10 +138,16 @@ async fn handle_packet(mut msg: Message, ctx: EgressCtx, verdict_tx: Sender<Mess
     let _ = verdict_tx.send(msg);
 }
 
-async fn decide_verdict(ctx: &EgressCtx, flow: Option<(Ipv4Addr, Ipv4Addr, u16)>) -> Verdict {
-    let Some((src_ip, dst_ip, dst_port)) = flow else {
+async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Verdict {
+    let Some(flow) = flow else {
         return Verdict::Accept;
     };
+    let Flow {
+        src_ip,
+        dst_ip,
+        dst_port,
+        ..
+    } = flow;
     // Only brokered initiators are held; anything we can't map to a registered
     // container (host process, unmapped source) passes through unaltered.
     let Some(container) = ctx.cache.get(src_ip) else {

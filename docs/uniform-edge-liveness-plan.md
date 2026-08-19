@@ -453,22 +453,66 @@ hard-fail path, no deployed TOML touched. `timeout` keeps its name *and* its
 meaning — a human-idle knob for browsing sessions — and merely becomes safe to
 set, because it can no longer fire mid-request or mid-WebSocket.
 
-### 4d.2 The grace period still exists — the kernel supplies it
+### 4d.2 The grace period is kernel-supplied — and non-deterministic (MEASURED)
 
-`DESTROY` does **not** fire when the peers exchange FIN. It fires when conntrack
-evicts the entry, which for a gracefully closed TCP flow is after
-`nf_conntrack_tcp_timeout_time_wait` (default 120 s). RST-closed flows go via
-`nf_conntrack_tcp_timeout_close` (~10 s); UDP via `nf_conntrack_udp_timeout`
-(~30 s, longer once bidirectional).
+**Measured on 103/104, 2026-08-19.** The earlier assumption in this section
+("~120 s TIME_WAIT for a clean TCP close") was **half right, and the half it got
+wrong matters.**
 
-So "reap the instant everything is closed" naturally behaves like a ~2-minute
-grace for TCP — tunable by sysctl rather than by us. That is the desired
-behaviour, but it is **assumed, not yet measured**.
+`DESTROY` fires when conntrack *evicts* the entry, and which timer governs that
+depends on **which side closed first** — something nullnet does not control:
 
-> **First task in Step 2: measure the real close→`DESTROY` lag on 103/104.** It
-> decides whether this design is a two-minute grace or a zero-second cliff, and
-> therefore how much the hazards below actually bite. Do this before building the
-> reap path.
+| Close pattern | conntrack state | sysctl | measured lag |
+|---|---|---|---|
+| Local side closes first, peer stays open | `TIME_WAIT` | `nf_conntrack_tcp_timeout_time_wait` = 120 | counted down to 0 on schedule, entry destroyed exactly at expiry |
+| Peer closes first, or both closed | `CLOSE` | `nf_conntrack_tcp_timeout_close` = 10 | **12.1 s** end-to-end, twice, cleanly |
+| UDP | — | `nf_conntrack_udp_timeout` = 30, `_stream` = 120 | not yet measured |
+
+Lab sysctls are the stock defaults (120 / 10 / 60 close_wait / 30 / 120), and
+`net.bridge.bridge-nf-call-iptables = 1`, so container traffic does traverse host
+conntrack as expected.
+
+**Both states occur in production traffic.** A live sample of 104's table:
+**25 `TIME_WAIT` vs 6 `ESTABLISHED`** — so `TIME_WAIT` is common, not exotic.
+Meanwhile every synthetic outbound HTTP flow landed in `CLOSE`, because the
+server closed first (`Connection: close`, keep-alive expiry). Real workloads will
+hit both.
+
+**So the effective egress grace swings 12× — 10 s or 120 s — decided by the
+remote peer.** Consequences the build must reckon with:
+
+- The claim "grace comes free from the kernel" is only half true. It is free, but
+  it is **unpredictable**, and nullnet cannot influence which timer applies.
+- **The 10 s floor is the number that matters**, because it sets the churn rate.
+  A container polling an endpoint every ~30 s would have its edge reaped ~10 s
+  after each request and rebuilt on the next — a full tunnel setup per poll,
+  paying cold-start latency on the triggering packet each time. Bursty traffic is
+  fine (overlapping flows never let the set reach zero); *sporadic* traffic is the
+  bad case.
+- One measurement that first looked like a 65 s lag turned out to be a conntrack
+  timer **refreshed by retransmissions**. Timers are not monotonic from the close;
+  do not assume a fixed deadline from any single observation.
+
+**Open design question this raises — see §4d.2a.**
+
+### 4d.2a Whether to add a fixed reap debounce
+
+Reaping the instant the open-set hits zero is *correct* (the flows are provably
+gone) but couples the rebuild rate to kernel timing nullnet does not control, with
+a 10 s floor. Three options:
+
+1. **Accept it.** Simplest, and still correct by the design's own definition. Cost
+   is rebuild churn for sporadic-egress containers.
+2. **Small fixed debounce** (server-side, not configurable — e.g. reap after the
+   set has been continuously zero for N seconds). Decouples the reap rate from
+   which side closed, smooths the 10 s case, and adds no config surface. Costs one
+   timer, reintroducing a little of what §4d.1 removed.
+3. **Raise `nf_conntrack_tcp_timeout_close` by sysctl** on client hosts. Rejected:
+   host-global, affects unrelated traffic, and a deployment requirement that
+   silently breaks the design if missed.
+
+Recommendation: **(2)**, sized in the tens of seconds — it keeps "no config key"
+intact while making behaviour independent of the peer. Decide before Step 3.
 
 ### 4d.3 Zero grace makes §4b.2 load-bearing, not merely required
 

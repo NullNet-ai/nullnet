@@ -1,7 +1,7 @@
 mod cache;
 mod egress_listener;
 mod listener;
-mod parse;
+pub(crate) mod parse;
 mod recv_loop;
 
 pub use cache::BridgeIpCache;

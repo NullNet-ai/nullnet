@@ -18,25 +18,47 @@ pub fn ipv4_src_and_dst_port(packet: &[u8]) -> Option<(Ipv4Addr, u16)> {
     Some((Ipv4Addr::from(src_octets), dst_port))
 }
 
-/// Like [`ipv4_src_and_dst_port`] but also returns the destination IP. Used by
-/// the egress listener, which classifies flows by destination (external vs
-/// internal) rather than by port.
-pub fn ipv4_flow(packet: &[u8]) -> Option<(Ipv4Addr, Ipv4Addr, u16)> {
+/// One connection, identified the same way conntrack identifies it: the full
+/// 5-tuple of its original direction. This is the key the egress open-flow set
+/// uses, so it must match conntrack's original tuple exactly — a narrower key
+/// (e.g. `(container, dst_ip)`) collapses concurrent connections to one host and
+/// would report the container idle while others are still open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Flow {
+    pub src_ip: Ipv4Addr,
+    pub src_port: u16,
+    pub dst_ip: Ipv4Addr,
+    pub dst_port: u16,
+    /// IANA protocol number: 6 TCP, 17 UDP.
+    pub proto: u8,
+}
+
+/// IANA protocol numbers, as they appear in both the IPv4 header and
+/// conntrack's `CTA_PROTO_NUM`.
+pub const IPPROTO_TCP: u8 = 6;
+pub const IPPROTO_UDP: u8 = 17;
+
+/// Like [`ipv4_src_and_dst_port`] but returns the whole 5-tuple. Used by the
+/// egress listener, which classifies flows by destination (external vs
+/// internal) and tracks their liveness by exact connection identity.
+pub fn ipv4_flow(packet: &[u8]) -> Option<Flow> {
     let headers = LaxPacketHeaders::from_ip(packet).ok()?;
     let (src_octets, dst_octets) = match headers.net? {
         NetHeaders::Ipv4(ipv4, _) => (ipv4.source, ipv4.destination),
         _ => return None,
     };
-    let dst_port = match headers.transport? {
-        TransportHeader::Tcp(tcp) => tcp.destination_port,
-        TransportHeader::Udp(udp) => udp.destination_port,
+    let (src_port, dst_port, proto) = match headers.transport? {
+        TransportHeader::Tcp(tcp) => (tcp.source_port, tcp.destination_port, IPPROTO_TCP),
+        TransportHeader::Udp(udp) => (udp.source_port, udp.destination_port, IPPROTO_UDP),
         _ => return None,
     };
-    Some((
-        Ipv4Addr::from(src_octets),
-        Ipv4Addr::from(dst_octets),
+    Some(Flow {
+        src_ip: Ipv4Addr::from(src_octets),
+        src_port,
+        dst_ip: Ipv4Addr::from(dst_octets),
         dst_port,
-    ))
+        proto,
+    })
 }
 
 #[cfg(test)]

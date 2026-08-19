@@ -33,6 +33,7 @@ use tun_rs::{DeviceBuilder, Layer};
 mod cli;
 mod commands;
 mod control_channel;
+mod conntrack;
 mod crypto;
 mod ebpf;
 mod egress_policy;
