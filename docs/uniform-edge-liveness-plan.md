@@ -1,28 +1,38 @@
-# Uniform Event-Driven Edge Liveness + `egress_timeout`
+# Event-Driven Edge Liveness
 
-**Status:** ready to implement. Design agreed, and re-verified against the tree on
-2026-08-19 before starting Step 1 — see §4c for what changed.
-**Scope:** server + proxy + client (Linux). Cross-cutting rework of how edges are
-kept alive / torn down on idle.
+**Status:** ready to implement. Design re-verified against the tree on 2026-08-19
+(§4c), **rescoped the same day** — no `egress_timeout`, no rename (§4d) — and
+extended with Step 4 after §2.5's two backend cases were separated.
+**Scope:** server + proxy + client (Linux). Rework of how edges are kept alive and
+torn down.
 
 This started as a small ask — "add an optional `egress_timeout`, rename the
 existing `timeout` to `ingress_timeout`" — and surfaced a structural flaw shared
-by **all** edge types. This doc captures the analysis, the agreed design, the
-decisions already made, and a concrete step-by-step build plan.
+by **all** edge types. Both halves of that original ask were later dropped (§4d);
+what survives is the flaw and its fix. This doc captures the analysis, the
+decisions, and a concrete step-by-step build plan.
 
 ---
 
-## 1. Original ask
+## 1. The ask, as it now stands
 
-- Rename the existing per-service `timeout` (TOML) → `ingress_timeout`.
-- Add an optional `egress_timeout` (absent **or** `0` = disabled, matching the
-  `ingress_timeout` convention). Applies to egress forward-proxy edges.
+Two independent goals, one per direction. Neither adds a config key.
 
-`timeout` today has **dual meaning** and that stays with `ingress_timeout`:
-`Some(_)` = proxy-reachable entry point, `None` = backend-only; the value is the
-idle seconds; `0` disables the idle teardown. See
-`members/nullnet-server/src/services/input.rs` (`ServiceToml`,
-`services_map`) and `service_info.rs`.
+- **Ingress** keeps its existing per-service `timeout` (TOML), unrenamed, with
+  its current dual meaning: `Some(_)` = proxy-reachable entry point, `None` =
+  backend-only; the value is the idle seconds; `0` disables teardown. See
+  `members/nullnet-server/src/services/input.rs` (`ServiceToml`, `services_map`)
+  and `service_info.rs`. What changes is only **what the timer measures** — time
+  since the last connection *closed*, not time since the last routing event. It
+  becomes a grace window rather than a hard cap, so it can no longer fire
+  mid-request or mid-WebSocket.
+- **Egress** gets **no timeout at all**. Instead the edge is torn down as soon as
+  every connection it carries is *verifiably* closed — the 1→0 transition of a
+  per-container open-flow set fed by conntrack. No configurable grace; the grace
+  that exists is the kernel's own conntrack eviction delay (§4d.2).
+
+*Historical:* the original ask was to rename `timeout` → `ingress_timeout` and add
+a symmetric `egress_timeout`. Both were dropped on 2026-08-19 — see §4d for why.
 
 ---
 
@@ -82,52 +92,90 @@ an upstream**, never during data transfer:
 So ingress refreshes on **routing events**, not byte flow — structurally the
 same mistake. It has shipped tolerably only because typical HTTP is short.
 
-### 2.5 Backend triggers
+### 2.5 Backend chains — two cases, and only one of them inherits
 
-Backend chains have **no idle timeout at all** — `collect_timed_out_clients`
-only reaps `c.is_proxy().is_some()` entries; service-to-service chain entries are
-never collected (`timeout.rs`, `service_info.rs::expired_proxy_clients`). They
-are torn down only by explicit chain-decrement or node/container loss. But a
-backend chain is a dependency of the proxy client that triggered it, so when that
-ingress client is reaped mid-transfer, `decrement_chain` takes the whole chain
-down with it. **Backend inherits the ingress flaw; it has no independent one.**
+Backend chains have **no idle timeout at all** — `collect_timed_out_clients` only
+reaps `c.is_proxy().is_some()` entries; service-to-service chain entries are never
+collected (`timeout.rs`, `service_info.rs::expired_proxy_clients`). They are torn
+down only by explicit chain-decrement or node/container loss.
+
+That is benign for one case and a real gap for the other. **The two must not be
+conflated** — an earlier revision of this doc did, and concluded backend needed no
+work of its own:
+
+- **`proxy_dependencies` chains — inherited, no work needed.** Built alongside the
+  proxy client that fronts them, so `ProxyClientTimedOut` →`teardown_chain`
+  →`decrement_chain` takes the chain down with its parent. It inherits the ingress
+  flaw of §2.4 (reaped mid-transfer when the parent is), and inherits the Step 1
+  fix for free. Nothing further to do.
+- **`backend_trigger` chains — autonomous, and never reaped on liveness.** Fired
+  by the client's NFQUEUE when a container dials a watched trigger port
+  (`nfqueue/listener.rs` → `BackendTrigger` RPC → `handle_backend_trigger` →
+  `setup_backend_chain`), with **no proxy client involved and no parent to inherit
+  from**. Verified: `ProxyClientTimedOut` calls `teardown_chain`, *not*
+  `teardown_backend_chain`; the only callers of `teardown_backend_chain` /
+  `teardown_all_backend_chains_for` are config-change handlers (`Removed`,
+  `ProxyDepsChanged`, `TriggersChanged`, `ReachabilityChanged`) and replica/node
+  loss (`ReplicasRemoved`, `ReplicaRemoved`).
+
+So a container that autonomously dials a backend service builds a chain that
+survives until config changes or the container dies — **structurally the same hole
+egress had.** It gets the same treatment, in Step 4; §5's preamble and Step 4
+explain why it is not a copy of the egress design.
 
 ---
 
-## 3. Agreed design: uniform, event-driven, connection-existence liveness
+## 3. Agreed design: event-driven, connection-existence liveness
 
-> **An edge is alive while ≥1 front connection is open. The timeout is a grace
-> period that starts only after the *last* connection closes.**
+> **An edge is alive while ≥1 front connection is open.**
 
-The timer stops measuring "activity" and starts measuring "time since there were
-zero open connections." "Is a connection still open" lives on the **datapath**,
-and the datapath owner differs per edge — so the *principle* is uniform, the
-*plumbing* differs:
+The shared principle: stop measuring "activity" and start tracking "does a
+connection still exist." "Is a connection still open" lives on the **datapath**,
+and the datapath owner differs per direction — so the *principle* is uniform, the
+*plumbing* differs, and — since 2026-08-19 (§4d) — **so does what happens when the
+count reaches zero.**
 
-| Edge     | Open event                                   | Close event                                              | Datapath owner |
-|----------|----------------------------------------------|----------------------------------------------------------|----------------|
-| Ingress  | `Proxy` RPC (existing) at accept/request     | `copy_bidirectional` returns (TCP) / pingora `logging` (HTTP) | proxy      |
-| Egress   | NFQUEUE `NEW` packet (existing)              | conntrack `DESTROY` netlink event                        | client         |
-| Backend  | inherited from parent ingress client         | inherited                                                | —              |
+| Edge     | Open event                                   | Close event                                              | Datapath owner | At zero |
+|----------|----------------------------------------------|----------------------------------------------------------|----------------|---------|
+| Ingress  | `Proxy` RPC (existing) at accept/request     | `copy_bidirectional` returns (TCP) / pingora `logging` (HTTP) | proxy      | arm `timeout` as a grace window, reap only if it stays 0 |
+| Egress   | NFQUEUE `NEW` packet (existing)              | conntrack `DESTROY` netlink event                        | client         | **reap immediately** — no configurable grace |
+| Backend — `proxy_dependencies` | inherited from parent ingress client | inherited                       | —              | inherited |
+| Backend — `backend_trigger`    | NFQUEUE trigger-port packet (existing) | conntrack `DESTROY` netlink event | client   | **decrement immediately** (not teardown — see Step 4) |
 
-Server side is identical for all: a per-edge **open-connection count**; while
-`> 0` the edge is pinned (never reaped); when it hits `0`, arm the timeout as a
-reconnect/keep-alive grace; reap only if it stays `0` for the full window.
+Note the last row's "at zero" wording: an autonomous backend-trigger chain is
+reaped by **decrementing `active_chains`**, not by removing an owned edge. The
+same edge may be held up by an ingress proxy chain at the same time, so the
+liveness signal contributes one decrement matched to the one increment that
+trigger caused. Egress has no such sharing — see Step 4.
+
+**Why the two directions differ at zero.** Ingress needs a grace window because
+its close signal is weak evidence of intent: for HTTP the count is *request*-
+scoped and returns to 0 between every interaction (§4b.1), so zero means "idle,"
+not "done." A browser will come back, and the identity is an unbounded external
+population that must eventually be reclaimed. Egress is the opposite on both
+counts: conntrack `DESTROY` is a *definitive* statement that the kernel no longer
+tracks the flow, and the edge is keyed per **container**, a small stable set whose
+natural lifecycle already reclaims it. So zero means "provably unused" and there
+is nothing to wait for.
 
 **Why conntrack `DESTROY` (not FIN/RST sniffing) for egress close:** conntrack
 unifies clean FIN, RST, half-close, UDP flow expiry, and idle timeout into one
 event. Sniffing FIN via NFQUEUE would miss UDP, half-closes, and connections that
 die without a final packet. We already lean on conntrack for `NEW`; lean on it
-for close too.
+for close too. It also supplies its own eviction delay, which is where egress's
+grace period actually comes from (§4d.2).
 
 ---
 
 ## 4. Decisions already made
 
-1. **`0` = disabled** for `egress_timeout`, matching `ingress_timeout`. Absent
-   also = disabled (no timeout).
-2. **Full-consistency rename**: rename the internal `timeout` field/method to
-   `ingress_timeout`, not just the TOML key (~30 mechanical sites).
+1. ~~**`0` = disabled** for `egress_timeout`~~ — **REVERSED 2026-08-19 (§4d).**
+   There is no `egress_timeout`. Egress reaps on the 1→0 transition, immediately.
+   Ingress `timeout` keeps its existing `0` = disabled semantics, unchanged.
+2. ~~**Full-consistency rename** `timeout` → `ingress_timeout`~~ — **REVERSED
+   2026-08-19 (§4d.1).** The rename existed only to disambiguate from
+   `egress_timeout`; with no such key there is nothing to disambiguate. `timeout`
+   stays `timeout`, and no deployed `services/<stack>.toml` changes.
 3. **Liveness = connection existence**, never bytes/packets.
 4. **Event-driven everywhere**, including egress close via conntrack events.
 5. **Egress conntrack events consumed via native netlink**, NOT the
@@ -170,7 +218,7 @@ user's entire read, and the grace window behaves exactly like today's idle timer
 **Consequences to design around:**
 - Liveness prevents reaping *mid-request* (the §2.4 long-download bug). It does
   **not** keep a chain warm between interactions.
-- So `ingress_timeout` on HTTP entry points is still an idle timer and must be
+- So `timeout` on HTTP entry points is still an idle timer and must be
   sized for **human** idle (minutes), not seconds. A 60 s grace reaps while a
   user reads a record, and the next click pays a full cold rebuild — for `crm`,
   12 edges plus up to six container unpauses.
@@ -197,8 +245,9 @@ the silent black-hole failure this plan exists to avoid.
 **Required:** treat a self-inflicted flush as a reconcile trigger, not a set of
 closes — re-dump `conntrack -L -s <bridge_ip>` immediately after any flush we
 issue, rather than waiting for the periodic backstop. Relying on the periodic
-reconcile alone is not enough: with a short `egress_timeout` the edge can be
-reaped before the next reconcile lands.
+reconcile alone is not enough: the edge can be reaped before the next reconcile
+lands. **Sharpened by the §4d rescope** — with no grace window at all, that is no
+longer a race but a certainty; see §4d.3 for the required suppression.
 
 ### 4b.3 The proxy pools upstream connections with no idle timeout
 
@@ -364,15 +413,120 @@ in §5 as a hint and re-grep before editing.
 
 ---
 
-## 5. Build plan (three independently verifiable steps)
+## 4d. Rescope, 2026-08-19: no `egress_timeout`, no rename
 
-### Step 1 — `ingress_timeout` rename + ingress open-count/grace
+Both halves of the original ask (§1) are dropped. The *mechanism* is unchanged —
+Step 2's conntrack listener is still the whole point — but egress no longer gets a
+configurable grace window, and `timeout` is no longer renamed.
+
+### 4d.1 What changed and why
+
+**Egress gets no timeout; it reaps on the 1→0 transition, immediately.** A
+configurable idle window was the wrong instrument for egress:
+
+- The edge is keyed `(initiator_ip, initiator_docker)` — **one per container**,
+  not per connection. Cardinality is bounded by container count (tens), not by
+  traffic. Contrast ingress, whose `client_ip` is an unbounded external population
+  that must eventually be reclaimed.
+- There is no resource pressure to schedule against. VXLAN net ids run
+  `101..2_097_151` (`net_id_pool.rs`). VLAN's 4094 would be tighter, but Docker
+  forces VXLAN.
+- Egress already has a correct, event-driven reaper keyed on the *right* thing:
+  `teardown_egress_edges_for_node` (either endpoint disconnects) and
+  `teardown_egress_edges_for_missing_containers` (driven off the client's
+  container report, `nullnet_grpc_impl.rs:715`). Container existence is the
+  natural granularity for a per-container resource.
+- So a timer would only ever fire *earlier* than provable disuse — trading a
+  guaranteed-correct signal for a guessed one, in the one direction where being
+  wrong is silent and unrecoverable (§2.2: a wrongly reaped egress edge kills the
+  in-flight transfer and does **not** self-heal).
+
+Tearing down on verified closure keeps the benefit (no edge outlives its last
+connection) without ever guessing.
+
+**The rename dies with it.** `ingress_timeout` existed only to disambiguate from
+`egress_timeout`. No second key, nothing to disambiguate. This also removes the
+breaking-config-change problem the rename created: no migration, no alias, no
+hard-fail path, no deployed TOML touched. `timeout` keeps its name *and* its
+meaning — a human-idle knob for browsing sessions — and merely becomes safe to
+set, because it can no longer fire mid-request or mid-WebSocket.
+
+### 4d.2 The grace period still exists — the kernel supplies it
+
+`DESTROY` does **not** fire when the peers exchange FIN. It fires when conntrack
+evicts the entry, which for a gracefully closed TCP flow is after
+`nf_conntrack_tcp_timeout_time_wait` (default 120 s). RST-closed flows go via
+`nf_conntrack_tcp_timeout_close` (~10 s); UDP via `nf_conntrack_udp_timeout`
+(~30 s, longer once bidirectional).
+
+So "reap the instant everything is closed" naturally behaves like a ~2-minute
+grace for TCP — tunable by sysctl rather than by us. That is the desired
+behaviour, but it is **assumed, not yet measured**.
+
+> **First task in Step 2: measure the real close→`DESTROY` lag on 103/104.** It
+> decides whether this design is a two-minute grace or a zero-second cliff, and
+> therefore how much the hazards below actually bite. Do this before building the
+> reap path.
+
+### 4d.3 Zero grace makes §4b.2 load-bearing, not merely required
+
+With a configurable grace, a false zero from our own `flush_container_conntrack`
+had a recovery window — the reconcile could correct it before the reap fired.
+**With no grace, a false zero *is* an immediate reap.** That flush is keyed by
+container bridge IP — exactly the open-set's key — and fires on every
+`EgressPolicyChanged`, so a policy reload would tear down every live egress edge
+on the node.
+
+Reconcile-after-flush is therefore not sufficient as a *repair*. The flush must
+**suppress reap decisions** for that container until the re-dump lands: mark the
+container as reconciling, ignore `DESTROY`-driven zeros while marked, clear the
+mark only after `conntrack -L -s <bridge_ip>` has repopulated the set. This is the
+regression most likely to ship silently — see §6 for the explicit test.
+
+### 4d.4 Other consequences of removing the grace
+
+- **Setup window needs a guard.** Between edge creation and its first `NEW`
+  landing in the open-set, the set is legitimately empty. An edge must not be
+  reapable until it has observed its first flow, or it can reap itself during its
+  own construction.
+- **Drift direction is safe.** A dropped `DESTROY` (netlink `ENOBUFS`) leaves a
+  stale tuple, so the edge lives *too long* and the periodic reconcile corrects
+  it. `NEW` comes from NFQUEUE, not netlink, so opens are never dropped. The
+  dangerous direction — a false *zero* — comes only from self-inflicted flushes
+  (§4d.3) and attribution bugs, not from event loss.
+- **Churn is a cost to watch, not a correctness risk.** A container that egresses
+  sporadically now rebuilds its tunnel each time, paying cold-start latency on the
+  triggering packet (the NFQUEUE trigger holds it until steered, so this is
+  latency, not loss) and cycling net ids at that rate. TIME_WAIT masks most of it
+  for back-to-back connections. Measure alongside §4d.2 — the same instrumentation
+  answers both.
+
+### 4d.5 Net effect on the build plan
+
+Step 1 loses the rename and is otherwise unchanged. Step 2 is unchanged in
+mechanism and gains §4d.3/§4d.4 as hard requirements. Step 3 shrinks from "TOML
+field + per-edge timer + reaper integrated into `check_timeouts`" to a purely
+event-driven reap on the 1→0 transition — no config plumbing, and no need to
+factor egress expiry into the timeout loop's sleep cadence.
+
+Step 4 was added later the same day, once §2.5's two backend cases were separated:
+autonomous `backend_trigger` chains have the same hole egress had and need the
+same treatment. It does not change Steps 1–3, but it does impose one constraint on
+Step 2 — build the open-set key-generic — which is cheap up front and expensive to
+retrofit.
+
+---
+
+## 5. Build plan (four independently verifiable steps)
+
+### Step 1 — ingress open-count + grace
 **Touches:** server + proxy + proto. **Builds & tests on macOS.**
 **Bonus:** fixes the pre-existing long-download-on-ingress bug (§2.4).
+**No rename (§4d.1)** — `timeout` keeps its name, its dual semantics and its `0` =
+disabled convention. No TOML key changes, so no deployed config is touched. Only
+what the timer *measures* changes: from "time since the last routing event" to
+"time since the last connection closed."
 
-- **Rename** `timeout` → `ingress_timeout` in `ServiceToml` and internal
-  field/method across `service_info.rs`, `changes.rs`, `graphviz.rs`,
-  `nullnet_grpc_impl.rs`, `input.rs`, `timeout.rs`, tests. Keep dual semantics.
 - **Proto** (`members/nullnet-grpc-lib/proto/nullnet_grpc.proto`): add
   `rpc ProxyConnectionClosed(ProxyConnectionEnd) returns (Empty);` with
   `ProxyConnectionEnd { string service_name; string client_ip; }`. `proxy_ip`
@@ -384,7 +538,7 @@ in §5 as a hint and re-grep before editing.
     sites: the sticky-reuse branch (`:507`) and the fresh-setup path (`:601`).
   - New close handler: decrement (saturating), set `latest = now`.
   - `expired_proxy_clients` (`service_info.rs`): reap only when
-    `open_connections == 0 && now - latest() >= ingress_timeout`. Timeout is now
+    `open_connections == 0 && now - latest() >= timeout`. The timeout is now
     a grace window after the last close.
   - `nearest_proxy_expiry` / `nearest_timeout` (`timeout.rs`): only count down
     clients with `open_connections == 0`.
@@ -456,7 +610,7 @@ in §5 as a hint and re-grep before editing.
   it returns to 0 between interactions and an idle tab is indistinguishable from
   an abandoned one. It fixes mid-request reaping (§2.4) and, via the TCP path,
   the `socket` WebSocket bug — it does **not** hold a chain warm across idle.
-  Size `ingress_timeout` on HTTP entry points for human idle (minutes).
+  Size `timeout` on HTTP entry points for human idle (minutes).
 - **Watch out:** HTTP keep-alive calls `Proxy` per request → count oscillates but
   stays balanced (one close per open via logging hook). Confirm pingora calls
   `upstream_peer`/`get_or_add_upstream` once per request and that the logging
@@ -467,12 +621,28 @@ in §5 as a hint and re-grep before editing.
 
 ### Step 2 — egress conntrack `DESTROY` listener (client)
 **Touches:** client (netlink). **Needs Linux / 103–104.**
+**Unchanged in mechanism by the §4d rescope** — this listener *is* the egress
+design; dropping `egress_timeout` removed the timer, not the liveness source. It
+gains three hard requirements, marked ⚠️ below.
 
+- ⚠️ **Measure the close→`DESTROY` lag FIRST (§4d.2), before building the reap
+  path.** With no configurable grace, the kernel's conntrack eviction delay *is*
+  the grace period. Expected ~120 s for a gracefully closed TCP flow
+  (`nf_conntrack_tcp_timeout_time_wait`), ~10 s on RST, ~30 s for UDP — but that
+  is assumed, not measured. The observed number decides whether this design is a
+  two-minute grace or a zero-second cliff, and how hard the hazards below bite.
 - New netlink listener subscribed to the NFCT conntrack event group (DESTROY)
   via **`netlink-sys`**, promoted to a direct client dependency (§4c.1 — *not*
   `neli`, which was never a client dep): `Socket::new(NETLINK_NETFILTER)` +
   `add_membership(NFNLGRP_CONNTRACK_DESTROY)`, driven as a `TokioSocket` under the
   `tokio_socket` feature. Parse `nfgenmsg` + `CTA_TUPLE_ORIG` by hand.
+- ⚠️ **Build the open-set key-generic, not egress-specific (Step 4 depends on
+  it).** Backend triggers need the identical machinery — same NFQUEUE listener,
+  same conntrack `DESTROY` stream, same 5-tuple set — differing only in the
+  *owner key* a tuple is filed under: egress files by container, backend files by
+  `(container, trigger_port)`. Parameterise that key now. Writing the set
+  egress-only means rewriting it in Step 4, and the reconcile/suppression logic
+  with it.
 - Per-container **open-flow set**, keyed by the **full connection 5-tuple**
   `(src_ip, src_port, dst_ip, dst_port, proto)`: NFQUEUE `NEW` adds the tuple,
   conntrack `DESTROY` removes that exact tuple. "Container is alive" = any tuple
@@ -498,7 +668,14 @@ in §5 as a hint and re-grep before editing.
   `DESTROY` is delivered — adding it would leak a phantom "open" until reconcile.
 - Report **0↔1 transitions** to the server via a new liveness RPC (e.g.
   `EgressLiveness { initiator_container; bool active; }`), keyed to the same
-  `(initiator_ip, initiator_docker)` `EgressKey`.
+  `(initiator_ip, initiator_docker)` `EgressKey`. Since the server now reaps
+  immediately on `active = false` (Step 3), this RPC is the trigger, not a hint —
+  never send a speculative or optimistic zero.
+- ⚠️ **Never report zero for an edge that has not yet seen its first flow
+  (§4d.4).** Between edge creation and the first `NEW` landing in the open-set the
+  set is legitimately empty; without a guard the edge reaps itself during its own
+  construction. Only arm zero-reporting for a container after its first accepted
+  flow has been recorded.
 - **Reconcile backstop (required here):** netlink event sockets drop under churn
   (`ENOBUFS`) → a naive delta set drifts. Periodically reconcile against a full
   `conntrack -L -s <bridge_ip>` dump (same `conntrack` CLI already used by
@@ -508,29 +685,107 @@ in §5 as a hint and re-grep before editing.
     `NETLINK_NO_ENOBUFS` — it suppresses the *notification* while the kernel still
     drops. We want the `ENOBUFS` error, because the cheapest correct response is to
     treat it as an immediate reconcile trigger rather than waiting for the period.
-- **Self-inflicted `DESTROY` events (see §4b.2) — must handle, not tolerate.**
-  Our own conntrack deletions emit `DESTROY` for flows that are still alive, and
-  `flush_container_conntrack` deletes *every* flow from a container bridge IP —
-  the same key this open-set uses — on every `EgressPolicyChanged`. Treating
-  those as closes zeroes the set and reaps live edges. Reconcile **immediately
-  after any flush we issue**; the periodic backstop alone is too late when
-  `egress_timeout` is short.
+- ⚠️ **Self-inflicted `DESTROY` events (§4b.2, sharpened by §4d.3) — the single
+  most dangerous item in this plan.** Our own conntrack deletions emit `DESTROY`
+  for flows that are still alive, and `flush_container_conntrack` deletes *every*
+  flow from a container bridge IP — the same key this open-set uses — on every
+  `EgressPolicyChanged`. With no grace window, treating those as closes does not
+  merely risk a premature reap; it **guarantees** that a policy reload tears down
+  every live egress edge on the node, instantly.
+  - Reconcile-after-flush is **not sufficient as a repair** — by the time the
+    re-dump lands the reap has already been reported and acted on.
+  - Required shape: the flush must **suppress reap decisions** for that container.
+    Mark the container as reconciling *before* issuing the flush, ignore
+    `DESTROY`-driven zeros while the mark is set, and clear it only once
+    `conntrack -L -s <bridge_ip>` has repopulated the set.
+  - Same treatment for the other two self-flush sites (`dnat::init`'s host-wide
+    `conntrack -F` at client startup, and `dnat::flush_conntrack`), though their
+    blast radius is smaller since caf6138 scoped the latter by source.
 
-### Step 3 — `egress_timeout` + egress grace reaper (server)
-**Touches:** server (+ config). **Needs Linux / 103–104 to verify end-to-end.**
+### Step 3 — egress reap on verified closure (server)
+**Touches:** server only. **Needs Linux / 103–104 to verify end-to-end.**
+**Substantially smaller since the §4d rescope** — no TOML, no per-edge timer, no
+timeout-loop integration. What was "plumb a config key, arm a grace, poll for
+expiry" is now a single event handler.
 
-- **TOML**: add `egress_timeout: Option<u64>` to `ServiceToml`; plumb through
-  `ServiceInfo::new` (+ both `*ServiceInfo` structs, ~15 call sites incl. tests).
-  Absent/`0` = disabled.
-- **Edge**: store the initiator service's `egress_timeout` on `EgressEdge` at
-  creation (`handle_egress_trigger` already resolves the service —
-  `nullnet_grpc_impl.rs:769`; pass it into `ensure_egress_edge`).
-- **Reaper**: reuse the shared "grace after last close" model. Track the
-  per-edge open-flow count from Step 2's liveness RPC; when it hits `0`, arm
-  `egress_timeout`; reap (existing `send_net_teardown` + map removal, mirroring
-  `teardown_egress_edges_for_node`) if it stays `0`. Hook into the existing
-  `check_timeouts` / `apply_timeouts` loop (it already has `&Orchestrator`), and
-  factor egress expiry into the loop's sleep cadence.
+- **No config.** `ServiceToml` is untouched; there is no `egress_timeout` field to
+  plumb through `ServiceInfo::new` and its ~15 call sites, and no value to store on
+  `EgressEdge` at creation. Delete that work from the estimate.
+- **Handler**: on Step 2's liveness RPC reporting `active = false` for an
+  `EgressKey`, reap the edge immediately — existing `send_net_teardown` + map
+  removal, mirroring `teardown_egress_edges_for_node`. On `active = true`, nothing
+  to do beyond the existing `ensure_egress_edge` path.
+- **No timeout-loop integration.** The reap is event-driven, so `check_timeouts` /
+  `apply_timeouts` need no egress awareness and their sleep cadence is unaffected.
+  This removes the "factor egress expiry into the loop's sleep cadence" work
+  entirely — the loop stays purely an ingress concern.
+- **Teardown is ack'd (§4b.4).** `send_net_teardown` returns the net id
+  asynchronously since #149, so the id comes back after both endpoints confirm (or
+  a 30 s grace, emitting `net_teardown_unconfirmed`). Any test sampling pool state
+  must call `Orchestrator::settle_teardowns()` first.
+- **Watch the rebuild rate (§4d.4).** Immediate reap means a sporadically-egressing
+  container rebuilds its tunnel per burst, cycling net ids at that rate. That is
+  the churn the FIFO pool and ack'd teardown from #149 were built to survive, but
+  this is the first workload that exercises them continuously — worth watching for
+  `net_teardown_unconfirmed` events during the Step 2/3 soak.
+
+### Step 4 — autonomous `backend_trigger` chains reap on verified closure
+**Touches:** client (small — reuses Step 2's set) + server. **Needs Linux / 103–104.**
+**Closes the gap in §2.5:** a trigger-built chain with no proxy parent is currently
+never reaped by any liveness or idle signal.
+
+Same principle as egress, but **four structural differences make it a distinct
+piece of work, not a copy.**
+
+- **1. Backend edges are refcounted; egress edges are owned.** An `EgressEdge` has
+  one owner, so zero means teardown. A backend dep edge lives in `active_chains`
+  and may be held simultaneously by an ingress proxy chain *and* one or more
+  backend triggers. So the liveness signal must produce a **decrement matched 1:1
+  to the increment that trigger caused** (`decrement_chain`, exactly as
+  `teardown_backend_chain` does today) — never a direct teardown. A double
+  decrement kills an edge another path still needs.
+  - This is the **third** appearance of the open/close pairing discipline, after
+    Step 1's ingress counter and Step 2's add-only-on-Accept rule, and the most
+    delicate: here the refcount is shared across two different mechanisms. Reuse
+    the same discipline — one increment, one guaranteed matching decrement, on
+    every exit path.
+- **2. One trigger builds a whole chain; conntrack sees only the first hop.** A
+  trigger on A→B:port builds the entire declared chain A→B→C
+  (`build_backend_dep_chain`). Connection existence on A→B says nothing about
+  B→C. Reaping the whole chain when the first hop goes quiet is consistent with
+  what `decrement_chain` already does on every other teardown path — **adopt it
+  deliberately**, and record it here rather than letting it fall out of where the
+  signal happens to originate.
+- **3. ⚠️ The self-flush hazard is worse here than for egress.** `dnat::flush_conntrack`
+  fires **twice per trigger-edge lifecycle** (§4b.2's table), scoped
+  `-s <container_ip> --dport <port>` — precisely this open-set's key. For egress
+  the dangerous flush only fires on policy reload; here it is part of the
+  **normal** edge lifecycle. §4d.3's reap-suppression is therefore the main path
+  for backend, not an edge case. Build Step 4 only after Step 2's suppression is
+  proven, and re-test it specifically against the trigger lifecycle.
+- **4. Backend partially self-heals; egress does not.** The trigger rule is a
+  *negative* filter — `--ctstate ESTABLISHED,RELATED -j ACCEPT` at the top of
+  `mangle PREROUTING`, then watched ports to NFQUEUE (`commands/nfqueue.rs`) — so
+  a flow that loses its conntrack entry falls through and re-enters NFQUEUE,
+  re-triggering (observed and documented at `dnat.rs:100-109`). Egress's
+  positively-matched `--ctstate NEW` gives no second chance (§2.2). So a premature
+  backend reap is a **stall rather than a black hole** — softer, but not safe: if
+  the rebuilt chain draws a different net id, the DNAT binding changes under the
+  in-flight connection and it breaks anyway.
+
+**Also re-check:** `backend_involved_services` pins services against the
+pause/resume suspend logic (`reconcile_suspends`). Liveness-driven backend
+reaping changes *when* services unpin, so the suspend path needs re-verifying —
+the invariant to preserve is suspended ⟺ no clients.
+
+**Client side** is small if Step 2 followed the key-generic constraint: file
+trigger-port flows under `(container, trigger_port)`, report 1→0 on the same
+liveness RPC shape.
+
+**Server side** is the real work: a handler that resolves the `EgressKey`-analogue
+`(initiator_name, initiator_ip, initiator_docker, port)` back to the chain built by
+`setup_backend_chain`, and decrements it once — mirroring `teardown_backend_chain`,
+which already walks exactly this structure via `collect_backend_chain_edges`.
 
 ---
 
@@ -539,22 +794,53 @@ in §5 as a hint and re-grep before editing.
 - Step 1: server + `nullnet-grpc-lib` + proxy all build on macOS; run server unit
   tests. (Client is Linux-only — `rtnetlink`/`aya`/`nfq`.) Baseline confirmed green
   on 2026-08-19 before any Step 1 edits.
+- **Measure before building the reap path (§4d.2):** on 103/104, open a TCP flow
+  from a container, close it cleanly, and time the gap to the `DESTROY` event.
+  Repeat for an RST close and for UDP. Record the numbers here — they define
+  egress's effective grace period, and every judgement below depends on them.
 - Steps 2–3: deploy to 103/104 (build/deploy recipe in the egress/ebpf memories).
-  Check: long download over proxied ingress survives past `ingress_timeout`;
-  idle-but-open egress flow (e.g. `nc` held open) survives past `egress_timeout`;
-  genuinely idle edge reaps after grace; conntrack event drops self-heal via
-  reconcile; `0`/absent disables on both directions.
+  Check: long download over proxied ingress survives past `timeout`;
+  idle-but-open egress flow (e.g. `nc` held open) is **never** reaped, however
+  long it stays silent — this is the core claim of the whole design; an egress
+  edge whose last flow closes is reaped without further traffic; conntrack event
+  drops self-heal via reconcile; `timeout = 0` still disables ingress teardown.
+- **The idle-but-open egress test is the headline case.** `nc` held open with zero
+  bytes for well past any previous timeout value must keep its edge. If it reaps,
+  the open-set is being fed by something other than connection existence.
 - Watch the `nullnet-server` timing tests — they use real wall-clock and have
-  flaked on CI before (see memory `nullnet_server_timing_tests_flaky`). The new
-  grace logic adds more `Instant`-based timing; keep margins wide.
+  flaked on CI before (see memory `nullnet_server_timing_tests_flaky`). The
+  ingress grace logic adds more `Instant`-based timing; keep margins wide. Egress
+  adds none — it is event-driven, with no timer to race.
 - **Net-id assertions must settle first (§4b.4).** Teardown is ack'd since #149,
   so `send_net_teardown` returns the id asynchronously; use
   `Orchestrator::settle_teardowns()` before sampling pool state.
-- **Explicitly test the self-inflicted-flush case (§4b.2):** with an egress edge
-  carrying live flows, trigger an `EgressPolicyChanged` reload and confirm the
-  edge is **not** reaped. This is the regression most likely to ship silently.
+- **Explicitly test the self-inflicted-flush case (§4b.2 / §4d.3) — now the
+  highest-priority test in this plan.** With an egress edge carrying live flows,
+  trigger an `EgressPolicyChanged` reload and confirm the edge is **not** reaped
+  and the flows survive. With no grace window there is no margin for error here:
+  if the suppression is wrong, every policy reload silently black-holes every
+  container's egress on that node. Test the client-startup `conntrack -F` path
+  too.
+- **Test the setup window (§4d.4):** trigger a brand-new egress edge and confirm
+  it is not reaped in the gap between creation and its first accepted flow.
+- **Step 4 — the autonomous backend case (§2.5).** Build the test so no ingress
+  request is involved at any point: a container dialling a watched trigger port
+  directly, with the fronting service's proxy session absent or already expired.
+  A test driven through the proxy exercises the *inherited* path and will pass
+  whether or not Step 4 works. Confirm: the chain is built, survives an
+  idle-but-open connection indefinitely, and is decremented once when the last
+  flow closes.
+- **Step 4 — shared-edge refcount (Step 4, difference 1):** hold one dep edge up
+  via *both* an ingress proxy chain and an autonomous backend trigger, then close
+  only the trigger's connection. The edge must survive on the proxy chain's
+  reference. This is the double-decrement failure, and it is invisible in any
+  single-path test.
+- **Step 4 — trigger-lifecycle self-flush (Step 4, difference 3):** `dnat::flush_conntrack`
+  fires twice per trigger-edge lifecycle on this open-set's exact key, so exercise
+  a full trigger edge up/down cycle with a live second flow present and confirm it
+  is not decremented out from under it.
 - **Explicitly test the idle-tab case (§4b.1):** hold an HTTP entry point idle
-  past `ingress_timeout` with a browser tab open and confirm the behaviour is
+  past `timeout` with a browser tab open and confirm the behaviour is
   what you intend (chain reaped, next click pays the rebuild) rather than what
   the "connection existence" framing might suggest.
 
@@ -562,6 +848,15 @@ in §5 as a hint and re-grep before editing.
 
 ⚠️ Paths are current; the `file:line` references throughout §5 are not (§4c.4).
 
+- Backend trigger RPC + chain build: `members/nullnet-server/src/nullnet_grpc_impl.rs`
+  (`handle_backend_trigger`, `setup_backend_chain`, `build_backend_dep_chain`)
+- Backend chain teardown / refcount: `members/nullnet-server/src/services/changes.rs`
+  (`teardown_backend_chain`, `collect_backend_chain_edges`), `service_info.rs`
+  (`decrement_chain`, `add_active_chain`)
+- Trigger NFQUEUE rules (ESTABLISHED bypass + watched-port ipset):
+  `members/nullnet-client/src/commands/nfqueue.rs`
+- Trigger listener: `members/nullnet-client/src/nfqueue/listener.rs`,
+  `members/nullnet-client/src/triggers.rs`
 - Ingress timer: `members/nullnet-server/src/timeout.rs`
 - Client state / `latest` / `active_chains`: `members/nullnet-server/src/services/clients.rs`
 - Service model: `members/nullnet-server/src/services/service_info.rs`
