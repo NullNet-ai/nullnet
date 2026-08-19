@@ -1,4 +1,5 @@
 use crate::commands::{RtNetLinkHandle, configure_access_port, dnat, egress, remove_vlan};
+use crate::conntrack::EgressOpenFlows;
 use crate::ebpf::{FirewallPeers, FirewallVxlanPorts, NetId};
 use crate::egress_policy::{PolicyVerdicts, flush_container_conntrack};
 use crate::egress_state::{EgressRecord, EgressState};
@@ -75,6 +76,7 @@ pub(crate) async fn control_channel(
     egress_state: Arc<EgressState>,
     bridge_cache: BridgeIpCache,
     policy_verdicts: Arc<PolicyVerdicts>,
+    open_flows: EgressOpenFlows,
 ) -> Result<(), Error> {
     let (outbound, grpc_rx) = mpsc::channel(64);
     let mut inbound = server
@@ -175,10 +177,11 @@ pub(crate) async fn control_channel(
                 let verdicts = policy_verdicts.clone();
                 let cache = bridge_cache.clone();
                 let grpc = server.clone();
+                let open = open_flows.clone();
                 tokio::spawn(async move {
                     println!("[egress-policy] policy changed on server; re-verdicting flows");
                     verdicts.clear();
-                    flush_container_conntrack(&grpc, cache.ips()).await;
+                    flush_container_conntrack(&grpc, cache.ips(), &open, &cache).await;
                 });
             }
             None => {}

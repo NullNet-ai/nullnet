@@ -514,20 +514,52 @@ a 10 s floor. Three options:
 Recommendation: **(2)**, sized in the tens of seconds — it keeps "no config key"
 intact while making behaviour independent of the peer. Decide before Step 3.
 
-### 4d.3 Zero grace makes §4b.2 load-bearing, not merely required
+### 4d.3 Our own conntrack flushes destroy the evidence — reconcile is NOT the fix
 
-With a configurable grace, a false zero from our own `flush_container_conntrack`
-had a recovery window — the reconcile could correct it before the reap fired.
-**With no grace, a false zero *is* an immediate reap.** That flush is keyed by
-container bridge IP — exactly the open-set's key — and fires on every
-`EgressPolicyChanged`, so a policy reload would tear down every live egress edge
-on the node.
+**Corrected 2026-08-19 while implementing Step 2.** Earlier revisions of this
+section said to "reconcile immediately after any flush we issue." **That is
+wrong, and would have caused exactly the outage it was meant to prevent.**
 
-Reconcile-after-flush is therefore not sufficient as a *repair*. The flush must
-**suppress reap decisions** for that container until the re-dump lands: mark the
-container as reconciling, ignore `DESTROY`-driven zeros while marked, clear the
-mark only after `conntrack -L -s <bridge_ip>` has repopulated the set. This is the
-regression most likely to ship silently — see §6 for the explicit test.
+With no grace window, a false zero *is* an immediate reap. `flush_container_conntrack`
+is keyed by container bridge IP — the open-set's own key — and fires on every
+`EgressPolicyChanged`. So the hazard is real. But the prescribed repair does not
+work, for a reason that only shows up when you read what the flush is *for*:
+
+> flush conntrack for the containers' flows so live connections re-enter the
+> NFQUEUE as NEW — newly-denied ones die there.
+> — `control_channel.rs`
+
+The flush **deliberately deletes the conntrack entries**. Immediately afterwards
+the table is *legitimately empty while the connections are still open*. A re-dump
+at that moment reports "no flows" and reaps every egress edge on the node — the
+reconcile is not a repair, it is the trigger.
+
+Worse: an **idle-but-open** connection sends nothing, so it never re-registers
+through NFQUEUE either. Its liveness evidence is simply gone until it next
+carries traffic. That is precisely the case this design exists to protect (§2.3),
+and no amount of dumping recovers it.
+
+**Implemented fix — bounded fail-safe suppression.** `OpenFlows::suppress_for`:
+
+- Mark the container **before** issuing the flush; while marked, emptiness is
+  read as *unknown*, never as idle — neither from `DESTROY` events nor from a
+  dump that comes back empty.
+- A real `NEW` packet clears the mark: that is first-hand evidence the container
+  is alive, and it is how trust is normally restored.
+- The mark **expires** (currently 120 s, `FLUSH_SUPPRESSION` in
+  `egress_policy.rs`), so a container that genuinely went idle across a policy
+  reload still reaps rather than being pinned forever.
+
+The residual cost is that an edge can outlive its last connection by up to the
+suppression window after a policy reload. That is the safe direction to be wrong
+in: too-long-lived beats black-holing live traffic, which does not self-heal
+(§2.2).
+
+**The other two flush sites.** `dnat::init`'s host-wide `conntrack -F` runs at
+client startup when the set is still empty, so it cannot produce a false close.
+`dnat::flush_conntrack` is scoped `-s <container_ip> --dport <port>` and fires
+twice per *trigger* edge lifecycle — narrow enough to matter mainly for Step 4,
+where it is on the normal path rather than an occasional event.
 
 ### 4d.4 Other consequences of removing the grace
 

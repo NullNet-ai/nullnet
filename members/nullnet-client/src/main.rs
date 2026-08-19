@@ -32,8 +32,8 @@ use tun_rs::{DeviceBuilder, Layer};
 
 mod cli;
 mod commands;
-mod control_channel;
 mod conntrack;
+mod control_channel;
 mod crypto;
 mod ebpf;
 mod egress_policy;
@@ -164,6 +164,12 @@ async fn main() -> Result<(), Error> {
     // NFQUEUE listeners and the control channel (which flushes them when the
     // server pushes an egress policy change).
     let bridge_cache = nfqueue::BridgeIpCache::new();
+    // Which connections each container has open. Shared: the NFQUEUE accept path
+    // adds flows, conntrack DESTROY retires them, and the control channel must
+    // suppress it around the conntrack flushes it triggers.
+    let open_flows: conntrack::EgressOpenFlows =
+        std::sync::Arc::new(std::sync::Mutex::new(conntrack::OpenFlows::new()));
+    let open_flows_cc = open_flows.clone();
     let policy_verdicts = Arc::new(egress_policy::PolicyVerdicts::default());
     let bridge_cache_cc = bridge_cache.clone();
     let policy_verdicts_cc = policy_verdicts.clone();
@@ -181,6 +187,7 @@ async fn main() -> Result<(), Error> {
             egress_state,
             bridge_cache_cc,
             policy_verdicts_cc,
+            open_flows_cc,
         )
         .await
         {
@@ -214,6 +221,7 @@ async fn main() -> Result<(), Error> {
         docker_changed.clone(),
         bridge_cache,
         policy_verdicts,
+        open_flows,
     );
 
     // declare services + push the port→trigger-owners map to the NFQUEUE

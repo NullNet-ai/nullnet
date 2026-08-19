@@ -15,9 +15,9 @@
 //! keyed by the initiator container + `EGRESS_TRIGGER_PORT` (egress is
 //! once-per-container, so a single sentinel-port entry covers all its flows).
 
+use crate::conntrack::EgressOpenFlows;
 use crate::egress_policy::PolicyVerdicts;
 use crate::nfqueue::cache::BridgeIpCache;
-use crate::conntrack::EgressOpenFlows;
 use crate::nfqueue::parse::{Flow, ipv4_flow};
 use crate::nfqueue::recv_loop::spawn_queue_loop;
 use crate::triggers::{EGRESS_TRIGGER_PORT, TriggerState, TriggersState};

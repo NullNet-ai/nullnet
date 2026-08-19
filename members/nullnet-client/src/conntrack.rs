@@ -12,12 +12,14 @@
 //! which side closed first, so it is a definitive close signal but not a prompt one.
 
 use crate::nfqueue::parse::{Flow, IPPROTO_TCP, IPPROTO_UDP};
+#[cfg(test)]
+use netlink_sys::Socket;
 use netlink_sys::{
-    AsyncSocket, AsyncSocketExt, Socket, SocketAddr, TokioSocket, protocols::NETLINK_NETFILTER,
+    AsyncSocket, AsyncSocketExt, SocketAddr, TokioSocket, protocols::NETLINK_NETFILTER,
 };
+use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use std::net::Ipv4Addr;
 
 /// ctnetlink attribute types (`linux/netfilter/nfnetlink_conntrack.h`). Stable
 /// kernel UAPI; not exposed by libc.
@@ -47,23 +49,23 @@ const fn nla_align(len: usize) -> usize {
 fn attrs(buf: &[u8]) -> impl Iterator<Item = (u16, &[u8])> {
     let mut off = 0usize;
     std::iter::from_fn(move || {
-        while off + 4 <= buf.len() {
-            let len = u16::from_ne_bytes([buf[off], buf[off + 1]]) as usize;
-            let ty = u16::from_ne_bytes([buf[off + 2], buf[off + 3]]) & NLA_TYPE_MASK;
-            // A length shorter than its own header, or past the end, means a
-            // malformed message: stop rather than loop forever on off += 0.
-            if len < 4 || off + len > buf.len() {
-                return None;
-            }
-            let payload = &buf[off + 4..off + len];
-            off += nla_align(len);
-            return Some((ty, payload));
+        if off + 4 > buf.len() {
+            return None;
         }
-        None
+        let len = u16::from_ne_bytes([buf[off], buf[off + 1]]) as usize;
+        let ty = u16::from_ne_bytes([buf[off + 2], buf[off + 3]]) & NLA_TYPE_MASK;
+        // A length shorter than its own header, or past the end, means a
+        // malformed message: stop rather than spin forever on off += 0.
+        if len < 4 || off + len > buf.len() {
+            return None;
+        }
+        let payload = &buf[off + 4..off + len];
+        off += nla_align(len);
+        Some((ty, payload))
     })
 }
 
-fn find<'a>(buf: &'a [u8], want: u16) -> Option<&'a [u8]> {
+fn find(buf: &[u8], want: u16) -> Option<&[u8]> {
     attrs(buf).find(|(ty, _)| *ty == want).map(|(_, p)| p)
 }
 
@@ -134,11 +136,8 @@ pub fn parse_destroy_batch(buf: &[u8]) -> Vec<Flow> {
 /// it does not eliminate them, which is why the reconcile backstop exists.
 const RX_BUF_BYTES: usize = 1 << 21;
 
-/// Subscribe to the conntrack DESTROY multicast group.
-///
-/// Deliberately does **not** set `NETLINK_NO_ENOBUFS`: under churn the kernel
-/// drops events either way, and we want to be told, because the cheapest correct
-/// response is an immediate reconcile rather than waiting for the periodic one.
+/// Blocking twin of [`destroy_socket_async`], used by the live tests.
+#[cfg(test)]
 pub fn destroy_socket(rx_buf_bytes: usize) -> std::io::Result<Socket> {
     let mut socket = Socket::new(NETLINK_NETFILTER)?;
     socket.bind(&SocketAddr::new(0, 0))?;
@@ -147,7 +146,11 @@ pub fn destroy_socket(rx_buf_bytes: usize) -> std::io::Result<Socket> {
     Ok(socket)
 }
 
-/// Same subscription, driven by tokio.
+/// Subscribe to the conntrack DESTROY multicast group, driven by tokio.
+///
+/// Deliberately does **not** set `NETLINK_NO_ENOBUFS`: under churn the kernel
+/// drops events either way, and we want to be told, because the cheapest correct
+/// response is an immediate reconcile rather than waiting for the periodic one.
 fn destroy_socket_async() -> std::io::Result<TokioSocket> {
     let mut socket = TokioSocket::new(NETLINK_NETFILTER)?;
     let inner = socket.socket_mut();
@@ -221,9 +224,9 @@ pub struct OpenFlows<K: Eq + std::hash::Hash + Clone> {
     /// owner from the flow would depend on the bridge-IP cache still holding
     /// the container at close time, which is exactly when it may not.
     owner_of: std::collections::HashMap<Flow, K>,
-    /// Owners whose set is mid-reconcile after a flush we issued ourselves.
-    /// See `suppress`.
-    suppressed: std::collections::HashSet<K>,
+    /// Owners whose liveness evidence we destroyed ourselves, and until when.
+    /// See `suppress_for`.
+    suppressed: std::collections::HashMap<K, std::time::Instant>,
 }
 
 /// What an update did to an owner's liveness, if anything.
@@ -240,15 +243,26 @@ impl<K: Eq + std::hash::Hash + Clone> OpenFlows<K> {
         Self {
             per_owner: std::collections::HashMap::new(),
             owner_of: std::collections::HashMap::new(),
-            suppressed: std::collections::HashSet::new(),
+            suppressed: std::collections::HashMap::new(),
         }
+    }
+
+    /// Is this owner's emptiness currently untrustworthy?
+    fn is_suppressed(&self, owner: &K) -> bool {
+        self.suppressed
+            .get(owner)
+            .is_some_and(|until| std::time::Instant::now() < *until)
     }
 
     /// Record a flow opening. Only ever called on the **Accept** path: a
     /// policy-denied `NEW` packet is dropped, so its conntrack entry never
     /// confirms and no `DESTROY` will follow — recording it would leak a
     /// phantom "open" until the next reconcile.
+    ///
+    /// A `NEW` is also first-hand evidence that the owner is alive, so it ends
+    /// any suppression: we know something real again.
     pub fn insert(&mut self, owner: K, flow: Flow) -> Option<Transition<K>> {
+        self.suppressed.remove(&owner);
         let set = self.per_owner.entry(owner.clone()).or_default();
         let was_empty = set.is_empty();
         if !set.insert(flow) {
@@ -268,27 +282,43 @@ impl<K: Eq + std::hash::Hash + Clone> OpenFlows<K> {
             return None;
         }
         self.per_owner.remove(&owner);
-        // A suppressed owner is mid-reconcile after a flush we issued: its set
-        // being empty says nothing about whether real connections are open.
-        (!self.suppressed.contains(&owner)).then_some(Transition::Idle(owner))
+        // A suppressed owner's emptiness is our own doing, not a real close.
+        (!self.is_suppressed(&owner)).then_some(Transition::Idle(owner))
     }
 
-    /// Stop trusting emptiness for this owner until `reconcile` runs.
+    /// Stop trusting this owner's emptiness for `window`.
     ///
-    /// Call this **before** issuing a conntrack flush of our own. Our flushes
-    /// emit `DESTROY` for flows that are still alive, and with no grace window
-    /// a false zero is an immediate reap — so the deletions must not be read as
-    /// closes. Reconciling afterwards is not enough on its own: the reap would
-    /// already have been reported by then.
-    pub fn suppress(&mut self, owner: K) {
-        self.suppressed.insert(owner);
+    /// Call **before** issuing a conntrack flush of our own. The flush is not a
+    /// bookkeeping detail we can reconcile away: it *deletes the evidence*.
+    /// `flush_container_conntrack` exists precisely so live connections lose
+    /// their conntrack entries and re-enter NFQUEUE as `NEW`, so immediately
+    /// after it the table is legitimately empty while the connections are very
+    /// much alive. Re-dumping at that moment — which an earlier version of the
+    /// plan prescribed — would read "no flows" and reap every edge on the node.
+    ///
+    /// Worse, an **idle-but-open** connection sends nothing, so it will not
+    /// re-register through NFQUEUE either. Its evidence is simply gone until it
+    /// next carries traffic. That is exactly the case this whole design exists
+    /// to protect (§2.3), so the only safe reading of "empty" here is "unknown".
+    ///
+    /// Hence a bounded fail-safe: report no idle for `window`, and let real
+    /// `NEW` packets (which clear suppression) restore first-hand knowledge. If
+    /// the owner genuinely went idle across a policy reload, its edge lives
+    /// longer than strictly necessary — the safe direction to be wrong in.
+    pub fn suppress_for(&mut self, owner: K, window: std::time::Duration) {
+        self.suppressed
+            .insert(owner, std::time::Instant::now() + window);
     }
 
     /// Replace an owner's set from a full conntrack dump and resume trusting it.
     ///
     /// Used both as the periodic drift backstop (netlink drops events under
     /// churn) and as the immediate follow-up to a flush we issued.
-    pub fn reconcile(&mut self, owner: K, flows: impl IntoIterator<Item = Flow>) -> Option<Transition<K>> {
+    pub fn reconcile(
+        &mut self,
+        owner: K,
+        flows: impl IntoIterator<Item = Flow>,
+    ) -> Option<Transition<K>> {
         if let Some(old) = self.per_owner.remove(&owner) {
             for f in old {
                 self.owner_of.remove(&f);
@@ -301,28 +331,31 @@ impl<K: Eq + std::hash::Hash + Clone> OpenFlows<K> {
         let now_empty = set.is_empty();
         if !now_empty {
             self.per_owner.insert(owner.clone(), set);
+            // A non-empty dump is first-hand evidence again.
+            self.suppressed.remove(&owner);
         }
-        self.suppressed.remove(&owner);
-        now_empty.then_some(Transition::Idle(owner))
+        // An empty dump during suppression is expected — we emptied the table
+        // ourselves — so it must not be reported as idle.
+        (now_empty && !self.is_suppressed(&owner)).then_some(Transition::Idle(owner))
     }
 
+    #[cfg(test)]
     pub fn is_active(&self, owner: &K) -> bool {
         self.per_owner.contains_key(owner)
     }
 
-    /// Owners with at least one open flow.
-    pub fn owners(&self) -> Vec<K> {
-        self.per_owner.keys().cloned().collect()
-    }
-
+    #[cfg(test)]
     pub fn flow_count(&self, owner: &K) -> usize {
-        self.per_owner.get(owner).map_or(0, std::collections::HashSet::len)
+        self.per_owner
+            .get(owner)
+            .map_or(0, std::collections::HashSet::len)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn flow(sp: u16, dst: [u8; 4], dp: u16) -> Flow {
         Flow {
@@ -340,11 +373,18 @@ mod tests {
     #[test]
     fn concurrent_flows_to_one_host_do_not_collapse() {
         let mut o: OpenFlows<&str> = OpenFlows::new();
-        assert_eq!(o.insert("c1", flow(1000, [1, 1, 1, 1], 443)), Some(Transition::Active("c1")));
+        assert_eq!(
+            o.insert("c1", flow(1000, [1, 1, 1, 1], 443)),
+            Some(Transition::Active("c1"))
+        );
         assert_eq!(o.insert("c1", flow(1001, [1, 1, 1, 1], 443)), None);
         assert_eq!(o.flow_count(&"c1"), 2);
 
-        assert_eq!(o.remove(&flow(1000, [1, 1, 1, 1], 443)), None, "still one open");
+        assert_eq!(
+            o.remove(&flow(1000, [1, 1, 1, 1], 443)),
+            None,
+            "still one open"
+        );
         assert_eq!(
             o.remove(&flow(1001, [1, 1, 1, 1], 443)),
             Some(Transition::Idle("c1")),
@@ -358,7 +398,7 @@ mod tests {
     fn suppressed_owner_never_reports_idle() {
         let mut o: OpenFlows<&str> = OpenFlows::new();
         o.insert("c1", flow(1000, [1, 1, 1, 1], 443));
-        o.suppress("c1");
+        o.suppress_for("c1", Duration::from_secs(60));
         assert_eq!(
             o.remove(&flow(1000, [1, 1, 1, 1], 443)),
             None,
@@ -366,22 +406,47 @@ mod tests {
         );
     }
 
-    /// Reconcile restores the real picture and re-arms reporting.
+    /// The failure the fail-safe exists for: a policy reload flushes conntrack,
+    /// so the table is legitimately empty while connections are still open. A
+    /// dump taken in that window must NOT be read as idle.
     #[test]
-    fn reconcile_restores_truth_and_clears_suppression() {
+    fn empty_dump_during_suppression_is_not_idle() {
         let mut o: OpenFlows<&str> = OpenFlows::new();
         o.insert("c1", flow(1000, [1, 1, 1, 1], 443));
-        o.suppress("c1");
+        o.suppress_for("c1", Duration::from_secs(60));
+        // The flush deleted everything; DESTROYs arrive, then we re-dump.
         o.remove(&flow(1000, [1, 1, 1, 1], 443));
-
-        // The dump shows a flow still live — the flush did not really end it.
-        assert_eq!(o.reconcile("c1", [flow(2000, [2, 2, 2, 2], 80)]), None);
-        assert!(o.is_active(&"c1"));
-
-        // A later genuine close now reports idle again.
         assert_eq!(
-            o.remove(&flow(2000, [2, 2, 2, 2], 80)),
-            Some(Transition::Idle("c1"))
+            o.reconcile("c1", []),
+            None,
+            "an empty table right after our own flush means UNKNOWN, not idle"
+        );
+    }
+
+    /// Suppression is bounded: once the window lapses, emptiness is trusted
+    /// again, so a container that really did go idle across a reload still reaps.
+    #[test]
+    fn suppression_expires_and_idle_is_reported_again() {
+        let mut o: OpenFlows<&str> = OpenFlows::new();
+        o.insert("c1", flow(1000, [1, 1, 1, 1], 443));
+        o.suppress_for("c1", Duration::ZERO);
+        assert_eq!(
+            o.remove(&flow(1000, [1, 1, 1, 1], 443)),
+            Some(Transition::Idle("c1")),
+            "an elapsed window must not pin the edge forever"
+        );
+    }
+
+    /// A real NEW packet is first-hand evidence, so it ends suppression early.
+    #[test]
+    fn new_flow_clears_suppression() {
+        let mut o: OpenFlows<&str> = OpenFlows::new();
+        o.suppress_for("c1", Duration::from_secs(60));
+        o.insert("c1", flow(1000, [1, 1, 1, 1], 443));
+        assert_eq!(
+            o.remove(&flow(1000, [1, 1, 1, 1], 443)),
+            Some(Transition::Idle("c1")),
+            "traffic after the flush restores trust in the set"
         );
     }
 
@@ -398,7 +463,10 @@ mod tests {
     #[test]
     fn duplicate_insert_is_idempotent() {
         let mut o: OpenFlows<&str> = OpenFlows::new();
-        assert_eq!(o.insert("c1", flow(1000, [1, 1, 1, 1], 443)), Some(Transition::Active("c1")));
+        assert_eq!(
+            o.insert("c1", flow(1000, [1, 1, 1, 1], 443)),
+            Some(Transition::Active("c1"))
+        );
         assert_eq!(o.insert("c1", flow(1000, [1, 1, 1, 1], 443)), None);
         assert_eq!(o.flow_count(&"c1"), 1);
         assert_eq!(
@@ -415,7 +483,10 @@ mod tests {
         let mut o: OpenFlows<&str> = OpenFlows::new();
         o.insert("c1", flow(1000, [1, 1, 1, 1], 443));
         assert_eq!(o.remove(&flow(9999, [3, 3, 3, 3], 22)), None);
-        assert!(o.is_active(&"c1"), "unrelated close must not disturb the owner");
+        assert!(
+            o.is_active(&"c1"),
+            "unrelated close must not disturb the owner"
+        );
     }
 
     /// Live end-to-end check of the hand-rolled ctnetlink parser against the
@@ -478,7 +549,11 @@ mod tests {
         let line = "tcp      6 431999 ESTABLISHED src=172.17.0.2 dst=1.1.1.1 sport=45678 \
                     dport=443 src=1.1.1.1 dst=192.168.1.103 sport=443 dport=45678 [ASSURED] mark=0 use=1";
         let f = parse_conntrack_line(line).expect("parses");
-        assert_eq!(f.src_ip, Ipv4Addr::new(172, 17, 0, 2), "original src, not reply");
+        assert_eq!(
+            f.src_ip,
+            Ipv4Addr::new(172, 17, 0, 2),
+            "original src, not reply"
+        );
         assert_eq!(f.dst_ip, Ipv4Addr::new(1, 1, 1, 1));
         assert_eq!(f.src_port, 45678);
         assert_eq!(f.dst_port, 443);
@@ -489,10 +564,16 @@ mod tests {
     fn conntrack_line_parses_udp_and_skips_other_protocols() {
         let udp = "udp      17 29 src=172.17.0.2 dst=8.8.8.8 sport=51000 dport=53 \
                    src=8.8.8.8 dst=192.168.1.103 sport=53 dport=51000 mark=0 use=1";
-        assert_eq!(parse_conntrack_line(udp).expect("parses").proto, IPPROTO_UDP);
+        assert_eq!(
+            parse_conntrack_line(udp).expect("parses").proto,
+            IPPROTO_UDP
+        );
 
         let icmp = "icmp     1 29 src=172.17.0.2 dst=8.8.8.8 type=8 code=0 id=1";
-        assert!(parse_conntrack_line(icmp).is_none(), "only TCP/UDP are tracked");
+        assert!(
+            parse_conntrack_line(icmp).is_none(),
+            "only TCP/UDP are tracked"
+        );
     }
 
     /// A dump we round-trip through `reconcile` must reproduce exactly the flows
@@ -509,7 +590,11 @@ tcp      6 100 ESTABLISHED src=172.17.0.2 dst=2.2.2.2 sport=2 dport=80 \
         let mut o: OpenFlows<&str> = OpenFlows::new();
         o.insert("c1", flow(999, [8, 8, 8, 8], 53)); // stale, dropped-event leftover
         assert_eq!(o.reconcile("c1", flows.clone()), None);
-        assert_eq!(o.flow_count(&"c1"), 2, "stale flow dropped, dumped flows adopted");
+        assert_eq!(
+            o.flow_count(&"c1"),
+            2,
+            "stale flow dropped, dumped flows adopted"
+        );
         assert_eq!(
             o.remove(&flow(999, [8, 8, 8, 8], 53)),
             None,
@@ -538,7 +623,9 @@ tcp      6 100 ESTABLISHED src=172.17.0.2 dst=2.2.2.2 sport=2 dport=80 \
             .expect("dump succeeded");
         println!("dump returned {} flow(s) for {}", flows.len(), local.ip());
         assert!(
-            flows.iter().any(|f| f.src_port == local.port() && f.dst_port == 80),
+            flows
+                .iter()
+                .any(|f| f.src_port == local.port() && f.dst_port == 80),
             "our live connection {}:{} -> 1.1.1.1:80 must appear in the dump, got {flows:?}",
             local.ip(),
             local.port()
@@ -597,10 +684,8 @@ fn parse_conntrack_line(line: &str) -> Option<Flow> {
         "udp" => IPPROTO_UDP,
         _ => return None,
     };
-    let first = |key: &str| -> Option<&str> {
-        line.split_whitespace()
-            .find_map(|t| t.strip_prefix(key))
-    };
+    let first =
+        |key: &str| -> Option<&str> { line.split_whitespace().find_map(|t| t.strip_prefix(key)) };
     Some(Flow {
         src_ip: first("src=")?.parse().ok()?,
         dst_ip: first("dst=")?.parse().ok()?,
@@ -631,24 +716,20 @@ pub async fn reconcile_container(
 ///
 /// This is self-heal, not liveness-polling: the event stream remains the signal,
 /// and this only repairs what `ENOBUFS` lost.
-pub fn spawn_reconcile_task(
-    open: EgressOpenFlows,
-    resolve: impl Fn(&str) -> Option<Ipv4Addr> + Send + 'static,
-    on_idle: impl Fn(String) + Send + 'static,
-) {
+pub fn spawn_reconcile_task(open: EgressOpenFlows, cache: crate::nfqueue::BridgeIpCache) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(RECONCILE_INTERVAL).await;
-            let owners: Vec<String> = open
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .owners();
-            for container in owners {
-                let Some(ip) = resolve(&container) else {
+            // Walk the cache, not the set: a container whose every event was
+            // dropped has no entry in the set to walk from, and that is exactly
+            // the drift this exists to repair.
+            for ip in cache.ips() {
+                let Some(container) = cache.get(ip) else {
                     continue;
                 };
-                if let Some(Transition::Idle(c)) = reconcile_container(&open, &container, ip).await {
-                    on_idle(c);
+                if let Some(Transition::Idle(c)) = reconcile_container(&open, &container, ip).await
+                {
+                    println!("[conntrack] reconcile: container {c} has no open egress flows");
                 }
             }
         }

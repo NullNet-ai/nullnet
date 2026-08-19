@@ -8,14 +8,14 @@ pub use cache::BridgeIpCache;
 pub use listener::{TriggerMap, TriggerOwner};
 
 use crate::commands::nfqueue as rules;
-use crate::conntrack::{EgressOpenFlows, OpenFlows, spawn_destroy_listener};
+use crate::conntrack::{EgressOpenFlows, spawn_destroy_listener, spawn_reconcile_task};
 use crate::egress_policy::PolicyVerdicts;
 use crate::triggers::TriggersState;
 use egress_listener::spawn_egress_recv_thread;
 use listener::{HANDLER_CONCURRENCY, ListenerCtx, spawn_recv_thread};
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use tokio::sync::Notify;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -40,6 +40,7 @@ pub fn spawn_listener(
     docker_changed: Arc<Notify>,
     cache: BridgeIpCache,
     verdicts: Arc<PolicyVerdicts>,
+    open_flows: EgressOpenFlows,
 ) {
     let trigger_owners: Arc<RwLock<TriggerMap>> = Arc::new(RwLock::new(HashMap::new()));
 
@@ -71,10 +72,12 @@ pub fn spawn_listener(
     // trigger-lifecycle state (so it can hold a SYN until steering is installed).
     // Egress liveness: the NFQUEUE Accept path adds flows, conntrack DESTROY
     // events retire them, and the container is alive while any remain.
-    let open_flows: EgressOpenFlows = Arc::new(Mutex::new(OpenFlows::new()));
     spawn_destroy_listener(open_flows.clone(), |container| {
         println!("[conntrack] container {container} has no open egress flows");
     });
+    // Backstop: netlink event sockets drop under churn, so a delta-only set
+    // drifts. This repairs it; it is not the liveness signal.
+    spawn_reconcile_task(open_flows.clone(), cache.clone());
     spawn_egress_recv_thread(
         grpc.clone(),
         cache.clone(),
