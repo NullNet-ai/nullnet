@@ -72,12 +72,10 @@ pub fn spawn_listener(
     // trigger-lifecycle state (so it can hold a SYN until steering is installed).
     // Egress liveness: the NFQUEUE Accept path adds flows, conntrack DESTROY
     // events retire them, and the container is alive while any remain.
-    spawn_destroy_listener(open_flows.clone(), |container| {
-        println!("[conntrack] container {container} has no open egress flows");
-    });
+    spawn_destroy_listener(open_flows.clone(), grpc.clone());
     // Backstop: netlink event sockets drop under churn, so a delta-only set
     // drifts. This repairs it; it is not the liveness signal.
-    spawn_reconcile_task(open_flows.clone(), cache.clone());
+    spawn_reconcile_task(open_flows.clone(), cache.clone(), grpc.clone());
     spawn_egress_recv_thread(
         grpc.clone(),
         cache.clone(),

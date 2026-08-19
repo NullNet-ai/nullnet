@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tonic::{Request, Status, Streaming};
 use uuid::Uuid;
@@ -55,6 +55,11 @@ struct EgressEdge {
     /// External destinations this edge has carried, keyed by destination IP.
     /// Populated from client destination reports; lives and dies with the edge.
     destinations: HashMap<Ipv4Addr, DestStat>,
+    /// When the initiator's last connection closed, per the client's conntrack
+    /// view. `None` means connections are open (or none have been reported yet,
+    /// which is treated the same — a brand-new edge is never reaped before its
+    /// first flow is seen).
+    idle_since: Option<Instant>,
 }
 
 /// One contacted external destination, for topology rendering.
@@ -226,6 +231,7 @@ impl Orchestrator {
                     initiator_docker: initiator_docker.clone(),
                     proxy_ip,
                     destinations: HashMap::new(),
+                    idle_since: None,
                 },
             );
         }
@@ -449,6 +455,78 @@ impl Orchestrator {
             )
             .await;
         }
+    }
+
+    /// Record an egress open-connection transition reported by the client.
+    ///
+    /// `active` is the client's conntrack-backed answer to "does any connection
+    /// still exist", not "has traffic moved recently" — see
+    /// docs/uniform-edge-liveness-plan.md §3.
+    pub(crate) async fn set_egress_liveness(
+        &self,
+        initiator_ip: IpAddr,
+        initiator_docker: Option<String>,
+        active: bool,
+    ) {
+        let key: EgressKey = (initiator_ip, initiator_docker);
+        let mut edges = self.egress_edges.write().await;
+        if let Some(edge) = edges.get_mut(&key) {
+            edge.idle_since = (!active).then(Instant::now);
+        }
+    }
+
+    /// Reap egress edges that have had no open connection for `debounce`.
+    ///
+    /// The debounce is not an idle timeout: the client only reports idle once
+    /// the kernel says the flows are gone. It exists because *how promptly*
+    /// conntrack says so swings between ~10s and ~120s depending on which peer
+    /// closed first (§4d.2), and rebuilding a tunnel per burst of traffic is
+    /// wasteful. It makes the reap rate depend on us rather than on the remote
+    /// peer.
+    pub(crate) async fn reap_idle_egress_edges(&self, debounce: Duration) {
+        let now = Instant::now();
+        let removed: Vec<EgressEdge> = {
+            let mut edges = self.egress_edges.write().await;
+            let keys: Vec<EgressKey> = edges
+                .iter()
+                .filter(|(_, e)| {
+                    e.net_id != 0
+                        && e.idle_since
+                            .is_some_and(|since| now.duration_since(since) >= debounce)
+                })
+                .map(|(k, _)| k.clone())
+                .collect();
+            keys.into_iter().filter_map(|k| edges.remove(&k)).collect()
+        };
+        for e in removed {
+            println!(
+                "Egress edge for '{}' ({}) idle past the debounce; tearing down net {}",
+                e.initiator_docker.as_deref().unwrap_or("<host>"),
+                e.initiator_ip,
+                e.net_id
+            );
+            self.send_net_teardown(
+                e.initiator_ip,
+                e.initiator_docker,
+                e.proxy_ip,
+                None,
+                e.net_id,
+            )
+            .await;
+        }
+    }
+
+    /// How long until the nearest egress edge becomes reapable, if any.
+    /// Keeps the timeout loop from sleeping past a due reap.
+    pub(crate) async fn nearest_egress_expiry(&self, debounce: Duration) -> Option<Duration> {
+        let now = Instant::now();
+        self.egress_edges
+            .read()
+            .await
+            .values()
+            .filter_map(|e| e.idle_since)
+            .map(|since| debounce.saturating_sub(now.duration_since(since)))
+            .min()
     }
 
     /// Tear down egress edges on `node_ip` whose initiator container is no longer

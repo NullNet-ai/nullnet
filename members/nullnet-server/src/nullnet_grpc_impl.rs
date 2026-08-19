@@ -20,12 +20,12 @@ use crate::services::service_info::{
 use crate::timeout::check_timeouts;
 use nullnet_grpc_lib::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentEvent, BackendTriggerRequest, CertBundle, EgressDestinationReport, EgressPolicyCheck,
-    EgressPolicyVerdict, EgressTriggerRequest, Empty, HttpRedirect, HttpRoute, HttpRouteBundle,
-    IngressPolicyCheck, IngressPolicyVerdict, MsgId, Net, NetMessage, NetType, PortMapping,
-    PortMappingBundle, ProxyConnectionEnd, ProxyRequest, ServiceProtocol, ServiceReport,
-    ServiceTrigger, ServicesListResponse, Upstream, agent_event::Event as AgentEventKind,
-    http_route::Target as HttpRouteTarget,
+    AgentEvent, BackendTriggerRequest, CertBundle, EgressDestinationReport, EgressLivenessReport,
+    EgressPolicyCheck, EgressPolicyVerdict, EgressTriggerRequest, Empty, HttpRedirect, HttpRoute,
+    HttpRouteBundle, IngressPolicyCheck, IngressPolicyVerdict, MsgId, Net, NetMessage, NetType,
+    PortMapping, PortMappingBundle, ProxyConnectionEnd, ProxyRequest, ServiceProtocol,
+    ServiceReport, ServiceTrigger, ServicesListResponse, Upstream,
+    agent_event::Event as AgentEventKind, http_route::Target as HttpRouteTarget,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::{HashMap, HashSet};
@@ -1125,6 +1125,24 @@ impl NullnetGrpcImpl {
         Ok(Response::new(Empty {}))
     }
 
+    async fn egress_liveness_impl(
+        &self,
+        request: Request<EgressLivenessReport>,
+    ) -> Result<Response<Empty>, Error> {
+        let sender_ip = request
+            .remote_addr()
+            .ok_or("Could not get remote address for egress liveness report")
+            .handle_err(location!())?
+            .ip();
+
+        let req = request.into_inner();
+        let container = (!req.initiator_container.is_empty()).then_some(req.initiator_container);
+        self.orchestrator
+            .set_egress_liveness(sender_ip, container, req.active)
+            .await;
+        Ok(Response::new(Empty {}))
+    }
+
     pub(crate) async fn handle_egress_trigger(
         &self,
         sender_ip: IpAddr,
@@ -1892,6 +1910,15 @@ impl NullnetGrpc for NullnetGrpcImpl {
         req: Request<BackendTriggerRequest>,
     ) -> Result<Response<Empty>, Status> {
         self.backend_trigger_impl(req)
+            .await
+            .map_err(|err| Status::internal(err.to_str()))
+    }
+
+    async fn egress_liveness(
+        &self,
+        req: Request<EgressLivenessReport>,
+    ) -> Result<Response<Empty>, Status> {
+        self.egress_liveness_impl(req)
             .await
             .map_err(|err| Status::internal(err.to_str()))
     }

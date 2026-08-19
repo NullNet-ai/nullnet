@@ -12,6 +12,18 @@ use tokio::sync::{Notify, RwLock};
 /// stay finite and non-zero.
 const MAX_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
+/// How long an egress edge must have had zero open connections before it is
+/// torn down.
+///
+/// Not an idle timeout — the client only reports idle once conntrack says the
+/// flows are gone. This exists because *how promptly* conntrack says so swings
+/// between ~10s and ~120s depending on which peer closed first (measured; see
+/// docs/uniform-edge-liveness-plan.md §4d.2), and a container that dials out
+/// every half minute should not rebuild its tunnel every time. Deliberately a
+/// constant, not a config key: it smooths kernel timing, it does not express
+/// policy.
+const EGRESS_REAP_DEBOUNCE: Duration = Duration::from_secs(30);
+
 pub(crate) async fn check_timeouts(
     services: Arc<RwLock<StackMap>>,
     orchestrator: Orchestrator,
@@ -20,17 +32,31 @@ pub(crate) async fn check_timeouts(
     loop {
         let sleep_duration = {
             let guard = services.read().await;
-            guard
+            let ingress = guard
                 .values()
                 .map(nearest_timeout)
                 .min()
-                .unwrap_or(MAX_POLL_INTERVAL)
+                .unwrap_or(MAX_POLL_INTERVAL);
+            drop(guard);
+            // An egress edge going idle has its own deadline, and it is usually
+            // sooner than any ingress one.
+            match orchestrator
+                .nearest_egress_expiry(EGRESS_REAP_DEBOUNCE)
+                .await
+            {
+                Some(egress) => ingress.min(egress),
+                None => ingress,
+            }
         };
 
         tokio::select! {
             () = tokio::time::sleep(sleep_duration) => {}
             () = config_changed.notified() => {}
         }
+
+        orchestrator
+            .reap_idle_egress_edges(EGRESS_REAP_DEBOUNCE)
+            .await;
 
         let mut services_mut = services.write().await;
         let stack_names: Vec<String> = services_mut.keys().cloned().collect();

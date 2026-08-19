@@ -15,7 +15,7 @@
 //! keyed by the initiator container + `EGRESS_TRIGGER_PORT` (egress is
 //! once-per-container, so a single sentinel-port entry covers all its flows).
 
-use crate::conntrack::EgressOpenFlows;
+use crate::conntrack::{EgressOpenFlows, Transition, report_liveness};
 use crate::egress_policy::PolicyVerdicts;
 use crate::nfqueue::cache::BridgeIpCache;
 use crate::nfqueue::parse::{Flow, ipv4_flow};
@@ -149,10 +149,16 @@ async fn handle_packet(mut msg: Message, ctx: EgressCtx, verdict_tx: Sender<Mess
     // several Accept paths is what would make that leak easy to introduce.
     if let (Verdict::Accept, Some(container), Some(flow)) = (decision.verdict, decision.track, flow)
     {
-        ctx.open_flows
+        // Take the transition out from under the lock: reporting it is an RPC,
+        // and holding a std Mutex across an await would be unsound.
+        let became_active = ctx
+            .open_flows
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(container, flow);
+        if let Some(Transition::Active(container)) = became_active {
+            report_liveness(&ctx.grpc, container, true).await;
+        }
     }
 
     msg.set_verdict(decision.verdict);

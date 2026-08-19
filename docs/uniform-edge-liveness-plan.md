@@ -1,8 +1,9 @@
 # Event-Driven Edge Liveness
 
-**Status:** ready to implement. Design re-verified against the tree on 2026-08-19
-(§4c), **rescoped the same day** — no `egress_timeout`, no rename (§4d) — and
-extended with Step 4 after §2.5's two backend cases were separated.
+**Status:** Steps 1-3 built and **fully E2E-verified on 103+104** (2026-08-20,
+see §8). Step 4 (autonomous `backend_trigger` chains) is designed but not begun.
+Design re-verified against the tree on 2026-08-19 (§4c), rescoped the same day
+(§4d), and §4d.2/§4d.3 corrected by measurement and by implementation.
 **Scope:** server + proxy + client (Linux). Rework of how edges are kept alive and
 torn down.
 
@@ -990,3 +991,54 @@ which already walks exactly this structure via `collect_backend_chain_edges`.
 - Egress iptables setup: `members/nullnet-client/src/commands/egress.rs`
 - Conntrack flush (CLI already used): `members/nullnet-client/src/egress_policy.rs`
 - Bridge IP → container: `members/nullnet-client/src/nfqueue/cache.rs`
+
+---
+
+## 8. Results — what has actually been proved
+
+### 8.1 Step status
+
+| Step | State |
+|---|---|
+| 1 — ingress open-count + grace | **done, E2E-verified** |
+| 2 — egress conntrack `DESTROY` listener | **done, E2E-verified** |
+| 3 — egress reap on verified closure | **done, E2E-verified** |
+| 4 — autonomous `backend_trigger` chains | designed (§2.5, Step 4), **not started** |
+
+### 8.2 E2E on 103+104, 2026-08-20
+
+Release binaries of server, proxy and client on both nodes; real topology; a
+container on the default bridge as egress initiator and a never-closing peer on
+`203.0.113.1` (TEST-NET-3, outside `nullnet_internal_dsts`) so "idle-but-open"
+could be tested honestly.
+
+| Test | Result |
+|---|---|
+| Egress idle-but-open, silent 150s (5x the debounce) | never reaped; tunnel and steer rule still up |
+| Egress close -> reap | server logged the debounced teardown 92s after close (~60s conntrack + 30s debounce) |
+| `EgressPolicyChanged` flush with a live flow | conntrack entry deleted by our own flush, socket still alive, tunnel up, **no reap** (§4d.3) |
+| Ingress 90s stream vs `timeout = 20` | 90/90 chunks — §2.4 mid-stream reaping is fixed |
+| Ingress idle | reaped at exactly +20s — the count returns to zero |
+| Failed/retried requests (502, upstream resolved) | still reaps — every +1 paired through pingora's error path |
+| 24 concurrent requests | 24/24 200, one clean reap |
+| Regression | apache 200, nginx 200; 0 panics, 0 `net_teardown_unconfirmed`, 0 pool exhaustion |
+
+The two halves of each pair are what matter: a live connection pins the edge
+*and* an idle one still reaps on schedule. Either alone proves nothing.
+
+### 8.3 Known-unrelated failure seen while testing
+
+`color.dnamicro.net` returns nothing (curl 000). **Not caused by this branch** —
+raw HTTP straight to the resolved upstream `10.0.3.65:3001`, with the proxy
+entirely out of the path, also hangs: TCP connects, nothing answers. Same shape
+as the half-provisioned-edge symptom seen on `crm`. Worth chasing separately.
+
+### 8.4 Still owed before a PR (Gate 4)
+
+- `CHANGELOG.md` entry.
+- `README.md`: a UDP mapping with `idle_timeout_secs = 0` now **pins** its edge
+  for as long as the proxy runs (§5 Step 1) — `timeout` silently stops applying
+  to that service. That is a behaviour change and needs documenting.
+- Decide whether a close report that fails all its retries deserves an `Event`.
+  It silently pins an edge, which is the kind of thing the Events tab exists for;
+  routine transitions are not.

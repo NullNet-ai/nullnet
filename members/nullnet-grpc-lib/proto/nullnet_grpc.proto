@@ -38,6 +38,12 @@ service NullnetGrpc {
   // brokered through the proxy's transparent forward listener.
   rpc EgressTrigger(EgressTriggerRequest) returns (Empty);
 
+  // Egress liveness: the initiator's open-connection set crossed 0<->1. The
+  // client is the only party that can see this — conntrack on the initiator
+  // host is what knows whether a connection still exists. initiator_ip is taken
+  // from remote_addr, so the pair identifies the same edge as EgressTrigger.
+  rpc EgressLiveness(EgressLivenessReport) returns (Empty);
+
   // Report the external destinations a registered service contacted through its
   // egress edge. Distinct from EgressTrigger (which builds the edge once): the
   // client accumulates per-destination counts locally and flushes a batch
@@ -355,6 +361,19 @@ message HttpRouteBundle {
 }
 
 // Backend-triggered chains --------------------------------------------------------------------------------------------
+
+// Egress edge liveness, reported only on transitions — not per flow.
+message EgressLivenessReport {
+  // Docker container of the initiator, empty for a host process. Together with
+  // the sender's IP this is the same key EgressTrigger builds the edge under.
+  string initiator_container = 1;
+  // true  = first connection opened (0 -> 1)
+  // false = last connection closed (1 -> 0), and the flows are provably gone,
+  //         not merely idle. The server still waits out a short debounce before
+  //         reaping, because how promptly conntrack reports a close depends on
+  //         which peer hung up first.
+  bool active = 2;
+}
 
 message BackendTriggerRequest {
   string service_name = 1;

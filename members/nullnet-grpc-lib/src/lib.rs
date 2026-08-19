@@ -5,9 +5,9 @@ use crate::control_tls_verifier::PinnedCa;
 use crate::nullnet_grpc::nullnet_grpc_client::NullnetGrpcClient;
 use crate::nullnet_grpc::{
     AgentEvent, BackendTriggerRequest, CertBundle, EgressDestinationEntry, EgressDestinationReport,
-    EgressPolicyCheck, EgressTriggerRequest, Empty, HttpRouteBundle, IngressPolicyCheck, MsgId,
-    NetMessage, NetType, PortMappingBundle, ProxyConnectionEnd, ProxyRequest, ServiceReport,
-    ServicesListResponse, Upstream,
+    EgressLivenessReport, EgressPolicyCheck, EgressTriggerRequest, Empty, HttpRouteBundle,
+    IngressPolicyCheck, MsgId, NetMessage, NetType, PortMappingBundle, ProxyConnectionEnd,
+    ProxyRequest, ServiceReport, ServicesListResponse, Upstream,
 };
 pub use proto::*;
 use std::path::Path;
@@ -106,6 +106,24 @@ impl NullnetGrpcInterface {
         self.client
             .clone()
             .proxy_connection_closed(Request::new(message))
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Report an egress open-connection transition (0<->1) for one container.
+    #[allow(clippy::missing_errors_doc)]
+    pub async fn egress_liveness(
+        &self,
+        initiator_container: String,
+        active: bool,
+    ) -> Result<(), String> {
+        self.client
+            .clone()
+            .egress_liveness(Request::new(EgressLivenessReport {
+                initiator_container,
+                active,
+            }))
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())

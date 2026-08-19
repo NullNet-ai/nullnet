@@ -17,6 +17,7 @@ use netlink_sys::Socket;
 use netlink_sys::{
     AsyncSocket, AsyncSocketExt, SocketAddr, TokioSocket, protocols::NETLINK_NETFILTER,
 };
+use nullnet_grpc_lib::NullnetGrpcInterface;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -160,6 +161,17 @@ fn destroy_socket_async() -> std::io::Result<TokioSocket> {
     Ok(socket)
 }
 
+/// Tell the server an initiator's open-connection count crossed 0<->1.
+///
+/// Fire-and-forget: a lost report is corrected by the periodic reconcile, and
+/// blocking the event loop on the control channel would stall every other
+/// container's events behind one slow RPC.
+pub async fn report_liveness(grpc: &NullnetGrpcInterface, container: String, active: bool) {
+    if let Err(e) = grpc.egress_liveness(container.clone(), active).await {
+        eprintln!("[conntrack] egress_liveness({container}, active={active}) failed: {e}");
+    }
+}
+
 /// The open-flow set for egress, keyed by container.
 pub type EgressOpenFlows = Arc<Mutex<OpenFlows<String>>>;
 
@@ -168,7 +180,7 @@ pub type EgressOpenFlows = Arc<Mutex<OpenFlows<String>>>;
 /// Runs for the life of the process. A failure to subscribe is fatal to egress
 /// liveness — without it flows would only ever be added — so it is reported
 /// loudly rather than silently degrading to "everything stays alive forever".
-pub fn spawn_destroy_listener(open: EgressOpenFlows, on_idle: impl Fn(String) + Send + 'static) {
+pub fn spawn_destroy_listener(open: EgressOpenFlows, grpc: NullnetGrpcInterface) {
     tokio::spawn(async move {
         let socket = match destroy_socket_async() {
             Ok(s) => s,
@@ -190,7 +202,7 @@ pub fn spawn_destroy_listener(open: EgressOpenFlows, on_idle: impl Fn(String) + 
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .remove(&flow);
                         if let Some(Transition::Idle(container)) = transition {
-                            on_idle(container);
+                            report_liveness(&grpc, container, false).await;
                         }
                     }
                 }
@@ -319,11 +331,15 @@ impl<K: Eq + std::hash::Hash + Clone> OpenFlows<K> {
         owner: K,
         flows: impl IntoIterator<Item = Flow>,
     ) -> Option<Transition<K>> {
-        if let Some(old) = self.per_owner.remove(&owner) {
-            for f in old {
-                self.owner_of.remove(&f);
+        let was_active = match self.per_owner.remove(&owner) {
+            Some(old) => {
+                for f in old {
+                    self.owner_of.remove(&f);
+                }
+                true
             }
-        }
+            None => false,
+        };
         let set: std::collections::HashSet<Flow> = flows.into_iter().collect();
         for f in &set {
             self.owner_of.insert(*f, owner.clone());
@@ -334,9 +350,13 @@ impl<K: Eq + std::hash::Hash + Clone> OpenFlows<K> {
             // A non-empty dump is first-hand evidence again.
             self.suppressed.remove(&owner);
         }
+        // Report only a real 1->0. An owner that was already empty has nothing
+        // to transition from, and reporting it would send one pointless RPC per
+        // container per pass — every container on the host, forever.
+        //
         // An empty dump during suppression is expected — we emptied the table
-        // ourselves — so it must not be reported as idle.
-        (now_empty && !self.is_suppressed(&owner)).then_some(Transition::Idle(owner))
+        // ourselves — so that must not be reported either.
+        (was_active && now_empty && !self.is_suppressed(&owner)).then_some(Transition::Idle(owner))
     }
 
     #[cfg(test)]
@@ -633,6 +653,16 @@ tcp      6 100 ESTABLISHED src=172.17.0.2 dst=2.2.2.2 sport=2 dport=80 \
         drop(stream);
     }
 
+    /// Reconcile must not report idle for an owner that was never active: the
+    /// periodic pass walks every container on the host, and reporting each one
+    /// would be a pointless RPC per container per pass.
+    #[test]
+    fn reconcile_on_an_untracked_owner_reports_nothing() {
+        let mut o: OpenFlows<&str> = OpenFlows::new();
+        assert_eq!(o.reconcile("never-seen", []), None);
+        assert!(!o.is_active(&"never-seen"));
+    }
+
     /// Owners are independent: one going idle says nothing about another.
     #[test]
     fn owners_are_independent() {
@@ -716,7 +746,11 @@ pub async fn reconcile_container(
 ///
 /// This is self-heal, not liveness-polling: the event stream remains the signal,
 /// and this only repairs what `ENOBUFS` lost.
-pub fn spawn_reconcile_task(open: EgressOpenFlows, cache: crate::nfqueue::BridgeIpCache) {
+pub fn spawn_reconcile_task(
+    open: EgressOpenFlows,
+    cache: crate::nfqueue::BridgeIpCache,
+    grpc: NullnetGrpcInterface,
+) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(RECONCILE_INTERVAL).await;
@@ -730,6 +764,7 @@ pub fn spawn_reconcile_task(open: EgressOpenFlows, cache: crate::nfqueue::Bridge
                 if let Some(Transition::Idle(c)) = reconcile_container(&open, &container, ip).await
                 {
                     println!("[conntrack] reconcile: container {c} has no open egress flows");
+                    report_liveness(&grpc, c, false).await;
                 }
             }
         }
