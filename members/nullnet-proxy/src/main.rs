@@ -1,11 +1,13 @@
 mod env;
 mod nullnet_proxy;
 mod port_mappings;
+mod routes;
 mod tcp_relay;
 mod tls;
 mod udp_relay;
 
 use crate::nullnet_proxy::NullnetProxy;
+use crate::routes::{Resolution, RouteMatch, RouteTable};
 use crate::tls::{CertStore, TlsResolver};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -22,6 +24,7 @@ use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::{Error, ErrorType, Result};
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{ProxyHttp, Session};
+use std::net::IpAddr;
 use std::process;
 use std::sync::Arc;
 use std::thread;
@@ -30,19 +33,90 @@ use std::time::Instant;
 const PROXY_PORT: u16 = 80;
 const HTTPS_PROXY_PORT: u16 = 443;
 
+/// Per-request state threaded from `request_filter` to `upstream_peer`/
+/// `upstream_request_filter`.
+#[derive(Default)]
+pub struct ProxyCtx {
+    /// The backend service name the HTTP route table resolved for this
+    /// request, if any. Set in `request_filter` (either an explicit route
+    /// match or the [`Resolution::Fallback`] Host-header default) and read
+    /// by `upstream_peer` in place of recomputing it from scratch. `None`
+    /// only when `request_filter` had no Host at all to resolve —
+    /// `upstream_peer`'s own header derivation is the fallback for that case,
+    /// exactly as it was before path-based routing existed.
+    service_name: Option<String>,
+    /// The path to actually send upstream, when a matched route's
+    /// `strip_prefix` rewrote it. `None` means "forward the original path
+    /// unchanged" — the pre-this-field, only behavior.
+    forward_path: Option<String>,
+}
+
 #[async_trait]
 impl ProxyHttp for NullnetProxy {
-    type CTX = ();
-    fn new_ctx(&self) -> Self::CTX {}
+    type CTX = ProxyCtx;
+    fn new_ctx(&self) -> Self::CTX {
+        ProxyCtx::default()
+    }
 
-    async fn request_filter(&self, session: &mut Session, _ctx: &mut ()) -> Result<bool> {
+    async fn request_filter(&self, session: &mut Session, ctx: &mut ProxyCtx) -> Result<bool> {
+        // Resolve HTTP path-based routing/redirects first — a redirect or an
+        // explicitly-uncovered path short-circuits right here, on both the
+        // HTTP and HTTPS listeners. A resolved backend feeds both the
+        // ingress-country check below and `upstream_peer`. See
+        // docs/http-path-routing-design.md.
+        if let Some(host) = ingress_host(session) {
+            let path = session.req_header().uri.path().to_string();
+            match self.routes.load().resolve(&host, &path) {
+                Resolution::Matched(RouteMatch::Backend {
+                    service_name,
+                    forward_path,
+                }) => {
+                    ctx.service_name = Some(service_name);
+                    if forward_path != path {
+                        ctx.forward_path = Some(forward_path);
+                    }
+                }
+                Resolution::Matched(RouteMatch::Redirect {
+                    to,
+                    status,
+                    preserve_path,
+                    preserve_query,
+                    matched_suffix,
+                }) => {
+                    let location = resolve_redirect_target(
+                        &to,
+                        &matched_suffix,
+                        preserve_path,
+                        preserve_query,
+                        session.req_header(),
+                        self.tls,
+                    );
+                    let mut resp = ResponseHeader::build(status, None)?;
+                    resp.insert_header("location", location.as_str())?;
+                    resp.insert_header("content-length", "0")?;
+                    session.write_response_header(Box::new(resp), true).await?;
+                    return Ok(true);
+                }
+                Resolution::NotFound => {
+                    let mut resp = ResponseHeader::build(404, None)?;
+                    resp.insert_header("content-length", "0")?;
+                    session.write_response_header(Box::new(resp), true).await?;
+                    return Ok(true);
+                }
+                Resolution::Fallback => ctx.service_name = Some(host),
+            }
+        }
+
         // Ingress country policy (both HTTP and HTTPS listeners), enforced before
-        // we touch the backend. Best-effort: if host or client IP can't be read
-        // we let upstream_peer handle it; only an explicit server deny 403s, and a
-        // check RPC error is logged and allowed through (upstream lookup will fail
-        // anyway if the control plane is down).
+        // we touch the backend. Keyed on the *resolved* backend — path routing
+        // may send this host to a different service than its own name — not
+        // the raw Host header. Best-effort: if host/client IP/resolution
+        // can't be read we let upstream_peer handle it; only an explicit
+        // server deny 403s, and a check RPC error is logged and allowed
+        // through (upstream lookup will fail anyway if the control plane is
+        // down).
         if let (Some(service), Some(client_ip)) =
-            (ingress_host(session), ingress_client_ip(session))
+            (ctx.service_name.clone(), ingress_client_ip(session))
         {
             match self.server.check_ingress(service.clone(), client_ip).await {
                 Ok(false) => {
@@ -79,7 +153,11 @@ impl ProxyHttp for NullnetProxy {
         Ok(true)
     }
 
-    async fn upstream_peer(&self, session: &mut Session, _ctx: &mut ()) -> Result<Box<HttpPeer>> {
+    async fn upstream_peer(
+        &self,
+        session: &mut Session,
+        ctx: &mut ProxyCtx,
+    ) -> Result<Box<HttpPeer>> {
         println!(
             "Received new proxy request from client: {:?}\n",
             session.client_addr()
@@ -181,7 +259,12 @@ impl ProxyHttp for NullnetProxy {
             },
         };
 
-        let service_name = url.to_string();
+        // Prefer the route table's resolution (`request_filter` already ran)
+        // over the raw Host header — path-based routing may send this host to
+        // a different backend than its own name. Falls back to the Host
+        // header itself when `request_filter` had nothing to resolve (no
+        // Host at all), matching pre-routing behavior.
+        let service_name = ctx.service_name.clone().unwrap_or_else(|| url.to_string());
         let proxy_req = ProxyRequest {
             client_ip: client_ip.clone(),
             service_name: service_name.clone(),
@@ -190,22 +273,31 @@ impl ProxyHttp for NullnetProxy {
         let upstream = match self.get_or_add_upstream(proxy_req).await {
             Ok(u) => u,
             Err(_) => {
-                let server = self.server.clone();
-                let cip = client_ip.clone();
-                let svc = service_name.clone();
-                tokio::spawn(async move {
-                    let _ = server
-                        .report_event(AgentEvent {
-                            event: Some(AgentEventKind::UpstreamLookupFailed(
-                                AgentUpstreamLookupFailed {
-                                    service_name: svc,
-                                    client_ip: cip,
-                                    error_message: "upstream lookup failed".to_string(),
-                                },
-                            )),
-                        })
-                        .await;
-                });
+                // Anything dialing the proxy by address instead of by name sends an
+                // IP as its `Host`: internet scanners on the public :80, or a local
+                // probe (`curl http://0.0.0.0/`). No service is ever named after an
+                // IP, so these can only ever fail — log them, but keep them out of
+                // the event buffer that real errors have to share.
+                if url.parse::<IpAddr>().is_ok() {
+                    eprintln!("Ignoring proxy request for IP host '{url}' (client {client_ip})");
+                } else {
+                    let server = self.server.clone();
+                    let cip = client_ip.clone();
+                    let svc = service_name.clone();
+                    tokio::spawn(async move {
+                        let _ = server
+                            .report_event(AgentEvent {
+                                event: Some(AgentEventKind::UpstreamLookupFailed(
+                                    AgentUpstreamLookupFailed {
+                                        service_name: svc,
+                                        client_ip: cip,
+                                        error_message: "upstream lookup failed".to_string(),
+                                    },
+                                )),
+                            })
+                            .await;
+                    });
+                }
                 return Err(Error::explain(
                     ErrorType::BindError,
                     "Failed to retrieve upstream",
@@ -243,8 +335,15 @@ impl ProxyHttp for NullnetProxy {
         &self,
         session: &mut Session,
         upstream_request: &mut RequestHeader,
-        _ctx: &mut Self::CTX,
+        ctx: &mut Self::CTX,
     ) -> Result<()> {
+        // A matched route's `strip_prefix` rewrote the path to send
+        // upstream — apply it here, on the outgoing request only; the
+        // client-facing session/logs still show the original path.
+        if let Some(forward_path) = &ctx.forward_path {
+            rewrite_uri_path(upstream_request, forward_path)?;
+        }
+
         // TLS terminates at this proxy, so it is the sole source of truth for
         // client IP, scheme, and requested host; any X-Forwarded-* the client
         // itself sent is untrusted and must be overwritten, not appended to.
@@ -255,6 +354,24 @@ impl ProxyHttp for NullnetProxy {
             ingress_raw_host(session),
         )
     }
+}
+
+/// Replace `upstream_request`'s path with `new_path`, preserving its
+/// existing query string. Used when a matched route's `strip_prefix`
+/// rewrote the path to send upstream.
+fn rewrite_uri_path(upstream_request: &mut RequestHeader, new_path: &str) -> Result<()> {
+    let path_and_query = match upstream_request.uri.query() {
+        Some(q) => format!("{new_path}?{q}"),
+        None => new_path.to_string(),
+    };
+    let uri = http::Uri::builder()
+        .path_and_query(path_and_query)
+        .build()
+        .map_err(|e| {
+            Error::explain(ErrorType::InternalError, format!("bad rewritten path: {e}"))
+        })?;
+    upstream_request.set_uri(uri);
+    Ok(())
 }
 
 /// Overwrite the X-Forwarded-{For,Proto,Host} headers on the upstream request
@@ -329,13 +446,25 @@ async fn main() -> Result<(), nullnet_liberror::Error> {
     // Certificates come from the control service over gRPC. Start empty; the
     // watch task fills this and hot-reloads it on every change.
     let cert_store: Arc<ArcSwap<CertStore>> = Arc::new(ArcSwap::from_pointee(CertStore::default()));
-    let nullnet_proxy = NullnetProxy::new(cert_store.clone()).await?;
+    // HTTP route table, same story: starts empty (Resolution::Fallback keeps
+    // Host-header routing until the first push arrives), hot-reloaded from
+    // then on. See docs/http-path-routing-design.md.
+    let route_table: Arc<ArcSwap<RouteTable>> =
+        Arc::new(ArcSwap::from_pointee(RouteTable::default()));
+    let nullnet_proxy = NullnetProxy::new(cert_store.clone(), route_table.clone()).await?;
 
     // subscribe to certificate updates (initial set + every subsequent change)
     {
         let server = nullnet_proxy.server.clone();
         let store = cert_store.clone();
         tokio::spawn(async move { watch_certificates(server, store).await });
+    }
+
+    // subscribe to HTTP route-table updates (initial set + every subsequent change)
+    {
+        let server = nullnet_proxy.server.clone();
+        let store = route_table.clone();
+        tokio::spawn(async move { routes::watch_and_serve(server, store).await });
     }
 
     // Egress is handled by the co-located nullnet-client's kernel forwarding
@@ -385,6 +514,63 @@ fn https_redirect_url(req: &RequestHeader, https_port: u16) -> String {
     } else {
         format!("https://{hostname}:{https_port}{}", req.uri)
     }
+}
+
+/// Build the `Location` value for a matched redirect route: `to` verbatim if
+/// it already names a scheme, otherwise (a bare `/...` path) the same
+/// scheme/host as the incoming request with `to` substituted as the path. No
+/// variable interpolation (e.g. no matched-suffix preservation) — see
+/// docs/http-path-routing-design.md.
+/// Build the `Location` value for a matched redirect route: `to` verbatim
+/// (plus any appended suffix/query — see below), or — for a bare `/...`
+/// path — the same scheme/host as the incoming request with `to`
+/// substituted as the path.
+///
+/// `matched_suffix` is the request path's suffix beyond the matched
+/// `path_prefix`; appended to `to` when `preserve_path` is set (NGINX
+/// `rewrite ^/old(.*) /new$1 permanent;` equivalent). `preserve_query`
+/// appends the original request's query string, merged with `to`'s own
+/// query (if any) via `&` rather than dropping either.
+fn resolve_redirect_target(
+    to: &str,
+    matched_suffix: &str,
+    preserve_path: bool,
+    preserve_query: bool,
+    req: &RequestHeader,
+    tls: bool,
+) -> String {
+    let (base, existing_query) = match to.split_once('?') {
+        Some((b, q)) => (b.to_string(), Some(q.to_string())),
+        None => (to.to_string(), None),
+    };
+
+    let mut target = base;
+    if preserve_path && !matched_suffix.is_empty() {
+        target.push_str(matched_suffix);
+    }
+
+    let mut query_parts: Vec<String> = Vec::new();
+    if let Some(q) = existing_query {
+        query_parts.push(q);
+    }
+    if preserve_query && let Some(q) = req.uri.query() {
+        query_parts.push(q.to_string());
+    }
+    if !query_parts.is_empty() {
+        target.push('?');
+        target.push_str(&query_parts.join("&"));
+    }
+
+    if target.contains("://") {
+        return target;
+    }
+    let host_header = req
+        .headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let scheme = if tls { "https" } else { "http" };
+    format!("{scheme}://{host_header}{target}")
 }
 
 /// Subscribe to the control service's certificate stream and atomically swap the
@@ -504,6 +690,101 @@ mod tests {
         let mut r = req("color.com", "/");
         set_forwarded_headers(&mut r, None, false, None).unwrap();
         assert!(r.headers.get("x-forwarded-host").is_none());
+    }
+
+    #[test]
+    fn redirect_target_absolute_url_used_verbatim_by_default() {
+        let r = req("old.example.com", "/whatever?x=1");
+        assert_eq!(
+            resolve_redirect_target(
+                "https://new.example.com/",
+                "whatever?x=1",
+                false,
+                false,
+                &r,
+                false
+            ),
+            "https://new.example.com/"
+        );
+    }
+
+    #[test]
+    fn redirect_target_relative_path_uses_request_host_and_scheme() {
+        let r = req("old.example.com", "/old");
+        assert_eq!(
+            resolve_redirect_target("/new", "", false, false, &r, true),
+            "https://old.example.com/new"
+        );
+    }
+
+    #[test]
+    fn redirect_target_preserve_path_appends_matched_suffix() {
+        let r = req("old.example.com", "/old/x/y");
+        assert_eq!(
+            resolve_redirect_target("/new", "/x/y", true, false, &r, false),
+            "http://old.example.com/new/x/y"
+        );
+    }
+
+    #[test]
+    fn redirect_target_preserve_path_no_op_on_exact_match() {
+        let r = req("old.example.com", "/old");
+        assert_eq!(
+            resolve_redirect_target("/new", "", true, false, &r, false),
+            "http://old.example.com/new"
+        );
+    }
+
+    #[test]
+    fn redirect_target_preserve_query_appends_request_query() {
+        let r = req("old.example.com", "/old?foo=bar");
+        assert_eq!(
+            resolve_redirect_target("/new", "", false, true, &r, false),
+            "http://old.example.com/new?foo=bar"
+        );
+    }
+
+    #[test]
+    fn redirect_target_preserve_query_merges_with_configured_query() {
+        let r = req("old.example.com", "/old?foo=bar");
+        assert_eq!(
+            resolve_redirect_target("/new?static=1", "", false, true, &r, false),
+            "http://old.example.com/new?static=1&foo=bar"
+        );
+    }
+
+    #[test]
+    fn redirect_target_preserve_query_absent_when_request_has_none() {
+        let r = req("old.example.com", "/old");
+        assert_eq!(
+            resolve_redirect_target("/new", "", false, true, &r, false),
+            "http://old.example.com/new"
+        );
+    }
+
+    #[test]
+    fn redirect_target_preserve_path_and_query_together() {
+        let r = req("old.example.com", "/old/x?foo=bar");
+        assert_eq!(
+            resolve_redirect_target("/new", "/x", true, true, &r, true),
+            "https://old.example.com/new/x?foo=bar"
+        );
+    }
+
+    #[test]
+    fn rewrite_uri_path_preserves_query_string() {
+        let mut r = req("api", "/api/users?limit=10");
+        rewrite_uri_path(&mut r, "/users").unwrap();
+        assert_eq!(r.uri.path(), "/users");
+        assert_eq!(r.uri.query(), Some("limit=10"));
+    }
+
+    #[test]
+    fn rewrite_uri_path_without_query() {
+        let mut r = req("api", "/api/users");
+        rewrite_uri_path(&mut r, "/users").unwrap();
+        assert_eq!(r.uri.path(), "/users");
+        assert_eq!(r.uri.query(), None);
     }
 }
 

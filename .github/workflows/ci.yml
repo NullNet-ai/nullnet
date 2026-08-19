@@ -25,7 +25,7 @@ jobs:
           - nullnet-proxy
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -55,14 +55,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src, rustfmt, clippy
 
-      - name: install bpf-linker
-        run: cargo install bpf-linker --locked
+      # Installs a prebuilt binary rather than compiling from source: bpf-linker's
+      # own build needs a matching local LLVM (`llvm-config` on PATH), which the
+      # runner image doesn't reliably provide and isn't worth pinning here. This
+      # is the install method aya-rs's own template CI uses.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: bpf-linker
 
       - name: Install protoc
         run: |

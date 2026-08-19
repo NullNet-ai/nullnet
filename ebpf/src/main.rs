@@ -243,19 +243,19 @@ fn data_plane(src: u32, dst: u32, src_port: u16, dst_port: u16) -> bool {
 
 #[inline]
 fn is_peer(ip: u32) -> bool {
-    unsafe { PEERS.get(&ip) }.is_some()
+    unsafe { PEERS.get(ip) }.is_some()
 }
 
 #[inline]
 fn vxlan_port_peer(port: u16) -> Option<u32> {
-    unsafe { VXLAN_PORTS.get(&port) }.copied()
+    unsafe { VXLAN_PORTS.get(port) }.copied()
 }
 
 // Is `port` allowed as a destination in this direction/proto? (ALLOW_PORTS key
 // layout must match userspace `allow_key` in members/nullnet-client/src/ebpf.)
 #[inline]
 fn is_port_allowed(is_egress: bool, proto: u8, port: u16) -> bool {
-    unsafe { ALLOW_PORTS.get(&allow_key(is_egress, proto, port)) }.is_some()
+    unsafe { ALLOW_PORTS.get(allow_key(is_egress, proto, port)) }.is_some()
 }
 
 #[inline]
@@ -288,7 +288,7 @@ fn ct_hit(key: &CtKey) -> bool {
 
 #[inline]
 fn ct_insert(key: &CtKey) {
-    let _ = CT.insert(key, &1u8, 0);
+    let _ = CT.insert(key, 1u8, 0);
 }
 
 #[panic_handler]

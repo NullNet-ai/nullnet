@@ -1,7 +1,7 @@
 use super::AppState;
 use super::auth::{AuthContext, require_scope};
 use crate::auth::Scope;
-use crate::services::input::{detect_port_conflicts, validate_stack_toml};
+use crate::services::input::{detect_port_conflicts, detect_route_conflicts, validate_stack_toml};
 use axum::extract::{Extension, Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -12,7 +12,7 @@ use serde::Serialize;
 /// the UI enforces (`[A-Za-z0-9_-]+`) — this also rejects path separators, dots,
 /// NUL, whitespace, and control characters, which would traverse, fail the write
 /// with a 500, or create ghost files.
-fn valid_stack_name(stack: &str) -> bool {
+pub(super) fn valid_stack_name(stack: &str) -> bool {
     !stack.is_empty()
         && stack
             .chars()
@@ -48,13 +48,21 @@ pub(super) async fn config_handler(
 }
 
 #[derive(Serialize)]
-struct SaveResult {
+pub(super) struct SaveResult {
     ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
-fn rejected(status: StatusCode, error: impl Into<String>) -> Response {
+pub(super) fn saved_ok() -> Response {
+    axum::Json(SaveResult {
+        ok: true,
+        error: None,
+    })
+    .into_response()
+}
+
+pub(super) fn rejected(status: StatusCode, error: impl Into<String>) -> Response {
     (
         status,
         axum::Json(SaveResult {
@@ -84,8 +92,8 @@ pub(super) async fn save_handler(
     }
 
     // 1. Syntax + semantic validation (mirrors the loader).
-    let parsed = match validate_stack_toml(&body) {
-        Ok(map) => map,
+    let (parsed, parsed_routes) = match validate_stack_toml(&body) {
+        Ok(parsed) => parsed,
         Err(e) => return rejected(StatusCode::UNPROCESSABLE_ENTITY, e),
     };
 
@@ -107,6 +115,29 @@ pub(super) async fn save_handler(
             format!(
                 "listen_port {} ({:?}) already used by service '{other_service}' in stack '{other_stack}'",
                 c.listen_port, c.protocol
+            ),
+        );
+    }
+
+    // 2b. Cross-stack route conflicts: same idea, for this stack's `[[route]]`
+    //     (host, path) pairs — including its own explicit routes clashing
+    //     with each other.
+    let mut candidate_routes = state.routes.read().await.clone();
+    candidate_routes.insert(stack.clone(), parsed_routes);
+    if let Some(c) = detect_route_conflicts(&candidate_routes)
+        .into_iter()
+        .find(|c| c.stack_a == stack || c.stack_b == stack)
+    {
+        let other_stack = if c.stack_a == stack {
+            c.stack_b
+        } else {
+            c.stack_a
+        };
+        return rejected(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!(
+                "route '{} {}' already claimed by stack '{other_stack}'",
+                c.host, c.path
             ),
         );
     }

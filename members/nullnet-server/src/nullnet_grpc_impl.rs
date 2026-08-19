@@ -13,15 +13,17 @@ use crate::services::changes::{
 };
 use crate::services::clients::{Client, ClientInfo};
 use crate::services::edge::{Edge, RegisteredEdge};
-use crate::services::input::{MatchIndex, ServicesToml, StackMap};
+use crate::services::input::{MatchIndex, RouteMap, RouteTarget, ServicesToml, StackMap};
 use crate::services::service_info::{CountryPolicy, ServiceInfo, backend_involved_services};
 use crate::timeout::check_timeouts;
 use nullnet_grpc_lib::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use nullnet_grpc_lib::nullnet_grpc::{
     AgentEvent, BackendTriggerRequest, CertBundle, EgressDestinationReport, EgressPolicyCheck,
-    EgressPolicyVerdict, EgressTriggerRequest, Empty, IngressPolicyCheck, IngressPolicyVerdict,
-    MsgId, Net, NetMessage, NetType, PortMapping, PortMappingBundle, ProxyRequest, ServiceReport,
-    ServiceTrigger, ServicesListResponse, Upstream, agent_event::Event as AgentEventKind,
+    EgressPolicyVerdict, EgressTriggerRequest, Empty, HttpRedirect, HttpRoute, HttpRouteBundle,
+    IngressPolicyCheck, IngressPolicyVerdict, MsgId, Net, NetMessage, NetType, PortMapping,
+    PortMappingBundle, ProxyRequest, ServiceProtocol, ServiceReport, ServiceTrigger,
+    ServicesListResponse, Upstream, agent_event::Event as AgentEventKind,
+    http_route::Target as HttpRouteTarget,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::{HashMap, HashSet};
@@ -38,6 +40,12 @@ pub(crate) struct NullnetGrpcImpl {
     /// Host-match index (stack → match entries), rebuilt alongside `services`.
     /// Used to join a client's raw observations to the services it hosts.
     match_index: Arc<RwLock<MatchIndex>>,
+    /// Explicit `[[route]]` entries, partitioned by stack name, rebuilt
+    /// alongside `services`. The admin API reads this for cross-stack
+    /// `(host, path)` conflict checks on save; see `build_http_route_bundle`
+    /// for how it's turned into the wire table (including implicit fallback
+    /// routes) the proxy actually consumes.
+    routes: Arc<RwLock<RouteMap>>,
     /// Orchestrator to manage TAP-based clients and NET setups
     orchestrator: Orchestrator,
     /// Latest TLS certificate set, kept in sync with `./certs` by a watcher.
@@ -46,6 +54,10 @@ pub(crate) struct NullnetGrpcImpl {
     /// Live TCP/UDP port→service table, derived from `services` and refreshed
     /// on every services.toml change. Proxies subscribe for updates.
     port_mappings: watch::Receiver<PortMappingBundle>,
+    /// Live HTTP (host, path) → target route table, derived from `services`/
+    /// `routes` and refreshed on every services.toml change. Proxies
+    /// subscribe for updates. See docs/http-path-routing-design.md.
+    http_routes: watch::Receiver<HttpRouteBundle>,
     /// One lock per in-flight proxy request identity, so concurrent duplicates
     /// are serialized rather than each building the same chain. See
     /// [`NullnetGrpcImpl::handle_proxy_request`].
@@ -82,6 +94,72 @@ fn build_port_mapping_bundle(stacks: &StackMap) -> PortMappingBundle {
             .join(", ")
     );
     PortMappingBundle { mappings }
+}
+
+/// Build the live HTTP `(host, path)` → target route table from the current
+/// `StackMap`/`RouteMap`: every explicit `[[route]]` entry, plus an implicit
+/// `{host = name, path = "/"} -> Service(name)` fallback for every
+/// proxy-reachable http service whose name isn't already claimed as a host by
+/// an explicit route in *any* stack — so an install with no `[[route]]`
+/// entries at all keeps today's plain Host-header routing unchanged. See
+/// docs/http-path-routing-design.md.
+fn build_http_route_bundle(stacks: &StackMap, routes: &RouteMap) -> HttpRouteBundle {
+    let explicit_hosts: HashSet<&str> = routes
+        .values()
+        .flat_map(|entries| entries.iter().map(|r| r.host.as_str()))
+        .collect();
+
+    let mut wire_routes: Vec<HttpRoute> = routes
+        .values()
+        .flat_map(|entries| entries.iter())
+        .map(|r| {
+            let (target, strip_prefix) = match &r.target {
+                RouteTarget::Service { name, strip_prefix } => {
+                    (HttpRouteTarget::ServiceName(name.clone()), *strip_prefix)
+                }
+                RouteTarget::Redirect {
+                    to,
+                    status,
+                    preserve_path,
+                    preserve_query,
+                } => (
+                    HttpRouteTarget::Redirect(HttpRedirect {
+                        to: to.clone(),
+                        status_code: u32::from(*status),
+                        preserve_path: *preserve_path,
+                        preserve_query: *preserve_query,
+                    }),
+                    false,
+                ),
+            };
+            HttpRoute {
+                host: r.host.clone(),
+                path_prefix: r.path.clone(),
+                target: Some(target),
+                strip_prefix,
+            }
+        })
+        .collect();
+
+    for (name, info) in stacks.values().flat_map(HashMap::iter) {
+        if info.protocol() != ServiceProtocol::Http || info.timeout().is_none() {
+            continue;
+        }
+        if explicit_hosts.contains(name.as_str()) {
+            continue;
+        }
+        wire_routes.push(HttpRoute {
+            host: name.clone(),
+            path_prefix: "/".to_string(),
+            target: Some(HttpRouteTarget::ServiceName(name.clone())),
+            strip_prefix: false,
+        });
+    }
+
+    println!("[http-routes] bundle built: {} route(s)", wire_routes.len());
+    HttpRouteBundle {
+        routes: wire_routes,
+    }
 }
 
 /// Build the trigger config for one node: the triggers of the services it
@@ -150,10 +228,11 @@ fn find_service_stack<'a>(services: &'a StackMap, service_name: &str) -> Option<
 }
 
 impl NullnetGrpcImpl {
-    pub async fn new() -> Result<Self, Error> {
-        let (stacks, index) = ServicesToml::load_validated().await?;
+    pub async fn new(db: crate::db::Db) -> Result<Self, Error> {
+        let (stacks, index, route_map, startup_conflicts) = ServicesToml::load_validated().await?;
         let services = Arc::new(RwLock::new(stacks));
         let match_index = Arc::new(RwLock::new(index));
+        let routes = Arc::new(RwLock::new(route_map));
 
         // regenerate the service graphviz periodically for debugging
         let services_2 = services.clone();
@@ -162,29 +241,70 @@ impl NullnetGrpcImpl {
         });
 
         let orchestrator = Orchestrator::new();
+        // Wired in before anything below emits, so even the startup-conflict
+        // events just below are persisted, not just broadcast to (currently
+        // nonexistent) live subscribers.
+        orchestrator.events.attach_db(db);
+
+        // Conflicts detected before the event store existed: the offending
+        // stacks were dropped, so report them now that we can.
+        for c in startup_conflicts.ports {
+            orchestrator
+                .events
+                .emit(Event::port_mapping_conflict(
+                    c.stack_a,
+                    c.service_a,
+                    c.stack_b,
+                    c.service_b,
+                    format!("{:?}", c.protocol),
+                    c.listen_port,
+                ))
+                .await;
+        }
+        for c in startup_conflicts.routes {
+            orchestrator
+                .events
+                .emit(Event::route_conflict(c.stack_a, c.stack_b, c.host, c.path))
+                .await;
+        }
+
         let config_changed = Arc::new(Notify::new());
         // Separate from `config_changed`: `Notify::notify_one` wakes at most
         // one waiter, so each consumer needs its own `Notify` rather than
         // racing `check_timeouts` for the same wake-up.
         let port_mappings_changed = Arc::new(Notify::new());
+        let http_routes_changed = Arc::new(Notify::new());
 
         // keep services up to date with the services.toml file
         let services_2 = services.clone();
         let match_index_2 = match_index.clone();
+        let routes_2 = routes.clone();
         let orchestrator_2 = orchestrator.clone();
         let config_changed_2 = config_changed.clone();
         let port_mappings_changed_2 = port_mappings_changed.clone();
+        let http_routes_changed_2 = http_routes_changed.clone();
+        let events_2 = orchestrator.events.clone();
         tokio::spawn(async move {
             if let Err(e) = ServicesToml::watch(
                 &services_2,
                 &match_index_2,
+                &routes_2,
                 orchestrator_2,
                 config_changed_2,
                 port_mappings_changed_2,
+                http_routes_changed_2,
             )
             .await
             {
+                // Config hot-reload is dead for the rest of this process: every
+                // later edit is silently ignored.
                 eprintln!("failed to watch services.toml for changes: {e:?}");
+                events_2
+                    .emit(Event::file_watch_failed(
+                        "services.toml".to_string(),
+                        format!("{e:?}"),
+                    ))
+                    .await;
             }
         });
 
@@ -202,6 +322,24 @@ impl NullnetGrpcImpl {
             }
         });
 
+        // live HTTP (host, path)→target route table, refreshed whenever
+        // services.toml changes
+        let initial_routes =
+            build_http_route_bundle(&*services.read().await, &*routes.read().await);
+        let (http_routes_tx, http_routes_rx) = watch::channel(initial_routes);
+        let services_2 = services.clone();
+        let routes_2 = routes.clone();
+        tokio::spawn(async move {
+            loop {
+                http_routes_changed.notified().await;
+                let bundle =
+                    build_http_route_bundle(&*services_2.read().await, &*routes_2.read().await);
+                if http_routes_tx.send(bundle).is_err() {
+                    break;
+                }
+            }
+        });
+
         // periodically check for timed-out proxy clients and tear down their chains
         let services_2 = services.clone();
         let orchestrator_2 = orchestrator.clone();
@@ -211,18 +349,29 @@ impl NullnetGrpcImpl {
 
         // load TLS certificates and keep them in sync with the ./certs dir
         let (certs_tx, certs_rx) = watch::channel(crate::certs::load_certificates().await);
+        let events_3 = orchestrator.events.clone();
         tokio::spawn(async move {
             if let Err(e) = crate::certs::watch(certs_tx).await {
+                // Renewals still write to disk but never reach the proxies, so
+                // they keep serving the old cert until it expires.
                 eprintln!("failed to watch certs for changes: {e:?}");
+                events_3
+                    .emit(Event::file_watch_failed(
+                        "certs".to_string(),
+                        format!("{e:?}"),
+                    ))
+                    .await;
             }
         });
 
         Ok(NullnetGrpcImpl {
             services,
             match_index,
+            routes,
             orchestrator,
             certs: certs_rx,
             port_mappings: port_mappings_rx,
+            http_routes: http_routes_rx,
             inflight_proxy: Arc::new(StdMutex::new(HashMap::new())),
         })
     }
@@ -1124,6 +1273,10 @@ impl NullnetGrpcImpl {
         &self.services
     }
 
+    pub(crate) fn routes(&self) -> &Arc<RwLock<RouteMap>> {
+        &self.routes
+    }
+
     pub(crate) fn orchestrator(&self) -> &Orchestrator {
         &self.orchestrator
     }
@@ -1341,6 +1494,13 @@ impl NullnetGrpcImpl {
                         Some(port) => Some(u32::from(port)),
                         None => {
                             eprintln!("UDP port pool exhausted");
+                            orchestrator
+                                .events
+                                .emit(Event::udp_port_pool_exhausted(
+                                    server.name().to_string(),
+                                    client_ethernet.to_string(),
+                                ))
+                                .await;
                             orchestrator.free_net_id(net_id).await;
                             if let Some(stack_map) = services.write().await.get_mut(&stack)
                                 && let Some(ServiceInfo::Registered(reg)) =
@@ -1561,12 +1721,15 @@ impl NullnetGrpcImpl {
     pub(crate) fn new_for_test(services: StackMap) -> Self {
         let (_, certs) = watch::channel(CertBundle::default());
         let (_, port_mappings) = watch::channel(PortMappingBundle::default());
+        let (_, http_routes) = watch::channel(HttpRouteBundle::default());
         NullnetGrpcImpl {
             services: Arc::new(RwLock::new(services)),
             match_index: Arc::new(RwLock::new(MatchIndex::new())),
+            routes: Arc::new(RwLock::new(RouteMap::new())),
             orchestrator: Orchestrator::new(),
             certs,
             port_mappings,
+            http_routes,
             inflight_proxy: Arc::new(StdMutex::new(HashMap::new())),
         }
     }
@@ -1684,22 +1847,29 @@ impl NullnetGrpc for NullnetGrpcImpl {
 
     async fn watch_certificates(
         &self,
-        _: Request<Empty>,
+        req: Request<Empty>,
     ) -> Result<Response<Self::WatchCertificatesStream>, Status> {
         let mut certs = self.certs.clone();
         let (tx, rx) = mpsc::channel(4);
+        // Every proxy opens this stream once at startup and exits when it drops,
+        // so its lifetime is the proxy's — the node events' counterpart.
+        let proxy_ip = req
+            .remote_addr()
+            .map_or_else(|| "unknown".to_string(), |a| a.ip().to_string());
+        let events = self.orchestrator.events.clone();
+        events.emit(Event::proxy_connected(proxy_ip.clone())).await;
         tokio::spawn(async move {
             // send the current set immediately, then one snapshot per change
             let initial = certs.borrow_and_update().clone();
-            if tx.send(Ok(initial)).await.is_err() {
-                return;
-            }
-            while certs.changed().await.is_ok() {
-                let snapshot = certs.borrow_and_update().clone();
-                if tx.send(Ok(snapshot)).await.is_err() {
-                    break;
+            if tx.send(Ok(initial)).await.is_ok() {
+                while certs.changed().await.is_ok() {
+                    let snapshot = certs.borrow_and_update().clone();
+                    if tx.send(Ok(snapshot)).await.is_err() {
+                        break;
+                    }
                 }
             }
+            events.emit(Event::proxy_disconnected(proxy_ip)).await;
         });
         Ok(Response::new(ReceiverStream::new(rx)))
     }
@@ -1720,6 +1890,30 @@ impl NullnetGrpc for NullnetGrpcImpl {
             }
             while mappings.changed().await.is_ok() {
                 let snapshot = mappings.borrow_and_update().clone();
+                if tx.send(Ok(snapshot)).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    type WatchHttpRoutesStream = ReceiverStream<Result<HttpRouteBundle, Status>>;
+
+    async fn watch_http_routes(
+        &self,
+        _: Request<Empty>,
+    ) -> Result<Response<Self::WatchHttpRoutesStream>, Status> {
+        let mut routes = self.http_routes.clone();
+        let (tx, rx) = mpsc::channel(4);
+        tokio::spawn(async move {
+            // send the current table immediately, then one snapshot per change
+            let initial = routes.borrow_and_update().clone();
+            if tx.send(Ok(initial)).await.is_err() {
+                return;
+            }
+            while routes.changed().await.is_ok() {
+                let snapshot = routes.borrow_and_update().clone();
                 if tx.send(Ok(snapshot)).await.is_err() {
                     break;
                 }
@@ -1772,6 +1966,35 @@ impl NullnetGrpc for NullnetGrpcImpl {
             ),
             AgentEventKind::GatewayForwardInstallFailed(e) => {
                 Event::gateway_forward_install_failed(e.vxlan_id, e.br_net)
+            }
+            AgentEventKind::BackendTriggerSetupTimedOut(e) => {
+                Event::backend_trigger_setup_timed_out(
+                    e.service_name,
+                    e.port as u16,
+                    e.docker_container,
+                    e.error_message,
+                )
+            }
+            AgentEventKind::EgressSteerSetupTimedOut(e) => Event::egress_steer_setup_timed_out(
+                e.docker_container,
+                e.dst_ip,
+                e.dst_port,
+                e.error_message,
+            ),
+            AgentEventKind::EgressSteerInstallFailed(e) => {
+                Event::egress_steer_install_failed(e.vxlan_id, e.docker_container, e.error_message)
+            }
+            AgentEventKind::NfqueueBindFailed(e) => {
+                Event::nfqueue_bind_failed(e.queue_id, e.error_message)
+            }
+            AgentEventKind::MssClampInstallFailed(e) => {
+                Event::mss_clamp_install_failed(e.error_message)
+            }
+            AgentEventKind::EgressPolicyCheckFailed(e) => {
+                Event::egress_policy_check_failed(e.docker_container, e.dst_ip, e.error_message)
+            }
+            AgentEventKind::ConntrackFlushFailed(e) => {
+                Event::conntrack_flush_failed(e.ip, e.error_message)
             }
             AgentEventKind::FirewallRulesLoadFailed(e) => {
                 Event::firewall_rules_load_failed(e.path, e.error_message)
@@ -1829,5 +2052,190 @@ impl NullnetGrpc for NullnetGrpcImpl {
         };
         self.orchestrator.events.emit(event).await;
         Ok(Response::new(Empty {}))
+    }
+}
+
+#[cfg(test)]
+mod http_route_bundle_tests {
+    use super::*;
+    use crate::services::input::{RouteEntry, RouteTarget};
+    use crate::services::service_info::CountryPolicy;
+
+    fn http_service(timeout: Option<u64>) -> ServiceInfo {
+        ServiceInfo::new(
+            vec![],
+            HashMap::new(),
+            timeout,
+            None,
+            ServiceProtocol::Http,
+            None,
+            CountryPolicy::None,
+            CountryPolicy::None,
+        )
+    }
+
+    fn tcp_service(listen_port: u16) -> ServiceInfo {
+        ServiceInfo::new(
+            vec![],
+            HashMap::new(),
+            Some(0),
+            None,
+            ServiceProtocol::Tcp,
+            Some(listen_port),
+            CountryPolicy::None,
+            CountryPolicy::None,
+        )
+    }
+
+    /// End-to-end backward-compatibility guarantee: a stack file written
+    /// before this feature existed — no `[[route]]` block anywhere, just a
+    /// mix of http/tcp/backend-only `[[services]]` — parses unchanged
+    /// (`[[services]]`/`[[route]]` are both optional) and produces exactly
+    /// the implicit Host-only dispatch every such service already had.
+    #[test]
+    fn old_config_with_no_route_blocks_is_unaffected() {
+        let toml_str = r#"
+[[services]]
+name = "color.com"
+timeout = 30
+docker_container = "color"
+port = 8080
+
+[[services]]
+name = "redis.internal"
+timeout = 0
+protocol = "tcp"
+listen_port = 6379
+
+[[services]]
+name = "backend.only"
+proxy_dependencies = [["color.com"]]
+"#;
+        let parsed: ServicesToml = toml::from_str(toml_str).unwrap();
+        let services = parsed.services_map().unwrap();
+        let stacks: StackMap = HashMap::from([("legacy".to_string(), services)]);
+
+        // No [[route]] block at all → RouteMap has no entry for this stack,
+        // exactly as a pre-feature server would never have populated one.
+        let bundle = build_http_route_bundle(&stacks, &RouteMap::new());
+
+        // Only the proxy-reachable http service ("color.com") gets a route —
+        // the tcp service stays on its listen_port (port_mappings, unrelated
+        // to this bundle) and the backend-only service was never
+        // proxy-reachable to begin with.
+        assert_eq!(bundle.routes.len(), 1);
+        assert_eq!(bundle.routes[0].host, "color.com");
+        assert_eq!(bundle.routes[0].path_prefix, "/");
+        assert_eq!(
+            bundle.routes[0].target,
+            Some(HttpRouteTarget::ServiceName("color.com".to_string()))
+        );
+    }
+
+    #[test]
+    fn declares_no_routes_falls_back_to_implicit_host_route() {
+        let stacks: StackMap = HashMap::from([(
+            "alpha".to_string(),
+            HashMap::from([("grafana".to_string(), http_service(Some(30)))]),
+        )]);
+        let bundle = build_http_route_bundle(&stacks, &RouteMap::new());
+
+        assert_eq!(bundle.routes.len(), 1);
+        assert_eq!(bundle.routes[0].host, "grafana");
+        assert_eq!(bundle.routes[0].path_prefix, "/");
+        assert_eq!(
+            bundle.routes[0].target,
+            Some(HttpRouteTarget::ServiceName("grafana".to_string()))
+        );
+    }
+
+    #[test]
+    fn explicit_route_for_a_host_suppresses_its_implicit_fallback() {
+        let stacks: StackMap = HashMap::from([(
+            "alpha".to_string(),
+            HashMap::from([
+                ("grafana".to_string(), http_service(Some(30))),
+                ("gitlab".to_string(), http_service(Some(30))),
+            ]),
+        )]);
+        // "grafana" gets explicit path-based routes; "gitlab" gets none, so it
+        // still falls back to its own implicit `{host=name, path="/"}` route.
+        let routes: RouteMap = HashMap::from([(
+            "alpha".to_string(),
+            vec![RouteEntry {
+                host: "grafana".to_string(),
+                path: "/dashboards".to_string(),
+                target: RouteTarget::Service {
+                    name: "grafana".to_string(),
+                    strip_prefix: false,
+                },
+            }],
+        )]);
+        let bundle = build_http_route_bundle(&stacks, &routes);
+
+        assert_eq!(bundle.routes.len(), 2);
+        assert!(
+            bundle
+                .routes
+                .iter()
+                .any(|r| r.host == "grafana" && r.path_prefix == "/dashboards")
+        );
+        assert!(
+            bundle
+                .routes
+                .iter()
+                .any(|r| r.host == "gitlab" && r.path_prefix == "/"),
+            "gitlab has no explicit route, so it should keep its implicit fallback"
+        );
+        // no separate implicit "/" route synthesized for grafana on top of its
+        // explicit one
+        assert!(
+            !bundle
+                .routes
+                .iter()
+                .any(|r| r.host == "grafana" && r.path_prefix == "/")
+        );
+    }
+
+    #[test]
+    fn backend_only_and_non_http_services_get_no_implicit_route() {
+        let stacks: StackMap = HashMap::from([(
+            "alpha".to_string(),
+            HashMap::from([
+                ("backend.only".to_string(), http_service(None)),
+                ("redis".to_string(), tcp_service(6379)),
+            ]),
+        )]);
+        let bundle = build_http_route_bundle(&stacks, &RouteMap::new());
+        assert!(bundle.routes.is_empty());
+    }
+
+    #[test]
+    fn redirect_route_converts_to_wire_redirect() {
+        let routes: RouteMap = HashMap::from([(
+            "alpha".to_string(),
+            vec![RouteEntry {
+                host: "old.example.com".to_string(),
+                path: "/".to_string(),
+                target: RouteTarget::Redirect {
+                    to: "https://new.example.com/".to_string(),
+                    status: 301,
+                    preserve_path: true,
+                    preserve_query: true,
+                },
+            }],
+        )]);
+        let bundle = build_http_route_bundle(&StackMap::new(), &routes);
+
+        assert_eq!(bundle.routes.len(), 1);
+        assert_eq!(
+            bundle.routes[0].target,
+            Some(HttpRouteTarget::Redirect(HttpRedirect {
+                to: "https://new.example.com/".to_string(),
+                status_code: 301,
+                preserve_path: true,
+                preserve_query: true,
+            }))
+        );
     }
 }

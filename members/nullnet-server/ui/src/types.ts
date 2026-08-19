@@ -89,6 +89,7 @@ export type EventJson =
   | WithSeverity & { type: 'net_teardown_unconfirmed'; net_id: number; node_ip: string }
   | WithSeverity & { type: 'config_reloaded'; stack: string }
   | WithSeverity & { type: 'config_stack_removed'; stack: string }
+  | WithSeverity & { type: 'route_conflict'; stack_a: string; stack_b: string; host: string; path: string }
   | WithSeverity & { type: 'all_replicas_removed'; service: string; stack: string; ip: string }
   | WithSeverity & { type: 'service_reachability_toggled'; service: string; stack: string; reachable: boolean }
   | WithSeverity & { type: 'proxy_client_timed_out'; service: string; client_ip: string }
@@ -98,6 +99,10 @@ export type EventJson =
   | WithSeverity & { type: 'net_id_pool_exhausted'; service: string; client_ip: string }
   | WithSeverity & { type: 'proxy_chain_setup_failed'; service: string; client_ip: string }
   | WithSeverity & { type: 'backend_trigger_setup_bailed'; service: string; port: number }
+  | WithSeverity & { type: 'udp_port_pool_exhausted'; service: string; client_ip: string }
+  | WithSeverity & { type: 'config_reload_failed'; error_message: string }
+  | WithSeverity & { type: 'file_watch_failed'; target: string; error_message: string }
+  | WithSeverity & { type: 'port_mapping_conflict'; stack_a: string; service_a: string; stack_b: string; service_b: string; protocol: string; listen_port: number }
   // Client error events
   | WithSeverity & { type: 'vxlan_setup_failed'; vxlan_id: number; ns_name: string; error_code: number }
   | WithSeverity & { type: 'vlan_setup_failed'; vlan_id: number; local_veth: string; error_reason: string }
@@ -115,6 +120,13 @@ export type EventJson =
   | WithSeverity & { type: 'firewall_rules_load_failed'; path: string; error_message: string }
   | WithSeverity & { type: 'container_suspend_failed'; docker_container: string; error_message: string }
   | WithSeverity & { type: 'container_resume_failed'; docker_container: string; error_message: string }
+  | WithSeverity & { type: 'backend_trigger_setup_timed_out'; service_name: string; port: number; docker_container: string; error_message: string }
+  | WithSeverity & { type: 'egress_steer_setup_timed_out'; docker_container: string; dst_ip: string; dst_port: number; error_message: string }
+  | WithSeverity & { type: 'egress_steer_install_failed'; vxlan_id: number; docker_container?: string; error_message: string }
+  | WithSeverity & { type: 'nfqueue_bind_failed'; queue_id: number; error_message: string }
+  | WithSeverity & { type: 'mss_clamp_install_failed'; error_message: string }
+  | WithSeverity & { type: 'egress_policy_check_failed'; docker_container: string; dst_ip: string; error_message: string }
+  | WithSeverity & { type: 'conntrack_flush_failed'; ip: string; error_message: string }
   // Client info events
   | WithSeverity & { type: 'vxlan_setup_completed'; vxlan_id: number; ns_name: string }
   | WithSeverity & { type: 'vlan_setup_completed'; vlan_id: number }
@@ -127,12 +139,28 @@ export type EventJson =
   | WithSeverity & { type: 'upstream_ip_parse_failed'; raw_ip: string; service_name: string }
   | WithSeverity & { type: 'proxy_client_not_inet'; address_family: string }
   | WithSeverity & { type: 'tls_certificate_invalid'; domain: string; reason: string }
+  | WithSeverity & { type: 'tcp_listener_bind_failed'; listen_port: number; service_name: string; error_message: string }
+  | WithSeverity & { type: 'udp_listener_bind_failed'; listen_port: number; service_name: string; error_message: string }
+  | WithSeverity & { type: 'tcp_upstream_connect_failed'; service_name: string; client_ip: string; error_message: string }
+  | WithSeverity & { type: 'udp_upstream_connect_failed'; service_name: string; client_ip: string; error_message: string }
   // Proxy info events
   | WithSeverity & { type: 'proxy_request_routed'; service_name: string; client_ip: string; upstream_ip: string; latency_ms: number }
+  | WithSeverity & { type: 'proxy_connected'; ip: string }
+  | WithSeverity & { type: 'proxy_disconnected'; ip: string }
   // Certificate events
   | WithSeverity & { type: 'certificate_installed'; domain: string }
   | WithSeverity & { type: 'certificate_renewed'; domain: string }
-  | WithSeverity & { type: 'certificate_removed'; domain: string };
+  | WithSeverity & { type: 'certificate_removed'; domain: string }
+  | WithSeverity & { type: 'certificate_renewal_failed'; domain: string; error_message: string }
+  | WithSeverity & { type: 'certificate_credentials_store_failed'; domain: string; error_message: string };
+
+/// Response shape of `GET /api/events` — a most-recent-first page of
+/// persisted events. `next_before_id`, when present, is the cursor to pass
+/// back as `before_id` to fetch the next (older) page.
+export interface EventsPage {
+  events: EventJson[];
+  next_before_id: number | null;
+}
 
 export interface GraphNodeJson {
   id: string;
@@ -176,4 +204,22 @@ export interface GraphJson {
 export interface ChainJson {
   proxy_net_id: number;
   all_net_ids: number[];
+}
+
+// HTTP path-based routing — see docs/http-path-routing-design.md.
+export type RouteTargetJson =
+  | { kind: 'service'; service: string; strip_prefix: boolean }
+  | { kind: 'redirect'; to: string; status: number; preserve_path: boolean; preserve_query: boolean };
+
+export interface RouteJson {
+  host: string;
+  path: string;
+  target: RouteTargetJson;
+}
+
+export interface RoutesResponseJson {
+  routes: RouteJson[];
+  /** Declared, proxy-reachable `protocol = "http"` service names in this
+   * stack — populates the "backend service" dropdown when adding a route. */
+  http_services: string[];
 }

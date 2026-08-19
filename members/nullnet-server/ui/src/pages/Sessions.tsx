@@ -5,6 +5,7 @@ import { apiFetch } from '../lib/apiFetch';
 import { useStack } from '../StackContext';
 import type { SessionJson } from '../types';
 import { flagEmoji, countryName } from '../geo';
+import { formatTimestamp, formatTimestampFull } from '../lib/time';
 
 export default function Sessions() {
   const { stack } = useStack();
@@ -20,10 +21,6 @@ export default function Sessions() {
     } finally {
       setTearing(prev => { const next = new Set(prev); next.delete(id); return next; });
     }
-  }
-
-  function formatTime(unix: number) {
-    return new Date(unix * 1000).toLocaleTimeString();
   }
 
   const list = sessions ?? [];
@@ -83,8 +80,11 @@ export default function Sessions() {
                   <td style={{ fontFamily: "'JetBrains Mono',monospace", color: s.chain_depth > 1 ? 'var(--amber)' : 'var(--t1)' }}>
                     {s.chain_depth}
                   </td>
-                  <td style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: 'var(--t2)' }}>
-                    {formatTime(s.created_at)}
+                  <td
+                    style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: 'var(--t2)' }}
+                    title={formatTimestampFull(s.created_at)}
+                  >
+                    {formatTimestamp(s.created_at)}
                   </td>
                   <td>
                     <button

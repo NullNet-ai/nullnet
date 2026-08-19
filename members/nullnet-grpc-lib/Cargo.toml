@@ -14,10 +14,9 @@ prost.workspace = true
 tonic-prost.workspace = true
 tokio = { workspace = true, features = ["fs"] }
 tokio-rustls = "0.26"
-serde = { workspace = true, features = ["derive"] }
 
 [build-dependencies]
-tonic-prost-build = "0.14.5"
+tonic-prost-build = "0.14.6"
 
 [badges]
 maintenance = { status = "actively-developed" }

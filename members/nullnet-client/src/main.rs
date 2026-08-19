@@ -16,8 +16,9 @@ use crate::triggers::TriggersState;
 use clap::Parser;
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentEvent, AgentServicesListUpdateFailed, AgentServicesListUpdated, Container, Listener, Net,
-    NetType, ServiceReport, agent_event::Event as AgentEventKind,
+    AgentEvent, AgentFirewallRulesLoadFailed, AgentMssClampInstallFailed,
+    AgentServicesListUpdateFailed, AgentServicesListUpdated, Container, Listener, Net, NetType,
+    ServiceReport, agent_event::Event as AgentEventKind,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
@@ -77,7 +78,7 @@ async fn main() -> Result<(), Error> {
     let rtnetlink_handle = RtNetLinkHandle::new()?;
 
     // cleanup existing VLANs and VXLANs material
-    cleanup_network(&rtnetlink_handle).await;
+    let mss_error = cleanup_network(&rtnetlink_handle).await;
 
     // maps of all the peers
     let peers = Arc::new(RwLock::new(Peers::default()));
@@ -87,6 +88,22 @@ async fn main() -> Result<(), Error> {
     let grpc_server = grpc_init().await?;
     let grpc_server2 = grpc_server.clone();
     let grpc_server3 = grpc_server.clone();
+
+    // Deferred from `cleanup_network`, which runs before this connection exists.
+    // Without the clamp, oversized segments are silently black-holed once they
+    // enter a tunnel, which is near-impossible to trace from the symptom.
+    if let Some(error_message) = mss_error {
+        let grpc = grpc_server.clone();
+        tokio::spawn(async move {
+            let _ = grpc
+                .report_event(AgentEvent {
+                    event: Some(AgentEventKind::MssClampInstallFailed(
+                        AgentMssClampInstallFailed { error_message },
+                    )),
+                })
+                .await;
+        });
+    }
 
     let net_type = grpc_server.network_type().await.handle_err(location!())?;
 
@@ -108,6 +125,22 @@ async fn main() -> Result<(), Error> {
         }
         Err(e) => {
             eprintln!("Failed to enable eBPF firewall: {e:?}");
+            // Awaited, not fire-and-forget: the exit below would kill a spawned
+            // task before it ever reached the server. Bounded, because
+            // `report_event` has no request timeout of its own and a hung one
+            // would keep us from exiting at all.
+            let _ = tokio::time::timeout(
+                Duration::from_secs(5),
+                grpc_server.report_event(AgentEvent {
+                    event: Some(AgentEventKind::FirewallRulesLoadFailed(
+                        AgentFirewallRulesLoadFailed {
+                            path: "ebpf host firewall".to_string(),
+                            error_message: format!("{e:?}"),
+                        },
+                    )),
+                }),
+            )
+            .await;
             process::exit(1);
         }
     };

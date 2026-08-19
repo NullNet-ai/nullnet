@@ -5,7 +5,8 @@ use crate::triggers::{TriggerState, TriggersState};
 use nfq::{Message, Verdict};
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentBackendTriggerSendFailed, AgentEvent, agent_event::Event as AgentEventKind,
+    AgentBackendTriggerSendFailed, AgentBackendTriggerSetupTimedOut, AgentEvent,
+    agent_event::Event as AgentEventKind,
 };
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
@@ -75,7 +76,9 @@ pub struct ListenerCtx {
 /// Spawn the backend-trigger recv loop (queue 0). Each packet is held until
 /// `handle_packet` resolves a verdict — see `recv_loop::spawn_queue_loop`.
 pub fn spawn_recv_thread(ctx: ListenerCtx) {
+    let grpc = ctx.grpc.clone();
     spawn_queue_loop(
+        &grpc,
         QUEUE_ID,
         COPY_RANGE,
         QUEUE_MAX_LEN,
@@ -168,6 +171,13 @@ async fn decide_verdict(
                     eprintln!(
                         "[nfqueue] timeout waiting for active state on '{service}' port {dst_port} container {container}"
                     );
+                    report_setup_timed_out(
+                        &ctx.grpc,
+                        service,
+                        dst_port,
+                        container,
+                        format!("chain not active after {ACTIVE_TIMEOUT:?}"),
+                    );
                     Verdict::Drop
                 }
             }
@@ -210,6 +220,13 @@ async fn decide_verdict(
                         // PENDING_TIMEOUT so re-trigger still works.
                         eprintln!(
                             "[nfqueue] no VxlanSetup for '{service}' port {dst_port} container {container}"
+                        );
+                        report_setup_timed_out(
+                            &ctx.grpc,
+                            service,
+                            dst_port,
+                            container,
+                            format!("no VxlanSetup within {ACTIVE_TIMEOUT:?}"),
                         );
                         Verdict::Drop
                     }
@@ -254,6 +271,32 @@ fn report_trigger_send_failed(
             AgentBackendTriggerSendFailed {
                 service_name: service.to_string(),
                 port: u32::from(port),
+                error_message,
+            },
+        )),
+    };
+    tokio::spawn(async move {
+        let _ = grpc.report_event(event).await;
+    });
+}
+
+/// Fire-and-forget: report a held packet dropped because the chain never went
+/// active. Distinct from [`report_trigger_send_failed`] — the trigger itself was
+/// accepted here, so the failure is the setup not landing, not the RPC.
+fn report_setup_timed_out(
+    grpc: &NullnetGrpcInterface,
+    service: &str,
+    port: u16,
+    container: &str,
+    error_message: String,
+) {
+    let grpc = grpc.clone();
+    let event = AgentEvent {
+        event: Some(AgentEventKind::BackendTriggerSetupTimedOut(
+            AgentBackendTriggerSetupTimedOut {
+                service_name: service.to_string(),
+                port: u32::from(port),
+                docker_container: container.to_string(),
                 error_message,
             },
         )),

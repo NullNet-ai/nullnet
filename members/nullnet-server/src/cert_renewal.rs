@@ -66,6 +66,15 @@ async fn run_pass(events: &EventStore, config: &RenewalConfig) {
             continue;
         };
         let Some(expiry) = crate::certs::read_expiry(&domain).await else {
+            // An ACME cert whose expiry can't be read is never renewed, so this
+            // silently opts it out of the guarantee the loop exists to provide.
+            eprintln!("Cert renewal: cannot read expiry of '{domain}'; skipping");
+            events
+                .emit(Event::certificate_renewal_failed(
+                    domain.clone(),
+                    "certificate expiry could not be read".to_string(),
+                ))
+                .await;
             continue;
         };
         if expiry > threshold {
@@ -82,7 +91,15 @@ async fn run_pass(events: &EventStore, config: &RenewalConfig) {
                     .await;
                 println!("Cert renewal: '{domain}' renewed successfully");
             }
-            Err(e) => eprintln!("Cert renewal: failed to renew '{domain}': {e:#}"),
+            Err(e) => {
+                eprintln!("Cert renewal: failed to renew '{domain}': {e:#}");
+                events
+                    .emit(Event::certificate_renewal_failed(
+                        domain.clone(),
+                        format!("{e:#}"),
+                    ))
+                    .await;
+            }
         }
     }
 }

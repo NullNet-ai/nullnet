@@ -35,6 +35,188 @@ pub(crate) struct MatchEntry {
 /// Stack name → its services' match entries. Rebuilt on every load/reload.
 pub(crate) type MatchIndex = HashMap<String, Vec<MatchEntry>>;
 
+/// A parsed, validated `[[route]]` entry: an HTTP(S) dispatch rule matching
+/// `host` + a `path` prefix, to either an existing (in-stack, http-protocol)
+/// service or a literal redirect. See docs/http-path-routing-design.md.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RouteEntry {
+    pub(crate) host: String,
+    pub(crate) path: String,
+    pub(crate) target: RouteTarget,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum RouteTarget {
+    Service {
+        name: String,
+        /// Strip the matched `path_prefix` from the path forwarded to the
+        /// backend (NGINX `proxy_pass http://backend/;` trailing-slash
+        /// equivalent). `false` reproduces the original, only behavior.
+        strip_prefix: bool,
+    },
+    Redirect {
+        to: String,
+        status: u16,
+        /// Append the request path's suffix beyond the matched
+        /// `path_prefix` to `to` (NGINX `rewrite ^/old(.*) /new$1
+        /// permanent;` equivalent).
+        preserve_path: bool,
+        /// Append the original request's query string to the final target.
+        preserve_query: bool,
+    },
+}
+
+/// Stack name → its explicit route entries. Rebuilt on every load/reload,
+/// alongside `StackMap`/`MatchIndex`. Implicit per-service fallback routes
+/// (an http service with no explicit route naming it) are *not* stored here
+/// — whether one applies depends on every stack's explicit routes, not just
+/// this one's, so they're derived at bundle-build time
+/// (`nullnet_grpc_impl::build_http_route_bundle`).
+pub(crate) type RouteMap = HashMap<String, Vec<RouteEntry>>;
+
+/// Validate and convert one stack's raw `[[route]]` entries against its
+/// `[[services]]` list: exactly one target (`service`/`redirect_to`) per
+/// route, a `service` target must name an in-stack, http-protocol service,
+/// `redirect_status` (when present) must be a supported redirect code, and
+/// `strip_prefix`/`preserve_path`/`preserve_query` each only apply to their
+/// own target kind. `(host, path)` uniqueness — within this stack or across
+/// stacks — is a separate check; see `detect_route_conflicts`.
+fn build_route_entries(
+    services: &[ServiceToml],
+    routes: &[RouteToml],
+) -> Result<Vec<RouteEntry>, Error> {
+    let mut entries = Vec::with_capacity(routes.len());
+    for r in routes {
+        let target = match (&r.service, &r.redirect_to) {
+            (Some(_), Some(_)) => {
+                return Err(format!(
+                    "route '{} {}': 'service' and 'redirect_to' are mutually exclusive",
+                    r.host, r.path
+                ))
+                .handle_err(location!());
+            }
+            (None, None) => {
+                return Err(format!(
+                    "route '{} {}': exactly one of 'service'/'redirect_to' is required",
+                    r.host, r.path
+                ))
+                .handle_err(location!());
+            }
+            (Some(service_name), None) => {
+                if r.preserve_path || r.preserve_query {
+                    return Err(format!(
+                        "route '{} {}': 'preserve_path'/'preserve_query' only apply to \
+                         'redirect_to' routes",
+                        r.host, r.path
+                    ))
+                    .handle_err(location!());
+                }
+                let Some(svc) = services.iter().find(|s| &s.name == service_name) else {
+                    return Err(format!(
+                        "route '{} {}': service '{service_name}' is not declared in this stack",
+                        r.host, r.path
+                    ))
+                    .handle_err(location!());
+                };
+                let protocol = svc
+                    .protocol
+                    .map_or(ServiceProtocol::Http, ServiceProtocol::from);
+                if protocol != ServiceProtocol::Http {
+                    return Err(format!(
+                        "route '{} {}': service '{service_name}' is protocol {protocol:?}, \
+                         routes can only target http services",
+                        r.host, r.path
+                    ))
+                    .handle_err(location!());
+                }
+                if svc.timeout.is_none() {
+                    return Err(format!(
+                        "route '{} {}': service '{service_name}' has no 'timeout', so it isn't a \
+                         proxy-reachable entry point",
+                        r.host, r.path
+                    ))
+                    .handle_err(location!());
+                }
+                RouteTarget::Service {
+                    name: service_name.clone(),
+                    strip_prefix: r.strip_prefix,
+                }
+            }
+            (None, Some(to)) => {
+                if r.strip_prefix {
+                    return Err(format!(
+                        "route '{} {}': 'strip_prefix' only applies to 'service' routes",
+                        r.host, r.path
+                    ))
+                    .handle_err(location!());
+                }
+                let status = r.redirect_status.unwrap_or(301);
+                if !matches!(status, 301 | 302 | 307 | 308) {
+                    return Err(format!(
+                        "route '{} {}': redirect_status {status} must be one of 301/302/307/308",
+                        r.host, r.path
+                    ))
+                    .handle_err(location!());
+                }
+                RouteTarget::Redirect {
+                    to: to.clone(),
+                    status,
+                    preserve_path: r.preserve_path,
+                    preserve_query: r.preserve_query,
+                }
+            }
+        };
+        entries.push(RouteEntry {
+            host: r.host.clone(),
+            path: r.path.clone(),
+            target,
+        });
+    }
+    Ok(entries)
+}
+
+/// Two routes (possibly in different stacks, or the same one) that both
+/// claim the same `(host, path)` pair — that pair dispatches to exactly one
+/// target on the proxy, so it must be globally unique, the same way
+/// `(protocol, listen_port)` already is for tcp/udp.
+pub(crate) struct RouteConflict {
+    pub(crate) stack_a: String,
+    pub(crate) stack_b: String,
+    pub(crate) host: String,
+    pub(crate) path: String,
+}
+
+/// Both conflict kinds found by the initial load, for the caller to report
+/// once the event store exists.
+pub(crate) struct StartupConflicts {
+    pub(crate) ports: Vec<PortConflict>,
+    pub(crate) routes: Vec<RouteConflict>,
+}
+
+/// Scan every stack for `(host, path)` pairs claimed by more than one route,
+/// including two routes within the same stack.
+pub(crate) fn detect_route_conflicts(routes: &RouteMap) -> Vec<RouteConflict> {
+    let mut claimed: HashMap<(String, String), String> = HashMap::new();
+    let mut conflicts = Vec::new();
+    for (stack, entries) in routes {
+        for entry in entries {
+            let key = (entry.host.clone(), entry.path.clone());
+            match claimed.get(&key) {
+                Some(other_stack) => conflicts.push(RouteConflict {
+                    stack_a: other_stack.clone(),
+                    stack_b: stack.clone(),
+                    host: entry.host.clone(),
+                    path: entry.path.clone(),
+                }),
+                None => {
+                    claimed.insert(key, stack.clone());
+                }
+            }
+        }
+    }
+    conflicts
+}
+
 /// Match entries for one file: only services with a match key are hostable, and
 /// such a service must declare a `port`.
 fn build_match_entries(services: &[ServiceToml]) -> Result<Vec<MatchEntry>, Error> {
@@ -62,20 +244,29 @@ fn build_match_entries(services: &[ServiceToml]) -> Result<Vec<MatchEntry>, Erro
 
 #[derive(Deserialize)]
 pub(crate) struct ServicesToml {
+    // Defaulted so a stack can be routes-only (e.g. a bare redirect, which
+    // needs no backend at all) without an empty `services = []` boilerplate.
+    #[serde(default)]
     services: Vec<ServiceToml>,
+    #[serde(default, rename = "route")]
+    routes: Vec<RouteToml>,
 }
 
 impl ServicesToml {
-    pub(crate) async fn load() -> Result<(StackMap, MatchIndex), Error> {
+    pub(crate) async fn load() -> Result<(StackMap, MatchIndex, RouteMap), Error> {
         Self::load_from_dir(SERVICES_DIR).await
     }
 
     /// Load every `*.toml` file under `dir`; the file stem is the stack name.
-    /// Returns the service map and the parallel host-match index.
-    pub(crate) async fn load_from_dir(dir: &str) -> Result<(StackMap, MatchIndex), Error> {
+    /// Returns the service map, the parallel host-match index, and the
+    /// parallel route map.
+    pub(crate) async fn load_from_dir(
+        dir: &str,
+    ) -> Result<(StackMap, MatchIndex, RouteMap), Error> {
         let mut entries = tokio::fs::read_dir(dir).await.handle_err(location!())?;
         let mut stacks: StackMap = HashMap::new();
         let mut index: MatchIndex = HashMap::new();
+        let mut routes: RouteMap = HashMap::new();
         while let Some(entry) = entries.next_entry().await.handle_err(location!())? {
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) != Some("toml") {
@@ -88,12 +279,13 @@ impl ServicesToml {
             else {
                 continue;
             };
-            let (services, match_entries) = parse_file(&path).await?;
+            let (services, match_entries, route_entries) = parse_file(&path).await?;
             println!("Loaded stack '{stack}': {services:?}");
             stacks.insert(stack.clone(), services);
-            index.insert(stack, match_entries);
+            index.insert(stack.clone(), match_entries);
+            routes.insert(stack, route_entries);
         }
-        Ok((stacks, index))
+        Ok((stacks, index, routes))
     }
 
     /// Load a single file as one stack's service map. Used by tests.
@@ -103,14 +295,21 @@ impl ServicesToml {
     }
 
     /// Load every stack and fail loudly if any `(protocol, listen_port)` pair
-    /// is claimed by more than one service — ports are global on the proxy,
-    /// unlike service names which only need to be unique within a stack.
-    pub(crate) async fn load_validated() -> Result<(StackMap, MatchIndex), Error> {
-        let (mut stacks, mut index) = Self::load().await?;
-        // Don't brick the control plane on a port conflict (e.g. a bad UI edit or
-        // hand-edited file left two stacks claiming the same listen_port). Drop the
-        // offending stacks and start anyway, logging loudly — the reload path is
-        // likewise tolerant, and an operator can fix the files without downtime.
+    /// or `(host, path)` route pair is claimed by more than one service/route
+    /// — both are global on the proxy, unlike service names which only need
+    /// to be unique within a stack.
+    ///
+    /// The conflicts are returned rather than reported here: the event store
+    /// doesn't exist yet this early in startup, so the caller emits them once
+    /// the orchestrator is up (the reload path emits its own directly).
+    pub(crate) async fn load_validated()
+    -> Result<(StackMap, MatchIndex, RouteMap, StartupConflicts), Error> {
+        let (mut stacks, mut index, mut routes) = Self::load().await?;
+        // Don't brick the control plane on a conflict (e.g. a bad UI edit or
+        // hand-edited file left two stacks claiming the same listen_port/route).
+        // Drop the offending stacks and start anyway, logging loudly — the
+        // reload path is likewise tolerant, and an operator can fix the files
+        // without downtime.
         let conflicts = detect_port_conflicts(&stacks);
         let mut bad: HashSet<String> = HashSet::new();
         for c in &conflicts {
@@ -122,24 +321,47 @@ impl ServicesToml {
             bad.insert(c.stack_a.clone());
             bad.insert(c.stack_b.clone());
         }
+        let route_conflicts = detect_route_conflicts(&routes);
+        for c in &route_conflicts {
+            eprintln!(
+                "[config] route conflict on startup: '{} {}' claimed by both '{}' and '{}' — \
+                 dropping these stacks until fixed",
+                c.host, c.path, c.stack_a, c.stack_b
+            );
+            bad.insert(c.stack_a.clone());
+            bad.insert(c.stack_b.clone());
+        }
         for stack in &bad {
             stacks.remove(stack);
             index.remove(stack);
+            routes.remove(stack);
         }
-        Ok((stacks, index))
+        Ok((
+            stacks,
+            index,
+            routes,
+            StartupConflicts {
+                ports: conflicts,
+                routes: route_conflicts,
+            },
+        ))
     }
 
-    /// `config_changed` and `port_mappings_changed` are separate `Notify`s —
-    /// each has exactly one consumer (`check_timeouts` and the port-mapping
-    /// refresh task, respectively). `Notify::notify_one` wakes at most one
-    /// waiter, so sharing a single `Notify` across two consumers would have
-    /// them race for each wake-up instead of both reliably observing it.
+    /// `config_changed`, `port_mappings_changed`, and `http_routes_changed`
+    /// are separate `Notify`s — each has exactly one consumer (`check_timeouts`,
+    /// the port-mapping refresh task, and the route-table refresh task,
+    /// respectively). `Notify::notify_one` wakes at most one waiter, so
+    /// sharing a single `Notify` across consumers would have them race for
+    /// each wake-up instead of all reliably observing it.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn watch(
         services: &Arc<RwLock<StackMap>>,
         match_index: &Arc<RwLock<MatchIndex>>,
+        routes: &Arc<RwLock<RouteMap>>,
         orchestrator: Orchestrator,
         config_changed: Arc<Notify>,
         port_mappings_changed: Arc<Notify>,
+        http_routes_changed: Arc<Notify>,
     ) -> Result<(), Error> {
         let services_directory = PathBuf::from(SERVICES_DIR);
 
@@ -174,19 +396,24 @@ impl ServicesToml {
                     // ensure file changes are propagated
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     match ServicesToml::load().await {
-                        Ok((loaded_services, loaded_index)) => {
+                        Ok((loaded_services, loaded_index, loaded_routes)) => {
                             let conflicts = detect_port_conflicts(&loaded_services);
-                            if conflicts.is_empty() {
+                            let route_conflicts = detect_route_conflicts(&loaded_routes);
+                            if conflicts.is_empty() && route_conflicts.is_empty() {
                                 let services_mut = &mut *services.write().await;
                                 apply_config_update(services_mut, loaded_services, &orchestrator)
                                     .await;
                                 *match_index.write().await = loaded_index;
+                                *routes.write().await = loaded_routes;
                                 config_changed.notify_one();
                                 port_mappings_changed.notify_one();
+                                http_routes_changed.notify_one();
                             } else {
                                 eprintln!(
-                                    "Rejecting services.toml reload: {} port mapping conflict(s)",
-                                    conflicts.len()
+                                    "Rejecting services.toml reload: {} port mapping conflict(s), \
+                                     {} route conflict(s)",
+                                    conflicts.len(),
+                                    route_conflicts.len()
                                 );
                                 for c in conflicts {
                                     orchestrator
@@ -201,9 +428,25 @@ impl ServicesToml {
                                         ))
                                         .await;
                                 }
+                                for c in route_conflicts {
+                                    orchestrator
+                                        .events
+                                        .emit(ServerEvent::route_conflict(
+                                            c.stack_a, c.stack_b, c.host, c.path,
+                                        ))
+                                        .await;
+                                }
                             }
                         }
-                        Err(e) => eprintln!("Failed to reload services.toml: {e:?}"),
+                        // Unparseable file: the previous config stays in force,
+                        // which looks identical to "nothing changed" from the UI.
+                        Err(e) => {
+                            eprintln!("Failed to reload services.toml: {e:?}");
+                            orchestrator
+                                .events
+                                .emit(ServerEvent::config_reload_failed(format!("{e:?}")))
+                                .await;
+                        }
                     }
                     last_update_time = Instant::now();
                 }
@@ -380,27 +623,38 @@ fn country_policy(
     }
 }
 
+/// One stack file's parsed, validated contents: its service map, host-match
+/// index entries, and route entries.
+type ParsedStack = (
+    HashMap<String, ServiceInfo>,
+    Vec<MatchEntry>,
+    Vec<RouteEntry>,
+);
+
 /// Single source of truth for "is this stack file valid?": TOML syntax, then the
-/// host-match/port, protocol/listen_port, and country-list rules. Shared by the
-/// disk loader ([`parse_file`]) and the UI save handler ([`validate_stack_toml`]).
-/// Cross-stack port conflicts are separate — see [`detect_port_conflicts`].
-fn parse_stack_content(
-    content: &str,
-) -> Result<(HashMap<String, ServiceInfo>, Vec<MatchEntry>), Error> {
+/// host-match/port, protocol/listen_port, route, and country-list rules. Shared
+/// by the disk loader ([`parse_file`]) and the UI save handlers
+/// ([`validate_stack_toml`]). Cross-stack port/route conflicts are separate —
+/// see [`detect_port_conflicts`]/[`detect_route_conflicts`].
+fn parse_stack_content(content: &str) -> Result<ParsedStack, Error> {
     let parsed: ServicesToml = toml::from_str(content).handle_err(location!())?;
     let match_entries = build_match_entries(&parsed.services)?;
-    Ok((parsed.services_map()?, match_entries))
+    let route_entries = build_route_entries(&parsed.services, &parsed.routes)?;
+    Ok((parsed.services_map()?, match_entries, route_entries))
 }
 
-/// Validate raw TOML the same way the loader does, returning the per-service map
-/// on success or a human-readable error for the UI's parse-status indicator.
-pub(crate) fn validate_stack_toml(content: &str) -> Result<HashMap<String, ServiceInfo>, String> {
+/// Validate raw TOML the same way the loader does, returning the per-service
+/// map and route list on success or a human-readable error for the UI's
+/// parse-status indicator.
+pub(crate) fn validate_stack_toml(
+    content: &str,
+) -> Result<(HashMap<String, ServiceInfo>, Vec<RouteEntry>), String> {
     parse_stack_content(content)
-        .map(|(services, _)| services)
+        .map(|(services, _match_entries, routes)| (services, routes))
         .map_err(|e| e.to_str().to_string())
 }
 
-async fn parse_file(path: &Path) -> Result<(HashMap<String, ServiceInfo>, Vec<MatchEntry>), Error> {
+async fn parse_file(path: &Path) -> Result<ParsedStack, Error> {
     let str_repr = tokio::fs::read_to_string(path)
         .await
         .handle_err(location!())?;
@@ -642,6 +896,30 @@ struct TriggerToml {
     chain: Vec<String>,
 }
 
+/// One `[[route]]` entry: an HTTP(S) location-block-style dispatch rule.
+/// `service`/`redirect_to` are mutually exclusive — validated (along with
+/// `redirect_status`) in [`build_route_entries`], not here, so a raw parse
+/// error and a semantic one both surface through the same caller.
+#[derive(Deserialize)]
+struct RouteToml {
+    host: String,
+    #[serde(default = "default_route_path")]
+    path: String,
+    service: Option<String>,
+    #[serde(default)]
+    strip_prefix: bool,
+    redirect_to: Option<String>,
+    redirect_status: Option<u16>,
+    #[serde(default)]
+    preserve_path: bool,
+    #[serde(default)]
+    preserve_query: bool,
+}
+
+fn default_route_path() -> String {
+    "/".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,7 +1038,7 @@ timeout = 30
             .await
             .unwrap();
 
-        let (stacks, _index) = ServicesToml::load_from_dir(dir.to_str().unwrap())
+        let (stacks, _index, _routes) = ServicesToml::load_from_dir(dir.to_str().unwrap())
             .await
             .expect("load");
 
@@ -907,5 +1185,350 @@ listen_port = 6379
         let stacks: StackMap = HashMap::from([("alpha".to_string(), alpha)]);
 
         assert!(detect_port_conflicts(&stacks).is_empty());
+    }
+
+    fn routes_of(toml_str: &str) -> Result<Vec<RouteEntry>, String> {
+        parse_stack_content(toml_str)
+            .map(|(_, _, routes)| routes)
+            .map_err(|e| e.to_str().to_string())
+    }
+
+    /// Backward compatibility: `[[route]]` is entirely optional. A stack file
+    /// written before this feature existed has no such block anywhere, and
+    /// must keep parsing exactly as it always did, with zero route entries.
+    #[test]
+    fn stack_with_no_route_blocks_parses_with_empty_routes() {
+        let toml_str = r#"
+[[services]]
+name = "color.com"
+timeout = 30
+docker_container = "color"
+port = 8080
+"#;
+        assert_eq!(routes_of(toml_str).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn route_targeting_a_declared_http_service_parses() {
+        let toml_str = r#"
+[[services]]
+name = "grafana"
+timeout = 30
+
+[[route]]
+host = "ops.example.com"
+path = "/grafana"
+service = "grafana"
+"#;
+        let routes = routes_of(toml_str).unwrap();
+        assert_eq!(
+            routes,
+            vec![RouteEntry {
+                host: "ops.example.com".to_string(),
+                path: "/grafana".to_string(),
+                target: RouteTarget::Service {
+                    name: "grafana".to_string(),
+                    strip_prefix: false,
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn route_path_defaults_to_slash() {
+        let toml_str = r#"
+[[services]]
+name = "grafana"
+timeout = 30
+
+[[route]]
+host = "ops.example.com"
+service = "grafana"
+"#;
+        let routes = routes_of(toml_str).unwrap();
+        assert_eq!(routes[0].path, "/");
+    }
+
+    #[test]
+    fn redirect_route_defaults_status_to_301() {
+        let toml_str = r#"
+[[route]]
+host = "old.example.com"
+redirect_to = "https://new.example.com/"
+"#;
+        let routes = routes_of(toml_str).unwrap();
+        assert_eq!(
+            routes,
+            vec![RouteEntry {
+                host: "old.example.com".to_string(),
+                path: "/".to_string(),
+                target: RouteTarget::Redirect {
+                    to: "https://new.example.com/".to_string(),
+                    status: 301,
+                    preserve_path: false,
+                    preserve_query: false,
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn route_with_both_service_and_redirect_is_rejected() {
+        let toml_str = r#"
+[[services]]
+name = "grafana"
+timeout = 30
+
+[[route]]
+host = "ops.example.com"
+service = "grafana"
+redirect_to = "https://elsewhere.example.com/"
+"#;
+        assert!(
+            routes_of(toml_str)
+                .unwrap_err()
+                .contains("mutually exclusive")
+        );
+    }
+
+    #[test]
+    fn route_with_neither_service_nor_redirect_is_rejected() {
+        let toml_str = r#"
+[[route]]
+host = "ops.example.com"
+"#;
+        assert!(
+            routes_of(toml_str)
+                .unwrap_err()
+                .contains("exactly one of 'service'/'redirect_to'")
+        );
+    }
+
+    #[test]
+    fn route_targeting_undeclared_service_is_rejected() {
+        let toml_str = r#"
+[[route]]
+host = "ops.example.com"
+service = "grafana"
+"#;
+        assert!(
+            routes_of(toml_str)
+                .unwrap_err()
+                .contains("not declared in this stack")
+        );
+    }
+
+    #[test]
+    fn route_targeting_tcp_service_is_rejected() {
+        let toml_str = r#"
+[[services]]
+name = "redis.internal"
+timeout = 0
+protocol = "tcp"
+listen_port = 6379
+
+[[route]]
+host = "ops.example.com"
+service = "redis.internal"
+"#;
+        assert!(
+            routes_of(toml_str)
+                .unwrap_err()
+                .contains("routes can only target http services")
+        );
+    }
+
+    #[test]
+    fn strip_prefix_route_parses_and_forwards_correctly() {
+        let toml_str = r#"
+[[services]]
+name = "api"
+timeout = 0
+
+[[route]]
+host = "ops.example.com"
+path = "/api"
+service = "api"
+strip_prefix = true
+"#;
+        let routes = routes_of(toml_str).unwrap();
+        assert_eq!(
+            routes,
+            vec![RouteEntry {
+                host: "ops.example.com".to_string(),
+                path: "/api".to_string(),
+                target: RouteTarget::Service {
+                    name: "api".to_string(),
+                    strip_prefix: true,
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn strip_prefix_on_a_redirect_route_is_rejected() {
+        let toml_str = r#"
+services = []
+
+[[route]]
+host = "old.example.com"
+redirect_to = "https://new.example.com/"
+strip_prefix = true
+"#;
+        assert!(
+            routes_of(toml_str)
+                .unwrap_err()
+                .contains("'strip_prefix' only applies to 'service' routes")
+        );
+    }
+
+    #[test]
+    fn preserve_path_on_a_service_route_is_rejected() {
+        let toml_str = r#"
+[[services]]
+name = "api"
+timeout = 0
+
+[[route]]
+host = "ops.example.com"
+service = "api"
+preserve_path = true
+"#;
+        assert!(
+            routes_of(toml_str)
+                .unwrap_err()
+                .contains("'preserve_path'/'preserve_query' only apply to 'redirect_to' routes")
+        );
+    }
+
+    #[test]
+    fn preserve_query_on_a_service_route_is_rejected() {
+        let toml_str = r#"
+[[services]]
+name = "api"
+timeout = 0
+
+[[route]]
+host = "ops.example.com"
+service = "api"
+preserve_query = true
+"#;
+        assert!(
+            routes_of(toml_str)
+                .unwrap_err()
+                .contains("'preserve_path'/'preserve_query' only apply to 'redirect_to' routes")
+        );
+    }
+
+    #[test]
+    fn redirect_route_with_preserve_flags_parses() {
+        let toml_str = r#"
+services = []
+
+[[route]]
+host = "old.example.com"
+path = "/old"
+redirect_to = "/new"
+preserve_path = true
+preserve_query = true
+"#;
+        let routes = routes_of(toml_str).unwrap();
+        assert_eq!(
+            routes,
+            vec![RouteEntry {
+                host: "old.example.com".to_string(),
+                path: "/old".to_string(),
+                target: RouteTarget::Redirect {
+                    to: "/new".to_string(),
+                    status: 301,
+                    preserve_path: true,
+                    preserve_query: true,
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn route_targeting_non_entry_point_service_is_rejected() {
+        let toml_str = r#"
+[[services]]
+name = "backend.only"
+
+[[route]]
+host = "ops.example.com"
+service = "backend.only"
+"#;
+        assert!(
+            routes_of(toml_str)
+                .unwrap_err()
+                .contains("isn't a proxy-reachable entry point")
+        );
+    }
+
+    #[test]
+    fn redirect_route_with_unsupported_status_is_rejected() {
+        let toml_str = r#"
+[[route]]
+host = "old.example.com"
+redirect_to = "https://new.example.com/"
+redirect_status = 200
+"#;
+        assert!(
+            routes_of(toml_str)
+                .unwrap_err()
+                .contains("must be one of 301/302/307/308")
+        );
+    }
+
+    #[test]
+    fn detect_route_conflicts_flags_cross_stack_collision() {
+        let alpha = vec![RouteEntry {
+            host: "ops.example.com".to_string(),
+            path: "/".to_string(),
+            target: RouteTarget::Service {
+                name: "a".to_string(),
+                strip_prefix: false,
+            },
+        }];
+        let bravo = vec![RouteEntry {
+            host: "ops.example.com".to_string(),
+            path: "/".to_string(),
+            target: RouteTarget::Service {
+                name: "b".to_string(),
+                strip_prefix: false,
+            },
+        }];
+        let routes: RouteMap =
+            HashMap::from([("alpha".to_string(), alpha), ("bravo".to_string(), bravo)]);
+
+        let conflicts = detect_route_conflicts(&routes);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].host, "ops.example.com");
+        assert_eq!(conflicts[0].path, "/");
+    }
+
+    #[test]
+    fn detect_route_conflicts_allows_same_host_different_paths() {
+        let alpha = vec![
+            RouteEntry {
+                host: "ops.example.com".to_string(),
+                path: "/a".to_string(),
+                target: RouteTarget::Service {
+                    name: "a".to_string(),
+                    strip_prefix: false,
+                },
+            },
+            RouteEntry {
+                host: "ops.example.com".to_string(),
+                path: "/b".to_string(),
+                target: RouteTarget::Service {
+                    name: "b".to_string(),
+                    strip_prefix: false,
+                },
+            },
+        ];
+        let routes: RouteMap = HashMap::from([("alpha".to_string(), alpha)]);
+
+        assert!(detect_route_conflicts(&routes).is_empty());
     }
 }

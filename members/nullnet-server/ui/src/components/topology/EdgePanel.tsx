@@ -2,13 +2,10 @@ import { useMemo } from 'react';
 import type { GraphEdgeJson, SessionJson, EgressDestination } from '../../types';
 import { spRow, spKey, spCode } from './panelStyles';
 import { useTopologyData } from './TopologyContext';
+import { formatTimestamp, formatTimestampFull } from '../../lib/time';
 
 interface Props {
   edges: GraphEdgeJson[];
-}
-
-function formatTime(unix: number): string {
-  return new Date(unix * 1000).toLocaleTimeString([], { hour12: false });
 }
 
 /// ISO alpha-2 country code → flag emoji (regional-indicator letters). Empty
@@ -67,8 +64,11 @@ function DestinationList({ destinations }: { destinations: EgressDestination[] }
                   <div style={{ fontSize: 9, color: 'var(--t2)', marginTop: 1 }}>{d.org}</div>
                 )}
               </td>
-              <td style={{ ...sep, fontSize: 9.5, color: 'var(--t1)', textAlign: 'right', whiteSpace: 'nowrap', verticalAlign: 'top', paddingTop: 5, paddingBottom: 4 }}>
-                ×{d.count} · {formatTime(d.last_seen)}
+              <td
+                style={{ ...sep, fontSize: 9.5, color: 'var(--t1)', textAlign: 'right', whiteSpace: 'nowrap', verticalAlign: 'top', paddingTop: 5, paddingBottom: 4 }}
+                title={formatTimestampFull(d.last_seen)}
+              >
+                ×{d.count} · {formatTimestamp(d.last_seen)}
               </td>
             </tr>
           );

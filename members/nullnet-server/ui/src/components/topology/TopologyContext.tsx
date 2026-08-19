@@ -1,7 +1,9 @@
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
 import type { ChainJson, GraphJson, ServiceJson, SessionJson } from '../../types';
-import type { PanelState } from './types';
-import { INTERNET_ID } from './types';
+import type { LayoutMode, PanelState } from './types';
+import { INTERNET_ID, LAYOUT_MODES } from './types';
+
+const LAYOUT_MODE_STORAGE_KEY = 'topology-layout-mode';
 import { useApi } from '../../hooks/useApi';
 
 // ── Data context ──────────────────────────────────────────────────────────────
@@ -25,6 +27,7 @@ const TopologyDataContext = createContext<TopologyData>({
 interface UIState {
   panel: PanelState;
   focusedClientIp: string | null;
+  layoutMode: LayoutMode;
 }
 
 export type UIAction =
@@ -33,11 +36,19 @@ export type UIAction =
   | { type: 'PANEL_CLOSED' }
   | { type: 'CLIENT_FOCUSED'; ip: string }
   | { type: 'FOCUS_CLEARED' }
-  | { type: 'STACK_CHANGED' };
+  | { type: 'STACK_CHANGED' }
+  | { type: 'LAYOUT_MODE_CHANGED'; mode: LayoutMode };
+
+function loadInitialLayoutMode(): LayoutMode {
+  if (typeof localStorage === 'undefined') return 'layered';
+  const stored = localStorage.getItem(LAYOUT_MODE_STORAGE_KEY);
+  return (LAYOUT_MODES as string[]).includes(stored ?? '') ? (stored as LayoutMode) : 'layered';
+}
 
 const initialUIState: UIState = {
   panel: null,
   focusedClientIp: null,
+  layoutMode: loadInitialLayoutMode(),
 };
 
 function uiReducer(state: UIState, action: UIAction): UIState {
@@ -78,6 +89,8 @@ function uiReducer(state: UIState, action: UIAction): UIState {
       return { ...state, focusedClientIp: null };
     case 'STACK_CHANGED':
       return { ...state, panel: null, focusedClientIp: null };
+    case 'LAYOUT_MODE_CHANGED':
+      return { ...state, layoutMode: action.mode };
   }
 }
 
@@ -121,6 +134,12 @@ export function TopologyProvider({
   const { data: chains, refetch: refetchChains } = useApi<ChainJson[]>(`/api/chains/${stack}`);
 
   const [uiState, dispatch] = useReducer(uiReducer, initialUIState);
+
+  // Persist the chosen layout mode across reloads (kept out of the reducer to
+  // keep it a pure function of state+action).
+  useEffect(() => {
+    localStorage.setItem(LAYOUT_MODE_STORAGE_KEY, uiState.layoutMode);
+  }, [uiState.layoutMode]);
 
   // Reset panel and focus when the active stack changes (not on initial mount).
   const prevStackRef = useRef(stack);

@@ -1,9 +1,9 @@
-use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::db::Db;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::broadcast;
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -18,6 +18,16 @@ pub(crate) enum Severity {
     Info,
     Warning,
     Error,
+}
+
+impl Severity {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Warning => "warning",
+            Self::Error => "error",
+        }
+    }
 }
 
 /// Wraps an event with its severity for serialization. Produces a flat JSON
@@ -110,6 +120,13 @@ pub(crate) enum Event {
         listen_port: u16,
         timestamp: u64,
     },
+    RouteConflict {
+        stack_a: String,
+        stack_b: String,
+        host: String,
+        path: String,
+        timestamp: u64,
+    },
     AllReplicasRemoved {
         service: String,
         stack: String,
@@ -159,6 +176,26 @@ pub(crate) enum Event {
     BackendTriggerSetupBailed {
         service: String,
         port: u16,
+        timestamp: u64,
+    },
+    /// A `services/*.toml` change was picked up but could not be parsed, so the
+    /// previous configuration is still in force.
+    ConfigReloadFailed {
+        error_message: String,
+        timestamp: u64,
+    },
+    /// A file watcher never started (or died), so changes to what it watched are
+    /// no longer picked up for the lifetime of this process.
+    FileWatchFailed {
+        target: String,
+        error_message: String,
+        timestamp: u64,
+    },
+    /// The dedicated-UDP-port pool for encrypted cross-host tunnels ran dry; the
+    /// edge that needed one failed. Mirrors [`Self::NetIdPoolExhausted`].
+    UdpPortPoolExhausted {
+        service: String,
+        client_ip: String,
         timestamp: u64,
     },
 
@@ -248,6 +285,61 @@ pub(crate) enum Event {
         error_message: String,
         timestamp: u64,
     },
+    /// A held first packet was dropped because the chain never became active in
+    /// time. The trigger itself was accepted — this is the setup not landing,
+    /// not the RPC failing (see [`Self::BackendTriggerSendFailed`]).
+    BackendTriggerSetupTimedOut {
+        service_name: String,
+        port: u16,
+        docker_container: String,
+        error_message: String,
+        timestamp: u64,
+    },
+    /// Egress counterpart of [`Self::BackendTriggerSetupTimedOut`]: the held
+    /// packet was dropped because steering never went live.
+    EgressSteerSetupTimedOut {
+        docker_container: String,
+        dst_ip: String,
+        dst_port: u32,
+        error_message: String,
+        timestamp: u64,
+    },
+    /// Egress steering rules could not be installed for a new edge, so the
+    /// initiator's held packet will time out and drop.
+    EgressSteerInstallFailed {
+        vxlan_id: u32,
+        docker_container: Option<String>,
+        error_message: String,
+        timestamp: u64,
+    },
+    /// An NFQUEUE consumer never started. Trigger detection and egress policy
+    /// enforcement are both off on that queue for the rest of the process.
+    NfqueueBindFailed {
+        queue_id: u32,
+        error_message: String,
+        timestamp: u64,
+    },
+    /// The TCP MSS clamp could not be installed, so oversized segments can be
+    /// silently black-holed once they enter an overlay tunnel.
+    MssClampInstallFailed {
+        error_message: String,
+        timestamp: u64,
+    },
+    /// An egress country-policy check could not be resolved. The flow is denied
+    /// (fail-closed), so this is a drop the operator should see.
+    EgressPolicyCheckFailed {
+        docker_container: String,
+        dst_ip: String,
+        error_message: String,
+        timestamp: u64,
+    },
+    /// Conntrack could not be flushed after a policy change, so flows the new
+    /// policy denies may keep running until they close on their own.
+    ConntrackFlushFailed {
+        ip: String,
+        error_message: String,
+        timestamp: u64,
+    },
 
     // --- Client info events ---
     VxlanSetupCompleted {
@@ -321,6 +413,17 @@ pub(crate) enum Event {
         timestamp: u64,
     },
 
+    /// A proxy opened its certificate stream — i.e. a proxy came up. Paired
+    /// with [`Self::ProxyDisconnected`], mirroring the node events.
+    ProxyConnected {
+        ip: String,
+        timestamp: u64,
+    },
+    ProxyDisconnected {
+        ip: String,
+        timestamp: u64,
+    },
+
     // --- Proxy info events ---
     ProxyRequestRouted {
         service_name: String,
@@ -343,6 +446,21 @@ pub(crate) enum Event {
         domain: String,
         timestamp: u64,
     },
+    /// Unattended renewal did not produce a usable certificate. Left unattended
+    /// this ends in an expired cert, so it is an error even though the current
+    /// one is still serving.
+    CertificateRenewalFailed {
+        domain: String,
+        error_message: String,
+        timestamp: u64,
+    },
+    /// A certificate was issued but its DNS credentials could not be stored, so
+    /// unattended renewal will never run for it.
+    CertificateCredentialsStoreFailed {
+        domain: String,
+        error_message: String,
+        timestamp: u64,
+    },
 }
 
 impl Event {
@@ -362,6 +480,7 @@ impl Event {
             Self::ConfigReloaded { .. } => "config_reloaded",
             Self::ConfigStackRemoved { .. } => "config_stack_removed",
             Self::PortMappingConflict { .. } => "port_mapping_conflict",
+            Self::RouteConflict { .. } => "route_conflict",
             Self::AllReplicasRemoved { .. } => "all_replicas_removed",
             Self::ServiceReachabilityToggled { .. } => "service_reachability_toggled",
             Self::ProxyClientTimedOut { .. } => "proxy_client_timed_out",
@@ -371,6 +490,22 @@ impl Event {
             Self::NetIdPoolExhausted { .. } => "net_id_pool_exhausted",
             Self::ProxyChainSetupFailed { .. } => "proxy_chain_setup_failed",
             Self::BackendTriggerSetupBailed { .. } => "backend_trigger_setup_bailed",
+            Self::ConfigReloadFailed { .. } => "config_reload_failed",
+            Self::FileWatchFailed { .. } => "file_watch_failed",
+            Self::UdpPortPoolExhausted { .. } => "udp_port_pool_exhausted",
+            Self::BackendTriggerSetupTimedOut { .. } => "backend_trigger_setup_timed_out",
+            Self::EgressSteerSetupTimedOut { .. } => "egress_steer_setup_timed_out",
+            Self::EgressSteerInstallFailed { .. } => "egress_steer_install_failed",
+            Self::NfqueueBindFailed { .. } => "nfqueue_bind_failed",
+            Self::MssClampInstallFailed { .. } => "mss_clamp_install_failed",
+            Self::EgressPolicyCheckFailed { .. } => "egress_policy_check_failed",
+            Self::ConntrackFlushFailed { .. } => "conntrack_flush_failed",
+            Self::ProxyConnected { .. } => "proxy_connected",
+            Self::ProxyDisconnected { .. } => "proxy_disconnected",
+            Self::CertificateRenewalFailed { .. } => "certificate_renewal_failed",
+            Self::CertificateCredentialsStoreFailed { .. } => {
+                "certificate_credentials_store_failed"
+            }
             Self::VxlanSetupFailed { .. } => "vxlan_setup_failed",
             Self::VlanSetupFailed { .. } => "vlan_setup_failed",
             Self::VxlanTeardownFailed { .. } => "vxlan_teardown_failed",
@@ -416,32 +551,50 @@ impl Event {
             | Self::SetupAck { .. }
             | Self::SessionCreated { .. }
             | Self::SessionTornDown { .. }
+            | Self::ProxyClientTimedOut { .. }
+            | Self::MaxNetworksLimitEnforced { .. }
             | Self::ConfigReloaded { .. }
+            | Self::ConfigStackRemoved { .. }
+            | Self::ServiceUnregistered { .. }
+            | Self::ServiceReachabilityToggled { .. }
             | Self::StickySessionReused { .. }
             | Self::VxlanSetupCompleted { .. }
             | Self::VlanSetupCompleted { .. }
             | Self::ControlChannelEstablished { .. }
             | Self::ServicesListUpdated { .. }
             | Self::ProxyRequestRouted { .. }
+            | Self::ProxyConnected { .. }
             | Self::CertificateInstalled { .. }
-            | Self::CertificateRenewed { .. } => Severity::Info,
+            | Self::CertificateRenewed { .. }
+            | Self::CertificateRemoved { .. } => Severity::Info,
 
             Self::NodeDisconnected { .. }
-            | Self::ServiceUnregistered { .. }
             | Self::ServiceDeclarationSkipped { .. }
-            | Self::ConfigStackRemoved { .. }
             | Self::AllReplicasRemoved { .. }
-            | Self::ServiceReachabilityToggled { .. }
-            | Self::ProxyClientTimedOut { .. }
             | Self::StaleSessionEvicted { .. }
-            | Self::MaxNetworksLimitEnforced { .. }
             | Self::BackendTriggerSetupBailed { .. }
             | Self::ControlChannelClosed { .. }
-            | Self::NetTeardownUnconfirmed { .. }
-            | Self::CertificateRemoved { .. } => Severity::Warning,
+            | Self::ContainerSuspendFailed { .. }
+            | Self::ProxyRequestMissingHost { .. }
+            | Self::ProxyRequestInvalidHost { .. }
+            | Self::ProxyClientNotInet { .. }
+            | Self::ProxyDisconnected { .. } => Severity::Warning,
 
             Self::SetupTimeout { .. }
+            | Self::NetTeardownUnconfirmed { .. }
+            | Self::ConntrackFlushFailed { .. }
+            | Self::CertificateCredentialsStoreFailed { .. }
             | Self::NetIdPoolExhausted { .. }
+            | Self::UdpPortPoolExhausted { .. }
+            | Self::ConfigReloadFailed { .. }
+            | Self::FileWatchFailed { .. }
+            | Self::BackendTriggerSetupTimedOut { .. }
+            | Self::EgressSteerSetupTimedOut { .. }
+            | Self::EgressSteerInstallFailed { .. }
+            | Self::NfqueueBindFailed { .. }
+            | Self::MssClampInstallFailed { .. }
+            | Self::EgressPolicyCheckFailed { .. }
+            | Self::CertificateRenewalFailed { .. }
             | Self::ProxyChainSetupFailed { .. }
             | Self::VxlanSetupFailed { .. }
             | Self::VlanSetupFailed { .. }
@@ -456,15 +609,12 @@ impl Event {
             | Self::EgressTriggerSendFailed { .. }
             | Self::GatewayForwardInstallFailed { .. }
             | Self::FirewallRulesLoadFailed { .. }
-            | Self::ContainerSuspendFailed { .. }
             | Self::ContainerResumeFailed { .. }
             | Self::UpstreamLookupFailed { .. }
-            | Self::ProxyRequestMissingHost { .. }
-            | Self::ProxyRequestInvalidHost { .. }
             | Self::UpstreamIpParseFailed { .. }
-            | Self::ProxyClientNotInet { .. }
             | Self::TlsCertificateInvalid { .. }
             | Self::PortMappingConflict { .. }
+            | Self::RouteConflict { .. }
             | Self::TcpListenerBindFailed { .. }
             | Self::UdpListenerBindFailed { .. }
             | Self::TcpUpstreamConnectFailed { .. }
@@ -597,6 +747,21 @@ impl Event {
             service_b,
             protocol,
             listen_port,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn route_conflict(
+        stack_a: String,
+        stack_b: String,
+        host: String,
+        path: String,
+    ) -> Self {
+        Self::RouteConflict {
+            stack_a,
+            stack_b,
+            host,
+            path,
             timestamp: now_secs(),
         }
     }
@@ -1014,61 +1179,264 @@ impl Event {
             timestamp: now_secs(),
         }
     }
+
+    pub(crate) fn certificate_renewal_failed(domain: String, error_message: String) -> Self {
+        Self::CertificateRenewalFailed {
+            domain,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn certificate_credentials_store_failed(
+        domain: String,
+        error_message: String,
+    ) -> Self {
+        Self::CertificateCredentialsStoreFailed {
+            domain,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn config_reload_failed(error_message: String) -> Self {
+        Self::ConfigReloadFailed {
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn file_watch_failed(target: String, error_message: String) -> Self {
+        Self::FileWatchFailed {
+            target,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn udp_port_pool_exhausted(service: String, client_ip: String) -> Self {
+        Self::UdpPortPoolExhausted {
+            service,
+            client_ip,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn proxy_connected(ip: String) -> Self {
+        Self::ProxyConnected {
+            ip,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn proxy_disconnected(ip: String) -> Self {
+        Self::ProxyDisconnected {
+            ip,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn backend_trigger_setup_timed_out(
+        service_name: String,
+        port: u16,
+        docker_container: String,
+        error_message: String,
+    ) -> Self {
+        Self::BackendTriggerSetupTimedOut {
+            service_name,
+            port,
+            docker_container,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn egress_steer_setup_timed_out(
+        docker_container: String,
+        dst_ip: String,
+        dst_port: u32,
+        error_message: String,
+    ) -> Self {
+        Self::EgressSteerSetupTimedOut {
+            docker_container,
+            dst_ip,
+            dst_port,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn egress_steer_install_failed(
+        vxlan_id: u32,
+        docker_container: Option<String>,
+        error_message: String,
+    ) -> Self {
+        Self::EgressSteerInstallFailed {
+            vxlan_id,
+            docker_container,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn nfqueue_bind_failed(queue_id: u32, error_message: String) -> Self {
+        Self::NfqueueBindFailed {
+            queue_id,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn mss_clamp_install_failed(error_message: String) -> Self {
+        Self::MssClampInstallFailed {
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn egress_policy_check_failed(
+        docker_container: String,
+        dst_ip: String,
+        error_message: String,
+    ) -> Self {
+        Self::EgressPolicyCheckFailed {
+            docker_container,
+            dst_ip,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn conntrack_flush_failed(ip: String, error_message: String) -> Self {
+        Self::ConntrackFlushFailed {
+            ip,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
 }
 
-/// Shared event store: ring buffer + broadcast channel for SSE subscribers.
-#[derive(Clone, Debug)]
+/// One page of persisted events: each entry is the flat envelope JSON
+/// (`{"severity":...,"type":...,...fields}`, matching what `EventEnvelope`
+/// used to produce) built straight from the stored payload, so callers never
+/// need to deserialize back into an `Event`. `next_before_id`, when present,
+/// is the cursor for fetching the next (older) page.
+pub(crate) struct EventPage {
+    pub(crate) events: Vec<serde_json::Value>,
+    pub(crate) next_before_id: Option<i64>,
+}
+
+/// Shared event store: durably backed by the `events` DB table (pruned on a
+/// retention timer — see `events_retention.rs`), plus a broadcast channel for
+/// live SSE subscribers. `db` is filled in once via [`Self::attach_db`] —
+/// the many in-process unit tests that build an `Orchestrator` directly never
+/// call it, so their events still broadcast live but aren't persisted, which
+/// is all those tests need.
+#[derive(Clone)]
 pub(crate) struct EventStore {
-    buffer: Arc<Mutex<VecDeque<Event>>>,
-    capacity: usize,
+    db: Arc<OnceLock<Db>>,
     tx: broadcast::Sender<Event>,
+}
+
+impl std::fmt::Debug for EventStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventStore")
+            .field("db_attached", &self.db.get().is_some())
+            .finish()
+    }
 }
 
 impl EventStore {
     pub(crate) fn new() -> Self {
-        let capacity = std::env::var("EVENT_BUFFER_SIZE")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1000_usize);
         let (tx, _) = broadcast::channel(512);
         Self {
-            buffer: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
-            capacity,
+            db: Arc::new(OnceLock::new()),
             tx,
         }
     }
 
+    /// Wire in DB-backed persistence. A no-op after the first call.
+    pub(crate) fn attach_db(&self, db: Db) {
+        let _ = self.db.set(db);
+    }
+
     pub(crate) async fn emit(&self, event: Event) {
-        let mut buf = self.buffer.lock().await;
-        if buf.len() >= self.capacity {
-            buf.pop_front();
+        if let Some(db) = self.db.get() {
+            let kind = event.kind();
+            match serde_json::to_value(&event) {
+                Ok(payload) => {
+                    let timestamp = payload
+                        .get("timestamp")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or_else(|| now_secs() as i64);
+                    if let Err(e) = db
+                        .events()
+                        .insert(
+                            kind,
+                            event.severity().as_str(),
+                            timestamp,
+                            &payload.to_string(),
+                        )
+                        .await
+                    {
+                        eprintln!("Failed to persist event '{kind}': {e:?}");
+                    }
+                }
+                Err(e) => eprintln!("Failed to serialize event '{kind}' for persistence: {e:#}"),
+            }
         }
-        buf.push_back(event.clone());
-        drop(buf);
         let _ = self.tx.send(event);
     }
 
-    /// Return stored events, optionally filtered by kind and/or severity, capped at limit.
-    /// `limit` takes the most recent N events.
-    pub(crate) async fn snapshot(
+    /// Most-recent-first page of persisted events, optionally filtered by
+    /// kind/severity/time range and cursor-paginated via `before_id`. Returns
+    /// an empty page (no error) if no DB has been attached yet.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn query(
         &self,
-        limit: Option<usize>,
         kind: Option<&str>,
         severity: Option<Severity>,
-    ) -> Vec<Event> {
-        let buf = self.buffer.lock().await;
-        let filtered: Vec<Event> = buf
-            .iter()
-            .filter(|e| kind.is_none_or(|k| e.kind() == k))
-            .filter(|e| severity.is_none_or(|s| e.severity() == s))
-            .cloned()
+        since: Option<i64>,
+        until: Option<i64>,
+        before_id: Option<i64>,
+        limit: i64,
+    ) -> EventPage {
+        let Some(db) = self.db.get() else {
+            return EventPage {
+                events: vec![],
+                next_before_id: None,
+            };
+        };
+        let severity_str = severity.map(Severity::as_str);
+        let rows = db
+            .events()
+            .query(kind, severity_str, since, until, before_id, limit)
+            .await
+            .unwrap_or_default();
+        // Another row exists past this page only if it came back full.
+        let next_before_id = (rows.len() as i64 >= limit)
+            .then(|| rows.last().map(|r| r.id))
+            .flatten();
+        let events = rows
+            .into_iter()
+            .map(|row| {
+                let mut obj = serde_json::from_str::<serde_json::Value>(&row.payload)
+                    .ok()
+                    .and_then(|v| match v {
+                        serde_json::Value::Object(map) => Some(map),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                obj.insert(
+                    "severity".to_string(),
+                    serde_json::Value::String(row.severity),
+                );
+                serde_json::Value::Object(obj)
+            })
             .collect();
-        match limit {
-            Some(n) => {
-                let start = filtered.len().saturating_sub(n);
-                filtered[start..].to_vec()
-            }
-            None => filtered,
+        EventPage {
+            events,
+            next_before_id,
         }
     }
 
