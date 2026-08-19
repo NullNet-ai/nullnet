@@ -12,7 +12,11 @@
 //! which side closed first, so it is a definitive close signal but not a prompt one.
 
 use crate::nfqueue::parse::{Flow, IPPROTO_TCP, IPPROTO_UDP};
-use netlink_sys::{Socket, SocketAddr, protocols::NETLINK_NETFILTER};
+use netlink_sys::{
+    AsyncSocket, AsyncSocketExt, Socket, SocketAddr, TokioSocket, protocols::NETLINK_NETFILTER,
+};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use std::net::Ipv4Addr;
 
 /// ctnetlink attribute types (`linux/netfilter/nfnetlink_conntrack.h`). Stable
@@ -126,6 +130,10 @@ pub fn parse_destroy_batch(buf: &[u8]) -> Vec<Flow> {
     out
 }
 
+/// Receive buffer for the event socket. Bigger means fewer drops under churn;
+/// it does not eliminate them, which is why the reconcile backstop exists.
+const RX_BUF_BYTES: usize = 1 << 21;
+
 /// Subscribe to the conntrack DESTROY multicast group.
 ///
 /// Deliberately does **not** set `NETLINK_NO_ENOBUFS`: under churn the kernel
@@ -134,10 +142,64 @@ pub fn parse_destroy_batch(buf: &[u8]) -> Vec<Flow> {
 pub fn destroy_socket(rx_buf_bytes: usize) -> std::io::Result<Socket> {
     let mut socket = Socket::new(NETLINK_NETFILTER)?;
     socket.bind(&SocketAddr::new(0, 0))?;
-    // Bigger receive buffer means fewer drops; it does not eliminate them.
     let _ = socket.set_rx_buf_sz(rx_buf_bytes);
     socket.add_membership(libc::NFNLGRP_CONNTRACK_DESTROY as u32)?;
     Ok(socket)
+}
+
+/// Same subscription, driven by tokio.
+fn destroy_socket_async() -> std::io::Result<TokioSocket> {
+    let mut socket = TokioSocket::new(NETLINK_NETFILTER)?;
+    let inner = socket.socket_mut();
+    inner.bind(&SocketAddr::new(0, 0))?;
+    let _ = inner.set_rx_buf_sz(RX_BUF_BYTES);
+    inner.add_membership(libc::NFNLGRP_CONNTRACK_DESTROY as u32)?;
+    Ok(socket)
+}
+
+/// The open-flow set for egress, keyed by container.
+pub type EgressOpenFlows = Arc<Mutex<OpenFlows<String>>>;
+
+/// Watch conntrack DESTROY events and retire the flows they close.
+///
+/// Runs for the life of the process. A failure to subscribe is fatal to egress
+/// liveness — without it flows would only ever be added — so it is reported
+/// loudly rather than silently degrading to "everything stays alive forever".
+pub fn spawn_destroy_listener(open: EgressOpenFlows, on_idle: impl Fn(String) + Send + 'static) {
+    tokio::spawn(async move {
+        let socket = match destroy_socket_async() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "[conntrack] cannot subscribe to DESTROY events: {e}. \
+                     Egress edges will not be torn down on connection close."
+                );
+                return;
+            }
+        };
+        println!("[conntrack] listening for DESTROY events");
+        loop {
+            match socket.recv_from_full().await {
+                Ok((buf, _)) => {
+                    for flow in parse_destroy_batch(&buf) {
+                        let transition = open
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .remove(&flow);
+                        if let Some(Transition::Idle(container)) = transition {
+                            on_idle(container);
+                        }
+                    }
+                }
+                Err(e) => {
+                    // ENOBUFS means the kernel dropped events we will never see,
+                    // so the set has drifted: the periodic reconcile is what
+                    // repairs it. Keep reading rather than tearing the task down.
+                    eprintln!("[conntrack] event recv error (set may have drifted): {e}");
+                }
+            }
+        }
+    });
 }
 
 /// Which connections are currently open, grouped by whatever owns them.
@@ -246,6 +308,11 @@ impl<K: Eq + std::hash::Hash + Clone> OpenFlows<K> {
 
     pub fn is_active(&self, owner: &K) -> bool {
         self.per_owner.contains_key(owner)
+    }
+
+    /// Owners with at least one open flow.
+    pub fn owners(&self) -> Vec<K> {
+        self.per_owner.keys().cloned().collect()
     }
 
     pub fn flow_count(&self, owner: &K) -> usize {
@@ -403,6 +470,82 @@ mod tests {
         panic!("no DESTROY for sport={src_port} within 180s");
     }
 
+    /// `conntrack -L` repeats src=/dst=/sport=/dport= for the reply tuple. We
+    /// must read the ORIGINAL one — the reply is post-NAT and would attribute
+    /// the flow to the wrong container, or to none.
+    #[test]
+    fn conntrack_line_parses_the_original_tuple_not_the_reply() {
+        let line = "tcp      6 431999 ESTABLISHED src=172.17.0.2 dst=1.1.1.1 sport=45678 \
+                    dport=443 src=1.1.1.1 dst=192.168.1.103 sport=443 dport=45678 [ASSURED] mark=0 use=1";
+        let f = parse_conntrack_line(line).expect("parses");
+        assert_eq!(f.src_ip, Ipv4Addr::new(172, 17, 0, 2), "original src, not reply");
+        assert_eq!(f.dst_ip, Ipv4Addr::new(1, 1, 1, 1));
+        assert_eq!(f.src_port, 45678);
+        assert_eq!(f.dst_port, 443);
+        assert_eq!(f.proto, IPPROTO_TCP);
+    }
+
+    #[test]
+    fn conntrack_line_parses_udp_and_skips_other_protocols() {
+        let udp = "udp      17 29 src=172.17.0.2 dst=8.8.8.8 sport=51000 dport=53 \
+                   src=8.8.8.8 dst=192.168.1.103 sport=53 dport=51000 mark=0 use=1";
+        assert_eq!(parse_conntrack_line(udp).expect("parses").proto, IPPROTO_UDP);
+
+        let icmp = "icmp     1 29 src=172.17.0.2 dst=8.8.8.8 type=8 code=0 id=1";
+        assert!(parse_conntrack_line(icmp).is_none(), "only TCP/UDP are tracked");
+    }
+
+    /// A dump we round-trip through `reconcile` must reproduce exactly the flows
+    /// the kernel reported — this is the repair path for dropped events.
+    #[test]
+    fn reconcile_from_a_dump_restores_the_exact_flow_set() {
+        let dump = "tcp      6 100 ESTABLISHED src=172.17.0.2 dst=1.1.1.1 sport=1 dport=443 \
+                    src=1.1.1.1 dst=9.9.9.9 sport=443 dport=1 [ASSURED] mark=0 use=1
+tcp      6 100 ESTABLISHED src=172.17.0.2 dst=2.2.2.2 sport=2 dport=80 \
+                    src=2.2.2.2 dst=9.9.9.9 sport=80 dport=2 [ASSURED] mark=0 use=1";
+        let flows: Vec<Flow> = dump.lines().filter_map(parse_conntrack_line).collect();
+        assert_eq!(flows.len(), 2);
+
+        let mut o: OpenFlows<&str> = OpenFlows::new();
+        o.insert("c1", flow(999, [8, 8, 8, 8], 53)); // stale, dropped-event leftover
+        assert_eq!(o.reconcile("c1", flows.clone()), None);
+        assert_eq!(o.flow_count(&"c1"), 2, "stale flow dropped, dumped flows adopted");
+        assert_eq!(
+            o.remove(&flow(999, [8, 8, 8, 8], 53)),
+            None,
+            "the stale flow is no longer known"
+        );
+    }
+
+    /// Live check that `dump_flows` parses real `conntrack -L` output. The unit
+    /// test above uses a hand-written line; this proves the real format matches.
+    #[test]
+    #[ignore = "needs root and network"]
+    fn live_dump_flows_sees_a_real_connection() {
+        use std::io::Write;
+        use std::net::TcpStream;
+
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let mut stream = TcpStream::connect("1.1.1.1:80").expect("connect");
+        let _ = stream.write_all(b"GET / HTTP/1.1\r\nHost: one.one.one.one\r\n\r\n");
+        let local = match stream.local_addr().expect("local") {
+            std::net::SocketAddr::V4(a) => a,
+            std::net::SocketAddr::V6(_) => panic!("expected IPv4"),
+        };
+
+        let flows = rt
+            .block_on(dump_flows(*local.ip()))
+            .expect("dump succeeded");
+        println!("dump returned {} flow(s) for {}", flows.len(), local.ip());
+        assert!(
+            flows.iter().any(|f| f.src_port == local.port() && f.dst_port == 80),
+            "our live connection {}:{} -> 1.1.1.1:80 must appear in the dump, got {flows:?}",
+            local.ip(),
+            local.port()
+        );
+        drop(stream);
+    }
+
     /// Owners are independent: one going idle says nothing about another.
     #[test]
     fn owners_are_independent() {
@@ -412,4 +555,102 @@ mod tests {
         assert_eq!(o.flow_count(&"c1"), 1);
         assert_eq!(o.flow_count(&"c2"), 1);
     }
+}
+
+/// How often to re-dump conntrack and correct drift from dropped events.
+const RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Dump the live flows conntrack currently holds for one container bridge IP.
+///
+/// Uses the `conntrack` CLI, the same one `egress_policy` already shells out to
+/// for flushes. A second netlink dump socket would be tidier but this runs on a
+/// slow cadence and only as a correctness backstop, so the subprocess cost is
+/// not worth avoiding.
+pub async fn dump_flows(bridge_ip: Ipv4Addr) -> Option<Vec<Flow>> {
+    let out = tokio::process::Command::new("conntrack")
+        .args(["-L", "-s", &bridge_ip.to_string()])
+        .output()
+        .await
+        .ok()?;
+    // Exit 1 just means "no entries matched"; anything else is a real failure,
+    // and guessing "empty" from a failed dump would reap every live edge.
+    match out.status.code() {
+        Some(0) | Some(1) => {}
+        _ => return None,
+    }
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(parse_conntrack_line)
+            .collect(),
+    )
+}
+
+/// Parse one `conntrack -L` row into its original-direction 5-tuple.
+///
+/// The original tuple is whichever `src=`/`dst=`/`sport=`/`dport=` come first on
+/// the line; the reply tuple repeats those keys afterwards and must be ignored,
+/// same reason as in `parse_orig_tuple`.
+fn parse_conntrack_line(line: &str) -> Option<Flow> {
+    let proto = match line.split_whitespace().next()? {
+        "tcp" => IPPROTO_TCP,
+        "udp" => IPPROTO_UDP,
+        _ => return None,
+    };
+    let first = |key: &str| -> Option<&str> {
+        line.split_whitespace()
+            .find_map(|t| t.strip_prefix(key))
+    };
+    Some(Flow {
+        src_ip: first("src=")?.parse().ok()?,
+        dst_ip: first("dst=")?.parse().ok()?,
+        src_port: first("sport=")?.parse().ok()?,
+        dst_port: first("dport=")?.parse().ok()?,
+        proto,
+    })
+}
+
+/// Re-dump one container's flows and replace its set.
+///
+/// Call this immediately after any conntrack flush **we** issue — see
+/// `suppress`. Waiting for the periodic pass is not good enough: with no grace
+/// window the reap would already have been reported.
+pub async fn reconcile_container(
+    open: &EgressOpenFlows,
+    container: &str,
+    bridge_ip: Ipv4Addr,
+) -> Option<Transition<String>> {
+    let flows = dump_flows(bridge_ip).await?;
+    let mut guard = open
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    guard.reconcile(container.to_string(), flows)
+}
+
+/// Periodically correct drift caused by dropped netlink events.
+///
+/// This is self-heal, not liveness-polling: the event stream remains the signal,
+/// and this only repairs what `ENOBUFS` lost.
+pub fn spawn_reconcile_task(
+    open: EgressOpenFlows,
+    resolve: impl Fn(&str) -> Option<Ipv4Addr> + Send + 'static,
+    on_idle: impl Fn(String) + Send + 'static,
+) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(RECONCILE_INTERVAL).await;
+            let owners: Vec<String> = open
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .owners();
+            for container in owners {
+                let Some(ip) = resolve(&container) else {
+                    continue;
+                };
+                if let Some(Transition::Idle(c)) = reconcile_container(&open, &container, ip).await {
+                    on_idle(c);
+                }
+            }
+        }
+    });
 }

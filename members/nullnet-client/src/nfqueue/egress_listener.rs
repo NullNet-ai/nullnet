@@ -17,6 +17,7 @@
 
 use crate::egress_policy::PolicyVerdicts;
 use crate::nfqueue::cache::BridgeIpCache;
+use crate::conntrack::EgressOpenFlows;
 use crate::nfqueue::parse::{Flow, ipv4_flow};
 use crate::nfqueue::recv_loop::spawn_queue_loop;
 use crate::triggers::{EGRESS_TRIGGER_PORT, TriggerState, TriggersState};
@@ -83,6 +84,10 @@ struct EgressCtx {
     pending: PendingDsts,
     /// Cached egress country-policy verdicts (server-decided).
     verdicts: Arc<PolicyVerdicts>,
+    /// Which connections each container currently has open. Distinct from
+    /// `pending`, which is a per-destination stat and collapses concurrent
+    /// flows to one host — see `OpenFlows`.
+    open_flows: EgressOpenFlows,
 }
 
 /// Spawn the egress-trigger recv loop (queue 1). Shares the bridge-IP cache, the
@@ -92,6 +97,7 @@ pub fn spawn_egress_recv_thread(
     cache: BridgeIpCache,
     triggers_state: Arc<TriggersState>,
     verdicts: Arc<PolicyVerdicts>,
+    open_flows: EgressOpenFlows,
 ) {
     let pending: PendingDsts = Arc::new(Mutex::new(HashMap::new()));
     spawn_flush_task(grpc.clone(), pending.clone());
@@ -104,6 +110,7 @@ pub fn spawn_egress_recv_thread(
         )),
         pending,
         verdicts,
+        open_flows,
     };
     let grpc = ctx.grpc.clone();
     spawn_queue_loop(
@@ -133,14 +140,47 @@ async fn handle_packet(mut msg: Message, ctx: EgressCtx, verdict_tx: Sender<Mess
     };
     // Parse before the async work so no borrow of `msg` is held across an await.
     let flow = ipv4_flow(msg.get_payload());
-    let verdict = decide_verdict(&ctx, flow).await;
-    msg.set_verdict(verdict);
+    let decision = decide_verdict(&ctx, flow).await;
+
+    // Record the open flow in exactly one place, and only when the packet is
+    // actually accepted. A denied NEW is dropped, so its conntrack entry never
+    // confirms and no DESTROY will follow — recording it would leak a phantom
+    // "open" until the next reconcile. Scattering this across `decide_verdict`'s
+    // several Accept paths is what would make that leak easy to introduce.
+    if let (Verdict::Accept, Some(container), Some(flow)) = (decision.verdict, decision.track, flow)
+    {
+        ctx.open_flows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(container, flow);
+    }
+
+    msg.set_verdict(decision.verdict);
     let _ = verdict_tx.send(msg);
 }
 
-async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Verdict {
+/// A verdict, plus who owns the flow when it is one we track for liveness.
+struct Decision {
+    verdict: Verdict,
+    /// `Some(container)` only for a brokered egress flow belonging to a
+    /// registered container. Host processes and unmapped sources pass through
+    /// untracked and must not enter the open-flow set.
+    track: Option<String>,
+}
+
+impl Decision {
+    /// Pass-through or denial: nothing to track either way.
+    const fn untracked(verdict: Verdict) -> Self {
+        Self {
+            verdict,
+            track: None,
+        }
+    }
+}
+
+async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Decision {
     let Some(flow) = flow else {
-        return Verdict::Accept;
+        return Decision::untracked(Verdict::Accept);
     };
     let Flow {
         src_ip,
@@ -151,7 +191,7 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Verdict {
     // Only brokered initiators are held; anything we can't map to a registered
     // container (host process, unmapped source) passes through unaltered.
     let Some(container) = ctx.cache.get(src_ip) else {
-        return Verdict::Accept;
+        return Decision::untracked(Verdict::Accept);
     };
 
     // Country-policy gate, before the trigger machinery: a denied flow gets no
@@ -162,13 +202,19 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Verdict {
     let allowed = policy_allows(ctx, &container, dst_ip).await;
     record_destination(ctx, &container, dst_ip, !allowed);
     if !allowed {
-        return Verdict::Drop;
+        return Decision::untracked(Verdict::Drop);
     }
 
+    // From here the flow belongs to `container`; `track` is set iff we accept.
+    let tracked = |verdict: Verdict| Decision {
+        verdict,
+        track: matches!(verdict, Verdict::Accept).then(|| container.clone()),
+    };
+
     match ctx.triggers_state.state(&container, EGRESS_TRIGGER_PORT) {
-        TriggerState::Active => Verdict::Accept,
+        TriggerState::Active => tracked(Verdict::Accept),
         TriggerState::Pending(notify) => {
-            wait_for_steer(ctx, &container, dst_ip, dst_port, notify).await
+            tracked(wait_for_steer(ctx, &container, dst_ip, dst_port, notify).await)
         }
         TriggerState::Fresh => {
             let notify = ctx
@@ -186,7 +232,7 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Verdict {
                     TriggerState::Active
                 )
             {
-                return Verdict::Accept;
+                return tracked(Verdict::Accept);
             }
             let res = timeout(
                 TRIGGER_TIMEOUT,
@@ -200,7 +246,7 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Verdict {
             .await;
             match res {
                 Ok(Ok(())) => match timeout(STEER_TIMEOUT, notified).await {
-                    Ok(_) => Verdict::Accept,
+                    Ok(_) => tracked(Verdict::Accept),
                     Err(_) => {
                         // Trigger accepted but steering is slow. Leave the entry
                         // Pending (ages out at PENDING_TIMEOUT) so a retransmit
@@ -213,14 +259,14 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Verdict {
                             dst_port,
                             format!("no egress steer within {STEER_TIMEOUT:?}"),
                         );
-                        Verdict::Drop
+                        tracked(Verdict::Drop)
                     }
                 },
                 Ok(Err(e)) => {
                     eprintln!("[egress-nfq] egress_trigger {container}: {e}");
                     report_trigger_send_failed(&ctx.grpc, &container, dst_ip, dst_port, e);
                     ctx.triggers_state.forget(&container, EGRESS_TRIGGER_PORT);
-                    Verdict::Drop
+                    tracked(Verdict::Drop)
                 }
                 Err(_) => {
                     eprintln!("[egress-nfq] egress_trigger timeout for container {container}");
@@ -232,7 +278,7 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Verdict {
                         format!("egress_trigger timed out after {TRIGGER_TIMEOUT:?}"),
                     );
                     ctx.triggers_state.forget(&container, EGRESS_TRIGGER_PORT);
-                    Verdict::Drop
+                    tracked(Verdict::Drop)
                 }
             }
         }

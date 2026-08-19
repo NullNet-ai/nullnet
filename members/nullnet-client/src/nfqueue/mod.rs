@@ -8,13 +8,14 @@ pub use cache::BridgeIpCache;
 pub use listener::{TriggerMap, TriggerOwner};
 
 use crate::commands::nfqueue as rules;
+use crate::conntrack::{EgressOpenFlows, OpenFlows, spawn_destroy_listener};
 use crate::egress_policy::PolicyVerdicts;
 use crate::triggers::TriggersState;
 use egress_listener::spawn_egress_recv_thread;
 use listener::{HANDLER_CONCURRENCY, ListenerCtx, spawn_recv_thread};
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::Notify;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -68,11 +69,18 @@ pub fn spawn_listener(
 
     // Egress-trigger listener shares the bridge-IP cache, gRPC handle, and the
     // trigger-lifecycle state (so it can hold a SYN until steering is installed).
+    // Egress liveness: the NFQUEUE Accept path adds flows, conntrack DESTROY
+    // events retire them, and the container is alive while any remain.
+    let open_flows: EgressOpenFlows = Arc::new(Mutex::new(OpenFlows::new()));
+    spawn_destroy_listener(open_flows.clone(), |container| {
+        println!("[conntrack] container {container} has no open egress flows");
+    });
     spawn_egress_recv_thread(
         grpc.clone(),
         cache.clone(),
         triggers_state.clone(),
         verdicts,
+        open_flows,
     );
 
     let ctx = ListenerCtx {
