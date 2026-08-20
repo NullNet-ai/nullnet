@@ -6,7 +6,7 @@ use crate::services::changes::dep_chain_intact;
 use crate::services::clients::Client;
 use crate::services::input::{ServicesToml, StackMap, apply_config_update};
 use crate::services::service_info::{CountryPolicy, ServiceInfo};
-use crate::timeout::apply_timeouts;
+use crate::timeout::{apply_timeouts, reap_idle_backend_chains};
 use nullnet_grpc_lib::nullnet_grpc::{NetMessage, ServiceProtocol, net_message};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
@@ -3312,4 +3312,221 @@ async fn node_hosting_no_trigger_service_gets_nothing() {
     let declared = declared_by_stack(vec![("P", 8932, Some("stack_p.1.xyz"))]);
 
     assert!(build_service_triggers(&services, &declared).is_empty());
+}
+
+// ===========================================================================
+// backend_liveness: A --trigger 5555--> B, and no proxy anywhere in the
+// picture. This is the autonomous `backend_trigger` shape from §2.5 of
+// docs/uniform-edge-liveness-plan.md — the one case that inherits nothing.
+// ===========================================================================
+
+const BACKEND_LIVENESS: &str = "backend_liveness";
+
+async fn backend_liveness_setup() -> NullnetGrpcImpl {
+    let services = load_fixture(BACKEND_LIVENESS).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+
+    let ip_map = HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]);
+    register_services(&server, &ip_map, 8080).await;
+
+    trigger_backend_chain(&server, "A", ip(1, 1, 1, 1), 5555).await;
+    server
+}
+
+fn client_count_of(guard: &StackMap, name: &str) -> usize {
+    match &stack_view(guard)[name] {
+        ServiceInfo::Registered(reg) => reg.client_count(),
+        ServiceInfo::Unregistered(_) => 0,
+    }
+}
+
+/// Gate 1 for Step 4: a chain built by an autonomous trigger is reaped by
+/// nothing. Both services carry `timeout = 1`, so the idle path is armed and
+/// running — it simply never considers this edge, because
+/// `expired_proxy_clients` filters on `Client::is_proxy` and a trigger-built
+/// edge's client is a *service* client.
+///
+/// The failure this documents: the edge survives every idle pass forever, and
+/// only a config change or the container dying takes it down.
+#[tokio::test]
+async fn autonomous_trigger_chain_is_never_reaped_on_idle() {
+    let server = backend_liveness_setup().await;
+
+    assert_eq!(
+        client_count_of(&*server.services().read().await, "B"),
+        1,
+        "precondition: the trigger built A->B"
+    );
+
+    // Many multiples of the 1s timeout, with the idle pass running each time.
+    for _ in 0..3 {
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let mut guard = server.services().write().await;
+        apply_timeouts(stack_view_mut(&mut guard), server.orchestrator(), "default").await;
+    }
+
+    assert_eq!(
+        client_count_of(&*server.services().read().await, "B"),
+        1,
+        "the trigger-built edge outlives every idle pass: nothing reaps it"
+    );
+}
+
+/// Report the client's "last connection on this trigger port closed", then run
+/// the reap with a zero debounce so the test does not sleep out the real one.
+async fn report_backend_idle_and_reap(
+    server: &NullnetGrpcImpl,
+    service: &str,
+    ip: IpAddr,
+    port: u16,
+) {
+    server
+        .orchestrator()
+        .set_backend_liveness(&(service.to_string(), ip, None, port), false)
+        .await;
+    let mut guard = server.services().write().await;
+    reap_idle_backend_chains(&mut guard, server.orchestrator(), std::time::Duration::ZERO).await;
+}
+
+/// The Step 4 path: once the initiator's connections on the trigger port are
+/// provably gone, the chain it built is released and — nothing else holding it
+/// — comes down. The idle timer plays no part; the client's conntrack view does.
+#[tokio::test]
+async fn trigger_chain_is_released_once_its_connections_close() {
+    let server = backend_liveness_setup().await;
+    assert_eq!(
+        client_count_of(&*server.services().read().await, "B"),
+        1,
+        "precondition: the trigger built A->B"
+    );
+
+    report_backend_idle_and_reap(&server, "A", ip(1, 1, 1, 1), 5555).await;
+
+    assert_eq!(
+        client_count_of(&*server.services().read().await, "B"),
+        0,
+        "the last close releases the only hold, so the edge comes down"
+    );
+    assert_net_ids_in_use(&server, 0).await;
+}
+
+/// A close for a chain we hold no refcount on must not decrement anything.
+///
+/// This is what keeps the liveness signal from consuming an increment it never
+/// contributed — a chain built by an ingress proxy client, or one whose hold a
+/// config-change teardown already released. `set_backend_liveness` drops the
+/// report rather than inventing a session for it.
+#[tokio::test]
+async fn a_close_without_a_held_refcount_decrements_nothing() {
+    let server = backend_liveness_setup().await;
+    // Build A->B, then take our hold away exactly as a teardown from another
+    // path would, leaving the edge up but unheld.
+    server
+        .orchestrator()
+        .forget_backend_sessions("A", ip(1, 1, 1, 1), None, &[5555])
+        .await;
+
+    report_backend_idle_and_reap(&server, "A", ip(1, 1, 1, 1), 5555).await;
+
+    assert_eq!(
+        client_count_of(&*server.services().read().await, "B"),
+        1,
+        "no session means no hold to release, so the edge is untouched"
+    );
+}
+
+/// Reaping twice in a row releases once: taking the session out of the map is
+/// what bounds it, not the caller remembering to only ask once.
+#[tokio::test]
+async fn a_second_reap_pass_releases_nothing_more() {
+    let services = load_fixture(BACKEND_LIVENESS).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+    // Two ports on F share the F->B edge, so its refcount is 2 and a stray
+    // second decrement would be visible as the edge disappearing.
+    let ip_map = HashMap::from([("F", ip(6, 6, 6, 6)), ("B", ip(2, 2, 2, 2))]);
+    register_services(&server, &ip_map, 8080).await;
+    trigger_backend_chain(&server, "F", ip(6, 6, 6, 6), 5555).await;
+    trigger_backend_chain(&server, "F", ip(6, 6, 6, 6), 6666).await;
+
+    server
+        .orchestrator()
+        .set_backend_liveness(&("F".to_string(), ip(6, 6, 6, 6), None, 5555), false)
+        .await;
+    for _ in 0..3 {
+        let mut guard = server.services().write().await;
+        reap_idle_backend_chains(&mut guard, server.orchestrator(), std::time::Duration::ZERO)
+            .await;
+    }
+
+    assert_eq!(
+        client_count_of(&*server.services().read().await, "B"),
+        1,
+        "repeated passes must not keep decrementing 6666's hold"
+    );
+}
+
+/// The free-rider case that made the refcount claim necessary. F triggers on
+/// 5555 and 6666, both chaining to B. 5555 builds the edge; 6666 finds it
+/// already up and must claim its own hold. When 5555's connections close, the
+/// edge has to survive for 6666.
+#[tokio::test]
+async fn a_shared_first_hop_survives_one_port_going_quiet() {
+    let services = load_fixture(BACKEND_LIVENESS).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+    let ip_map = HashMap::from([("F", ip(6, 6, 6, 6)), ("B", ip(2, 2, 2, 2))]);
+    register_services(&server, &ip_map, 8080).await;
+
+    trigger_backend_chain(&server, "F", ip(6, 6, 6, 6), 5555).await;
+    trigger_backend_chain(&server, "F", ip(6, 6, 6, 6), 6666).await;
+    assert_eq!(
+        client_count_of(&*server.services().read().await, "B"),
+        1,
+        "both ports route to the same F->B edge"
+    );
+
+    report_backend_idle_and_reap(&server, "F", ip(6, 6, 6, 6), 5555).await;
+    assert_eq!(
+        client_count_of(&*server.services().read().await, "B"),
+        1,
+        "6666 still holds the edge: 5555's close must not take it down"
+    );
+
+    report_backend_idle_and_reap(&server, "F", ip(6, 6, 6, 6), 6666).await;
+    assert_eq!(
+        client_count_of(&*server.services().read().await, "B"),
+        0,
+        "once the last port goes quiet the edge is finally released"
+    );
+}
+
+/// A trigger whose chain cannot be built takes no increment, so it must record
+/// no hold. A phantom hold is worse than useless: it makes the later
+/// `claim_backend_session` a no-op, so the trigger rides on an increment
+/// something else contributed and its close consumes that one instead.
+///
+/// `G` triggers into `Ghost`, which no fixture registers, so
+/// `build_backend_dep_chain` bails.
+#[tokio::test]
+async fn a_bailed_setup_records_no_hold() {
+    let server = backend_liveness_setup().await;
+    let ip_map = HashMap::from([("G", ip(7, 7, 7, 7))]);
+    register_services(&server, &ip_map, 8080).await;
+
+    trigger_backend_chain(&server, "G", ip(7, 7, 7, 7), 7777).await;
+
+    assert!(
+        !server
+            .orchestrator()
+            .holds_backend_session(&("G".to_string(), ip(7, 7, 7, 7), None, 7777))
+            .await,
+        "a setup that built nothing must not claim to hold a refcount"
+    );
+    // Contrast: the trigger that did build one does hold it.
+    assert!(
+        server
+            .orchestrator()
+            .holds_backend_session(&("A".to_string(), ip(1, 1, 1, 1), None, 5555))
+            .await,
+        "a setup that built the chain holds exactly one refcount"
+    );
 }

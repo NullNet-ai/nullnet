@@ -4,10 +4,10 @@ mod proto;
 use crate::control_tls_verifier::PinnedCa;
 use crate::nullnet_grpc::nullnet_grpc_client::NullnetGrpcClient;
 use crate::nullnet_grpc::{
-    AgentEvent, BackendTriggerRequest, CertBundle, EgressDestinationEntry, EgressDestinationReport,
-    EgressLivenessReport, EgressPolicyCheck, EgressTriggerRequest, Empty, HttpRouteBundle,
-    IngressPolicyCheck, MsgId, NetMessage, NetType, PortMappingBundle, ProxyConnectionEnd,
-    ProxyRequest, ServiceReport, ServicesListResponse, Upstream,
+    AgentEvent, BackendLivenessReport, BackendTriggerRequest, CertBundle, EgressDestinationEntry,
+    EgressDestinationReport, EgressLivenessReport, EgressPolicyCheck, EgressTriggerRequest, Empty,
+    HttpRouteBundle, IngressPolicyCheck, MsgId, NetMessage, NetType, PortMappingBundle,
+    ProxyConnectionEnd, ProxyRequest, ServiceReport, ServicesListResponse, Upstream,
 };
 pub use proto::*;
 use std::path::Path;
@@ -121,6 +121,31 @@ impl NullnetGrpcInterface {
         self.client
             .clone()
             .egress_liveness(Request::new(EgressLivenessReport {
+                initiator_container,
+                active,
+            }))
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Report a trigger-built chain's open-connection transition (0<->1).
+    ///
+    /// Keyed by trigger port, not by initiator: one replica can hold several
+    /// trigger chains at once and they go quiet independently.
+    #[allow(clippy::missing_errors_doc)]
+    pub async fn backend_liveness(
+        &self,
+        service_name: String,
+        port: u32,
+        initiator_container: String,
+        active: bool,
+    ) -> Result<(), String> {
+        self.client
+            .clone()
+            .backend_liveness(Request::new(BackendLivenessReport {
+                service_name,
+                port,
                 initiator_container,
                 active,
             }))

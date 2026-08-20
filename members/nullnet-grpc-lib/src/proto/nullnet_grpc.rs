@@ -364,6 +364,28 @@ pub struct EgressLivenessReport {
     #[prost(bool, tag = "2")]
     pub active: bool,
 }
+/// Backend chain liveness, reported only on transitions — not per flow. Keyed
+/// per trigger port, not per initiator: one replica may hold several trigger
+/// chains at once and they go quiet independently.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BackendLivenessReport {
+    #[prost(string, tag = "1")]
+    pub service_name: ::prost::alloc::string::String,
+    /// The trigger port whose chain this reports on, matching BackendTriggerRequest.
+    #[prost(uint32, tag = "2")]
+    pub port: u32,
+    /// Real Docker container name of the initiator replica. Never empty: the
+    /// NFQUEUE trigger path passes host traffic straight through, so only
+    /// containers can ever open one of these chains.
+    #[prost(string, tag = "3")]
+    pub initiator_container: ::prost::alloc::string::String,
+    /// true  = first connection opened (0 -> 1)
+    /// false = last connection closed (1 -> 0), provably gone rather than idle.
+    /// The server still waits out a debounce before decrementing, for the
+    /// same conntrack-timing reason as EgressLivenessReport.
+    #[prost(bool, tag = "4")]
+    pub active: bool,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BackendTriggerRequest {
     #[prost(string, tag = "1")]
@@ -482,7 +504,7 @@ pub struct Empty {}
 pub struct AgentEvent {
     #[prost(
         oneof = "agent_event::Event",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 25, 30, 31, 32, 33, 34, 35, 36, 37, 38, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 26, 27, 28, 29, 22"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 25, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 26, 27, 28, 29, 22"
     )]
     pub event: ::core::option::Option<agent_event::Event>,
 }
@@ -537,6 +559,8 @@ pub mod agent_event {
         EgressPolicyCheckFailed(super::AgentEgressPolicyCheckFailed),
         #[prost(message, tag = "38")]
         ConntrackFlushFailed(super::AgentConntrackFlushFailed),
+        #[prost(message, tag = "39")]
+        ConntrackSubscribeFailed(super::AgentConntrackSubscribeFailed),
         /// Client info events
         #[prost(message, tag = "13")]
         VxlanSetupCompleted(super::AgentVxlanSetupCompleted),
@@ -729,6 +753,11 @@ pub struct AgentNfqueueBindFailed {
     #[prost(uint32, tag = "1")]
     pub queue_id: u32,
     #[prost(string, tag = "2")]
+    pub error_message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentConntrackSubscribeFailed {
+    #[prost(string, tag = "1")]
     pub error_message: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1152,6 +1181,31 @@ pub mod nullnet_grpc_client {
                 .insert(GrpcMethod::new("nullnet_grpc.NullnetGrpc", "BackendTrigger"));
             self.inner.unary(req, path, codec).await
         }
+        /// Backend liveness: the open-connection set for one (initiator replica,
+        /// trigger port) crossed 0\<->1. The proxy's idle timeout cannot cover these
+        /// chains — nothing about them involves a proxy client — so this is the only
+        /// signal that a trigger-built chain is finished with.
+        pub async fn backend_liveness(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BackendLivenessReport>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/nullnet_grpc.NullnetGrpc/BackendLiveness",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("nullnet_grpc.NullnetGrpc", "BackendLiveness"));
+            self.inner.unary(req, path, codec).await
+        }
         /// Egress trigger — for a registered service reaching the external internet,
         /// brokered through the proxy's transparent forward listener.
         pub async fn egress_trigger(
@@ -1461,6 +1515,14 @@ pub mod nullnet_grpc_server {
         async fn backend_trigger(
             &self,
             request: tonic::Request<super::BackendTriggerRequest>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
+        /// Backend liveness: the open-connection set for one (initiator replica,
+        /// trigger port) crossed 0\<->1. The proxy's idle timeout cannot cover these
+        /// chains — nothing about them involves a proxy client — so this is the only
+        /// signal that a trigger-built chain is finished with.
+        async fn backend_liveness(
+            &self,
+            request: tonic::Request<super::BackendLivenessReport>,
         ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
         /// Egress trigger — for a registered service reaching the external internet,
         /// brokered through the proxy's transparent forward listener.
@@ -1889,6 +1951,51 @@ pub mod nullnet_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = BackendTriggerSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/nullnet_grpc.NullnetGrpc/BackendLiveness" => {
+                    #[allow(non_camel_case_types)]
+                    struct BackendLivenessSvc<T: NullnetGrpc>(pub Arc<T>);
+                    impl<
+                        T: NullnetGrpc,
+                    > tonic::server::UnaryService<super::BackendLivenessReport>
+                    for BackendLivenessSvc<T> {
+                        type Response = super::Empty;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BackendLivenessReport>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as NullnetGrpc>::backend_liveness(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = BackendLivenessSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

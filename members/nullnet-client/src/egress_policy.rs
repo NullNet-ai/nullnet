@@ -7,7 +7,7 @@
 //! so live flows re-enter the queue as NEW and get re-verdicted — flows the
 //! new policy denies die on their next packet.
 
-use crate::conntrack::EgressOpenFlows;
+use crate::conntrack::LivenessSets;
 use crate::nfqueue::BridgeIpCache;
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
@@ -66,25 +66,22 @@ impl PolicyVerdicts {
 /// conntrack entries. Long enough for an active connection to carry a packet
 /// and re-register through NFQUEUE; bounded so a genuinely idle container still
 /// reaps. See `OpenFlows::suppress_for`.
-const FLUSH_SUPPRESSION: Duration = Duration::from_secs(120);
+pub(crate) const FLUSH_SUPPRESSION: Duration = Duration::from_secs(120);
 
 pub async fn flush_container_conntrack(
     grpc: &NullnetGrpcInterface,
     ips: Vec<Ipv4Addr>,
-    open_flows: &EgressOpenFlows,
+    sets: &LivenessSets,
     cache: &BridgeIpCache,
 ) {
     // Suppress BEFORE flushing, not after: the DESTROY events our own deletions
     // raise are indistinguishable from real closes, and with no grace window a
     // false zero is an immediate reap of a live edge.
-    {
-        let mut guard = open_flows
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for ip in &ips {
-            if let Some(container) = cache.get(*ip) {
-                guard.suppress_for(container, FLUSH_SUPPRESSION);
-            }
+    // `-D -s <ip>` is not port-scoped, so it empties the container's trigger
+    // chains as well as its egress flows: both sets are marked.
+    for ip in &ips {
+        if let Some(container) = cache.get(*ip) {
+            sets.suppress_container(&container, FLUSH_SUPPRESSION);
         }
     }
 

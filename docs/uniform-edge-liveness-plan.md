@@ -1003,7 +1003,7 @@ which already walks exactly this structure via `collect_backend_chain_edges`.
 | 1 — ingress open-count + grace | **done, E2E-verified** |
 | 2 — egress conntrack `DESTROY` listener | **done, E2E-verified** |
 | 3 — egress reap on verified closure | **done, E2E-verified** |
-| 4 — autonomous `backend_trigger` chains | designed (§2.5, Step 4), **not started** |
+| 4 — autonomous `backend_trigger` chains | **done, E2E-verified** |
 
 ### 8.2 E2E on 103+104, 2026-08-20
 
@@ -1033,12 +1033,85 @@ raw HTTP straight to the resolved upstream `10.0.3.65:3001`, with the proxy
 entirely out of the path, also hangs: TCP connects, nothing answers. Same shape
 as the half-provisioned-edge symptom seen on `crm`. Worth chasing separately.
 
-### 8.4 Still owed before a PR (Gate 4)
+### 8.4 Step 4 E2E on 103+104, 2026-08-20
 
-- `CHANGELOG.md` entry.
-- `README.md`: a UDP mapping with `idle_timeout_secs = 0` now **pins** its edge
-  for as long as the proxy runs (§5 Step 1) — `timeout` silently stops applying
-  to that service. That is a behaviour change and needs documenting.
-- Decide whether a close report that fails all its retries deserves an `Event`.
-  It silently pins an edge, which is the kind of thing the Events tab exists for;
-  routine transitions are not.
+Driven with **no ingress request anywhere in the path** — the trap noted in
+Step 4, since anything through the proxy exercises the inherited teardown and
+passes whether or not Step 4 works. Initiator `mystack_actix-sample`
+(`color.dnamicro.net`) on 104, dep `mystack_timestamp_server` on 103, trigger
+port 5555, driven from the container's own netns via `nsenter` so the source
+address and NFQUEUE view are exactly the application's.
+
+| Test | Result |
+|---|---|
+| Trigger builds the chain with no proxy involved | net 101 up, DNAT `-s 172.18.0.6 --dport 5555` installed |
+| Idle-but-open, silent 125s (>4x the debounce) | **never released** — DNAT intact, both flows still `ESTABLISHED`, 0 idle reports, 0 releases |
+| One of two flows on the same key closes | **no release** — the other flow still open; per-5-tuple counting does not collapse |
+| Last flow closes for real (RST via `ss -K`) | conntrack `CLOSE` -> `DESTROY` at ~10s, server logged *"Trigger chain 'color.dnamicro.net' port 5555 idle past the debounce; releasing its hold"* 30s later, net 101 torn down, DNAT removed |
+| Regression | apache 200, nginx 200; 0 panics, 0 `net_teardown_unconfirmed`, 0 pool exhaustion, 0 subscribe failures |
+
+**The tuple invariant under DNAT is now evidence, not assumption** — Step 4's
+riskiest unknown. A live conntrack entry reads
+
+```
+tcp ESTABLISHED src=172.18.0.6 dst=10.9.9.9   sport=45154 dport=5555   <- original
+                src=10.0.3.41  dst=10.0.3.44  sport=5555  dport=45154  <- reply (overlay)
+```
+
+The original tuple is pre-DNAT and sourced from the container's gwbridge
+address, which is exactly what the NFQUEUE `Accept` path records — so `DESTROY`
+matches what was inserted. (NFQUEUE sits in `mangle PREROUTING`, DNAT in `nat
+PREROUTING`, which runs after.)
+
+**Bug this E2E caught (fixed):** the reconcile looped `for ip in cache.ips()` and
+*replaced* the container's set once per address. Swarm gives every task an
+overlay address **and** a `docker_gwbridge` one, and outbound flows are sourced
+from the gwbridge address while `docker inspect` advertises the overlay — so the
+dump for the quiet interface wiped the flows seen on the busy one and reported a
+live, `ESTABLISHED`, 5-day-timeout connection as idle. First run of the
+idle-but-open test failed on exactly this. Now dumped per address and reconciled
+once per container from the union, bailing entirely if any dump fails.
+**This was pre-existing for egress too** (Step 2/3), where it would false-reap
+live egress edges for any Swarm container; §8.2's egress run missed it because
+that initiator was single-homed on the default bridge.
+
+### 8.5 Refcount discipline — why Step 4 is not a copy of egress
+
+`handle_backend_trigger` returns early when the first dep already has the
+initiator as a client, taking **no** increment. So a trigger riding on a chain
+built by an ingress path, or by another trigger port sharing the first hop, held
+nothing — and releasing on its close would consume an increment it never
+contributed, dropping the chain under a co-tenant's live connections.
+
+Every trigger session now claims exactly one refcount: `setup_backend_chain`
+reports whether it actually built (its two bail paths return `false`, so a
+chain that was never built never records a hold), and the early-return path calls
+`claim_backend_chain` to add its own +1 without rebuilding. The session entry in
+the orchestrator *is* the receipt — it exists iff we hold one increment nothing
+has consumed — and `teardown_backend_chain` drops the sessions for the ports it
+walked, so a config-change teardown cannot leave a stale hold behind.
+
+### 8.6 Gate 4 — done
+
+- `CHANGELOG.md` entry added.
+- `README.md` documents that `timeout` is a grace window from the last close,
+  that a UDP mapping with `idle_timeout_secs = 0` therefore pins its edge, and
+  that backend chains are released on conntrack liveness rather than `timeout`.
+- **Event decision.** A liveness *report* that fails gets **no** event: the
+  failure direction is safe (the edge lives too long), it self-heals on the next
+  open/close cycle, and one event per transition is telemetry, not Events-tab
+  material. The subscription *itself* failing does get one —
+  `ConntrackSubscribeFailed`, `Severity::Error`. Without that socket the sets
+  only ever gain flows, so every edge on the node is pinned for the life of the
+  process, and nothing else would ever show it. Wired through
+  `types.ts` + `Events.tsx` as well as the proto/server halves.
+
+### 8.7 Unexplained observation, not attributed to this change
+
+During the restart churn of one test cycle the initiator container lost its
+`docker_gwbridge` interface and default route, leaving only the overlay NIC.
+**Not root-caused.** It did not recur across three later full trigger cycles
+with `ip monitor` running inside the container's netns, and that monitor shows
+the VXLAN teardown deleting only its own additive NIC (`ns_101_c-in`) — eth0 and
+eth1 untouched. A co-located container kept both interfaces throughout. Recorded
+because it was seen, not because there is evidence nullnet caused it.

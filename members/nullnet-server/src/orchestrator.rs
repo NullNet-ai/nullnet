@@ -24,6 +24,27 @@ type OutboundStream = mpsc::Sender<Result<NetMessage, Status>>;
 /// One edge per initiator replica multiplexes all of its external destinations.
 type EgressKey = (IpAddr, Option<String>);
 
+/// Identity of one autonomous `backend_trigger` chain: the initiator replica
+/// plus the trigger port. Per port, because one replica can hold several
+/// trigger chains at once and they go quiet independently.
+pub(crate) type BackendKey = (String, IpAddr, Option<String>, u16);
+
+/// A live trigger-built chain that this server holds **exactly one** refcount
+/// on, across every hop.
+///
+/// The map entry is the refcount receipt: a session exists if and only if the
+/// trigger claimed an increment that nothing has consumed yet. That is what
+/// makes the liveness decrement 1:1 — see `claim_backend_session`.
+#[derive(Debug, Clone)]
+struct BackendSession {
+    /// Which stack the chain lives in; the reap walks services per stack.
+    stack: String,
+    /// When the initiator's last connection on this trigger port closed, per
+    /// the client's conntrack view. `None` means connections are open, or none
+    /// have been reported yet — a chain is never reaped before its first flow.
+    idle_since: Option<Instant>,
+}
+
 /// Cap on distinct external destinations tracked per egress edge. When full, the
 /// least-recently-contacted destination is evicted. Bounds memory for a service
 /// that contacts a very large set of hosts (e.g. a crawler).
@@ -112,6 +133,10 @@ pub struct Orchestrator {
     /// Live egress edges, keyed by initiator replica. Separate from the service
     /// StackMap because the proxy end is infrastructure, not a registered service.
     egress_edges: Arc<RwLock<HashMap<EgressKey, EgressEdge>>>,
+    /// Trigger chains this server holds a refcount on, keyed per trigger port.
+    /// The chain edges themselves live in the service StackMap; this records
+    /// only *our* claim on them and when they last went quiet.
+    backend_sessions: Arc<RwLock<HashMap<BackendKey, BackendSession>>>,
     /// IP → country/ASN cache enriching contacted egress destinations.
     geo: GeoCache,
     /// Teardowns whose net id has not yet been returned to the pool because
@@ -130,6 +155,7 @@ impl Orchestrator {
             udp_port_pools: Arc::new(Mutex::new(HashMap::new())),
             net_id_ports: Arc::new(Mutex::new(HashMap::new())),
             egress_edges: Arc::new(RwLock::new(HashMap::new())),
+            backend_sessions: Arc::new(RwLock::new(HashMap::new())),
             geo: GeoCache::from_env(),
             inflight_teardowns: Arc::new(AtomicUsize::new(0)),
             events: EventStore::new(),
@@ -527,6 +553,116 @@ impl Orchestrator {
             .filter_map(|e| e.idle_since)
             .map(|since| debounce.saturating_sub(now.duration_since(since)))
             .min()
+    }
+
+    /// Claim a refcount for this trigger chain if it does not already hold one.
+    ///
+    /// Returns `true` when the caller must now increment every hop of the
+    /// chain. That happens when the chain was already up and
+    /// `handle_backend_trigger` therefore did not rebuild it: without this the
+    /// session would ride on someone else's increment and its close would
+    /// decrement a refcount it never contributed.
+    pub(crate) async fn claim_backend_session(&self, key: BackendKey, stack: &str) -> bool {
+        let mut sessions = self.backend_sessions.write().await;
+        if sessions.contains_key(&key) {
+            return false;
+        }
+        sessions.insert(
+            key,
+            BackendSession {
+                stack: stack.to_string(),
+                idle_since: None,
+            },
+        );
+        true
+    }
+
+    /// Record that a freshly built chain is held by this session.
+    ///
+    /// `net_chain_setup` already added the +1 on every hop, so unlike
+    /// `claim_backend_session` this does not ask the caller to increment. An
+    /// existing entry is overwritten rather than doubled: a rebuild only
+    /// happens once the previous increment has been consumed (the first dep
+    /// having no client entry is exactly what made it a rebuild).
+    pub(crate) async fn hold_backend_session(&self, key: BackendKey, stack: &str) {
+        self.backend_sessions.write().await.insert(
+            key,
+            BackendSession {
+                stack: stack.to_string(),
+                idle_since: None,
+            },
+        );
+    }
+
+    /// Record a trigger chain's open-connection transition reported by the client.
+    ///
+    /// A report for a session we hold no refcount on is ignored: there is
+    /// nothing for us to release, and inventing an entry would let the next
+    /// decrement land on a refcount somebody else contributed.
+    pub(crate) async fn set_backend_liveness(&self, key: &BackendKey, active: bool) {
+        if let Some(session) = self.backend_sessions.write().await.get_mut(key) {
+            session.idle_since = (!active).then(Instant::now);
+        }
+    }
+
+    /// Take the sessions whose last connection closed at least `debounce` ago.
+    ///
+    /// Removing them here is what makes the reap exactly once: the caller then
+    /// performs the single matching decrement, and a later duplicate report
+    /// finds no session.
+    pub(crate) async fn take_due_backend_sessions(
+        &self,
+        debounce: Duration,
+    ) -> Vec<(BackendKey, String)> {
+        let now = Instant::now();
+        let mut sessions = self.backend_sessions.write().await;
+        let due: Vec<BackendKey> = sessions
+            .iter()
+            .filter(|(_, s)| {
+                s.idle_since
+                    .is_some_and(|since| now.duration_since(since) >= debounce)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        due.into_iter()
+            .filter_map(|k| sessions.remove(&k).map(|s| (k, s.stack)))
+            .collect()
+    }
+
+    /// How long until the nearest trigger chain becomes reapable, if any.
+    pub(crate) async fn nearest_backend_expiry(&self, debounce: Duration) -> Option<Duration> {
+        let now = Instant::now();
+        self.backend_sessions
+            .read()
+            .await
+            .values()
+            .filter_map(|s| s.idle_since)
+            .map(|since| debounce.saturating_sub(now.duration_since(since)))
+            .min()
+    }
+
+    /// Whether we currently hold a refcount for this trigger session.
+    #[cfg(test)]
+    pub(crate) async fn holds_backend_session(&self, key: &BackendKey) -> bool {
+        self.backend_sessions.read().await.contains_key(key)
+    }
+
+    /// Drop our claim on `ports`' chains for one initiator replica.
+    ///
+    /// Called from every teardown path that decrements a trigger chain from
+    /// somewhere else: that teardown consumed our increment, so keeping the
+    /// session would let a later close decrement a second time.
+    pub(crate) async fn forget_backend_sessions(
+        &self,
+        service: &str,
+        ip: IpAddr,
+        docker: Option<&str>,
+        ports: &[u16],
+    ) {
+        let mut sessions = self.backend_sessions.write().await;
+        for port in ports {
+            sessions.remove(&(service.to_string(), ip, docker.map(String::from), *port));
+        }
     }
 
     /// Tear down egress edges on `node_ip` whose initiator container is no longer

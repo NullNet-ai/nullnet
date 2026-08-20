@@ -124,6 +124,7 @@ export type EventJson =
   | WithSeverity & { type: 'egress_steer_setup_timed_out'; docker_container: string; dst_ip: string; dst_port: number; error_message: string }
   | WithSeverity & { type: 'egress_steer_install_failed'; vxlan_id: number; docker_container?: string; error_message: string }
   | WithSeverity & { type: 'nfqueue_bind_failed'; queue_id: number; error_message: string }
+  | WithSeverity & { type: 'conntrack_subscribe_failed'; error_message: string }
   | WithSeverity & { type: 'mss_clamp_install_failed'; error_message: string }
   | WithSeverity & { type: 'egress_policy_check_failed'; docker_container: string; dst_ip: string; error_message: string }
   | WithSeverity & { type: 'conntrack_flush_failed'; ip: string; error_message: string }

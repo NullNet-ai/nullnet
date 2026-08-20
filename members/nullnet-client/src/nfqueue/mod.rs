@@ -5,16 +5,16 @@ pub(crate) mod parse;
 mod recv_loop;
 
 pub use cache::BridgeIpCache;
-pub use listener::{TriggerMap, TriggerOwner};
+pub use listener::{TriggerMap, TriggerOwner, TriggerOwners, service_for, watched_ports};
 
 use crate::commands::nfqueue as rules;
-use crate::conntrack::{EgressOpenFlows, spawn_destroy_listener, spawn_reconcile_task};
+use crate::conntrack::{LivenessSets, spawn_destroy_listener, spawn_reconcile_task};
 use crate::egress_policy::PolicyVerdicts;
 use crate::triggers::TriggersState;
 use egress_listener::spawn_egress_recv_thread;
 use listener::{HANDLER_CONCURRENCY, ListenerCtx, spawn_recv_thread};
 use nullnet_grpc_lib::NullnetGrpcInterface;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use tokio::sync::Notify;
 use tokio::sync::Semaphore;
@@ -40,9 +40,11 @@ pub fn spawn_listener(
     docker_changed: Arc<Notify>,
     cache: BridgeIpCache,
     verdicts: Arc<PolicyVerdicts>,
-    open_flows: EgressOpenFlows,
+    sets: LivenessSets,
 ) {
-    let trigger_owners: Arc<RwLock<TriggerMap>> = Arc::new(RwLock::new(HashMap::new()));
+    // Shared with the liveness machinery, which resolves the same
+    // container -> service/port ownership when a chain goes quiet.
+    let trigger_owners: TriggerOwners = sets.owners.clone();
 
     // Initial cache populate + long-running docker-events watcher. The
     // watcher pings `docker_changed` after every refresh so the
@@ -70,18 +72,19 @@ pub fn spawn_listener(
 
     // Egress-trigger listener shares the bridge-IP cache, gRPC handle, and the
     // trigger-lifecycle state (so it can hold a SYN until steering is installed).
-    // Egress liveness: the NFQUEUE Accept path adds flows, conntrack DESTROY
-    // events retire them, and the container is alive while any remain.
-    spawn_destroy_listener(open_flows.clone(), grpc.clone());
+    // Liveness, both kinds: the NFQUEUE Accept paths add flows, conntrack
+    // DESTROY events retire them, and an edge lives while any of its remain.
+    // One socket and one dump serve both sets — see `LivenessSets`.
+    spawn_destroy_listener(sets.clone(), grpc.clone());
     // Backstop: netlink event sockets drop under churn, so a delta-only set
     // drifts. This repairs it; it is not the liveness signal.
-    spawn_reconcile_task(open_flows.clone(), cache.clone(), grpc.clone());
+    spawn_reconcile_task(sets.clone(), cache.clone(), grpc.clone());
     spawn_egress_recv_thread(
         grpc.clone(),
         cache.clone(),
         triggers_state.clone(),
         verdicts,
-        open_flows,
+        sets.egress.clone(),
     );
 
     let ctx = ListenerCtx {
@@ -90,6 +93,7 @@ pub fn spawn_listener(
         trigger_owners,
         triggers_state,
         semaphore: Arc::new(Semaphore::new(HANDLER_CONCURRENCY)),
+        open_flows: sets.triggers,
     };
     spawn_recv_thread(ctx);
 }

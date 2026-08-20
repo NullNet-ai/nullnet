@@ -5,6 +5,7 @@ All Nullnet releases with the relative changes are documented in this file.
 ## [UNRELEASED]
 ### Added
 ### Changed
+- Tear edges down on proven connection liveness instead of routing-event timers ([#160](https://github.com/NullNet-ai/nullnet/pull/160) — fixes [#126](https://github.com/NullNet-ai/nullnet/issues/126))
 - Persist events to SQLite with time-based retention ([#157](https://github.com/NullNet-ai/nullnet/pull/157) — fixes [#151](https://github.com/NullNet-ai/nullnet/issues/151))
 - Install BPF linker as a prebuilt binary rather than compiling it from source ([#158](https://github.com/NullNet-ai/nullnet/pull/158))
 ### Removed

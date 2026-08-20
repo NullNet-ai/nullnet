@@ -400,28 +400,54 @@ pub(crate) fn dep_chain_intact(
         })
 }
 
+/// Trigger ports of `initiator_name` whose chains match both filters.
+///
+/// `only_through` keeps chains that reference a given dep — used for dep-side
+/// teardown, where only chains running through the affected dep come down.
+/// `only_port` keeps a single trigger's chain, which is the granularity
+/// liveness works at: one port's connections going quiet says nothing about
+/// another port's.
+fn matching_trigger_ports(
+    initiator_name: &str,
+    only_through: Option<&str>,
+    only_port: Option<u16>,
+    services: &HashMap<String, ServiceInfo>,
+) -> Vec<u16> {
+    let Some(triggers) = services.get(initiator_name).map(ServiceInfo::triggers) else {
+        return Vec::new();
+    };
+    triggers
+        .iter()
+        .filter(|(port, chain)| {
+            only_port.is_none_or(|p| **port == p)
+                && only_through.is_none_or(|dep| chain.iter().any(|d| d == dep))
+        })
+        .map(|(port, _)| *port)
+        .collect()
+}
+
 /// Walk the backend trigger chains starting from a specific initiator replica
 /// and collect the `(client, dep_service_name)` edges. One chain per trigger
-/// port; each is walked as a linear chain. If `only_through` is `Some(dep)`,
-/// chains that don't reference `dep` are skipped — useful for dep-side teardown
-/// where only chains that go through the affected dep should come down.
+/// port matching the filters (see [`matching_trigger_ports`]); each is walked
+/// as a linear chain.
 fn collect_backend_chain_edges(
     initiator_name: &str,
     initiator_ip: IpAddr,
     initiator_docker: Option<&str>,
     only_through: Option<&str>,
+    only_port: Option<u16>,
     services: &HashMap<String, ServiceInfo>,
 ) -> Vec<(Client, String)> {
     let mut edges = Vec::new();
-    let Some(triggers) = services.get(initiator_name).map(ServiceInfo::triggers) else {
-        return edges;
-    };
-    for chain in triggers.values() {
-        if let Some(dep) = only_through
-            && !chain.iter().any(|d| d == dep)
-        {
+    let ports = matching_trigger_ports(initiator_name, only_through, only_port, services);
+    for port in ports {
+        let Some(chain) = services
+            .get(initiator_name)
+            .map(ServiceInfo::triggers)
+            .and_then(|t| t.get(&port))
+        else {
             continue;
-        }
+        };
         let mut current_name = initiator_name.to_string();
         let mut current_ip = initiator_ip;
         let mut current_docker: Option<String> = initiator_docker.map(String::from);
@@ -449,20 +475,24 @@ fn collect_backend_chain_edges(
 
 /// Backend twin of `teardown_dep_chain`: walks the initiator's trigger chains
 /// and decrements each edge. `only_through` filters to chains containing the
-/// given dep name; `None` walks every chain.
+/// given dep name; `only_port` to a single trigger's chain. `None`/`None` walks
+/// every chain.
 async fn teardown_backend_chain(
     initiator_name: &str,
     initiator_ip: IpAddr,
     initiator_docker: Option<&str>,
     only_through: Option<&str>,
+    only_port: Option<u16>,
     services: &mut HashMap<String, ServiceInfo>,
     orchestrator: &Orchestrator,
 ) {
+    let ports = matching_trigger_ports(initiator_name, only_through, only_port, services);
     let edges = collect_backend_chain_edges(
         initiator_name,
         initiator_ip,
         initiator_docker,
         only_through,
+        only_port,
         services,
     );
     let pinned = backend_involved_services(services);
@@ -473,6 +503,64 @@ async fn teardown_backend_chain(
                 .await;
         }
     }
+    // This teardown consumed whatever refcount the trigger sessions on these
+    // ports were holding. Dropping the sessions is what stops a later close
+    // from decrementing a second time — see `Orchestrator::claim_backend_session`.
+    orchestrator
+        .forget_backend_sessions(initiator_name, initiator_ip, initiator_docker, &ports)
+        .await;
+}
+
+/// Increment every hop of one trigger's chain: the claim half of
+/// [`teardown_backend_chain`].
+///
+/// Used when the chain is already up and so was not rebuilt. Without it the
+/// trigger holds no refcount of its own, and either its own close decrements
+/// somebody else's increment, or a co-tenant's close tears the chain down
+/// under this trigger's live connections.
+pub(crate) fn claim_backend_chain(
+    initiator_name: &str,
+    initiator_ip: IpAddr,
+    initiator_docker: Option<&str>,
+    port: u16,
+    services: &mut HashMap<String, ServiceInfo>,
+) {
+    let edges = collect_backend_chain_edges(
+        initiator_name,
+        initiator_ip,
+        initiator_docker,
+        None,
+        Some(port),
+        services,
+    );
+    for (client, dep_name) in edges {
+        if let Some(ServiceInfo::Registered(dep_reg)) = services.get_mut(&dep_name) {
+            dep_reg.add_chain(&client);
+        }
+    }
+}
+
+/// Release the one refcount a trigger session holds, now that its connections
+/// are provably gone. Never a teardown: the same edges may still be held by an
+/// ingress proxy chain or by another trigger port.
+pub(crate) async fn release_backend_chain(
+    initiator_name: &str,
+    initiator_ip: IpAddr,
+    initiator_docker: Option<&str>,
+    port: u16,
+    services: &mut HashMap<String, ServiceInfo>,
+    orchestrator: &Orchestrator,
+) {
+    teardown_backend_chain(
+        initiator_name,
+        initiator_ip,
+        initiator_docker,
+        None,
+        Some(port),
+        services,
+        orchestrator,
+    )
+    .await;
 }
 
 /// Tear down every backend chain initiated by any replica of `initiator_name`.
@@ -497,6 +585,7 @@ async fn teardown_all_backend_chains_for(
             ip,
             docker.as_deref(),
             only_through,
+            None,
             services,
             orchestrator,
         )
@@ -591,6 +680,7 @@ async fn teardown_partial_replicas(
                 src_ip,
                 src_docker,
                 Some(name),
+                None,
                 services,
                 orchestrator,
             )
@@ -678,6 +768,7 @@ pub(crate) async fn apply_changes(
                             ip,
                             docker.as_deref(),
                             None,
+                            None,
                             services,
                             orchestrator,
                         )
@@ -709,6 +800,7 @@ pub(crate) async fn apply_changes(
                         &name,
                         ip,
                         docker_container.as_deref(),
+                        None,
                         None,
                         services,
                         orchestrator,

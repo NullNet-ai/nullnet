@@ -8,7 +8,7 @@ use crate::net::EgressRole;
 use crate::net_id_pool::generate_key;
 use crate::orchestrator::Orchestrator;
 use crate::services::changes::{
-    ServiceChange, apply_changes, collect_dep_chain_edges, dep_chain_intact,
+    ServiceChange, apply_changes, claim_backend_chain, collect_dep_chain_edges, dep_chain_intact,
     detect_services_list_changes,
 };
 use crate::services::clients::{Client, ClientInfo};
@@ -20,11 +20,11 @@ use crate::services::service_info::{
 use crate::timeout::check_timeouts;
 use nullnet_grpc_lib::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentEvent, BackendTriggerRequest, CertBundle, EgressDestinationReport, EgressLivenessReport,
-    EgressPolicyCheck, EgressPolicyVerdict, EgressTriggerRequest, Empty, HttpRedirect, HttpRoute,
-    HttpRouteBundle, IngressPolicyCheck, IngressPolicyVerdict, MsgId, Net, NetMessage, NetType,
-    PortMapping, PortMappingBundle, ProxyConnectionEnd, ProxyRequest, ServiceProtocol,
-    ServiceReport, ServiceTrigger, ServicesListResponse, Upstream,
+    AgentEvent, BackendLivenessReport, BackendTriggerRequest, CertBundle, EgressDestinationReport,
+    EgressLivenessReport, EgressPolicyCheck, EgressPolicyVerdict, EgressTriggerRequest, Empty,
+    HttpRedirect, HttpRoute, HttpRouteBundle, IngressPolicyCheck, IngressPolicyVerdict, MsgId, Net,
+    NetMessage, NetType, PortMapping, PortMappingBundle, ProxyConnectionEnd, ProxyRequest,
+    ServiceProtocol, ServiceReport, ServiceTrigger, ServicesListResponse, Upstream,
     agent_event::Event as AgentEventKind, http_route::Target as HttpRouteTarget,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
@@ -971,6 +971,69 @@ impl NullnetGrpcImpl {
         Ok(Response::new(Empty {}))
     }
 
+    async fn backend_liveness_impl(
+        &self,
+        request: Request<BackendLivenessReport>,
+    ) -> Result<Response<Empty>, Error> {
+        let sender_ip = request
+            .remote_addr()
+            .ok_or("Could not get remote address for backend liveness report")
+            .handle_err(location!())?
+            .ip();
+
+        let req = request.into_inner();
+        let port = u16::try_from(req.port).handle_err(location!())?;
+        let container = (!req.initiator_container.is_empty()).then_some(req.initiator_container);
+
+        // Resolve to the same replica identity the trigger keyed the session
+        // under, or the decrement would target a different replica's chain.
+        let Some((initiator_ip, initiator_docker)) = self
+            .resolve_trigger_replica(&req.service_name, sender_ip, container.as_deref())
+            .await
+        else {
+            // The replica is gone; its chains came down with it.
+            return Ok(Response::new(Empty {}));
+        };
+
+        self.orchestrator
+            .set_backend_liveness(
+                &(req.service_name, initiator_ip, initiator_docker, port),
+                req.active,
+            )
+            .await;
+        Ok(Response::new(Empty {}))
+    }
+
+    /// Resolve `(sender_ip, container)` to a registered replica of
+    /// `service_name`. Same rule as `handle_backend_trigger`: prefer the
+    /// `(ip, container)` match, fall back to IP-only only when the caller
+    /// supplied no container.
+    async fn resolve_trigger_replica(
+        &self,
+        service_name: &str,
+        sender_ip: IpAddr,
+        container: Option<&str>,
+    ) -> Option<(IpAddr, Option<String>)> {
+        let guard = self.services.read().await;
+        let stack = find_service_stack(&guard, service_name)?;
+        let ServiceInfo::Registered(reg) = &guard[stack][service_name] else {
+            return None;
+        };
+        let replica = reg
+            .replicas()
+            .iter()
+            .find(|r| {
+                r.ip() == sender_ip && container.is_some_and(|c| r.docker_container() == Some(c))
+            })
+            .or_else(|| {
+                container
+                    .is_none()
+                    .then(|| reg.replicas().iter().find(|r| r.ip() == sender_ip))
+                    .flatten()
+            })?;
+        Some((replica.ip(), replica.docker_container().map(String::from)))
+    }
+
     pub(crate) async fn handle_backend_trigger(
         &self,
         initiator_name: &str,
@@ -1047,21 +1110,60 @@ impl NullnetGrpcImpl {
         };
 
         println!("[trigger] needs_rebuild={needs_rebuild} for '{initiator_name}' port {port}");
+        let key = (
+            initiator_name.to_string(),
+            initiator_ip,
+            initiator_docker.clone(),
+            port,
+        );
         if !needs_rebuild {
+            // The chain is already up, so nothing is rebuilt — but this trigger
+            // must still take a refcount of its own. Riding on the increment
+            // that an ingress chain or another trigger port contributed means
+            // its close would release somebody else's hold, and that a
+            // co-tenant's close would drop the chain under this trigger's live
+            // connections.
+            if self.orchestrator.claim_backend_session(key, &stack).await
+                && let Some(stack_map) = self.services.write().await.get_mut(&stack)
+            {
+                println!("[trigger] claiming a refcount on the existing chain for port {port}");
+                claim_backend_chain(
+                    initiator_name,
+                    initiator_ip,
+                    initiator_docker.as_deref(),
+                    port,
+                    stack_map,
+                );
+            }
             println!("[trigger] returning early without rebuild");
             return Ok(());
         }
 
-        self.setup_backend_chain(
-            &stack,
-            initiator_name,
-            initiator_ip,
-            initiator_docker.as_deref(),
-            port,
-        )
-        .await
+        // Record the hold only when a chain was really built. A bailed setup
+        // (dep unregistered, empty chain) took no increment, and marking it held
+        // would both block the later claim and let its close consume an
+        // increment contributed by something else.
+        if self
+            .setup_backend_chain(
+                &stack,
+                initiator_name,
+                initiator_ip,
+                initiator_docker.as_deref(),
+                port,
+            )
+            .await?
+        {
+            self.orchestrator.hold_backend_session(key, &stack).await;
+        }
+        Ok(())
     }
 
+    /// Build the chain for one trigger port.
+    ///
+    /// Returns whether a chain was actually built, i.e. whether the caller now
+    /// holds one increment on every hop. The bail paths below return `Ok(false)`
+    /// precisely so a session is never recorded as holding a refcount that was
+    /// never taken — that would let a later close consume somebody else's.
     pub(crate) async fn setup_backend_chain(
         &self,
         stack: &str,
@@ -1069,7 +1171,7 @@ impl NullnetGrpcImpl {
         initiator_ip: IpAddr,
         initiator_docker: Option<&str>,
         port: u16,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         let Some(mut chain) = self
             .build_backend_dep_chain(stack, initiator_name, initiator_ip, initiator_docker, port)
             .await?
@@ -1084,7 +1186,7 @@ impl NullnetGrpcImpl {
                     port,
                 ))
                 .await;
-            return Ok(());
+            return Ok(false);
         };
         println!(
             "[trigger] built dep chain with {} edge(s) for '{initiator_name}' port {port}",
@@ -1095,13 +1197,13 @@ impl NullnetGrpcImpl {
             first.backend_entry_port = Some(u32::from(port));
         } else {
             println!("[trigger] dep chain is empty for '{initiator_name}' port {port}");
-            return Ok(());
+            return Ok(false);
         }
 
         println!("[trigger] dispatching net_chain_setup for '{initiator_name}' port {port}");
         self.net_chain_setup(stack, chain).await?;
         println!("[trigger] net_chain_setup completed for '{initiator_name}' port {port}");
-        Ok(())
+        Ok(true)
     }
 
     async fn egress_trigger_impl(
@@ -1914,6 +2016,15 @@ impl NullnetGrpc for NullnetGrpcImpl {
             .map_err(|err| Status::internal(err.to_str()))
     }
 
+    async fn backend_liveness(
+        &self,
+        req: Request<BackendLivenessReport>,
+    ) -> Result<Response<Empty>, Status> {
+        self.backend_liveness_impl(req)
+            .await
+            .map_err(|err| Status::internal(err.to_str()))
+    }
+
     async fn egress_liveness(
         &self,
         req: Request<EgressLivenessReport>,
@@ -2099,6 +2210,9 @@ impl NullnetGrpc for NullnetGrpcImpl {
             ),
             AgentEventKind::EgressSteerInstallFailed(e) => {
                 Event::egress_steer_install_failed(e.vxlan_id, e.docker_container, e.error_message)
+            }
+            AgentEventKind::ConntrackSubscribeFailed(e) => {
+                Event::conntrack_subscribe_failed(e.error_message)
             }
             AgentEventKind::NfqueueBindFailed(e) => {
                 Event::nfqueue_bind_failed(e.queue_id, e.error_message)

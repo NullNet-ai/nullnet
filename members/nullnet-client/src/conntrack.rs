@@ -11,13 +11,18 @@
 //! `DESTROY` fires at conntrack *eviction*, 10s or 120s after close depending on
 //! which side closed first, so it is a definitive close signal but not a prompt one.
 
+use crate::commands::egress::is_internal_dst;
 use crate::nfqueue::parse::{Flow, IPPROTO_TCP, IPPROTO_UDP};
+use crate::nfqueue::{TriggerOwners, service_for, watched_ports};
 #[cfg(test)]
 use netlink_sys::Socket;
 use netlink_sys::{
     AsyncSocket, AsyncSocketExt, SocketAddr, TokioSocket, protocols::NETLINK_NETFILTER,
 };
 use nullnet_grpc_lib::NullnetGrpcInterface;
+use nullnet_grpc_lib::nullnet_grpc::{
+    AgentConntrackSubscribeFailed, AgentEvent, agent_event::Event as AgentEventKind,
+};
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -172,23 +177,141 @@ pub async fn report_liveness(grpc: &NullnetGrpcInterface, container: String, act
     }
 }
 
+/// Backend twin of [`report_liveness`], for one trigger-built chain.
+pub async fn report_backend_liveness(
+    grpc: &NullnetGrpcInterface,
+    service: String,
+    container: String,
+    port: u16,
+    active: bool,
+) {
+    if let Err(e) = grpc
+        .backend_liveness(service.clone(), u32::from(port), container.clone(), active)
+        .await
+    {
+        eprintln!(
+            "[conntrack] backend_liveness({service}, {container}:{port}, active={active}) failed: {e}"
+        );
+    }
+}
+
 /// The open-flow set for egress, keyed by container.
 pub type EgressOpenFlows = Arc<Mutex<OpenFlows<String>>>;
 
+/// A trigger-built chain's owner: the initiator container and the trigger port
+/// whose chain it opened. Per port, not per container — one replica can hold
+/// several trigger chains at once and they go quiet independently.
+pub type TriggerKey = (String, u16);
+
+/// The open-flow set for autonomous `backend_trigger` chains.
+pub type TriggerOpenFlows = Arc<Mutex<OpenFlows<TriggerKey>>>;
+
+/// Everything the liveness machinery needs, in one place: the two open-flow
+/// sets — fed by the same DESTROY socket and repaired by the same conntrack
+/// dump — plus the trigger lookup that says which service a container's flows
+/// on a given port belong to, and which ports to bucket a dump by.
+#[derive(Clone)]
+pub struct LivenessSets {
+    pub egress: EgressOpenFlows,
+    pub triggers: TriggerOpenFlows,
+    pub owners: TriggerOwners,
+}
+
+impl LivenessSets {
+    pub fn new() -> Self {
+        Self {
+            egress: Arc::new(Mutex::new(OpenFlows::new())),
+            triggers: Arc::new(Mutex::new(OpenFlows::new())),
+            owners: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        }
+    }
+
+    /// Stop trusting emptiness for every key a conntrack flush of ours will
+    /// empty. `conntrack -D -s <ip>` and `-D -s <ip> --dport <port>` both delete
+    /// evidence rather than record a close, so both sets must be marked before
+    /// either runs — see [`OpenFlows::suppress_for`].
+    pub fn suppress_container(&self, container: &str, window: Duration) {
+        self.egress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .suppress_for(container.to_string(), window);
+        let mut triggers = self
+            .triggers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for port in watched_ports(&self.owners, container) {
+            triggers.suppress_for((container.to_string(), port), window);
+        }
+    }
+
+    /// Narrow twin of [`Self::suppress_container`] for the port-scoped flush
+    /// `dnat::install`/`dnat::remove` issue on exactly one trigger key.
+    pub fn suppress_trigger(&self, container: &str, port: u16, window: Duration) {
+        self.triggers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .suppress_for((container.to_string(), port), window);
+    }
+}
+
+impl Default for LivenessSets {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Retire one closed flow from both sets and report whichever went idle.
+///
+/// A flow belongs to at most one set — egress queues only flows to external
+/// destinations, the trigger queue only flows to watched ports — but which one
+/// is not knowable from the tuple alone, so both are asked.
+async fn retire_flow(sets: &LivenessSets, grpc: &NullnetGrpcInterface, flow: &Flow) {
+    let egress = sets
+        .egress
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(flow);
+    if let Some(Transition::Idle(container)) = egress {
+        report_liveness(grpc, container, false).await;
+    }
+
+    let trigger = sets
+        .triggers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(flow);
+    if let Some(Transition::Idle((container, port))) = trigger
+        && let Some(service) = service_for(&sets.owners, &container, port)
+    {
+        report_backend_liveness(grpc, service, container, port, false).await;
+    }
+}
+
 /// Watch conntrack DESTROY events and retire the flows they close.
 ///
-/// Runs for the life of the process. A failure to subscribe is fatal to egress
+/// Runs for the life of the process. A failure to subscribe is fatal to
 /// liveness — without it flows would only ever be added — so it is reported
 /// loudly rather than silently degrading to "everything stays alive forever".
-pub fn spawn_destroy_listener(open: EgressOpenFlows, grpc: NullnetGrpcInterface) {
+pub fn spawn_destroy_listener(sets: LivenessSets, grpc: NullnetGrpcInterface) {
     tokio::spawn(async move {
         let socket = match destroy_socket_async() {
             Ok(s) => s,
             Err(e) => {
+                // Fatal to liveness for the life of the process: without this
+                // the sets only ever gain flows, so every edge on this node is
+                // pinned. An operator has to be told — nothing else will show it.
                 eprintln!(
                     "[conntrack] cannot subscribe to DESTROY events: {e}. \
-                     Egress edges will not be torn down on connection close."
+                     Edges will not be torn down on connection close."
                 );
+                let event = AgentEvent {
+                    event: Some(AgentEventKind::ConntrackSubscribeFailed(
+                        AgentConntrackSubscribeFailed {
+                            error_message: e.to_string(),
+                        },
+                    )),
+                };
+                let _ = grpc.report_event(event).await;
                 return;
             }
         };
@@ -197,13 +320,7 @@ pub fn spawn_destroy_listener(open: EgressOpenFlows, grpc: NullnetGrpcInterface)
             match socket.recv_from_full().await {
                 Ok((buf, _)) => {
                     for flow in parse_destroy_batch(&buf) {
-                        let transition = open
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .remove(&flow);
-                        if let Some(Transition::Idle(container)) = transition {
-                            report_liveness(&grpc, container, false).await;
-                        }
+                        retire_flow(&sets, &grpc, &flow).await;
                     }
                 }
                 Err(e) => {
@@ -509,6 +626,43 @@ mod tests {
         );
     }
 
+    /// The trigger set's whole reason for being keyed per port: two chains from
+    /// the same container are independent, so one going quiet must not report
+    /// the other idle.
+    #[test]
+    fn trigger_ports_on_one_container_are_independent() {
+        let mut o: OpenFlows<TriggerKey> = OpenFlows::new();
+        let k5555 = ("c1".to_string(), 5555u16);
+        let k6666 = ("c1".to_string(), 6666u16);
+        o.insert(k5555.clone(), flow(1000, [10, 0, 0, 1], 5555));
+        o.insert(k6666.clone(), flow(1001, [10, 0, 0, 2], 6666));
+
+        assert_eq!(
+            o.remove(&flow(1000, [10, 0, 0, 1], 5555)),
+            Some(Transition::Idle(k5555)),
+            "5555 closing reports only 5555"
+        );
+        assert!(o.is_active(&k6666), "6666's chain is untouched");
+    }
+
+    /// The §4d.3 hazard, in the shape it takes for triggers: `dnat::install`
+    /// and `dnat::remove` each flush conntrack on exactly this key, so it
+    /// happens twice per edge lifecycle rather than only on a policy reload.
+    #[test]
+    fn a_dnat_flush_does_not_report_a_trigger_chain_idle() {
+        let mut o: OpenFlows<TriggerKey> = OpenFlows::new();
+        let key = ("c1".to_string(), 5555u16);
+        o.insert(key.clone(), flow(1000, [10, 0, 0, 1], 5555));
+
+        // What the client does around a flush of its own.
+        o.suppress_for(key.clone(), Duration::from_secs(120));
+        assert_eq!(
+            o.remove(&flow(1000, [10, 0, 0, 1], 5555)),
+            None,
+            "our own flush must not release the chain's refcount"
+        );
+    }
+
     /// Live end-to-end check of the hand-rolled ctnetlink parser against the
     /// real kernel. Needs root and outbound :80. Run explicitly:
     ///
@@ -725,21 +879,64 @@ fn parse_conntrack_line(line: &str) -> Option<Flow> {
     })
 }
 
-/// Re-dump one container's flows and replace its set.
+/// Re-dump one container's flows and replace both sets from that one dump.
 ///
-/// Call this immediately after any conntrack flush **we** issue — see
-/// `suppress`. Waiting for the periodic pass is not good enough: with no grace
-/// window the reap would already have been reported.
+/// Takes **every** address the container owns, not one. Swarm gives each task
+/// an overlay address *and* a `docker_gwbridge` one, and its outbound flows are
+/// sourced from the gwbridge address while `docker inspect` advertises the
+/// overlay. Reconciling per address would let the dump for the quiet interface
+/// replace the flows seen on the busy one and report a live container idle.
+///
+/// One dump set serves both liveness sets: which one a flow belongs to is
+/// decided by its destination, not by a second query.
 pub async fn reconcile_container(
-    open: &EgressOpenFlows,
+    sets: &LivenessSets,
+    grpc: &NullnetGrpcInterface,
     container: &str,
-    bridge_ip: Ipv4Addr,
-) -> Option<Transition<String>> {
-    let flows = dump_flows(bridge_ip).await?;
-    let mut guard = open
+    bridge_ips: &[Ipv4Addr],
+) {
+    let mut flows: Vec<Flow> = Vec::new();
+    for ip in bridge_ips {
+        // A failed dump is not an empty one. Reconciling from partial data
+        // looks exactly like the container going quiet, which is the one
+        // reading that costs a live edge.
+        let Some(mut found) = dump_flows(*ip).await else {
+            return;
+        };
+        flows.append(&mut found);
+    }
+
+    // Egress holds external destinations only — the NFQUEUE rule that fills it
+    // matches `! --match-set nullnet_internal_dsts dst`. Reconciling from the
+    // raw dump would seed the set with the container's internal flows, and the
+    // last *external* close would then never read as a 1->0.
+    let external = flows.iter().copied().filter(|f| !is_internal_dst(f.dst_ip));
+    let egress = sets
+        .egress
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    guard.reconcile(container.to_string(), flows)
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .reconcile(container.to_string(), external);
+    if let Some(Transition::Idle(c)) = egress {
+        println!("[conntrack] reconcile: container {c} has no open egress flows");
+        report_liveness(grpc, c, false).await;
+    }
+
+    // One bucket per trigger port this container actually owns. A port it does
+    // not own is someone else's chain and must not be attributed here.
+    for port in watched_ports(&sets.owners, container) {
+        let on_port = flows.iter().copied().filter(|f| f.dst_port == port);
+        let transition = sets
+            .triggers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reconcile((container.to_string(), port), on_port);
+        if let Some(Transition::Idle((c, p))) = transition
+            && let Some(service) = service_for(&sets.owners, &c, p)
+        {
+            println!("[conntrack] reconcile: container {c} has no open flows on trigger port {p}");
+            report_backend_liveness(grpc, service, c, p, false).await;
+        }
+    }
 }
 
 /// Periodically correct drift caused by dropped netlink events.
@@ -747,25 +944,28 @@ pub async fn reconcile_container(
 /// This is self-heal, not liveness-polling: the event stream remains the signal,
 /// and this only repairs what `ENOBUFS` lost.
 pub fn spawn_reconcile_task(
-    open: EgressOpenFlows,
+    sets: LivenessSets,
     cache: crate::nfqueue::BridgeIpCache,
     grpc: NullnetGrpcInterface,
 ) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(RECONCILE_INTERVAL).await;
-            // Walk the cache, not the set: a container whose every event was
-            // dropped has no entry in the set to walk from, and that is exactly
+            // Walk the cache, not the sets: a container whose every event was
+            // dropped has no entry in either to walk from, and that is exactly
             // the drift this exists to repair.
+            // Group the cache by container first: a multi-homed container
+            // appears under several addresses and must be reconciled once,
+            // from the union of their dumps.
+            let mut by_container: std::collections::HashMap<String, Vec<Ipv4Addr>> =
+                std::collections::HashMap::new();
             for ip in cache.ips() {
-                let Some(container) = cache.get(ip) else {
-                    continue;
-                };
-                if let Some(Transition::Idle(c)) = reconcile_container(&open, &container, ip).await
-                {
-                    println!("[conntrack] reconcile: container {c} has no open egress flows");
-                    report_liveness(&grpc, c, false).await;
+                if let Some(container) = cache.get(ip) {
+                    by_container.entry(container).or_default().push(ip);
                 }
+            }
+            for (container, ips) in by_container {
+                reconcile_container(&sets, &grpc, &container, &ips).await;
             }
         }
     });

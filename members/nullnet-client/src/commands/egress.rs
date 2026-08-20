@@ -41,6 +41,27 @@ const INTERNAL_RANGES: [&str; 9] = [
     "240.0.0.0/4",
 ];
 
+/// Is `ip` one of [`INTERNAL_RANGES`], i.e. not the external internet?
+///
+/// Shares the one list with the ipset the NFQUEUE rule matches on, so the
+/// userspace reconcile backstop and the kernel cannot disagree about what
+/// counts as egress.
+pub(crate) fn is_internal_dst(ip: Ipv4Addr) -> bool {
+    INTERNAL_RANGES.iter().any(|cidr| cidr_contains(cidr, ip))
+}
+
+/// Panics only on a malformed [`INTERNAL_RANGES`] entry, which is a compile-time
+/// constant in this file.
+fn cidr_contains(cidr: &str, ip: Ipv4Addr) -> bool {
+    let (base, bits) = cidr
+        .split_once('/')
+        .expect("INTERNAL_RANGES entry is a CIDR");
+    let base: Ipv4Addr = base.parse().expect("INTERNAL_RANGES base is IPv4");
+    let bits: u32 = bits.parse().expect("INTERNAL_RANGES prefix is a number");
+    let mask = u32::MAX.checked_shl(32 - bits).unwrap_or(0);
+    (u32::from(ip) & mask) == (u32::from(base) & mask)
+}
+
 fn sudo(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
     // For iptables, inject `-w` (wait for the xtables lock) right after the
     // binary so concurrent per-edge VxlanSetup tasks don't fail on lock
@@ -611,5 +632,53 @@ mod purge_tests {
     fn empty_output_yields_nothing() {
         assert!(parse_steer_net_ids("").is_empty());
         assert!(parse_overlay_snat_rules("").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_internal_dst;
+    use std::net::Ipv4Addr;
+
+    /// The reconcile backstop filters the egress open-flow set with this, so it
+    /// has to agree with the ipset the NFQUEUE rule matches on. Calling an
+    /// internal address external leaves those flows in the set, and the last
+    /// real external close then never reads as a 1->0.
+    #[test]
+    fn private_and_special_ranges_are_internal() {
+        for ip in [
+            "10.1.2.3",
+            "172.16.0.1",
+            "172.31.255.254",
+            "192.168.1.5",
+            "127.0.0.1",
+            "169.254.1.1",
+            "100.64.0.1",
+            "0.0.0.0",
+            "224.0.0.1",
+            "240.0.0.1",
+        ] {
+            assert!(
+                is_internal_dst(ip.parse::<Ipv4Addr>().unwrap()),
+                "{ip} must not be brokered as egress"
+            );
+        }
+    }
+
+    /// Boundaries matter: 172.16/12 ends at 172.31, so 172.32 is public.
+    #[test]
+    fn public_addresses_are_external() {
+        for ip in [
+            "1.1.1.1",
+            "8.8.8.8",
+            "203.0.113.1",
+            "172.32.0.1",
+            "9.255.255.255",
+        ] {
+            assert!(
+                !is_internal_dst(ip.parse::<Ipv4Addr>().unwrap()),
+                "{ip} is real egress"
+            );
+        }
     }
 }
