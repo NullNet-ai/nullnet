@@ -6,7 +6,7 @@ mod tcp_relay;
 mod tls;
 mod udp_relay;
 
-use crate::nullnet_proxy::NullnetProxy;
+use crate::nullnet_proxy::{NullnetProxy, send_close};
 use crate::routes::{Resolution, RouteMatch, RouteTable};
 use crate::tls::{CertStore, TlsResolver};
 use arc_swap::ArcSwap;
@@ -49,6 +49,19 @@ pub struct ProxyCtx {
     /// `strip_prefix` rewrote it. `None` means "forward the original path
     /// unchanged" — the pre-this-field, only behavior.
     forward_path: Option<String>,
+    /// Whether this request holds one open-connection count on the server.
+    ///
+    /// Exactly one, however many times `upstream_peer` runs: pingora re-enters
+    /// it on a retryable upstream error (`fail_to_connect`'s contract) and each
+    /// entry issues its own `Proxy` RPC, so re-entry cancels the duplicate it
+    /// just created. `logging` fires exactly once per request and −1's only when
+    /// this is set, which also keeps a request denied in `request_filter` —
+    /// which never reaches `upstream_peer` — from sending an unmatched close.
+    counted: bool,
+    /// Close identity, captured alongside the +1. Keyed on the *client*, not the
+    /// resolved upstream: under `max_networks`/sticky reuse many clients share
+    /// one upstream.
+    client_ip: Option<String>,
 }
 
 #[async_trait]
@@ -271,7 +284,25 @@ impl ProxyHttp for NullnetProxy {
         };
         println!("{proxy_req:?}");
         let upstream = match self.get_or_add_upstream(proxy_req).await {
-            Ok(u) => u,
+            Ok(u) => {
+                if ctx.counted {
+                    // A retry. Pingora re-enters this function, and *every*
+                    // entry issues its own `Proxy` RPC — which is what the
+                    // server counts, so the count has just gone up again while
+                    // `logging` will still fire only once. Cancel the duplicate
+                    // here rather than leak it and pin the edge forever.
+                    //
+                    // Sent after the new +1, never before: closing first would
+                    // let the count touch zero, and the idle pass could reap the
+                    // chain in that window — under a request that is still live.
+                    send_close(self.server.clone(), service_name.clone(), client_ip.clone()).await;
+                } else {
+                    ctx.counted = true;
+                    ctx.client_ip = Some(client_ip.clone());
+                    ctx.service_name = Some(service_name.clone());
+                }
+                u
+            }
             Err(_) => {
                 // Anything dialing the proxy by address instead of by name sends an
                 // IP as its `Host`: internet scanners on the public :80, or a local
@@ -353,6 +384,26 @@ impl ProxyHttp for NullnetProxy {
             self.tls,
             ingress_raw_host(session),
         )
+    }
+
+    /// The close half of the ingress open-connection count.
+    ///
+    /// Pingora calls this exactly once per request across all three of its
+    /// terminal paths (normal finish, `request_filter` short-circuit, and
+    /// `handle_error`), which is what makes the pairing with `upstream_peer`'s
+    /// +1 exact. `counted` gates it: a request denied in `request_filter` never
+    /// reached `upstream_peer`, so it must not send a close.
+    async fn logging(&self, _session: &mut Session, _e: Option<&Error>, ctx: &mut Self::CTX) {
+        if !ctx.counted {
+            return;
+        }
+        ctx.counted = false;
+        let (Some(client_ip), Some(service_name)) =
+            (ctx.client_ip.take(), ctx.service_name.clone())
+        else {
+            return;
+        };
+        send_close(self.server.clone(), service_name, client_ip).await;
     }
 }
 

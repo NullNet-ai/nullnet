@@ -263,6 +263,16 @@ pub struct Upstream {
     #[prost(uint32, tag = "2")]
     pub port: u32,
 }
+/// Close half of the ingress open-connection count. Keyed on the *client*
+/// identity, not the resolved upstream: under max_networks/sticky reuse many
+/// clients share one upstream, so the upstream cannot identify the counter.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProxyConnectionEnd {
+    #[prost(string, tag = "1")]
+    pub client_ip: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub service_name: ::prost::alloc::string::String,
+}
 /// One entry in the live port→service table. Only services with a non-HTTP
 /// protocol need an entry — HTTP stays on the existing Host-header routing.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -338,6 +348,43 @@ pub struct HttpRedirect {
 pub struct HttpRouteBundle {
     #[prost(message, repeated, tag = "1")]
     pub routes: ::prost::alloc::vec::Vec<HttpRoute>,
+}
+/// Egress edge liveness, reported only on transitions — not per flow.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EgressLivenessReport {
+    /// Docker container of the initiator, empty for a host process. Together with
+    /// the sender's IP this is the same key EgressTrigger builds the edge under.
+    #[prost(string, tag = "1")]
+    pub initiator_container: ::prost::alloc::string::String,
+    /// true  = first connection opened (0 -> 1)
+    /// false = last connection closed (1 -> 0), and the flows are provably gone,
+    /// not merely idle. The server still waits out a short debounce before
+    /// reaping, because how promptly conntrack reports a close depends on
+    /// which peer hung up first.
+    #[prost(bool, tag = "2")]
+    pub active: bool,
+}
+/// Backend chain liveness, reported only on transitions — not per flow. Keyed
+/// per trigger port, not per initiator: one replica may hold several trigger
+/// chains at once and they go quiet independently.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BackendLivenessReport {
+    #[prost(string, tag = "1")]
+    pub service_name: ::prost::alloc::string::String,
+    /// The trigger port whose chain this reports on, matching BackendTriggerRequest.
+    #[prost(uint32, tag = "2")]
+    pub port: u32,
+    /// Real Docker container name of the initiator replica. Never empty: the
+    /// NFQUEUE trigger path passes host traffic straight through, so only
+    /// containers can ever open one of these chains.
+    #[prost(string, tag = "3")]
+    pub initiator_container: ::prost::alloc::string::String,
+    /// true  = first connection opened (0 -> 1)
+    /// false = last connection closed (1 -> 0), provably gone rather than idle.
+    /// The server still waits out a debounce before decrementing, for the
+    /// same conntrack-timing reason as EgressLivenessReport.
+    #[prost(bool, tag = "4")]
+    pub active: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BackendTriggerRequest {
@@ -457,7 +504,7 @@ pub struct Empty {}
 pub struct AgentEvent {
     #[prost(
         oneof = "agent_event::Event",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 25, 30, 31, 32, 33, 34, 35, 36, 37, 38, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 26, 27, 28, 29, 22"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 25, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 26, 27, 28, 29, 22"
     )]
     pub event: ::core::option::Option<agent_event::Event>,
 }
@@ -512,6 +559,8 @@ pub mod agent_event {
         EgressPolicyCheckFailed(super::AgentEgressPolicyCheckFailed),
         #[prost(message, tag = "38")]
         ConntrackFlushFailed(super::AgentConntrackFlushFailed),
+        #[prost(message, tag = "39")]
+        ConntrackSubscribeFailed(super::AgentConntrackSubscribeFailed),
         /// Client info events
         #[prost(message, tag = "13")]
         VxlanSetupCompleted(super::AgentVxlanSetupCompleted),
@@ -704,6 +753,11 @@ pub struct AgentNfqueueBindFailed {
     #[prost(uint32, tag = "1")]
     pub queue_id: u32,
     #[prost(string, tag = "2")]
+    pub error_message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AgentConntrackSubscribeFailed {
+    #[prost(string, tag = "1")]
     pub error_message: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1077,6 +1131,34 @@ pub mod nullnet_grpc_client {
                 .insert(GrpcMethod::new("nullnet_grpc.NullnetGrpc", "Proxy"));
             self.inner.unary(req, path, codec).await
         }
+        /// A front connection through the proxy closed. Pairs 1:1 with a preceding
+        /// successful Proxy call: the server keeps an open-connection count per proxy
+        /// client and only starts the idle grace once it reaches zero, so an edge is
+        /// never reaped under a live connection. proxy_ip is taken from remote_addr,
+        /// like Proxy itself.
+        pub async fn proxy_connection_closed(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ProxyConnectionEnd>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/nullnet_grpc.NullnetGrpc/ProxyConnectionClosed",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("nullnet_grpc.NullnetGrpc", "ProxyConnectionClosed"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         /// Backend trigger — for service-to-service chains that do not involve the proxy.
         pub async fn backend_trigger(
             &mut self,
@@ -1097,6 +1179,31 @@ pub mod nullnet_grpc_client {
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("nullnet_grpc.NullnetGrpc", "BackendTrigger"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Backend liveness: the open-connection set for one (initiator replica,
+        /// trigger port) crossed 0\<->1. The proxy's idle timeout cannot cover these
+        /// chains — nothing about them involves a proxy client — so this is the only
+        /// signal that a trigger-built chain is finished with.
+        pub async fn backend_liveness(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BackendLivenessReport>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/nullnet_grpc.NullnetGrpc/BackendLiveness",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("nullnet_grpc.NullnetGrpc", "BackendLiveness"));
             self.inner.unary(req, path, codec).await
         }
         /// Egress trigger — for a registered service reaching the external internet,
@@ -1120,6 +1227,31 @@ pub mod nullnet_grpc_client {
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("nullnet_grpc.NullnetGrpc", "EgressTrigger"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Egress liveness: the initiator's open-connection set crossed 0\<->1. The
+        /// client is the only party that can see this — conntrack on the initiator
+        /// host is what knows whether a connection still exists. initiator_ip is taken
+        /// from remote_addr, so the pair identifies the same edge as EgressTrigger.
+        pub async fn egress_liveness(
+            &mut self,
+            request: impl tonic::IntoRequest<super::EgressLivenessReport>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/nullnet_grpc.NullnetGrpc/EgressLiveness",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("nullnet_grpc.NullnetGrpc", "EgressLiveness"));
             self.inner.unary(req, path, codec).await
         }
         /// Report the external destinations a registered service contacted through its
@@ -1370,16 +1502,41 @@ pub mod nullnet_grpc_server {
             &self,
             request: tonic::Request<super::ProxyRequest>,
         ) -> std::result::Result<tonic::Response<super::Upstream>, tonic::Status>;
+        /// A front connection through the proxy closed. Pairs 1:1 with a preceding
+        /// successful Proxy call: the server keeps an open-connection count per proxy
+        /// client and only starts the idle grace once it reaches zero, so an edge is
+        /// never reaped under a live connection. proxy_ip is taken from remote_addr,
+        /// like Proxy itself.
+        async fn proxy_connection_closed(
+            &self,
+            request: tonic::Request<super::ProxyConnectionEnd>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
         /// Backend trigger — for service-to-service chains that do not involve the proxy.
         async fn backend_trigger(
             &self,
             request: tonic::Request<super::BackendTriggerRequest>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
+        /// Backend liveness: the open-connection set for one (initiator replica,
+        /// trigger port) crossed 0\<->1. The proxy's idle timeout cannot cover these
+        /// chains — nothing about them involves a proxy client — so this is the only
+        /// signal that a trigger-built chain is finished with.
+        async fn backend_liveness(
+            &self,
+            request: tonic::Request<super::BackendLivenessReport>,
         ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
         /// Egress trigger — for a registered service reaching the external internet,
         /// brokered through the proxy's transparent forward listener.
         async fn egress_trigger(
             &self,
             request: tonic::Request<super::EgressTriggerRequest>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
+        /// Egress liveness: the initiator's open-connection set crossed 0\<->1. The
+        /// client is the only party that can see this — conntrack on the initiator
+        /// host is what knows whether a connection still exists. initiator_ip is taken
+        /// from remote_addr, so the pair identifies the same edge as EgressTrigger.
+        async fn egress_liveness(
+            &self,
+            request: tonic::Request<super::EgressLivenessReport>,
         ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
         /// Report the external destinations a registered service contacted through its
         /// egress edge. Distinct from EgressTrigger (which builds the edge once): the
@@ -1718,6 +1875,52 @@ pub mod nullnet_grpc_server {
                     };
                     Box::pin(fut)
                 }
+                "/nullnet_grpc.NullnetGrpc/ProxyConnectionClosed" => {
+                    #[allow(non_camel_case_types)]
+                    struct ProxyConnectionClosedSvc<T: NullnetGrpc>(pub Arc<T>);
+                    impl<
+                        T: NullnetGrpc,
+                    > tonic::server::UnaryService<super::ProxyConnectionEnd>
+                    for ProxyConnectionClosedSvc<T> {
+                        type Response = super::Empty;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ProxyConnectionEnd>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as NullnetGrpc>::proxy_connection_closed(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ProxyConnectionClosedSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
                 "/nullnet_grpc.NullnetGrpc/BackendTrigger" => {
                     #[allow(non_camel_case_types)]
                     struct BackendTriggerSvc<T: NullnetGrpc>(pub Arc<T>);
@@ -1763,6 +1966,51 @@ pub mod nullnet_grpc_server {
                     };
                     Box::pin(fut)
                 }
+                "/nullnet_grpc.NullnetGrpc/BackendLiveness" => {
+                    #[allow(non_camel_case_types)]
+                    struct BackendLivenessSvc<T: NullnetGrpc>(pub Arc<T>);
+                    impl<
+                        T: NullnetGrpc,
+                    > tonic::server::UnaryService<super::BackendLivenessReport>
+                    for BackendLivenessSvc<T> {
+                        type Response = super::Empty;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BackendLivenessReport>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as NullnetGrpc>::backend_liveness(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = BackendLivenessSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
                 "/nullnet_grpc.NullnetGrpc/EgressTrigger" => {
                     #[allow(non_camel_case_types)]
                     struct EgressTriggerSvc<T: NullnetGrpc>(pub Arc<T>);
@@ -1793,6 +2041,51 @@ pub mod nullnet_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = EgressTriggerSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/nullnet_grpc.NullnetGrpc/EgressLiveness" => {
+                    #[allow(non_camel_case_types)]
+                    struct EgressLivenessSvc<T: NullnetGrpc>(pub Arc<T>);
+                    impl<
+                        T: NullnetGrpc,
+                    > tonic::server::UnaryService<super::EgressLivenessReport>
+                    for EgressLivenessSvc<T> {
+                        type Response = super::Empty;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::EgressLivenessReport>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as NullnetGrpc>::egress_liveness(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = EgressLivenessSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

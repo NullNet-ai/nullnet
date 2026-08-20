@@ -1,5 +1,5 @@
 use crate::orchestrator::Orchestrator;
-use crate::services::changes::{ServiceChange, apply_changes};
+use crate::services::changes::{ServiceChange, apply_changes, release_backend_chain};
 use crate::services::input::StackMap;
 use crate::services::service_info::{ServiceInfo, backend_involved_services};
 use std::collections::HashMap;
@@ -12,6 +12,20 @@ use tokio::sync::{Notify, RwLock};
 /// stay finite and non-zero.
 const MAX_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
+/// How long an edge must have had zero open connections before it is released.
+///
+/// Not an idle timeout — the client only reports idle once conntrack says the
+/// flows are gone. This exists because *how promptly* conntrack says so swings
+/// between ~10s and ~120s depending on which peer closed first (measured; see
+/// docs/uniform-edge-liveness-plan.md §4d.2), and a container that dials out
+/// every half minute should not rebuild its tunnel every time. Deliberately a
+/// constant, not a config key: it smooths kernel timing, it does not express
+/// policy.
+///
+/// Shared by egress edges and trigger-built chains: the kernel timing it
+/// absorbs is the same for both.
+const LIVENESS_REAP_DEBOUNCE: Duration = Duration::from_secs(30);
+
 pub(crate) async fn check_timeouts(
     services: Arc<RwLock<StackMap>>,
     orchestrator: Orchestrator,
@@ -20,11 +34,24 @@ pub(crate) async fn check_timeouts(
     loop {
         let sleep_duration = {
             let guard = services.read().await;
-            guard
+            let ingress = guard
                 .values()
                 .map(nearest_timeout)
                 .min()
-                .unwrap_or(MAX_POLL_INTERVAL)
+                .unwrap_or(MAX_POLL_INTERVAL);
+            drop(guard);
+            // A liveness-driven deadline (egress edge or trigger chain going
+            // idle) is usually sooner than any ingress one.
+            let egress = orchestrator
+                .nearest_egress_expiry(LIVENESS_REAP_DEBOUNCE)
+                .await;
+            let backend = orchestrator
+                .nearest_backend_expiry(LIVENESS_REAP_DEBOUNCE)
+                .await;
+            [egress, backend]
+                .into_iter()
+                .flatten()
+                .fold(ingress, Duration::min)
         };
 
         tokio::select! {
@@ -32,13 +59,49 @@ pub(crate) async fn check_timeouts(
             () = config_changed.notified() => {}
         }
 
+        orchestrator
+            .reap_idle_egress_edges(LIVENESS_REAP_DEBOUNCE)
+            .await;
+
         let mut services_mut = services.write().await;
+        reap_idle_backend_chains(&mut services_mut, &orchestrator, LIVENESS_REAP_DEBOUNCE).await;
         let stack_names: Vec<String> = services_mut.keys().cloned().collect();
         for stack in stack_names {
             if let Some(stack_map) = services_mut.get_mut(&stack) {
                 apply_timeouts(stack_map, &orchestrator, &stack).await;
             }
         }
+    }
+}
+
+/// Release the hold of every trigger chain whose connections are provably gone.
+///
+/// Each session holds exactly one refcount, so this decrements by one — never a
+/// teardown, since an ingress chain or another trigger port may still hold the
+/// same edges. Taking the session out of the map is what makes it happen
+/// exactly once, however many duplicate close reports arrive.
+pub(crate) async fn reap_idle_backend_chains(
+    services: &mut StackMap,
+    orchestrator: &Orchestrator,
+    debounce: Duration,
+) {
+    for (key, stack) in orchestrator.take_due_backend_sessions(debounce).await {
+        let (service, ip, docker, port) = key;
+        let Some(stack_map) = services.get_mut(&stack) else {
+            continue;
+        };
+        println!(
+            "Trigger chain '{service}' ({ip}) port {port} idle past the debounce; releasing its hold"
+        );
+        release_backend_chain(
+            &service,
+            ip,
+            docker.as_deref(),
+            port,
+            stack_map,
+            orchestrator,
+        )
+        .await;
     }
 }
 

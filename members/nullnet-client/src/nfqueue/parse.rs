@@ -1,42 +1,52 @@
 use etherparse::{LaxPacketHeaders, NetHeaders, TransportHeader};
 use std::net::Ipv4Addr;
 
-/// NFQUEUE delivers L3 (no Ethernet) IPv4 packets to userspace. Extract the
-/// source IP and the L4 destination port for TCP and UDP. Returns `None` for
-/// non-IPv4, non-TCP/UDP, fragmented, or malformed packets.
-pub fn ipv4_src_and_dst_port(packet: &[u8]) -> Option<(Ipv4Addr, u16)> {
-    let headers = LaxPacketHeaders::from_ip(packet).ok()?;
-    let src_octets = match headers.net? {
-        NetHeaders::Ipv4(ipv4, _) => ipv4.source,
-        _ => return None,
-    };
-    let dst_port = match headers.transport? {
-        TransportHeader::Tcp(tcp) => tcp.destination_port,
-        TransportHeader::Udp(udp) => udp.destination_port,
-        _ => return None,
-    };
-    Some((Ipv4Addr::from(src_octets), dst_port))
+/// One connection, identified the same way conntrack identifies it: the full
+/// 5-tuple of its original direction. This is the key the egress open-flow set
+/// uses, so it must match conntrack's original tuple exactly — a narrower key
+/// (e.g. `(container, dst_ip)`) collapses concurrent connections to one host and
+/// would report the container idle while others are still open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Flow {
+    pub src_ip: Ipv4Addr,
+    pub src_port: u16,
+    pub dst_ip: Ipv4Addr,
+    pub dst_port: u16,
+    /// IANA protocol number: 6 TCP, 17 UDP.
+    pub proto: u8,
 }
 
-/// Like [`ipv4_src_and_dst_port`] but also returns the destination IP. Used by
-/// the egress listener, which classifies flows by destination (external vs
-/// internal) rather than by port.
-pub fn ipv4_flow(packet: &[u8]) -> Option<(Ipv4Addr, Ipv4Addr, u16)> {
+/// IANA protocol numbers, as they appear in both the IPv4 header and
+/// conntrack's `CTA_PROTO_NUM`.
+pub const IPPROTO_TCP: u8 = 6;
+pub const IPPROTO_UDP: u8 = 17;
+
+/// NFQUEUE delivers L3 (no Ethernet) IPv4 packets to userspace. Extract the
+/// whole 5-tuple for TCP and UDP; `None` for non-IPv4, non-TCP/UDP, fragmented,
+/// or malformed packets.
+///
+/// Both listeners parse at this width: they classify a flow by destination
+/// (external vs internal, or a watched trigger port) and then track its
+/// liveness by exact connection identity, which is the 5-tuple conntrack keys
+/// its own entries by.
+pub fn ipv4_flow(packet: &[u8]) -> Option<Flow> {
     let headers = LaxPacketHeaders::from_ip(packet).ok()?;
     let (src_octets, dst_octets) = match headers.net? {
         NetHeaders::Ipv4(ipv4, _) => (ipv4.source, ipv4.destination),
         _ => return None,
     };
-    let dst_port = match headers.transport? {
-        TransportHeader::Tcp(tcp) => tcp.destination_port,
-        TransportHeader::Udp(udp) => udp.destination_port,
+    let (src_port, dst_port, proto) = match headers.transport? {
+        TransportHeader::Tcp(tcp) => (tcp.source_port, tcp.destination_port, IPPROTO_TCP),
+        TransportHeader::Udp(udp) => (udp.source_port, udp.destination_port, IPPROTO_UDP),
         _ => return None,
     };
-    Some((
-        Ipv4Addr::from(src_octets),
-        Ipv4Addr::from(dst_octets),
+    Some(Flow {
+        src_ip: Ipv4Addr::from(src_octets),
+        src_port,
+        dst_ip: Ipv4Addr::from(dst_octets),
         dst_port,
-    ))
+        proto,
+    })
 }
 
 #[cfg(test)]
@@ -82,10 +92,11 @@ mod tests {
             54321,
             80,
         );
-        assert_eq!(
-            ipv4_src_and_dst_port(&pkt),
-            Some((Ipv4Addr::new(172, 17, 0, 5), 80))
-        );
+        let flow = ipv4_flow(&pkt).expect("parses");
+        assert_eq!(flow.src_ip, Ipv4Addr::new(172, 17, 0, 5));
+        assert_eq!(flow.dst_ip, Ipv4Addr::new(10, 0, 0, 1));
+        assert_eq!((flow.src_port, flow.dst_port), (54321, 80));
+        assert_eq!(flow.proto, IPPROTO_TCP);
     }
 
     #[test]
@@ -96,15 +107,16 @@ mod tests {
             12345,
             53,
         );
-        assert_eq!(
-            ipv4_src_and_dst_port(&pkt),
-            Some((Ipv4Addr::new(172, 17, 0, 6), 53))
-        );
+        let flow = ipv4_flow(&pkt).expect("parses");
+        assert_eq!(flow.src_ip, Ipv4Addr::new(172, 17, 0, 6));
+        assert_eq!(flow.dst_ip, Ipv4Addr::new(10, 0, 0, 2));
+        assert_eq!((flow.src_port, flow.dst_port), (12345, 53));
+        assert_eq!(flow.proto, IPPROTO_UDP);
     }
 
     #[test]
     fn rejects_too_short() {
-        assert!(ipv4_src_and_dst_port(&[0x45; 10]).is_none());
+        assert!(ipv4_flow(&[0x45; 10]).is_none());
     }
 
     #[test]
@@ -114,7 +126,7 @@ mod tests {
         let mut buf = vec![0u8; 40];
         buf[0] = 0x60;
         buf[6] = 59; // No-Next-Header so etherparse stops cleanly
-        assert!(ipv4_src_and_dst_port(&buf).is_none());
+        assert!(ipv4_flow(&buf).is_none());
     }
 
     #[test]
@@ -124,6 +136,6 @@ mod tests {
         buf[0] = 0x45;
         buf[2..4].copy_from_slice(&total_len);
         buf[9] = 1; // ICMP — not TCP/UDP
-        assert!(ipv4_src_and_dst_port(&buf).is_none());
+        assert!(ipv4_flow(&buf).is_none());
     }
 }

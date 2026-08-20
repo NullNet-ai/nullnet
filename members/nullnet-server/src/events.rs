@@ -322,6 +322,13 @@ pub(crate) enum Event {
         error_message: String,
         timestamp: u64,
     },
+    /// The client never subscribed to conntrack `DESTROY` events, so it cannot
+    /// see connections closing. Every edge on that node is pinned for the rest
+    /// of the process: liveness only ever adds flows, never retires them.
+    ConntrackSubscribeFailed {
+        error_message: String,
+        timestamp: u64,
+    },
     /// The TCP MSS clamp could not be installed, so oversized segments can be
     /// silently black-holed once they enter an overlay tunnel.
     MssClampInstallFailed {
@@ -500,6 +507,7 @@ impl Event {
             Self::EgressSteerSetupTimedOut { .. } => "egress_steer_setup_timed_out",
             Self::EgressSteerInstallFailed { .. } => "egress_steer_install_failed",
             Self::NfqueueBindFailed { .. } => "nfqueue_bind_failed",
+            Self::ConntrackSubscribeFailed { .. } => "conntrack_subscribe_failed",
             Self::MssClampInstallFailed { .. } => "mss_clamp_install_failed",
             Self::EgressPolicyCheckFailed { .. } => "egress_policy_check_failed",
             Self::ConntrackFlushFailed { .. } => "conntrack_flush_failed",
@@ -595,6 +603,7 @@ impl Event {
             | Self::EgressSteerSetupTimedOut { .. }
             | Self::EgressSteerInstallFailed { .. }
             | Self::NfqueueBindFailed { .. }
+            | Self::ConntrackSubscribeFailed { .. }
             | Self::MssClampInstallFailed { .. }
             | Self::EgressPolicyCheckFailed { .. }
             | Self::CertificateRenewalFailed { .. }
@@ -1286,6 +1295,13 @@ impl Event {
     pub(crate) fn nfqueue_bind_failed(queue_id: u32, error_message: String) -> Self {
         Self::NfqueueBindFailed {
             queue_id,
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn conntrack_subscribe_failed(error_message: String) -> Self {
+        Self::ConntrackSubscribeFailed {
             error_message,
             timestamp: now_secs(),
         }

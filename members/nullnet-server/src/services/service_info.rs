@@ -467,6 +467,30 @@ impl RegisteredServiceInfo {
         }
     }
 
+    /// Record a front connection opening for a proxy client. Searches across
+    /// replicas like `set_latest_now` — a client is sticky to one replica, so at
+    /// most one entry matches.
+    pub(crate) fn open_connection(&mut self, client: &Client) {
+        for replica in &mut self.replicas {
+            if let Some(client_info) = replica.clients.clients_mut().get_mut(client) {
+                client_info.open_connection();
+                return;
+            }
+        }
+    }
+
+    /// Record a front connection closing. Saturating, and a no-op when no entry
+    /// matches: a close can outlive its client entry (session evicted, node
+    /// re-registered), and that must not resurrect or corrupt anything.
+    pub(crate) fn close_connection(&mut self, client: &Client) {
+        for replica in &mut self.replicas {
+            if let Some(client_info) = replica.clients.clients_mut().get_mut(client) {
+                client_info.close_connection();
+                return;
+            }
+        }
+    }
+
     /// Decrement `active_chains` for a specific client entry.
     /// If it reaches 0, the VXLAN is torn down and the entry is removed.
     pub(crate) async fn decrement_chain(
@@ -655,6 +679,9 @@ impl RegisteredServiceInfo {
         &self.triggers
     }
 
+    /// Proxy clients whose idle grace has elapsed. `timeout` is a grace window
+    /// measured from the last connection *close*, not from the last routing
+    /// event — a client with open connections is pinned however long it idles.
     pub(crate) fn expired_proxy_clients(&self, timeout: Duration) -> Vec<Client> {
         let now = Instant::now();
         self.replicas
@@ -665,7 +692,9 @@ impl RegisteredServiceInfo {
                     .clients()
                     .iter()
                     .filter(|(c, ci)| {
-                        c.is_proxy().is_some() && now.duration_since(ci.latest()) >= timeout
+                        c.is_proxy().is_some()
+                            && ci.open_connections() == 0
+                            && now.duration_since(ci.latest()) >= timeout
                     })
                     .map(|(c, _)| c.clone())
             })
@@ -681,7 +710,10 @@ impl RegisteredServiceInfo {
                     .clients
                     .clients()
                     .iter()
-                    .filter(|(c, _)| c.is_proxy().is_some())
+                    // A client with connections open is pinned, not counting
+                    // down: its grace only starts at the last close, so it must
+                    // not pull the loop's sleep short every cycle.
+                    .filter(|(c, ci)| c.is_proxy().is_some() && ci.open_connections() == 0)
                     .map(|(_, ci)| timeout.saturating_sub(now.duration_since(ci.latest())))
             })
             .min()

@@ -1,5 +1,6 @@
+use crate::conntrack::{TriggerOpenFlows, report_backend_liveness};
 use crate::nfqueue::cache::BridgeIpCache;
-use crate::nfqueue::parse::ipv4_src_and_dst_port;
+use crate::nfqueue::parse::ipv4_flow;
 use crate::nfqueue::recv_loop::spawn_queue_loop;
 use crate::triggers::{TriggerState, TriggersState};
 use nfq::{Message, Verdict};
@@ -48,6 +49,26 @@ pub struct TriggerOwner {
 /// claim the same port, each through its own replicas.
 pub type TriggerMap = HashMap<u16, Vec<TriggerOwner>>;
 
+/// The hot-swapped port → owners lookup, shared by the packet path and by the
+/// liveness reporters (which need the same container→service resolution when a
+/// chain goes quiet as when it opened).
+pub type TriggerOwners = Arc<RwLock<TriggerMap>>;
+
+/// [`owner_for`] against the shared lookup, taking the lock.
+pub fn service_for(owners: &TriggerOwners, container: &str, port: u16) -> Option<String> {
+    owner_for(&owners.read().unwrap(), container, port).map(ToString::to_string)
+}
+
+/// Every trigger port `container` owns. The reconcile backstop buckets a
+/// conntrack dump by these, and the flush suppression marks them.
+pub fn watched_ports(owners: &TriggerOwners, container: &str) -> Vec<u16> {
+    let map = owners.read().unwrap();
+    map.keys()
+        .copied()
+        .filter(|p| owner_for(&map, container, *p).is_some())
+        .collect()
+}
+
 /// The service whose trigger `container` should fire on `port`, if any.
 ///
 /// The ipset that queues these packets matches on destination port alone, so a
@@ -68,9 +89,12 @@ fn owner_for<'a>(map: &'a TriggerMap, container: &str, port: u16) -> Option<&'a 
 pub struct ListenerCtx {
     pub grpc: NullnetGrpcInterface,
     pub cache: BridgeIpCache,
-    pub trigger_owners: Arc<RwLock<TriggerMap>>,
+    pub trigger_owners: TriggerOwners,
     pub triggers_state: Arc<TriggersState>,
     pub semaphore: Arc<Semaphore>,
+    /// Open connections per `(container, trigger_port)`. Fed here on Accept and
+    /// drained by conntrack DESTROY — the chain lives while any remain.
+    pub open_flows: TriggerOpenFlows,
 }
 
 /// Spawn the backend-trigger recv loop (queue 0). Each packet is held until
@@ -103,11 +127,12 @@ async fn handle_packet(mut msg: Message, ctx: ListenerCtx, verdict_tx: Sender<Me
         }
     };
 
-    let Some((src_ip, dst_port)) = ipv4_src_and_dst_port(msg.get_payload()) else {
+    let Some(flow) = ipv4_flow(msg.get_payload()) else {
         msg.set_verdict(Verdict::Accept);
         let _ = verdict_tx.send(msg);
         return;
     };
+    let (src_ip, dst_port) = (flow.src_ip, flow.dst_port);
 
     let Some(container) = ctx.cache.get(src_ip) else {
         // Host process, K8s pod, rootless docker — anything we can't map to
@@ -131,8 +156,25 @@ async fn handle_packet(mut msg: Message, ctx: ListenerCtx, verdict_tx: Sender<Me
     };
 
     let verdict = decide_verdict(&ctx, &container, dst_port, src_ip, &service).await;
+    // Release the packet before reporting: the verdict is what unblocks the
+    // connection, and the liveness RPC must never sit in front of it.
     msg.set_verdict(verdict);
     let _ = verdict_tx.send(msg);
+
+    // Record on Accept only. A dropped packet's conntrack entry is never
+    // confirmed, so no DESTROY follows it and recording one would leave a
+    // phantom open flow pinning the chain until the next reconcile. Same
+    // add-only-on-Accept rule as the egress listener.
+    if matches!(verdict, Verdict::Accept) {
+        let transition = ctx
+            .open_flows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((container.clone(), dst_port), flow);
+        if transition.is_some() {
+            report_backend_liveness(&ctx.grpc, service, container, dst_port, true).await;
+        }
+    }
 }
 
 async fn decide_verdict(

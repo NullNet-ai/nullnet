@@ -22,14 +22,33 @@ service NullnetGrpc {
   // Proxy
   rpc Proxy(ProxyRequest) returns (Upstream);
 
+  // A front connection through the proxy closed. Pairs 1:1 with a preceding
+  // successful Proxy call: the server keeps an open-connection count per proxy
+  // client and only starts the idle grace once it reaches zero, so an edge is
+  // never reaped under a live connection. proxy_ip is taken from remote_addr,
+  // like Proxy itself.
+  rpc ProxyConnectionClosed(ProxyConnectionEnd) returns (Empty);
+
   // Backend-triggered chains APIs -------------------------------------------------------------------------------------
 
   // Backend trigger — for service-to-service chains that do not involve the proxy.
   rpc BackendTrigger(BackendTriggerRequest) returns (Empty);
 
+  // Backend liveness: the open-connection set for one (initiator replica,
+  // trigger port) crossed 0<->1. The proxy's idle timeout cannot cover these
+  // chains — nothing about them involves a proxy client — so this is the only
+  // signal that a trigger-built chain is finished with.
+  rpc BackendLiveness(BackendLivenessReport) returns (Empty);
+
   // Egress trigger — for a registered service reaching the external internet,
   // brokered through the proxy's transparent forward listener.
   rpc EgressTrigger(EgressTriggerRequest) returns (Empty);
+
+  // Egress liveness: the initiator's open-connection set crossed 0<->1. The
+  // client is the only party that can see this — conntrack on the initiator
+  // host is what knows whether a connection still exists. initiator_ip is taken
+  // from remote_addr, so the pair identifies the same edge as EgressTrigger.
+  rpc EgressLiveness(EgressLivenessReport) returns (Empty);
 
   // Report the external destinations a registered service contacted through its
   // egress edge. Distinct from EgressTrigger (which builds the edge once): the
@@ -273,6 +292,14 @@ message Upstream {
   uint32 port = 2;
 }
 
+// Close half of the ingress open-connection count. Keyed on the *client*
+// identity, not the resolved upstream: under max_networks/sticky reuse many
+// clients share one upstream, so the upstream cannot identify the counter.
+message ProxyConnectionEnd {
+  string client_ip = 1;
+  string service_name = 2;
+}
+
 // Protocol a proxy-reachable service is exposed over. HTTP is routed by Host
 // header on the shared 80/443 listeners; TCP/UDP each get a dedicated
 // listen_port the proxy binds directly.
@@ -340,6 +367,37 @@ message HttpRouteBundle {
 }
 
 // Backend-triggered chains --------------------------------------------------------------------------------------------
+
+// Egress edge liveness, reported only on transitions — not per flow.
+message EgressLivenessReport {
+  // Docker container of the initiator, empty for a host process. Together with
+  // the sender's IP this is the same key EgressTrigger builds the edge under.
+  string initiator_container = 1;
+  // true  = first connection opened (0 -> 1)
+  // false = last connection closed (1 -> 0), and the flows are provably gone,
+  //         not merely idle. The server still waits out a short debounce before
+  //         reaping, because how promptly conntrack reports a close depends on
+  //         which peer hung up first.
+  bool active = 2;
+}
+
+// Backend chain liveness, reported only on transitions — not per flow. Keyed
+// per trigger port, not per initiator: one replica may hold several trigger
+// chains at once and they go quiet independently.
+message BackendLivenessReport {
+  string service_name = 1;
+  // The trigger port whose chain this reports on, matching BackendTriggerRequest.
+  uint32 port = 2;
+  // Real Docker container name of the initiator replica. Never empty: the
+  // NFQUEUE trigger path passes host traffic straight through, so only
+  // containers can ever open one of these chains.
+  string initiator_container = 3;
+  // true  = first connection opened (0 -> 1)
+  // false = last connection closed (1 -> 0), provably gone rather than idle.
+  //         The server still waits out a debounce before decrementing, for the
+  //         same conntrack-timing reason as EgressLivenessReport.
+  bool active = 4;
+}
 
 message BackendTriggerRequest {
   string service_name = 1;
@@ -462,6 +520,7 @@ message AgentEvent {
     AgentMssClampInstallFailed    mss_clamp_install_failed   = 36;
     AgentEgressPolicyCheckFailed  egress_policy_check_failed = 37;
     AgentConntrackFlushFailed     conntrack_flush_failed     = 38;
+    AgentConntrackSubscribeFailed conntrack_subscribe_failed = 39;
     // Client info events
     AgentVxlanSetupCompleted      vxlan_setup_completed      = 13;
     AgentVlanSetupCompleted       vlan_setup_completed       = 14;
@@ -503,6 +562,7 @@ message AgentBackendTriggerSetupTimedOut { string service_name = 1; uint32 port 
 message AgentEgressSteerSetupTimedOut { string docker_container = 1; string dst_ip = 2; uint32 dst_port = 3; string error_message = 4; }
 message AgentEgressSteerInstallFailed { uint32 vxlan_id = 1; optional string docker_container = 2; string error_message = 3; }
 message AgentNfqueueBindFailed      { uint32 queue_id = 1; string error_message = 2; }
+message AgentConntrackSubscribeFailed { string error_message = 1; }
 message AgentMssClampInstallFailed  { string error_message = 1; }
 message AgentEgressPolicyCheckFailed { string docker_container = 1; string dst_ip = 2; string error_message = 3; }
 message AgentConntrackFlushFailed   { string ip = 1; string error_message = 2; }
