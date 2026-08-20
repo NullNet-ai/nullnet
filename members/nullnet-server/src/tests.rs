@@ -6,7 +6,7 @@ use crate::services::changes::dep_chain_intact;
 use crate::services::clients::Client;
 use crate::services::input::{ServicesToml, StackMap, apply_config_update};
 use crate::services::service_info::{CountryPolicy, ServiceInfo};
-use crate::timeout::apply_timeouts;
+use crate::timeout::{apply_timeouts, reap_idle_backend_chains};
 use nullnet_grpc_lib::nullnet_grpc::{NetMessage, ServiceProtocol, net_message};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
@@ -120,6 +120,10 @@ fn assert_graphviz(services: &StackMap, fixture: &str, expected_file: &str) {
     );
 }
 
+/// A *completed* request: the proxy resolves an upstream, then the connection
+/// closes. Both halves matter — the server pins a client while it has open
+/// connections, so a helper that only ever opened would leave every client
+/// unreapable and quietly disable the timeout tests below.
 async fn setup_proxy_chain(
     server: &NullnetGrpcImpl,
     service_name: &str,
@@ -130,6 +134,9 @@ async fn setup_proxy_chain(
         .handle_proxy_request(service_name, proxy_ip, client_ip)
         .await
         .expect("proxy request failed");
+    server
+        .mark_connection_closed(service_name, proxy_ip, client_ip)
+        .await;
 }
 
 /// Trigger the backend chain at `port` from `initiator_ip` (acting as the
@@ -770,6 +777,72 @@ async fn proxy_timeout_A() {
     }
     if let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] {
         assert!(!reg.has_clients());
+    }
+}
+
+/// The point of the open-connection count: a client whose connection is still
+/// open is never reaped, however long it idles. A's timeout is 1s; this holds
+/// the connection open across many multiples of it and expects A intact.
+///
+/// This is the regression that motivated the whole rework — before it, a long
+/// download or a live WebSocket was torn down mid-transfer with no self-heal.
+#[tokio::test]
+async fn open_connection_pins_client_past_timeout() {
+    let server = proxy_timeout_setup().await;
+    let proxy1 = ip(5, 5, 5, 5);
+
+    // A fresh request that does NOT close: one connection still open.
+    server
+        .handle_proxy_request("A", proxy1, "10.0.0.1")
+        .await
+        .expect("proxy request failed");
+
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    {
+        let mut guard = server.services().write().await;
+        apply_timeouts(stack_view_mut(&mut guard), server.orchestrator(), "default").await;
+        if let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] {
+            assert!(
+                reg.has_clients(),
+                "a client with an open connection must not be reaped on idle"
+            );
+        }
+    }
+
+    // Close it, and the same idle period now reaps: the timeout is a grace
+    // window measured from the last close, not a hard cap on the session.
+    server.mark_connection_closed("A", proxy1, "10.0.0.1").await;
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let mut guard = server.services().write().await;
+    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator(), "default").await;
+    if let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] {
+        assert!(
+            !reg.has_clients(),
+            "once the last connection closed, the grace window must expire normally"
+        );
+    }
+}
+
+/// A close that arrives without a matching open must not underflow the count.
+/// The proxy retries closes, so a duplicate is entirely possible; underflowing
+/// to `usize::MAX` would pin the edge forever.
+#[tokio::test]
+async fn unmatched_close_does_not_underflow() {
+    let server = proxy_timeout_setup().await;
+    let proxy1 = ip(5, 5, 5, 5);
+
+    // setup_proxy_chain already closed once; close twice more.
+    server.mark_connection_closed("A", proxy1, "10.0.0.1").await;
+    server.mark_connection_closed("A", proxy1, "10.0.0.1").await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let mut guard = server.services().write().await;
+    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator(), "default").await;
+    if let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] {
+        assert!(
+            !reg.has_clients(),
+            "a saturating close must leave the client reapable, not pinned"
+        );
     }
 }
 
@@ -3118,6 +3191,10 @@ async fn concurrent_requests_same_client_tear_down_cleanly() {
                 .handle_proxy_request("A", proxy, "10.0.0.1")
                 .await
                 .expect("proxy request failed");
+            // Each racing request closes its own connection, as the proxy does.
+            // Six opens need six closes: the client stays pinned until the last
+            // one lands, which is the behaviour being relied on below.
+            server.mark_connection_closed("A", proxy, "10.0.0.1").await;
         });
     }
     while set.join_next().await.is_some() {}
@@ -3235,4 +3312,191 @@ async fn node_hosting_no_trigger_service_gets_nothing() {
     let declared = declared_by_stack(vec![("P", 8932, Some("stack_p.1.xyz"))]);
 
     assert!(build_service_triggers(&services, &declared).is_empty());
+}
+
+// ===========================================================================
+// backend_liveness: A --trigger 5555--> B, and no proxy anywhere in the
+// picture. This is the autonomous `backend_trigger` shape from §2.5 of
+// docs/uniform-edge-liveness-plan.md — the one case that inherits nothing.
+// ===========================================================================
+
+const BACKEND_LIVENESS: &str = "backend_liveness";
+
+async fn backend_liveness_setup() -> NullnetGrpcImpl {
+    let services = load_fixture(BACKEND_LIVENESS).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+
+    let ip_map = HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]);
+    register_services(&server, &ip_map, 8080).await;
+
+    trigger_backend_chain(&server, "A", ip(1, 1, 1, 1), 5555).await;
+    server
+}
+
+fn client_count_of(guard: &StackMap, name: &str) -> usize {
+    match &stack_view(guard)[name] {
+        ServiceInfo::Registered(reg) => reg.client_count(),
+        ServiceInfo::Unregistered(_) => 0,
+    }
+}
+
+/// Gate 1 for Step 4: a chain built by an autonomous trigger is reaped by
+/// nothing. Both services carry `timeout = 1`, so the idle path is armed and
+/// running — it simply never considers this edge, because
+/// `expired_proxy_clients` filters on `Client::is_proxy` and a trigger-built
+/// edge's client is a *service* client.
+///
+/// The failure this documents: the edge survives every idle pass forever, and
+/// only a config change or the container dying takes it down.
+#[tokio::test]
+async fn autonomous_trigger_chain_is_never_reaped_on_idle() {
+    let server = backend_liveness_setup().await;
+
+    assert_eq!(
+        client_count_of(&*server.services().read().await, "B"),
+        1,
+        "precondition: the trigger built A->B"
+    );
+
+    // Many multiples of the 1s timeout, with the idle pass running each time.
+    for _ in 0..3 {
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let mut guard = server.services().write().await;
+        apply_timeouts(stack_view_mut(&mut guard), server.orchestrator(), "default").await;
+    }
+
+    assert_eq!(
+        client_count_of(&*server.services().read().await, "B"),
+        1,
+        "the trigger-built edge outlives every idle pass: nothing reaps it"
+    );
+}
+
+/// Report the client's "last connection on this trigger port closed", then run
+/// the reap with a zero debounce so the test does not sleep out the real one.
+async fn report_backend_idle_and_reap(
+    server: &NullnetGrpcImpl,
+    service: &str,
+    ip: IpAddr,
+    port: u16,
+) {
+    server
+        .orchestrator()
+        .set_backend_liveness(&(service.to_string(), ip, None, port), false)
+        .await;
+    let mut guard = server.services().write().await;
+    reap_idle_backend_chains(&mut guard, server.orchestrator(), std::time::Duration::ZERO).await;
+}
+
+/// The Step 4 path: once the initiator's connections on the trigger port are
+/// provably gone, the chain it built is released and — nothing else holding it
+/// — comes down. The idle timer plays no part; the client's conntrack view does.
+#[tokio::test]
+async fn trigger_chain_is_released_once_its_connections_close() {
+    let server = backend_liveness_setup().await;
+    assert_eq!(
+        client_count_of(&*server.services().read().await, "B"),
+        1,
+        "precondition: the trigger built A->B"
+    );
+
+    report_backend_idle_and_reap(&server, "A", ip(1, 1, 1, 1), 5555).await;
+
+    assert_eq!(
+        client_count_of(&*server.services().read().await, "B"),
+        0,
+        "the last close releases the only hold, so the edge comes down"
+    );
+    assert_net_ids_in_use(&server, 0).await;
+}
+
+/// A close for a chain we hold no refcount on must not decrement anything.
+///
+/// This is what keeps the liveness signal from consuming an increment it never
+/// contributed — a chain built by an ingress proxy client, or one whose hold a
+/// config-change teardown already released. `set_backend_liveness` drops the
+/// report rather than inventing a session for it.
+#[tokio::test]
+async fn a_close_without_a_held_refcount_decrements_nothing() {
+    let server = backend_liveness_setup().await;
+    // Build A->B, then take our hold away exactly as a teardown from another
+    // path would, leaving the edge up but unheld.
+    server
+        .orchestrator()
+        .forget_backend_sessions("A", ip(1, 1, 1, 1), None, &[5555])
+        .await;
+
+    report_backend_idle_and_reap(&server, "A", ip(1, 1, 1, 1), 5555).await;
+
+    assert_eq!(
+        client_count_of(&*server.services().read().await, "B"),
+        1,
+        "no session means no hold to release, so the edge is untouched"
+    );
+}
+
+/// Reaping twice in a row releases once: taking the session out of the map is
+/// what bounds it, not the caller remembering to only ask once.
+#[tokio::test]
+async fn a_second_reap_pass_releases_nothing_more() {
+    let server = backend_liveness_setup().await;
+    // A->B built by the trigger, and D->B built independently, so B keeps a
+    // client entry after A's release and a stray extra decrement would show up
+    // as that entry vanishing too.
+    let ip_map = HashMap::from([("D", ip(4, 4, 4, 4))]);
+    register_services(&server, &ip_map, 8080).await;
+    trigger_backend_chain(&server, "D", ip(4, 4, 4, 4), 8888).await;
+    assert_eq!(
+        client_count_of(&*server.services().read().await, "B"),
+        2,
+        "precondition: A->B and D->B are separate client entries"
+    );
+
+    server
+        .orchestrator()
+        .set_backend_liveness(&("A".to_string(), ip(1, 1, 1, 1), None, 5555), false)
+        .await;
+    for _ in 0..3 {
+        let mut guard = server.services().write().await;
+        reap_idle_backend_chains(&mut guard, server.orchestrator(), std::time::Duration::ZERO)
+            .await;
+    }
+
+    assert_eq!(
+        client_count_of(&*server.services().read().await, "B"),
+        1,
+        "A's hold is released once; repeated passes must not touch D's"
+    );
+}
+
+/// A trigger whose chain cannot be built takes no increment, so it must record
+/// no hold. A phantom hold is worse than useless: it makes the later
+/// `claim_backend_session` a no-op, so the trigger rides on an increment
+/// something else contributed and its close consumes that one instead.
+///
+/// `G` triggers into `Ghost`, which no fixture registers, so
+/// `build_backend_dep_chain` bails.
+#[tokio::test]
+async fn a_bailed_setup_records_no_hold() {
+    let server = backend_liveness_setup().await;
+    let ip_map = HashMap::from([("G", ip(7, 7, 7, 7))]);
+    register_services(&server, &ip_map, 8080).await;
+
+    trigger_backend_chain(&server, "G", ip(7, 7, 7, 7), 7777).await;
+
+    assert!(
+        !server
+            .orchestrator()
+            .holds_backend_session(&("G".to_string(), ip(7, 7, 7, 7), None, 7777))
+            .await,
+        "a setup that built nothing must not claim to hold a refcount"
+    );
+    // Contrast: the trigger that did build one does hold it.
+    assert!(
+        server
+            .orchestrator()
+            .holds_backend_session(&("A".to_string(), ip(1, 1, 1, 1), None, 5555))
+            .await,
+        "a setup that built the chain holds exactly one refcount"
+    );
 }

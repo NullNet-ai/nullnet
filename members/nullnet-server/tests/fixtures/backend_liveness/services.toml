@@ -1,0 +1,48 @@
+# A dials B on 5555 with no proxy anywhere in the picture: the autonomous
+# `backend_trigger` shape. Both timeouts are non-zero so the idle path is
+# demonstrably armed and still never touches the chain.
+[[services]]
+name = "A"
+timeout = 1
+
+[[services.triggers]]
+port = 5555
+chain = ["B"]
+
+[[services]]
+name = "B"
+timeout = 1
+
+# Two trigger ports whose chains share their first hop. Before the refcount
+# claim, the port that built B held the only increment and the other rode free,
+# so the builder going quiet tore B down under the free-rider's connections.
+[[services]]
+name = "F"
+timeout = 1
+
+[[services.triggers]]
+port = 5555
+chain = ["B"]
+
+[[services.triggers]]
+port = 6666
+chain = ["B"]
+
+# Triggers into a dep that is in no fixture, so the chain can never be built.
+[[services]]
+name = "G"
+timeout = 1
+
+[[services.triggers]]
+port = 7777
+chain = ["Ghost"]
+
+# An independent initiator into the same dep, so B keeps a client entry after
+# A's hold is released.
+[[services]]
+name = "D"
+timeout = 1
+
+[[services.triggers]]
+port = 8888
+chain = ["B"]

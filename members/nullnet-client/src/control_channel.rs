@@ -1,6 +1,7 @@
 use crate::commands::{RtNetLinkHandle, configure_access_port, dnat, egress, remove_vlan};
+use crate::conntrack::LivenessSets;
 use crate::ebpf::{FirewallPeers, FirewallVxlanPorts, NetId};
-use crate::egress_policy::{PolicyVerdicts, flush_container_conntrack};
+use crate::egress_policy::{FLUSH_SUPPRESSION, PolicyVerdicts, flush_container_conntrack};
 use crate::egress_state::{EgressRecord, EgressState};
 use crate::host_mappings::{
     HOSTS_MARKER, HostMappingsState, edit_container_hosts, hosts_file_lock,
@@ -75,6 +76,7 @@ pub(crate) async fn control_channel(
     egress_state: Arc<EgressState>,
     bridge_cache: BridgeIpCache,
     policy_verdicts: Arc<PolicyVerdicts>,
+    sets: LivenessSets,
 ) -> Result<(), Error> {
     let (outbound, grpc_rx) = mpsc::channel(64);
     let mut inbound = server
@@ -127,6 +129,7 @@ pub(crate) async fn control_channel(
             Some(net_message::Message::VxlanSetup(vxlan_setup)) => {
                 let triggers_state = triggers_state.clone();
                 let egress_state = egress_state.clone();
+                let sets = sets.clone();
                 tokio::spawn(async move {
                     let _ = handle_vxlan_setup(
                         vxlan_setup,
@@ -137,6 +140,7 @@ pub(crate) async fn control_channel(
                         firewall_peers,
                         firewall_vxlan_ports,
                         egress_state,
+                        sets,
                     )
                     .await;
                 });
@@ -144,6 +148,7 @@ pub(crate) async fn control_channel(
             Some(net_message::Message::VxlanTeardown(vxlan_teardown)) => {
                 let triggers_state = triggers_state.clone();
                 let egress_state = egress_state.clone();
+                let sets = sets.clone();
                 tokio::spawn(async move {
                     handle_vxlan_teardown(
                         vxlan_teardown,
@@ -154,6 +159,7 @@ pub(crate) async fn control_channel(
                         firewall_peers,
                         firewall_vxlan_ports,
                         egress_state,
+                        sets,
                     )
                     .await;
                 });
@@ -175,10 +181,11 @@ pub(crate) async fn control_channel(
                 let verdicts = policy_verdicts.clone();
                 let cache = bridge_cache.clone();
                 let grpc = server.clone();
+                let sets = sets.clone();
                 tokio::spawn(async move {
                     println!("[egress-policy] policy changed on server; re-verdicting flows");
                     verdicts.clear();
-                    flush_container_conntrack(&grpc, cache.ips()).await;
+                    flush_container_conntrack(&grpc, cache.ips(), &sets, &cache).await;
                 });
             }
             None => {}
@@ -379,6 +386,7 @@ async fn handle_vxlan_setup(
     firewall_peers: Arc<FirewallPeers>,
     firewall_vxlan_ports: Arc<FirewallVxlanPorts>,
     egress_state: Arc<EgressState>,
+    sets: LivenessSets,
 ) -> Result<(), Error> {
     let egress_steer = message.egress_steer.unwrap_or(false);
     let egress_intercept = message.egress_intercept.unwrap_or(false);
@@ -621,6 +629,12 @@ async fn handle_vxlan_setup(
         {
             let container_key = message.docker_container.as_deref().unwrap_or("");
             let container_ip = triggers_state.peek_container_ip(container_key, dnat_port);
+            // `dnat::install` flushes conntrack on exactly this trigger key so
+            // live flows re-evaluate against the new rule. That deletes the
+            // liveness evidence rather than recording a close, so mark the key
+            // untrustworthy first — otherwise a rebuild under open connections
+            // reads as 1->0 and decrements the chain out from under them.
+            sets.suppress_trigger(container_key, dnat_port, FLUSH_SUPPRESSION);
             // Only promote to Active if the DNAT rule is actually live. Waking
             // the held packet without it would release the SYN into a missing
             // rule (→ misroute to the original dest); instead leave it Pending
@@ -694,6 +708,7 @@ async fn handle_vxlan_teardown(
     firewall_peers: Arc<FirewallPeers>,
     firewall_vxlan_ports: Arc<FirewallVxlanPorts>,
     egress_state: Arc<EgressState>,
+    sets: LivenessSets,
 ) {
     let ack_id = message.msg_id.clone();
     // reverse egress steering/interception if this was an egress edge
@@ -723,18 +738,25 @@ async fn handle_vxlan_teardown(
     // DNAT — its teardown runs via EgressState below — so skip DNAT removal for
     // it. Only real backend DNAT ports (>0) go through `dnat::remove`; otherwise
     // we'd fire a bogus `iptables -D --dport 0` and a false removal-failed event.
-    if let Some((_container, port, overlay_ip, container_ip)) =
+    if let Some((container, port, overlay_ip, container_ip)) =
         triggers_state.remove_by_vxlan(message.vxlan_id)
         && port != crate::triggers::EGRESS_TRIGGER_PORT
-        && !dnat::remove(port, overlay_ip, container_ip)
     {
-        fire_event(
-            &grpc,
-            AgentEventKind::DnatRemovalFailed(AgentDnatRemovalFailed {
-                port: u32::from(port),
-                overlay_ip: overlay_ip.to_string(),
-            }),
-        );
+        // Second of the two flushes per trigger-edge lifecycle. Without
+        // suppression the DESTROYs it raises report idle for a chain the server
+        // is already tearing down, and that stray decrement lands on whatever
+        // holds the refcount next. Must precede `dnat::remove`, which is what
+        // issues the flush.
+        sets.suppress_trigger(&container, port, FLUSH_SUPPRESSION);
+        if !dnat::remove(port, overlay_ip, container_ip) {
+            fire_event(
+                &grpc,
+                AgentEventKind::DnatRemovalFailed(AgentDnatRemovalFailed {
+                    port: u32::from(port),
+                    overlay_ip: overlay_ip.to_string(),
+                }),
+            );
+        }
     }
 
     // remove host mapping if one was installed at setup

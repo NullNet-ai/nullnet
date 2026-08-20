@@ -61,6 +61,7 @@ const KIND_LABELS: Record<string, string> = {
   egress_steer_setup_timed_out: 'egress_steer_setup_timed_out',
   egress_steer_install_failed: 'egress_steer_install_failed',
   nfqueue_bind_failed: 'nfqueue_bind_failed',
+  conntrack_subscribe_failed: 'conntrack_subscribe_failed',
   mss_clamp_install_failed: 'mss_clamp_install_failed',
   egress_policy_check_failed: 'egress_policy_check_failed',
   conntrack_flush_failed: 'conntrack_flush_failed',
@@ -182,6 +183,8 @@ function eventDetail(e: EventJson): string {
       return `vxlan ${e.vxlan_id} · ${e.docker_container ?? '—'} · ${e.error_message}`;
     case 'nfqueue_bind_failed':
       return `queue ${e.queue_id} · ${e.error_message}`;
+    case 'conntrack_subscribe_failed':
+      return e.error_message;
     case 'mss_clamp_install_failed':
       return e.error_message;
     case 'egress_policy_check_failed':

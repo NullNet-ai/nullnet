@@ -16,6 +16,7 @@ nullnet-grpc-lib.workspace = true
 ipnetwork = { workspace = true, features = ["serde"] }
 listeners = "0.6.1"
 rtnetlink = "0.23.0"
+netlink-sys = { version = "0.9.0", features = ["tokio_socket"] }
 futures.workspace = true
 network-interface = "2.0.5"
 nfq = "0.2"

@@ -1,4 +1,4 @@
-use crate::nullnet_proxy::NullnetProxy;
+use crate::nullnet_proxy::{ConnectionGuard, NullnetProxy};
 use crate::port_mappings::MappingEntry;
 use nullnet_grpc_lib::nullnet_grpc::{
     AgentEvent, AgentTcpListenerBindFailed, AgentTcpUpstreamConnectFailed,
@@ -122,6 +122,15 @@ async fn handle_connection(
             return;
         }
     };
+
+    // Armed the instant the server has counted this connection. Every path out
+    // from here — upstream-connect failure, relay error, normal close — drops
+    // the guard and reports the close, so the count cannot leak.
+    let _close_guard = ConnectionGuard::new(
+        proxy.server.clone(),
+        entry.service_name.clone(),
+        client_ip.clone(),
+    );
 
     let mut outbound = match TcpStream::connect(upstream).await {
         Ok(s) => {

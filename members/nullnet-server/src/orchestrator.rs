@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tonic::{Request, Status, Streaming};
 use uuid::Uuid;
@@ -23,6 +23,27 @@ type OutboundStream = mpsc::Sender<Result<NetMessage, Status>>;
 /// Initiator replica identity keying an egress edge: (node IP, docker container).
 /// One edge per initiator replica multiplexes all of its external destinations.
 type EgressKey = (IpAddr, Option<String>);
+
+/// Identity of one autonomous `backend_trigger` chain: the initiator replica
+/// plus the trigger port. Per port, because one replica can hold several
+/// trigger chains at once and they go quiet independently.
+pub(crate) type BackendKey = (String, IpAddr, Option<String>, u16);
+
+/// A live trigger-built chain that this server holds **exactly one** refcount
+/// on, across every hop.
+///
+/// The map entry is the refcount receipt: a session exists if and only if the
+/// trigger claimed an increment that nothing has consumed yet. That is what
+/// makes the liveness decrement 1:1 — see `claim_backend_session`.
+#[derive(Debug, Clone)]
+struct BackendSession {
+    /// Which stack the chain lives in; the reap walks services per stack.
+    stack: String,
+    /// When the initiator's last connection on this trigger port closed, per
+    /// the client's conntrack view. `None` means connections are open, or none
+    /// have been reported yet — a chain is never reaped before its first flow.
+    idle_since: Option<Instant>,
+}
 
 /// Cap on distinct external destinations tracked per egress edge. When full, the
 /// least-recently-contacted destination is evicted. Bounds memory for a service
@@ -55,6 +76,11 @@ struct EgressEdge {
     /// External destinations this edge has carried, keyed by destination IP.
     /// Populated from client destination reports; lives and dies with the edge.
     destinations: HashMap<Ipv4Addr, DestStat>,
+    /// When the initiator's last connection closed, per the client's conntrack
+    /// view. `None` means connections are open (or none have been reported yet,
+    /// which is treated the same — a brand-new edge is never reaped before its
+    /// first flow is seen).
+    idle_since: Option<Instant>,
 }
 
 /// One contacted external destination, for topology rendering.
@@ -107,6 +133,10 @@ pub struct Orchestrator {
     /// Live egress edges, keyed by initiator replica. Separate from the service
     /// StackMap because the proxy end is infrastructure, not a registered service.
     egress_edges: Arc<RwLock<HashMap<EgressKey, EgressEdge>>>,
+    /// Trigger chains this server holds a refcount on, keyed per trigger port.
+    /// The chain edges themselves live in the service StackMap; this records
+    /// only *our* claim on them and when they last went quiet.
+    backend_sessions: Arc<RwLock<HashMap<BackendKey, BackendSession>>>,
     /// IP → country/ASN cache enriching contacted egress destinations.
     geo: GeoCache,
     /// Teardowns whose net id has not yet been returned to the pool because
@@ -125,6 +155,7 @@ impl Orchestrator {
             udp_port_pools: Arc::new(Mutex::new(HashMap::new())),
             net_id_ports: Arc::new(Mutex::new(HashMap::new())),
             egress_edges: Arc::new(RwLock::new(HashMap::new())),
+            backend_sessions: Arc::new(RwLock::new(HashMap::new())),
             geo: GeoCache::from_env(),
             inflight_teardowns: Arc::new(AtomicUsize::new(0)),
             events: EventStore::new(),
@@ -226,6 +257,7 @@ impl Orchestrator {
                     initiator_docker: initiator_docker.clone(),
                     proxy_ip,
                     destinations: HashMap::new(),
+                    idle_since: None,
                 },
             );
         }
@@ -448,6 +480,174 @@ impl Orchestrator {
                 e.net_id,
             )
             .await;
+        }
+    }
+
+    /// Record an egress open-connection transition reported by the client.
+    ///
+    /// `active` is the client's conntrack-backed answer to "does any connection
+    /// still exist", not "has traffic moved recently" — see
+    /// docs/uniform-edge-liveness-plan.md §3.
+    pub(crate) async fn set_egress_liveness(
+        &self,
+        initiator_ip: IpAddr,
+        initiator_docker: Option<String>,
+        active: bool,
+    ) {
+        let key: EgressKey = (initiator_ip, initiator_docker);
+        let mut edges = self.egress_edges.write().await;
+        if let Some(edge) = edges.get_mut(&key) {
+            edge.idle_since = (!active).then(Instant::now);
+        }
+    }
+
+    /// Reap egress edges that have had no open connection for `debounce`.
+    ///
+    /// The debounce is not an idle timeout: the client only reports idle once
+    /// the kernel says the flows are gone. It exists because *how promptly*
+    /// conntrack says so swings between ~10s and ~120s depending on which peer
+    /// closed first (§4d.2), and rebuilding a tunnel per burst of traffic is
+    /// wasteful. It makes the reap rate depend on us rather than on the remote
+    /// peer.
+    pub(crate) async fn reap_idle_egress_edges(&self, debounce: Duration) {
+        let now = Instant::now();
+        let removed: Vec<EgressEdge> = {
+            let mut edges = self.egress_edges.write().await;
+            let keys: Vec<EgressKey> = edges
+                .iter()
+                .filter(|(_, e)| {
+                    e.net_id != 0
+                        && e.idle_since
+                            .is_some_and(|since| now.duration_since(since) >= debounce)
+                })
+                .map(|(k, _)| k.clone())
+                .collect();
+            keys.into_iter().filter_map(|k| edges.remove(&k)).collect()
+        };
+        for e in removed {
+            println!(
+                "Egress edge for '{}' ({}) idle past the debounce; tearing down net {}",
+                e.initiator_docker.as_deref().unwrap_or("<host>"),
+                e.initiator_ip,
+                e.net_id
+            );
+            self.send_net_teardown(
+                e.initiator_ip,
+                e.initiator_docker,
+                e.proxy_ip,
+                None,
+                e.net_id,
+            )
+            .await;
+        }
+    }
+
+    /// How long until the nearest egress edge becomes reapable, if any.
+    /// Keeps the timeout loop from sleeping past a due reap.
+    ///
+    /// Must apply the **same** `net_id != 0` filter as `reap_idle_egress_edges`.
+    /// An edge still being built holds a placeholder id, and an idle report can
+    /// land on it while the VXLAN setup is in flight; counting it here while the
+    /// reap skips it makes the loop compute a zero sleep, decline to reap, and
+    /// spin at full tilt until the build finishes.
+    pub(crate) async fn nearest_egress_expiry(&self, debounce: Duration) -> Option<Duration> {
+        let now = Instant::now();
+        self.egress_edges
+            .read()
+            .await
+            .values()
+            .filter(|e| e.net_id != 0)
+            .filter_map(|e| e.idle_since)
+            .map(|since| debounce.saturating_sub(now.duration_since(since)))
+            .min()
+    }
+
+    /// Record that a freshly built chain is held by this session.
+    ///
+    /// Only a build takes a refcount — `net_chain_setup` added the +1 on every
+    /// hop. A trigger that found the chain already up holds nothing (see
+    /// `handle_backend_trigger`). An existing entry is overwritten rather than
+    /// doubled: a rebuild only happens once the previous increment has been
+    /// consumed (the first dep having no client entry is what made it a
+    /// rebuild).
+    pub(crate) async fn hold_backend_session(&self, key: BackendKey, stack: &str) {
+        self.backend_sessions.write().await.insert(
+            key,
+            BackendSession {
+                stack: stack.to_string(),
+                idle_since: None,
+            },
+        );
+    }
+
+    /// Record a trigger chain's open-connection transition reported by the client.
+    ///
+    /// A report for a session we hold no refcount on is ignored: there is
+    /// nothing for us to release, and inventing an entry would let the next
+    /// decrement land on a refcount somebody else contributed.
+    pub(crate) async fn set_backend_liveness(&self, key: &BackendKey, active: bool) {
+        if let Some(session) = self.backend_sessions.write().await.get_mut(key) {
+            session.idle_since = (!active).then(Instant::now);
+        }
+    }
+
+    /// Take the sessions whose last connection closed at least `debounce` ago.
+    ///
+    /// Removing them here is what makes the reap exactly once: the caller then
+    /// performs the single matching decrement, and a later duplicate report
+    /// finds no session.
+    pub(crate) async fn take_due_backend_sessions(
+        &self,
+        debounce: Duration,
+    ) -> Vec<(BackendKey, String)> {
+        let now = Instant::now();
+        let mut sessions = self.backend_sessions.write().await;
+        let due: Vec<BackendKey> = sessions
+            .iter()
+            .filter(|(_, s)| {
+                s.idle_since
+                    .is_some_and(|since| now.duration_since(since) >= debounce)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        due.into_iter()
+            .filter_map(|k| sessions.remove(&k).map(|s| (k, s.stack)))
+            .collect()
+    }
+
+    /// How long until the nearest trigger chain becomes reapable, if any.
+    pub(crate) async fn nearest_backend_expiry(&self, debounce: Duration) -> Option<Duration> {
+        let now = Instant::now();
+        self.backend_sessions
+            .read()
+            .await
+            .values()
+            .filter_map(|s| s.idle_since)
+            .map(|since| debounce.saturating_sub(now.duration_since(since)))
+            .min()
+    }
+
+    /// Whether we currently hold a refcount for this trigger session.
+    #[cfg(test)]
+    pub(crate) async fn holds_backend_session(&self, key: &BackendKey) -> bool {
+        self.backend_sessions.read().await.contains_key(key)
+    }
+
+    /// Drop our claim on `ports`' chains for one initiator replica.
+    ///
+    /// Called from every teardown path that decrements a trigger chain from
+    /// somewhere else: that teardown consumed our increment, so keeping the
+    /// session would let a later close decrement a second time.
+    pub(crate) async fn forget_backend_sessions(
+        &self,
+        service: &str,
+        ip: IpAddr,
+        docker: Option<&str>,
+        ports: &[u16],
+    ) {
+        let mut sessions = self.backend_sessions.write().await;
+        for port in ports {
+            sessions.remove(&(service.to_string(), ip, docker.map(String::from), *port));
         }
     }
 
@@ -1025,5 +1225,80 @@ mod udp_port_pool_tests {
         // allocation for the same pair reuses it rather than advancing.
         let reused = orch.allocate_vxlan_port(102, host_a, host_b).await.unwrap();
         assert_eq!(port, reused);
+    }
+}
+
+#[cfg(test)]
+mod egress_liveness_tests {
+    use super::*;
+
+    fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+    }
+
+    /// Insert an edge directly, so a half-built one (placeholder net id) can be
+    /// observed without standing up a real VXLAN setup.
+    async fn insert_edge(orch: &Orchestrator, key: EgressKey, net_id: u32, idle_for: Duration) {
+        orch.egress_edges.write().await.insert(
+            key.clone(),
+            EgressEdge {
+                net_id,
+                initiator_ip: key.0,
+                initiator_docker: key.1,
+                proxy_ip: ip(10, 0, 0, 9),
+                destinations: HashMap::new(),
+                idle_since: Some(Instant::now() - idle_for),
+            },
+        );
+    }
+
+    /// `nearest_egress_expiry` and `reap_idle_egress_edges` must agree on which
+    /// edges count. An edge still being built holds a placeholder net id and the
+    /// reap skips it; if the expiry counted it, the timeout loop would compute a
+    /// zero sleep, decline to reap, and spin at full tilt until the build ended.
+    #[tokio::test]
+    async fn a_half_built_edge_does_not_drive_the_sleep_to_zero() {
+        let orch = Orchestrator::new();
+        let debounce = Duration::from_secs(30);
+        insert_edge(&orch, (ip(10, 0, 0, 1), None), 0, Duration::from_secs(600)).await;
+
+        assert_eq!(
+            orch.nearest_egress_expiry(debounce).await,
+            None,
+            "a placeholder edge must not be counted as due"
+        );
+        orch.reap_idle_egress_edges(debounce).await;
+        assert_eq!(
+            orch.nearest_egress_expiry(debounce).await,
+            None,
+            "and the reap must not have made it due either"
+        );
+    }
+
+    /// The other half of the pair: a fully built idle edge *is* due, and the
+    /// reap clears it. Without this the fix above could pass by never reaping.
+    #[tokio::test]
+    async fn a_built_idle_edge_is_due_and_gets_reaped() {
+        let orch = Orchestrator::new();
+        let debounce = Duration::from_secs(30);
+        insert_edge(
+            &orch,
+            (ip(10, 0, 0, 2), None),
+            101,
+            Duration::from_secs(600),
+        )
+        .await;
+
+        assert_eq!(
+            orch.nearest_egress_expiry(debounce).await,
+            Some(Duration::ZERO),
+            "a built edge idle past the debounce is due now"
+        );
+        orch.reap_idle_egress_edges(debounce).await;
+        assert_eq!(
+            orch.nearest_egress_expiry(debounce).await,
+            None,
+            "reaping it removes the deadline, so the loop can sleep again"
+        );
     }
 }
