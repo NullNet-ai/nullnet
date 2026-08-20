@@ -19,10 +19,62 @@ diesel::table! {
 }
 
 diesel::table! {
-    services (stack) {
-        stack -> Text,
-        service_json -> Text,
+    stacks (name) {
+        name -> Text,
         updated_at -> BigInt,
+    }
+}
+
+diesel::table! {
+    services (id) {
+        id -> Integer,
+        stack -> Text,
+        name -> Text,
+        docker_container -> Nullable<Text>,
+        process_path -> Nullable<Text>,
+        port -> Nullable<Integer>,
+        timeout -> Nullable<BigInt>,
+        max_networks -> Nullable<Integer>,
+        protocol -> Nullable<Text>,
+        listen_port -> Nullable<Integer>,
+        egress_blocked_countries -> Nullable<Text>,
+        egress_allowed_countries -> Nullable<Text>,
+        ingress_blocked_countries -> Nullable<Text>,
+        ingress_allowed_countries -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    service_triggers (id) {
+        id -> Integer,
+        service_id -> Integer,
+        port -> Integer,
+        chain -> Text,
+    }
+}
+
+diesel::table! {
+    service_dependencies (id) {
+        id -> Integer,
+        service_id -> Integer,
+        branch_index -> Integer,
+        chain -> Text,
+    }
+}
+
+diesel::table! {
+    routes (id) {
+        id -> Integer,
+        stack -> Text,
+        host -> Text,
+        path -> Text,
+        target_kind -> Text,
+        target_service -> Nullable<Text>,
+        strip_prefix -> Bool,
+        redirect_to -> Nullable<Text>,
+        redirect_status -> Nullable<Integer>,
+        preserve_path -> Bool,
+        preserve_query -> Bool,
     }
 }
 
@@ -78,6 +130,10 @@ diesel::table! {
 diesel::joinable!(dns_credentials -> certificates (domain));
 diesel::joinable!(user_scopes -> users (user_id));
 diesel::joinable!(refresh_tokens -> users (user_id));
+diesel::joinable!(services -> stacks (stack));
+diesel::joinable!(service_triggers -> services (service_id));
+diesel::joinable!(service_dependencies -> services (service_id));
+diesel::joinable!(routes -> stacks (stack));
 diesel::allow_tables_to_appear_in_same_query!(
     certificates,
     dns_credentials,
@@ -86,4 +142,9 @@ diesel::allow_tables_to_appear_in_same_query!(
     refresh_tokens,
     login_attempts,
     events,
+    stacks,
+    services,
+    service_triggers,
+    service_dependencies,
+    routes,
 );

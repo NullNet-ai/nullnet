@@ -100,7 +100,7 @@ export type EventJson =
   | WithSeverity & { type: 'proxy_chain_setup_failed'; service: string; client_ip: string }
   | WithSeverity & { type: 'backend_trigger_setup_bailed'; service: string; port: number }
   | WithSeverity & { type: 'udp_port_pool_exhausted'; service: string; client_ip: string }
-  | WithSeverity & { type: 'config_reload_failed'; error_message: string }
+  | WithSeverity & { type: 'legacy_config_import_failed'; stack: string; error_message: string }
   | WithSeverity & { type: 'file_watch_failed'; target: string; error_message: string }
   | WithSeverity & { type: 'port_mapping_conflict'; stack_a: string; service_a: string; stack_b: string; service_b: string; protocol: string; listen_port: number }
   // Client error events
@@ -205,6 +205,36 @@ export interface GraphJson {
 export interface ChainJson {
   proxy_net_id: number;
   all_net_ids: number[];
+}
+
+// Structured stack service config — the widget-based Config page.
+// Field-for-field mirror of the server's `ServiceToml`/`TriggerToml`
+// (members/nullnet-server/src/services/input.rs), which is reused directly
+// as this endpoint's wire format.
+export interface TriggerConfigJson {
+  port: number;
+  chain: string[];
+}
+
+export interface ServiceConfigJson {
+  name: string;
+  docker_container?: string | null;
+  process_path?: string | null;
+  port?: number | null;
+  timeout?: number | null;
+  proxy_dependencies: string[][];
+  triggers: TriggerConfigJson[];
+  max_networks?: number | null;
+  protocol?: 'http' | 'tcp' | 'udp' | null;
+  listen_port?: number | null;
+  egress_blocked_countries?: string[] | null;
+  egress_allowed_countries?: string[] | null;
+  ingress_blocked_countries?: string[] | null;
+  ingress_allowed_countries?: string[] | null;
+}
+
+export interface ServiceConfigListJson {
+  services: ServiceConfigJson[];
 }
 
 // HTTP path-based routing — see docs/http-path-routing-design.md.

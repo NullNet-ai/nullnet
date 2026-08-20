@@ -54,16 +54,27 @@ pub(crate) struct NullnetGrpcImpl {
     /// Proxies fetch the current value and subscribe for updates.
     certs: watch::Receiver<CertBundle>,
     /// Live TCP/UDP port→service table, derived from `services` and refreshed
-    /// on every services.toml change. Proxies subscribe for updates.
+    /// on every config change. Proxies subscribe for updates.
     port_mappings: watch::Receiver<PortMappingBundle>,
     /// Live HTTP (host, path) → target route table, derived from `services`/
-    /// `routes` and refreshed on every services.toml change. Proxies
+    /// `routes` and refreshed on every config change. Proxies
     /// subscribe for updates. See docs/http-path-routing-design.md.
     http_routes: watch::Receiver<HttpRouteBundle>,
     /// One lock per in-flight proxy request identity, so concurrent duplicates
     /// are serialized rather than each building the same chain. See
     /// [`NullnetGrpcImpl::handle_proxy_request`].
     inflight_proxy: Arc<StdMutex<HashMap<ProxyKey, Arc<tokio::sync::Mutex<()>>>>>,
+    /// Fires whenever a config save/delete changes timeout-relevant state;
+    /// `check_timeouts` is its only consumer.
+    config_changed: Arc<Notify>,
+    /// Fires whenever a config save/delete changes the tcp/udp `listen_port`
+    /// table; the port-mapping refresh task is its only consumer. Previously
+    /// notified by the `services.toml` file watcher — now notified directly
+    /// by the HTTP config/route handlers, since the DB is the sole writer.
+    port_mappings_changed: Arc<Notify>,
+    /// Same as `port_mappings_changed`, for the HTTP `(host, path)` route
+    /// table; the route-table refresh task is its only consumer.
+    http_routes_changed: Arc<Notify>,
 }
 
 /// Identity of a proxy request: the same `(service, client, proxy)` triple that
@@ -231,7 +242,24 @@ fn find_service_stack<'a>(services: &'a StackMap, service_name: &str) -> Option<
 
 impl NullnetGrpcImpl {
     pub async fn new(db: crate::db::Db) -> Result<Self, Error> {
-        let (stacks, index, route_map, startup_conflicts) = ServicesToml::load_validated().await?;
+        let orchestrator = Orchestrator::new();
+        // Wired in before anything below emits, so even legacy-config-import
+        // warnings and the startup-conflict events just below are persisted,
+        // not just broadcast to (currently nonexistent) live subscribers.
+        orchestrator.events.attach_db(db.clone());
+
+        // Import any pre-existing ./services/*.toml left over from before
+        // issue #140 into the DB — a no-op after the first successful boot,
+        // or on a fresh install with nothing to import.
+        crate::services::migrate::migrate_legacy_toml(
+            &db,
+            &orchestrator.events,
+            crate::services::migrate::LEGACY_SERVICES_DIR,
+        )
+        .await?;
+
+        let (stacks, index, route_map, startup_conflicts) =
+            ServicesToml::load_validated(&db).await?;
         let services = Arc::new(RwLock::new(stacks));
         let match_index = Arc::new(RwLock::new(index));
         let routes = Arc::new(RwLock::new(route_map));
@@ -241,12 +269,6 @@ impl NullnetGrpcImpl {
         tokio::spawn(async move {
             generate_graphviz(services_2).await;
         });
-
-        let orchestrator = Orchestrator::new();
-        // Wired in before anything below emits, so even the startup-conflict
-        // events just below are persisted, not just broadcast to (currently
-        // nonexistent) live subscribers.
-        orchestrator.events.attach_db(db);
 
         // Conflicts detected before the event store existed: the offending
         // stacks were dropped, so report them now that we can.
@@ -277,40 +299,15 @@ impl NullnetGrpcImpl {
         let port_mappings_changed = Arc::new(Notify::new());
         let http_routes_changed = Arc::new(Notify::new());
 
-        // keep services up to date with the services.toml file
-        let services_2 = services.clone();
-        let match_index_2 = match_index.clone();
-        let routes_2 = routes.clone();
-        let orchestrator_2 = orchestrator.clone();
-        let config_changed_2 = config_changed.clone();
-        let port_mappings_changed_2 = port_mappings_changed.clone();
-        let http_routes_changed_2 = http_routes_changed.clone();
-        let events_2 = orchestrator.events.clone();
-        tokio::spawn(async move {
-            if let Err(e) = ServicesToml::watch(
-                &services_2,
-                &match_index_2,
-                &routes_2,
-                orchestrator_2,
-                config_changed_2,
-                port_mappings_changed_2,
-                http_routes_changed_2,
-            )
-            .await
-            {
-                // Config hot-reload is dead for the rest of this process: every
-                // later edit is silently ignored.
-                eprintln!("failed to watch services.toml for changes: {e:?}");
-                events_2
-                    .emit(Event::file_watch_failed(
-                        "services.toml".to_string(),
-                        format!("{e:?}"),
-                    ))
-                    .await;
-            }
-        });
+        // The DB is the sole writer of config now (no more `services.toml`
+        // file watcher — issue #140): the HTTP config/route handlers notify
+        // these three directly after a successful save/delete, so each task
+        // below only needs its own consuming clone.
+        let config_changed_for_state = config_changed.clone();
+        let port_mappings_changed_for_state = port_mappings_changed.clone();
+        let http_routes_changed_for_state = http_routes_changed.clone();
 
-        // live TCP/UDP port→service table, refreshed whenever services.toml changes
+        // live TCP/UDP port→service table, refreshed whenever config changes
         let initial_mappings = build_port_mapping_bundle(&*services.read().await);
         let (port_mappings_tx, port_mappings_rx) = watch::channel(initial_mappings);
         let services_2 = services.clone();
@@ -325,7 +322,7 @@ impl NullnetGrpcImpl {
         });
 
         // live HTTP (host, path)→target route table, refreshed whenever
-        // services.toml changes
+        // config changes
         let initial_routes =
             build_http_route_bundle(&*services.read().await, &*routes.read().await);
         let (http_routes_tx, http_routes_rx) = watch::channel(initial_routes);
@@ -375,6 +372,9 @@ impl NullnetGrpcImpl {
             port_mappings: port_mappings_rx,
             http_routes: http_routes_rx,
             inflight_proxy: Arc::new(StdMutex::new(HashMap::new())),
+            config_changed: config_changed_for_state,
+            port_mappings_changed: port_mappings_changed_for_state,
+            http_routes_changed: http_routes_changed_for_state,
         })
     }
 
@@ -1465,8 +1465,27 @@ impl NullnetGrpcImpl {
         &self.routes
     }
 
+    pub(crate) fn match_index(&self) -> &Arc<RwLock<MatchIndex>> {
+        &self.match_index
+    }
+
     pub(crate) fn orchestrator(&self) -> &Orchestrator {
         &self.orchestrator
+    }
+
+    /// Notify handles the HTTP config/route handlers fire after a successful
+    /// DB save/delete — see the fields' docs on `NullnetGrpcImpl` for what
+    /// each one wakes.
+    pub(crate) fn config_changed(&self) -> &Arc<Notify> {
+        &self.config_changed
+    }
+
+    pub(crate) fn port_mappings_changed(&self) -> &Arc<Notify> {
+        &self.port_mappings_changed
+    }
+
+    pub(crate) fn http_routes_changed(&self) -> &Arc<Notify> {
+        &self.http_routes_changed
     }
 
     #[allow(clippy::type_complexity)]
@@ -1919,6 +1938,9 @@ impl NullnetGrpcImpl {
             port_mappings,
             http_routes,
             inflight_proxy: Arc::new(StdMutex::new(HashMap::new())),
+            config_changed: Arc::new(Notify::new()),
+            port_mappings_changed: Arc::new(Notify::new()),
+            http_routes_changed: Arc::new(Notify::new()),
         }
     }
 
