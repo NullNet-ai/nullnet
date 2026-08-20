@@ -93,7 +93,6 @@ pub(crate) struct ConnectionGuard {
     server: NullnetGrpcInterface,
     service_name: String,
     client_ip: String,
-    armed: bool,
 }
 
 impl ConnectionGuard {
@@ -106,16 +105,12 @@ impl ConnectionGuard {
             server,
             service_name,
             client_ip,
-            armed: true,
         }
     }
 }
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
         let (server, service_name, client_ip) = (
             self.server.clone(),
             std::mem::take(&mut self.service_name),

@@ -8,7 +8,7 @@ use crate::net::EgressRole;
 use crate::net_id_pool::generate_key;
 use crate::orchestrator::Orchestrator;
 use crate::services::changes::{
-    ServiceChange, apply_changes, claim_backend_chain, collect_dep_chain_edges, dep_chain_intact,
+    ServiceChange, apply_changes, collect_dep_chain_edges, dep_chain_intact,
     detect_services_list_changes,
 };
 use crate::services::clients::{Client, ClientInfo};
@@ -1117,24 +1117,12 @@ impl NullnetGrpcImpl {
             port,
         );
         if !needs_rebuild {
-            // The chain is already up, so nothing is rebuilt — but this trigger
-            // must still take a refcount of its own. Riding on the increment
-            // that an ingress chain or another trigger port contributed means
-            // its close would release somebody else's hold, and that a
-            // co-tenant's close would drop the chain under this trigger's live
-            // connections.
-            if self.orchestrator.claim_backend_session(key, &stack).await
-                && let Some(stack_map) = self.services.write().await.get_mut(&stack)
-            {
-                println!("[trigger] claiming a refcount on the existing chain for port {port}");
-                claim_backend_chain(
-                    initiator_name,
-                    initiator_ip,
-                    initiator_docker.as_deref(),
-                    port,
-                    stack_map,
-                );
-            }
+            // Deliberately takes no refcount. A trigger that does not rebuild
+            // gets no `VxlanSetup`, so no DNAT is installed for its port and it
+            // never carries traffic — the client can therefore never report it
+            // idle, and a hold taken here could never be released. Claiming one
+            // pins the chain forever (verified on the lab). The chain stays
+            // owned by whichever path built it.
             println!("[trigger] returning early without rebuild");
             return Ok(());
         }

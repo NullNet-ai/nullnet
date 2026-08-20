@@ -36,3 +36,13 @@ timeout = 1
 [[services.triggers]]
 port = 7777
 chain = ["Ghost"]
+
+# An independent initiator into the same dep, so B keeps a client entry after
+# A's hold is released.
+[[services]]
+name = "D"
+timeout = 1
+
+[[services.triggers]]
+port = 8888
+chain = ["B"]

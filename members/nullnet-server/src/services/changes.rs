@@ -511,35 +511,6 @@ async fn teardown_backend_chain(
         .await;
 }
 
-/// Increment every hop of one trigger's chain: the claim half of
-/// [`teardown_backend_chain`].
-///
-/// Used when the chain is already up and so was not rebuilt. Without it the
-/// trigger holds no refcount of its own, and either its own close decrements
-/// somebody else's increment, or a co-tenant's close tears the chain down
-/// under this trigger's live connections.
-pub(crate) fn claim_backend_chain(
-    initiator_name: &str,
-    initiator_ip: IpAddr,
-    initiator_docker: Option<&str>,
-    port: u16,
-    services: &mut HashMap<String, ServiceInfo>,
-) {
-    let edges = collect_backend_chain_edges(
-        initiator_name,
-        initiator_ip,
-        initiator_docker,
-        None,
-        Some(port),
-        services,
-    );
-    for (client, dep_name) in edges {
-        if let Some(ServiceInfo::Registered(dep_reg)) = services.get_mut(&dep_name) {
-            dep_reg.add_chain(&client);
-        }
-    }
-}
-
 /// Release the one refcount a trigger session holds, now that its connections
 /// are provably gone. Never a teardown: the same edges may still be held by an
 /// ingress proxy chain or by another trigger port.

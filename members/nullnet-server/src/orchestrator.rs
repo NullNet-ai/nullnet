@@ -544,46 +544,32 @@ impl Orchestrator {
 
     /// How long until the nearest egress edge becomes reapable, if any.
     /// Keeps the timeout loop from sleeping past a due reap.
+    ///
+    /// Must apply the **same** `net_id != 0` filter as `reap_idle_egress_edges`.
+    /// An edge still being built holds a placeholder id, and an idle report can
+    /// land on it while the VXLAN setup is in flight; counting it here while the
+    /// reap skips it makes the loop compute a zero sleep, decline to reap, and
+    /// spin at full tilt until the build finishes.
     pub(crate) async fn nearest_egress_expiry(&self, debounce: Duration) -> Option<Duration> {
         let now = Instant::now();
         self.egress_edges
             .read()
             .await
             .values()
+            .filter(|e| e.net_id != 0)
             .filter_map(|e| e.idle_since)
             .map(|since| debounce.saturating_sub(now.duration_since(since)))
             .min()
     }
 
-    /// Claim a refcount for this trigger chain if it does not already hold one.
-    ///
-    /// Returns `true` when the caller must now increment every hop of the
-    /// chain. That happens when the chain was already up and
-    /// `handle_backend_trigger` therefore did not rebuild it: without this the
-    /// session would ride on someone else's increment and its close would
-    /// decrement a refcount it never contributed.
-    pub(crate) async fn claim_backend_session(&self, key: BackendKey, stack: &str) -> bool {
-        let mut sessions = self.backend_sessions.write().await;
-        if sessions.contains_key(&key) {
-            return false;
-        }
-        sessions.insert(
-            key,
-            BackendSession {
-                stack: stack.to_string(),
-                idle_since: None,
-            },
-        );
-        true
-    }
-
     /// Record that a freshly built chain is held by this session.
     ///
-    /// `net_chain_setup` already added the +1 on every hop, so unlike
-    /// `claim_backend_session` this does not ask the caller to increment. An
-    /// existing entry is overwritten rather than doubled: a rebuild only
-    /// happens once the previous increment has been consumed (the first dep
-    /// having no client entry is exactly what made it a rebuild).
+    /// Only a build takes a refcount — `net_chain_setup` added the +1 on every
+    /// hop. A trigger that found the chain already up holds nothing (see
+    /// `handle_backend_trigger`). An existing entry is overwritten rather than
+    /// doubled: a rebuild only happens once the previous increment has been
+    /// consumed (the first dep having no client entry is what made it a
+    /// rebuild).
     pub(crate) async fn hold_backend_session(&self, key: BackendKey, stack: &str) {
         self.backend_sessions.write().await.insert(
             key,
@@ -1239,5 +1225,80 @@ mod udp_port_pool_tests {
         // allocation for the same pair reuses it rather than advancing.
         let reused = orch.allocate_vxlan_port(102, host_a, host_b).await.unwrap();
         assert_eq!(port, reused);
+    }
+}
+
+#[cfg(test)]
+mod egress_liveness_tests {
+    use super::*;
+
+    fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+    }
+
+    /// Insert an edge directly, so a half-built one (placeholder net id) can be
+    /// observed without standing up a real VXLAN setup.
+    async fn insert_edge(orch: &Orchestrator, key: EgressKey, net_id: u32, idle_for: Duration) {
+        orch.egress_edges.write().await.insert(
+            key.clone(),
+            EgressEdge {
+                net_id,
+                initiator_ip: key.0,
+                initiator_docker: key.1,
+                proxy_ip: ip(10, 0, 0, 9),
+                destinations: HashMap::new(),
+                idle_since: Some(Instant::now() - idle_for),
+            },
+        );
+    }
+
+    /// `nearest_egress_expiry` and `reap_idle_egress_edges` must agree on which
+    /// edges count. An edge still being built holds a placeholder net id and the
+    /// reap skips it; if the expiry counted it, the timeout loop would compute a
+    /// zero sleep, decline to reap, and spin at full tilt until the build ended.
+    #[tokio::test]
+    async fn a_half_built_edge_does_not_drive_the_sleep_to_zero() {
+        let orch = Orchestrator::new();
+        let debounce = Duration::from_secs(30);
+        insert_edge(&orch, (ip(10, 0, 0, 1), None), 0, Duration::from_secs(600)).await;
+
+        assert_eq!(
+            orch.nearest_egress_expiry(debounce).await,
+            None,
+            "a placeholder edge must not be counted as due"
+        );
+        orch.reap_idle_egress_edges(debounce).await;
+        assert_eq!(
+            orch.nearest_egress_expiry(debounce).await,
+            None,
+            "and the reap must not have made it due either"
+        );
+    }
+
+    /// The other half of the pair: a fully built idle edge *is* due, and the
+    /// reap clears it. Without this the fix above could pass by never reaping.
+    #[tokio::test]
+    async fn a_built_idle_edge_is_due_and_gets_reaped() {
+        let orch = Orchestrator::new();
+        let debounce = Duration::from_secs(30);
+        insert_edge(
+            &orch,
+            (ip(10, 0, 0, 2), None),
+            101,
+            Duration::from_secs(600),
+        )
+        .await;
+
+        assert_eq!(
+            orch.nearest_egress_expiry(debounce).await,
+            Some(Duration::ZERO),
+            "a built edge idle past the debounce is due now"
+        );
+        orch.reap_idle_egress_edges(debounce).await;
+        assert_eq!(
+            orch.nearest_egress_expiry(debounce).await,
+            None,
+            "reaping it removes the deadline, so the loop can sleep again"
+        );
     }
 }

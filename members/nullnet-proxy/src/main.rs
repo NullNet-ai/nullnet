@@ -49,14 +49,14 @@ pub struct ProxyCtx {
     /// `strip_prefix` rewrote it. `None` means "forward the original path
     /// unchanged" — the pre-this-field, only behavior.
     forward_path: Option<String>,
-    /// Whether this request incremented the server's open-connection count.
+    /// Whether this request holds one open-connection count on the server.
     ///
-    /// Doubles as an idempotency guard: pingora re-enters `upstream_peer` on a
-    /// retryable upstream error (`fail_to_connect`'s contract), so the +1 must
-    /// happen only on the first pass. `logging` fires exactly once per request
-    /// and −1's only when this is set, which also keeps a request denied in
-    /// `request_filter` — which never reaches `upstream_peer` — from sending an
-    /// unmatched close.
+    /// Exactly one, however many times `upstream_peer` runs: pingora re-enters
+    /// it on a retryable upstream error (`fail_to_connect`'s contract) and each
+    /// entry issues its own `Proxy` RPC, so re-entry cancels the duplicate it
+    /// just created. `logging` fires exactly once per request and −1's only when
+    /// this is set, which also keeps a request denied in `request_filter` —
+    /// which never reaches `upstream_peer` — from sending an unmatched close.
     counted: bool,
     /// Close identity, captured alongside the +1. Keyed on the *client*, not the
     /// resolved upstream: under `max_networks`/sticky reuse many clients share
@@ -285,9 +285,18 @@ impl ProxyHttp for NullnetProxy {
         println!("{proxy_req:?}");
         let upstream = match self.get_or_add_upstream(proxy_req).await {
             Ok(u) => {
-                // Only on the first pass: a retry re-enters this function but
-                // `logging` still fires once, so an unconditional +1 would leak.
-                if !ctx.counted {
+                if ctx.counted {
+                    // A retry. Pingora re-enters this function, and *every*
+                    // entry issues its own `Proxy` RPC — which is what the
+                    // server counts, so the count has just gone up again while
+                    // `logging` will still fire only once. Cancel the duplicate
+                    // here rather than leak it and pin the edge forever.
+                    //
+                    // Sent after the new +1, never before: closing first would
+                    // let the count touch zero, and the idle pass could reap the
+                    // chain in that window — under a request that is still live.
+                    send_close(self.server.clone(), service_name.clone(), client_ip.clone()).await;
+                } else {
                     ctx.counted = true;
                     ctx.client_ip = Some(client_ip.clone());
                     ctx.service_name = Some(service_name.clone());

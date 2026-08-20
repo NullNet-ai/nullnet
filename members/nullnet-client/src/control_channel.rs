@@ -738,25 +738,25 @@ async fn handle_vxlan_teardown(
     // DNAT — its teardown runs via EgressState below — so skip DNAT removal for
     // it. Only real backend DNAT ports (>0) go through `dnat::remove`; otherwise
     // we'd fire a bogus `iptables -D --dport 0` and a false removal-failed event.
-    // Second of the two flushes per trigger-edge lifecycle. Without suppression
-    // the DESTROYs it raises report idle for a chain the server is already
-    // tearing down, and that stray decrement lands on whatever holds the
-    // refcount next.
     if let Some((container, port, overlay_ip, container_ip)) =
         triggers_state.remove_by_vxlan(message.vxlan_id)
         && port != crate::triggers::EGRESS_TRIGGER_PORT
-        && {
-            sets.suppress_trigger(&container, port, FLUSH_SUPPRESSION);
-            !dnat::remove(port, overlay_ip, container_ip)
-        }
     {
-        fire_event(
-            &grpc,
-            AgentEventKind::DnatRemovalFailed(AgentDnatRemovalFailed {
-                port: u32::from(port),
-                overlay_ip: overlay_ip.to_string(),
-            }),
-        );
+        // Second of the two flushes per trigger-edge lifecycle. Without
+        // suppression the DESTROYs it raises report idle for a chain the server
+        // is already tearing down, and that stray decrement lands on whatever
+        // holds the refcount next. Must precede `dnat::remove`, which is what
+        // issues the flush.
+        sets.suppress_trigger(&container, port, FLUSH_SUPPRESSION);
+        if !dnat::remove(port, overlay_ip, container_ip) {
+            fire_event(
+                &grpc,
+                AgentEventKind::DnatRemovalFailed(AgentDnatRemovalFailed {
+                    port: u32::from(port),
+                    overlay_ip: overlay_ip.to_string(),
+                }),
+            );
+        }
     }
 
     // remove host mapping if one was installed at setup

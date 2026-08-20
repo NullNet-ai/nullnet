@@ -48,11 +48,10 @@ pub(crate) async fn check_timeouts(
             let backend = orchestrator
                 .nearest_backend_expiry(LIVENESS_REAP_DEBOUNCE)
                 .await;
-            [Some(ingress), egress, backend]
+            [egress, backend]
                 .into_iter()
                 .flatten()
-                .min()
-                .unwrap_or(ingress)
+                .fold(ingress, Duration::min)
         };
 
         tokio::select! {

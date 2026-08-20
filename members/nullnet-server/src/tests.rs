@@ -3439,18 +3439,22 @@ async fn a_close_without_a_held_refcount_decrements_nothing() {
 /// what bounds it, not the caller remembering to only ask once.
 #[tokio::test]
 async fn a_second_reap_pass_releases_nothing_more() {
-    let services = load_fixture(BACKEND_LIVENESS).await;
-    let server = NullnetGrpcImpl::new_for_test(services);
-    // Two ports on F share the F->B edge, so its refcount is 2 and a stray
-    // second decrement would be visible as the edge disappearing.
-    let ip_map = HashMap::from([("F", ip(6, 6, 6, 6)), ("B", ip(2, 2, 2, 2))]);
+    let server = backend_liveness_setup().await;
+    // A->B built by the trigger, and D->B built independently, so B keeps a
+    // client entry after A's release and a stray extra decrement would show up
+    // as that entry vanishing too.
+    let ip_map = HashMap::from([("D", ip(4, 4, 4, 4))]);
     register_services(&server, &ip_map, 8080).await;
-    trigger_backend_chain(&server, "F", ip(6, 6, 6, 6), 5555).await;
-    trigger_backend_chain(&server, "F", ip(6, 6, 6, 6), 6666).await;
+    trigger_backend_chain(&server, "D", ip(4, 4, 4, 4), 8888).await;
+    assert_eq!(
+        client_count_of(&*server.services().read().await, "B"),
+        2,
+        "precondition: A->B and D->B are separate client entries"
+    );
 
     server
         .orchestrator()
-        .set_backend_liveness(&("F".to_string(), ip(6, 6, 6, 6), None, 5555), false)
+        .set_backend_liveness(&("A".to_string(), ip(1, 1, 1, 1), None, 5555), false)
         .await;
     for _ in 0..3 {
         let mut guard = server.services().write().await;
@@ -3461,41 +3465,7 @@ async fn a_second_reap_pass_releases_nothing_more() {
     assert_eq!(
         client_count_of(&*server.services().read().await, "B"),
         1,
-        "repeated passes must not keep decrementing 6666's hold"
-    );
-}
-
-/// The free-rider case that made the refcount claim necessary. F triggers on
-/// 5555 and 6666, both chaining to B. 5555 builds the edge; 6666 finds it
-/// already up and must claim its own hold. When 5555's connections close, the
-/// edge has to survive for 6666.
-#[tokio::test]
-async fn a_shared_first_hop_survives_one_port_going_quiet() {
-    let services = load_fixture(BACKEND_LIVENESS).await;
-    let server = NullnetGrpcImpl::new_for_test(services);
-    let ip_map = HashMap::from([("F", ip(6, 6, 6, 6)), ("B", ip(2, 2, 2, 2))]);
-    register_services(&server, &ip_map, 8080).await;
-
-    trigger_backend_chain(&server, "F", ip(6, 6, 6, 6), 5555).await;
-    trigger_backend_chain(&server, "F", ip(6, 6, 6, 6), 6666).await;
-    assert_eq!(
-        client_count_of(&*server.services().read().await, "B"),
-        1,
-        "both ports route to the same F->B edge"
-    );
-
-    report_backend_idle_and_reap(&server, "F", ip(6, 6, 6, 6), 5555).await;
-    assert_eq!(
-        client_count_of(&*server.services().read().await, "B"),
-        1,
-        "6666 still holds the edge: 5555's close must not take it down"
-    );
-
-    report_backend_idle_and_reap(&server, "F", ip(6, 6, 6, 6), 6666).await;
-    assert_eq!(
-        client_count_of(&*server.services().read().await, "B"),
-        0,
-        "once the last port goes quiet the edge is finally released"
+        "A's hold is released once; repeated passes must not touch D's"
     );
 }
 
