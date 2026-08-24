@@ -172,8 +172,10 @@ pub(super) async fn export_handler(
     match ServicesToml::export_toml(&state.db, &stack).await {
         Ok(Some(text)) => {
             let mut resp = text.into_response();
-            resp.headers_mut()
-                .insert(header::CONTENT_TYPE, HeaderValue::from_static("application/toml"));
+            resp.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/toml"),
+            );
             // `stack` is already `valid_stack_name`-checked (bare
             // identifier chars only), so it's always a valid header value.
             resp.headers_mut().insert(

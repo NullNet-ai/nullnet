@@ -1861,7 +1861,12 @@ redirect_status = 200
     #[tokio::test]
     async fn export_toml_is_none_for_a_stack_that_does_not_exist() {
         let db = test_db().await;
-        assert!(ServicesToml::export_toml(&db, "nope").await.unwrap().is_none());
+        assert!(
+            ServicesToml::export_toml(&db, "nope")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// `export_toml`'s output must be exactly what `import_handler` (and a
@@ -1899,7 +1904,10 @@ redirect_status = 200
             .await
             .unwrap();
 
-        let text = ServicesToml::export_toml(&db, "alpha").await.unwrap().unwrap();
+        let text = ServicesToml::export_toml(&db, "alpha")
+            .await
+            .unwrap()
+            .unwrap();
         let (map, _match_entries, routes) = validate_stack_toml(&text).unwrap();
 
         assert_eq!(map["web"].proxy_deps(), vec![vec!["db".to_string()]]);
