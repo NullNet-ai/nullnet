@@ -5,9 +5,12 @@ use super::config::{
     valid_stack_name,
 };
 use crate::auth::Scope;
-use crate::services::input::{ServiceToml, ServicesToml, services_to_inserts};
+use crate::services::input::{
+    ServiceToml, ServicesToml, route_entries_to_inserts, services_to_inserts, stack_services,
+    validate_stack_toml,
+};
 use axum::extract::{Extension, Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
@@ -146,6 +149,114 @@ pub(super) async fn delete_handler(
 
     if let Err(e) = reload_and_apply(&state).await {
         eprintln!("failed to reload config after deleting '{stack}': {e:?}");
+    }
+
+    saved_ok()
+}
+
+/// GET the stack's config reconstructed as raw TOML text — the Config
+/// page's "Export" button, a manual backup/version-history path alongside
+/// the DB (issue #163 review feedback), and the format `import_handler`
+/// reads back.
+pub(super) async fn export_handler(
+    Extension(ctx): Extension<AuthContext>,
+    Path(stack): Path<String>,
+    State(state): State<AppState>,
+) -> Response {
+    if let Err(resp) = require_scope(&ctx, Scope::ConfigRead) {
+        return resp;
+    }
+    if !valid_stack_name(&stack) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    match ServicesToml::export_toml(&state.db, &stack).await {
+        Ok(Some(text)) => {
+            let mut resp = text.into_response();
+            resp.headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static("application/toml"));
+            // `stack` is already `valid_stack_name`-checked (bare
+            // identifier chars only), so it's always a valid header value.
+            resp.headers_mut().insert(
+                header::CONTENT_DISPOSITION,
+                HeaderValue::from_str(&format!("attachment; filename=\"{stack}.toml\""))
+                    .expect("valid_stack_name chars are all valid header-value chars"),
+            );
+            resp
+        }
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            eprintln!("failed to export config for '{stack}': {e:?}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// POST raw TOML text (the format `export_handler` produces) as a
+/// whole-stack replace of both services and routes — validated the same
+/// way the widget-editor `save_handler` validates its JSON (this stack's
+/// own routes against its own services, then the cross-stack port/route
+/// conflict pre-check), persisted, and applied live. Lets an operator
+/// restore a stack from an exported/hand-edited backup instead of
+/// rebuilding it widget by widget.
+pub(super) async fn import_handler(
+    Extension(ctx): Extension<AuthContext>,
+    Path(stack): Path<String>,
+    State(state): State<AppState>,
+    body: String,
+) -> Response {
+    if let Err(resp) = require_scope(&ctx, Scope::ConfigWrite) {
+        return resp;
+    }
+    if !valid_stack_name(&stack) {
+        return rejected(StatusCode::BAD_REQUEST, "invalid stack name");
+    }
+
+    // 1. Syntax + semantic validation, against this TOML's own routes.
+    let (parsed, _match_entries, parsed_routes) = match validate_stack_toml(&body) {
+        Ok(p) => p,
+        Err(e) => return rejected(StatusCode::UNPROCESSABLE_ENTITY, e),
+    };
+
+    // 2. Cross-stack port/route conflicts — same pre-check the widget editor uses.
+    let mut candidate = state.services.read().await.clone();
+    candidate.insert(stack.clone(), parsed);
+    if let Some(msg) = port_conflict_message(&candidate, &stack) {
+        return rejected(StatusCode::UNPROCESSABLE_ENTITY, msg);
+    }
+    let mut candidate_routes = state.routes.read().await.clone();
+    candidate_routes.insert(stack.clone(), parsed_routes.clone());
+    if let Some(msg) = route_conflict_message(&candidate_routes, &stack) {
+        return rejected(StatusCode::UNPROCESSABLE_ENTITY, msg);
+    }
+
+    // 3. Valid → persist and apply live. `validate_stack_toml` above already
+    //    confirmed `body` parses and is semantically valid; this re-parse
+    //    is only to get the exact-as-declared `[[services]]` shape to
+    //    persist (see `stack_services`'s doc comment).
+    let services =
+        stack_services(&body).expect("body already validated by validate_stack_toml above");
+    let service_inserts = services_to_inserts(&services);
+    let route_inserts = route_entries_to_inserts(&parsed_routes);
+    if state
+        .db
+        .stacks()
+        .put_services(&stack, &service_inserts)
+        .await
+        .is_err()
+        || state
+            .db
+            .stacks()
+            .put_routes(&stack, &route_inserts)
+            .await
+            .is_err()
+    {
+        return rejected(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to write configuration",
+        );
+    }
+    if let Err(e) = reload_and_apply(&state).await {
+        eprintln!("failed to reload config after importing TOML for '{stack}': {e:?}");
     }
 
     saved_ok()

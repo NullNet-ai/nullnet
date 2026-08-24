@@ -243,20 +243,10 @@ fn find_service_stack<'a>(services: &'a StackMap, service_name: &str) -> Option<
 impl NullnetGrpcImpl {
     pub async fn new(db: crate::db::Db) -> Result<Self, Error> {
         let orchestrator = Orchestrator::new();
-        // Wired in before anything below emits, so even legacy-config-import
-        // warnings and the startup-conflict events just below are persisted,
-        // not just broadcast to (currently nonexistent) live subscribers.
+        // Wired in before anything below emits, so even the startup-conflict
+        // events just below are persisted, not just broadcast to (currently
+        // nonexistent) live subscribers.
         orchestrator.events.attach_db(db.clone());
-
-        // Import any pre-existing ./services/*.toml left over from before
-        // issue #140 into the DB — a no-op after the first successful boot,
-        // or on a fresh install with nothing to import.
-        crate::services::migrate::migrate_legacy_toml(
-            &db,
-            &orchestrator.events,
-            crate::services::migrate::LEGACY_SERVICES_DIR,
-        )
-        .await?;
 
         let (stacks, index, route_map, startup_conflicts) =
             ServicesToml::load_validated(&db).await?;

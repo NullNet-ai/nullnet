@@ -7,8 +7,10 @@
 //! surface is unused until that migration happens. `stacks`/`services`/
 //! `service_triggers`/`service_dependencies`/`routes` back per-stack
 //! service config (issue #140) as normalized rows — the on-disk
-//! `./services/*.toml` files are now legacy, auto-imported on startup by
-//! `services::migrate::migrate_legacy_toml`. The auth repositories
+//! `./services/*.toml` files are no longer read at all; move config in or
+//! out as TOML text via the Config page's Export/Import buttons (or
+//! `GET`/`POST /api/service-config/{stack}/export`/`import`). The auth
+//! repositories
 //! (`users`/`user_scopes`/`refresh_tokens`/`login_attempts`) back the
 //! server's JWT auth system and are fully wired up, as is `events` (durable
 //! storage for `crate::events::Event`, pruned by `events_retention.rs`).

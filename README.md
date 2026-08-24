@@ -131,19 +131,22 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
 - service configuration is split per **stack** and lives in the server's SQLite database as
   normalized rows (`stacks`/`services`/`service_triggers`/`service_dependencies`/`routes` — one
   service's triggers/dependency branches are child rows of its own row, keyed by an autoincrement
-  id). Edit it through the admin UI's Config page (per-service widgets) or directly via
+  id). Edit it through the admin UI's Config page (per-service widgets), or directly via
   `GET`/`POST`/`DELETE /api/service-config/{stack}` (services, structured JSON) and
-  `GET`/`POST /api/routes/{stack}` (routes) — both validate and apply live, no restart needed.
-  Pre-`v0.2` deployments that used one `services/<stack>.toml` file per stack are migrated
-  automatically on first startup after upgrading: each file is parsed and imported as normalized
-  rows (a stack already in the DB is left alone) and moved to `services/.migrated-toml-backup/` as a
-  plain-text safety copy — editing a file there, or recreating one at its original path, no longer
-  has any effect. A file that fails validation is left where it was, not imported, and reported as a
-  `legacy_config_import_failed` event.
+  `GET`/`POST /api/routes/{stack}` (routes) — both validate and apply live, no restart needed. The
+  Config page's **Export**/**Import** buttons (`GET`/`POST /api/service-config/{stack}/export`/
+  `import`) round-trip a stack as a single TOML file — a hand-editable backup/version-history format
+  outside the DB, validated through the exact same path as the widget UI on import.
 
-  The TOML shown below is no longer a literal API payload (there's no raw-text endpoint) — it's the
-  clearest way to document the field set, which the JSON wire format (and the widget UI) mirrors
-  field-for-field. For example, this defines a stack called `my-app`:
+  **Upgrading a host still on pre-`v0.2` file-based config?** There is no automatic migration —
+  `./services/<stack>.toml` files are no longer read at all, by anything, once this build starts. For
+  each stack, create it (Config page → name it → "Create stack") and use **Import from TOML** to
+  paste/upload that stack's existing `.toml` file *before* relying on this build in production, or the
+  stack comes up with zero services/routes until you do.
+
+  The TOML shown below is that Export/Import format, and the clearest way to document the field set,
+  which the JSON wire format (and the widget UI) mirrors field-for-field. For example, this defines a
+  stack called `my-app`:
   ```
   [[services]]                 # http entry point, backed by a Docker container
   name = "color.com"

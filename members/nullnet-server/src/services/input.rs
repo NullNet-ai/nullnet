@@ -235,7 +235,7 @@ fn build_match_entries(services: &[ServiceToml]) -> Result<Vec<MatchEntry>, Erro
     Ok(entries)
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct ServicesToml {
     // Defaulted so a stack can be routes-only (e.g. a bare redirect, which
     // needs no backend at all) without an empty `services = []` boilerplate.
@@ -248,9 +248,7 @@ pub(crate) struct ServicesToml {
 impl ServicesToml {
     /// Load every stack's config from the normalized `stacks`/`services`/
     /// `service_triggers`/`service_dependencies`/`routes` tables (issue
-    /// #140 — this replaces the old `./services/*.toml` directory scan;
-    /// legacy files are imported on startup by
-    /// `services::migrate::migrate_legacy_toml` before this ever runs).
+    /// #140 — this replaces the old `./services/*.toml` directory scan).
     /// Returns the service map, the parallel host-match index, and the
     /// parallel route map.
     pub(crate) async fn load(db: &Db) -> Result<(StackMap, MatchIndex, RouteMap), Error> {
@@ -296,6 +294,21 @@ impl ServicesToml {
             trigger_rows,
             dependency_rows,
         )))
+    }
+
+    /// Serialize a stack's current DB-stored services and routes back into
+    /// TOML text — the Config page's "Export" button, and the format its
+    /// "Import" button reads back in (review feedback on #163: a manual
+    /// backup path alongside the DB). `None` if the stack doesn't exist.
+    pub(crate) async fn export_toml(db: &Db, stack: &str) -> Result<Option<String>, Error> {
+        let Some(services) = Self::stack_services_from_db(db, stack).await? else {
+            return Ok(None);
+        };
+        let route_rows = db.stacks().routes_for(stack).await?;
+        let routes: Vec<RouteToml> = route_rows.iter().map(route_toml_from_row).collect();
+        let text =
+            toml::to_string_pretty(&ServicesToml { services, routes }).handle_err(location!())?;
+        Ok(Some(text))
     }
 
     /// Validate a new services list for `stack` against its *current* routes
@@ -604,17 +617,18 @@ fn parse_stack_content(content: &str) -> Result<ParsedStack, Error> {
 
 /// Validate raw TOML the same way the loader does, returning the per-service
 /// map, host-match entries, and route list on success — or a human-readable
-/// error. Used by `services::migrate::migrate_legacy_toml` to validate a
-/// legacy file before importing it (and, via the route list, to get the
-/// `RouteEntry`s to persist — see [`route_entries_to_inserts`]).
+/// error. Used by `http_server::service_config`'s TOML import handler to
+/// validate a pasted/uploaded file before persisting it (and, via the route
+/// list, to get the `RouteEntry`s to persist — see
+/// [`route_entries_to_inserts`]).
 pub(crate) fn validate_stack_toml(content: &str) -> Result<ParsedStack, String> {
     parse_stack_content(content).map_err(|e| e.to_str().to_string())
 }
 
-/// Parse a legacy TOML file's content and return its declared
-/// `[[services]]`, in order — used only by `services::migrate::migrate_legacy_toml`
-/// to get the exact declared shape (no auto-registered dependency
-/// placeholders merged in) to persist as normalized rows.
+/// Parse a TOML file's content and return its declared `[[services]]`, in
+/// order — used by the TOML import handler to get the exact declared shape
+/// (no auto-registered dependency placeholders merged in) to persist as
+/// normalized rows.
 pub(crate) fn stack_services(content: &str) -> Result<Vec<ServiceToml>, String> {
     toml::from_str::<ServicesToml>(content)
         .map(|parsed| parsed.services)
@@ -686,8 +700,8 @@ fn services_from_rows(
 
 /// Convert already-validated services into the row shape
 /// `StackRepository::put_services` persists — used by both
-/// `services::migrate::migrate_legacy_toml` (importing a legacy file) and
-/// `http_server::service_config`'s save handler (the widget UI).
+/// `http_server::service_config`'s save handler (the widget UI) and its
+/// TOML import handler.
 pub(crate) fn services_to_inserts(services: &[ServiceToml]) -> Vec<crate::db::ServiceInsert<'_>> {
     services
         .iter()
@@ -741,9 +755,8 @@ fn route_toml_from_row(row: &crate::db::RouteRow) -> RouteToml {
 }
 
 /// Convert already-validated route entries into the row shape
-/// `StackRepository::put_routes` persists — used by both
-/// `services::migrate::migrate_legacy_toml` and `http_server::routes`'s save
-/// handler.
+/// `StackRepository::put_routes` persists — used by `http_server::routes`'s
+/// save handler and `http_server::service_config`'s TOML import handler.
 pub(crate) fn route_entries_to_inserts(routes: &[RouteEntry]) -> Vec<crate::db::RouteInsert<'_>> {
     routes
         .iter()
@@ -1030,7 +1043,7 @@ pub(crate) struct TriggerToml {
 /// `service`/`redirect_to` are mutually exclusive — validated (along with
 /// `redirect_status`) in [`build_route_entries`], not here, so a raw parse
 /// error and a semantic one both surface through the same caller.
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct RouteToml {
     host: String,
     #[serde(default = "default_route_path")]
@@ -1830,5 +1843,68 @@ redirect_status = 200
         assert_eq!(toml_routes[1].redirect_status, Some(308));
         assert!(toml_routes[1].preserve_path);
         assert!(toml_routes[1].preserve_query);
+    }
+
+    async fn test_db() -> crate::db::Db {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "nullnet-server-input-test-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::db::Db::open(dir.join("test.db").to_str().unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn export_toml_is_none_for_a_stack_that_does_not_exist() {
+        let db = test_db().await;
+        assert!(ServicesToml::export_toml(&db, "nope").await.unwrap().is_none());
+    }
+
+    /// `export_toml`'s output must be exactly what `import_handler` (and a
+    /// legacy hand-edited file) can parse back — round-trip it through
+    /// `validate_stack_toml` and check the declared service/dependency/
+    /// trigger/route shape survived.
+    #[tokio::test]
+    async fn export_toml_round_trips_through_validate_stack_toml() {
+        let db = test_db().await;
+        let services = vec![ServiceToml {
+            docker_container: Some("my-app_web".to_string()),
+            port: Some(8080),
+            timeout: Some(0),
+            proxy_dependencies: vec![vec!["db".to_string()]],
+            triggers: vec![TriggerToml {
+                port: 5555,
+                chain: vec!["worker".to_string()],
+            }],
+            ..empty_service("web")
+        }];
+        db.stacks()
+            .put_services("alpha", &services_to_inserts(&services))
+            .await
+            .unwrap();
+        let route_entries = vec![RouteEntry {
+            host: "ops.example.com".to_string(),
+            path: "/".to_string(),
+            target: RouteTarget::Service {
+                name: "web".to_string(),
+                strip_prefix: false,
+            },
+        }];
+        db.stacks()
+            .put_routes("alpha", &route_entries_to_inserts(&route_entries))
+            .await
+            .unwrap();
+
+        let text = ServicesToml::export_toml(&db, "alpha").await.unwrap().unwrap();
+        let (map, _match_entries, routes) = validate_stack_toml(&text).unwrap();
+
+        assert_eq!(map["web"].proxy_deps(), vec![vec!["db".to_string()]]);
+        assert_eq!(map["web"].triggers()[&5555], vec!["worker".to_string()]);
+        assert!(map.contains_key("db")); // implicit dependency placeholder
+        assert_eq!(routes, route_entries);
     }
 }

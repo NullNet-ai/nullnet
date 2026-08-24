@@ -67,6 +67,14 @@ pub async fn serve(state: AppState) {
                 .post(service_config::save_handler)
                 .delete(service_config::delete_handler),
         )
+        .route(
+            "/api/service-config/{stack}/export",
+            get(service_config::export_handler),
+        )
+        .route(
+            "/api/service-config/{stack}/import",
+            post(service_config::import_handler),
+        )
         .route("/api/graph/{stack}", get(graph::graph_handler))
         .route("/api/sessions/{stack}", get(sessions::list_handler))
         .route(

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import Layout from '../components/Layout';
 import Modal from '../components/Modal';
 import { useApi } from '../hooks/useApi';
@@ -6,16 +6,24 @@ import { apiFetch } from '../lib/apiFetch';
 import { useStack } from '../StackContext';
 import type { ServiceConfigJson, ServiceConfigListJson } from '../types';
 
-type MatchKind = 'none' | 'docker' | 'process';
+// A service is only ever discoverable via a host match — `build_match_entries`
+// (server-side) never registers a replica for a service without one. There is
+// no third "no match" option: a service that only needs to exist as a chain
+// placeholder doesn't need declaring at all (referencing its name in a
+// dependency branch or trigger chain already registers it implicitly).
+type MatchKind = 'docker' | 'process';
 type ProtocolKind = 'http' | 'tcp' | 'udp';
 type CountryMode = 'none' | 'block' | 'allow';
 
-// A dependency branch / trigger chain is edited as one comma-separated text
-// field rather than its own repeatable list-of-inputs — still a world away
-// from hand-typing TOML array-of-arrays syntax, without a custom tag-picker.
+// Known service names, for the datalist that backs every dependency-branch/
+// trigger-chain step input below — autocomplete for the common case (an
+// already-declared or already-referenced name) without forcing every step to
+// be one, since a chain step is often a placeholder never declared on its own.
+const CHAIN_NAMES_LIST_ID = 'known-service-names';
+
 interface TriggerFormState {
   port: string;
-  chain: string;
+  chain: string[];
 }
 
 interface ServiceFormState {
@@ -28,7 +36,7 @@ interface ServiceFormState {
   maxNetworks: string;
   protocol: ProtocolKind;
   listenPort: string;
-  dependencies: string[];
+  dependencies: string[][];
   triggers: TriggerFormState[];
   egressMode: CountryMode;
   egressCodes: string;
@@ -38,7 +46,7 @@ interface ServiceFormState {
 
 const EMPTY_FORM: ServiceFormState = {
   name: '',
-  matchKind: 'none',
+  matchKind: 'docker',
   matchValue: '',
   port: '',
   reachable: false,
@@ -53,6 +61,45 @@ const EMPTY_FORM: ServiceFormState = {
   ingressMode: 'none',
   ingressCodes: '',
 };
+
+// One step of a dependency branch or trigger chain: a service-name text
+// input with autocomplete suggestions from every name already known in this
+// stack. Free text (not a strict <select>) because a chain step is often a
+// placeholder that has no [[services]] entry of its own — see MatchKind.
+function ChainStepList({ steps, onChange }: { steps: string[]; onChange: (next: string[]) => void }) {
+  function update(i: number, value: string) {
+    onChange(steps.map((s, idx) => (idx === i ? value : s)));
+  }
+  function remove(i: number) {
+    onChange(steps.filter((_, idx) => idx !== i));
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {steps.map((step, i) => (
+        <div key={i} style={{ display: 'flex', gap: 6 }}>
+          <input
+            list={CHAIN_NAMES_LIST_ID}
+            value={step}
+            onChange={e => update(i, e.target.value)}
+            placeholder="service name"
+            spellCheck={false}
+          />
+          <button type="button" className="teardown-btn" onClick={() => remove(i)}>
+            ×
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="card-action"
+        style={{ background: 'none', border: 'none', cursor: 'pointer', alignSelf: 'start' }}
+        onClick={() => onChange([...steps, ''])}
+      >
+        + Add step
+      </button>
+    </div>
+  );
+}
 
 // A stack name maps to a bare filename-turned-DB-key, so keep it to safe
 // identifier chars — mirrors the server's `valid_stack_name`.
@@ -72,7 +119,11 @@ function textFromList(list: string[] | null | undefined): string {
 function serviceToForm(s: ServiceConfigJson): ServiceFormState {
   return {
     name: s.name,
-    matchKind: s.docker_container ? 'docker' : s.process_path ? 'process' : 'none',
+    // A service without either match key (only possible from data written
+    // before this option was removed, or via a hand-edited TOML import)
+    // falls back to 'docker' — its match value stays blank, so the form
+    // won't validate until a real host match is filled in.
+    matchKind: s.process_path ? 'process' : 'docker',
     matchValue: s.docker_container ?? s.process_path ?? '',
     port: s.port != null ? String(s.port) : '',
     reachable: s.timeout != null,
@@ -80,8 +131,8 @@ function serviceToForm(s: ServiceConfigJson): ServiceFormState {
     maxNetworks: s.max_networks != null ? String(s.max_networks) : '',
     protocol: s.protocol ?? 'http',
     listenPort: s.listen_port != null ? String(s.listen_port) : '',
-    dependencies: s.proxy_dependencies.map(textFromList),
-    triggers: s.triggers.map(t => ({ port: String(t.port), chain: textFromList(t.chain) })),
+    dependencies: s.proxy_dependencies.map(branch => [...branch]),
+    triggers: s.triggers.map(t => ({ port: String(t.port), chain: [...t.chain] })),
     egressMode: s.egress_blocked_countries ? 'block' : s.egress_allowed_countries ? 'allow' : 'none',
     egressCodes: textFromList(s.egress_blocked_countries ?? s.egress_allowed_countries),
     ingressMode: s.ingress_blocked_countries ? 'block' : s.ingress_allowed_countries ? 'allow' : 'none',
@@ -91,16 +142,17 @@ function serviceToForm(s: ServiceConfigJson): ServiceFormState {
 
 function formToService(f: ServiceFormState): ServiceConfigJson {
   const codes = (text: string) => listFromText(text).map(c => c.toUpperCase());
+  const chain = (steps: string[]) => steps.map(s => s.trim()).filter(Boolean);
   return {
     name: f.name.trim(),
     docker_container: f.matchKind === 'docker' ? f.matchValue.trim() : null,
     process_path: f.matchKind === 'process' ? f.matchValue.trim() : null,
     port: f.port.trim() !== '' ? Number(f.port) : null,
     timeout: f.reachable ? Number(f.timeout || '0') : null,
-    proxy_dependencies: f.dependencies.map(listFromText).filter(branch => branch.length > 0),
+    proxy_dependencies: f.dependencies.map(chain).filter(branch => branch.length > 0),
     triggers: f.triggers
       .filter(t => t.port.trim() !== '')
-      .map(t => ({ port: Number(t.port), chain: listFromText(t.chain) })),
+      .map(t => ({ port: Number(t.port), chain: chain(t.chain) })),
     max_networks: f.maxNetworks.trim() !== '' ? Number(f.maxNetworks) : null,
     protocol: f.protocol,
     listen_port: f.protocol !== 'http' && f.listenPort.trim() !== '' ? Number(f.listenPort) : null,
@@ -126,7 +178,8 @@ export default function Config() {
   const { stack, setStack } = useStack();
   const { data, loading, error, refetch } = useApi<ServiceConfigListJson>(`/api/service-config/${stack}`);
   const { data: stacks, refetch: refetchStacks } = useApi<string[]>('/api/stacks', 10000);
-  const services = data?.services ?? [];
+  // Stable across renders with no data change, so it's a safe useMemo dep below.
+  const services = useMemo(() => data?.services ?? [], [data]);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
@@ -138,9 +191,24 @@ export default function Config() {
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const noStack = !stack.trim();
   const notFound = !noStack && !loading && !!error && error.includes('404');
+
+  // Every name already declared or referenced anywhere in this stack —
+  // suggestions for the dependency-branch/trigger-chain step inputs.
+  const knownServiceNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const s of services) {
+      names.add(s.name);
+      for (const branch of s.proxy_dependencies) for (const step of branch) names.add(step);
+      for (const t of s.triggers) for (const step of t.chain) names.add(step);
+    }
+    return Array.from(names).sort();
+  }, [services]);
 
   function openAdd() {
     setEditingIndex(null);
@@ -243,18 +311,64 @@ export default function Config() {
     }
   }
 
-  function addDependencyBranch() {
-    setForm(f => ({ ...f, dependencies: [...f.dependencies, ''] }));
+  // Downloads the stack's current config as the same TOML the server used to
+  // read from `services/<stack>.toml` — a manual backup path outside the DB.
+  async function exportStack() {
+    setExporting(true);
+    setListError(null);
+    try {
+      const res = await apiFetch(`/api/service-config/${stack}/export`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        setListError(body.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${stack}.toml`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setListError(String(e));
+    }
+    setExporting(false);
   }
-  function updateDependencyBranch(i: number, value: string) {
-    setForm(f => ({ ...f, dependencies: f.dependencies.map((d, idx) => (idx === i ? value : d)) }));
+
+  // Replaces the stack's services+routes with a picked TOML file's contents
+  // — validated (and applied live) the same way the widget editor is.
+  async function importStack(file: File) {
+    setImporting(true);
+    setListError(null);
+    try {
+      const text = await file.text();
+      const res = await apiFetch(`/api/service-config/${stack}/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: text,
+      });
+      const data = await res.json().catch(() => ({ ok: res.ok, error: `HTTP ${res.status}` }));
+      if (res.ok && data.ok) refetch();
+      else setListError(data.error ?? `HTTP ${res.status}`);
+    } catch (e) {
+      setListError(String(e));
+    }
+    setImporting(false);
+  }
+
+  function addDependencyBranch() {
+    setForm(f => ({ ...f, dependencies: [...f.dependencies, ['']] }));
+  }
+  function updateDependencyBranch(i: number, next: string[]) {
+    setForm(f => ({ ...f, dependencies: f.dependencies.map((d, idx) => (idx === i ? next : d)) }));
   }
   function removeDependencyBranch(i: number) {
     setForm(f => ({ ...f, dependencies: f.dependencies.filter((_, idx) => idx !== i) }));
   }
 
   function addTrigger() {
-    setForm(f => ({ ...f, triggers: [...f.triggers, { port: '', chain: '' }] }));
+    setForm(f => ({ ...f, triggers: [...f.triggers, { port: '', chain: [''] }] }));
   }
   function updateTrigger(i: number, patch: Partial<TriggerFormState>) {
     setForm(f => ({ ...f, triggers: f.triggers.map((t, idx) => (idx === i ? { ...t, ...patch } : t)) }));
@@ -263,7 +377,7 @@ export default function Config() {
     setForm(f => ({ ...f, triggers: f.triggers.filter((_, idx) => idx !== i) }));
   }
 
-  const formValid = form.name.trim() !== '' && (form.matchKind === 'none' || form.port.trim() !== '');
+  const formValid = form.name.trim() !== '' && form.port.trim() !== '' && form.matchValue.trim() !== '';
 
   const createErrorLine = createError && (
     <span className="cfg-err">
@@ -398,7 +512,28 @@ export default function Config() {
               </table>
             </div>
 
-            <div style={{ marginTop: 16 }}>
+            <div style={{ marginTop: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button className="save-btn" onClick={exportStack} disabled={exporting}>
+                {exporting ? 'Exporting…' : 'Export as TOML'}
+              </button>
+              <button
+                className="save-btn"
+                onClick={() => importInputRef.current?.click()}
+                disabled={importing}
+              >
+                {importing ? 'Importing…' : 'Import from TOML'}
+              </button>
+              <input
+                ref={importInputRef}
+                type="file"
+                accept=".toml"
+                style={{ display: 'none' }}
+                onChange={e => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  if (file) importStack(file);
+                }}
+              />
               <button className="teardown-btn" onClick={removeStack}>
                 Delete stack
               </button>
@@ -430,29 +565,21 @@ export default function Config() {
               value={form.matchKind}
               onChange={e => setForm(f => ({ ...f, matchKind: e.target.value as MatchKind }))}
             >
-              <option value="none">None (dependency-only placeholder)</option>
               <option value="docker">Docker container / Swarm service</option>
               <option value="process">Non-Docker process path</option>
             </select>
           </label>
-          {form.matchKind !== 'none' && (
-            <label className="modal-field">
-              <span>{form.matchKind === 'docker' ? 'Container / service name' : 'Process exe path'}</span>
-              <input
-                value={form.matchValue}
-                onChange={e => setForm(f => ({ ...f, matchValue: e.target.value }))}
-                placeholder={form.matchKind === 'docker' ? 'my-app_color' : '/usr/local/bin/metrics-exporter'}
-                spellCheck={false}
-              />
-            </label>
-          )}
-          {/* Always rendered (not just when a match key is set): a service
-              can carry a `port` independent of the match key in the
-              underlying TOML, and gating this field on `matchKind` would
-              silently drop that value on save if such a service is ever
-              edited without first re-selecting a match kind. */}
           <label className="modal-field">
-            <span>Backend port{form.matchKind === 'none' ? ' (requires a host match above)' : ''}</span>
+            <span>{form.matchKind === 'docker' ? 'Container / service name' : 'Process exe path'}</span>
+            <input
+              value={form.matchValue}
+              onChange={e => setForm(f => ({ ...f, matchValue: e.target.value }))}
+              placeholder={form.matchKind === 'docker' ? 'my-app_color' : '/usr/local/bin/metrics-exporter'}
+              spellCheck={false}
+            />
+          </label>
+          <label className="modal-field">
+            <span>Backend port</span>
             <input
               type="number"
               value={form.port}
@@ -512,18 +639,27 @@ export default function Config() {
             </label>
           )}
 
+          <datalist id={CHAIN_NAMES_LIST_ID}>
+            {knownServiceNames.map(n => (
+              <option key={n} value={n} />
+            ))}
+          </datalist>
+
           <div className="modal-field">
-            <span>Proxy dependencies — independent branches, each a comma-separated chain</span>
+            <span>Proxy dependencies — independent branches, each an ordered chain</span>
             {form.dependencies.map((branch, i) => (
-              <div key={i} style={{ display: 'flex', gap: 6 }}>
-                <input
-                  value={branch}
-                  onChange={e => updateDependencyBranch(i, e.target.value)}
-                  placeholder="db.example, cache.example"
-                  spellCheck={false}
-                />
-                <button type="button" className="teardown-btn" onClick={() => removeDependencyBranch(i)}>
-                  ×
+              <div
+                key={i}
+                style={{ border: '1px solid var(--t3)', borderRadius: 6, padding: 8, marginBottom: 8 }}
+              >
+                <ChainStepList steps={branch} onChange={next => updateDependencyBranch(i, next)} />
+                <button
+                  type="button"
+                  className="teardown-btn"
+                  style={{ marginTop: 6 }}
+                  onClick={() => removeDependencyBranch(i)}
+                >
+                  Remove branch
                 </button>
               </div>
             ))}
@@ -540,22 +676,25 @@ export default function Config() {
           <div className="modal-field">
             <span>Backend triggers — port observed on this host → chain to bring up</span>
             {form.triggers.map((t, i) => (
-              <div key={i} style={{ display: 'flex', gap: 6 }}>
+              <div
+                key={i}
+                style={{ border: '1px solid var(--t3)', borderRadius: 6, padding: 8, marginBottom: 8 }}
+              >
                 <input
                   type="number"
                   value={t.port}
                   onChange={e => updateTrigger(i, { port: e.target.value })}
-                  placeholder="port"
-                  style={{ width: 90 }}
+                  placeholder="port observed on this host"
+                  style={{ width: '100%', marginBottom: 6 }}
                 />
-                <input
-                  value={t.chain}
-                  onChange={e => updateTrigger(i, { chain: e.target.value })}
-                  placeholder="worker.example, ..."
-                  spellCheck={false}
-                />
-                <button type="button" className="teardown-btn" onClick={() => removeTrigger(i)}>
-                  ×
+                <ChainStepList steps={t.chain} onChange={next => updateTrigger(i, { chain: next })} />
+                <button
+                  type="button"
+                  className="teardown-btn"
+                  style={{ marginTop: 6 }}
+                  onClick={() => removeTrigger(i)}
+                >
+                  Remove trigger
                 </button>
               </div>
             ))}
