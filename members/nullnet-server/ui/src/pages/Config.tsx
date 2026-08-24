@@ -15,11 +15,9 @@ type MatchKind = 'docker' | 'process';
 type ProtocolKind = 'http' | 'tcp' | 'udp';
 type CountryMode = 'none' | 'block' | 'allow';
 
-// Known service names, for the datalist that backs every dependency-branch/
-// trigger-chain step input below — autocomplete for the common case (an
-// already-declared or already-referenced name) without forcing every step to
-// be one, since a chain step is often a placeholder never declared on its own.
-const CHAIN_NAMES_LIST_ID = 'known-service-names';
+// Sentinel for "+ Type a custom name…", picked from a chain step's <select>
+// below — never a real value, replaced with '' on save if left untouched.
+const CUSTOM_STEP = '\u0000custom';
 
 interface TriggerFormState {
   port: string;
@@ -62,11 +60,21 @@ const EMPTY_FORM: ServiceFormState = {
   ingressCodes: '',
 };
 
-// One step of a dependency branch or trigger chain: a service-name text
-// input with autocomplete suggestions from every name already known in this
-// stack. Free text (not a strict <select>) because a chain step is often a
-// placeholder that has no [[services]] entry of its own — see MatchKind.
-function ChainStepList({ steps, onChange }: { steps: string[]; onChange: (next: string[]) => void }) {
+// One step of a dependency branch or trigger chain: a `<select>` of every
+// service name already known in this stack — same pattern as the Routes
+// page's service picker. A chain step is often a placeholder with no
+// [[services]] entry of its own (see MatchKind), so "+ Type a custom
+// name…" drops to a plain text input instead of blocking on the list;
+// an already-saved custom name renders as that text input straight away.
+function ChainStepList({
+  steps,
+  onChange,
+  knownNames,
+}: {
+  steps: string[];
+  onChange: (next: string[]) => void;
+  knownNames: string[];
+}) {
   function update(i: number, value: string) {
     onChange(steps.map((s, idx) => (idx === i ? value : s)));
   }
@@ -75,20 +83,37 @@ function ChainStepList({ steps, onChange }: { steps: string[]; onChange: (next: 
   }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      {steps.map((step, i) => (
-        <div key={i} style={{ display: 'flex', gap: 6 }}>
-          <input
-            list={CHAIN_NAMES_LIST_ID}
-            value={step}
-            onChange={e => update(i, e.target.value)}
-            placeholder="service name"
-            spellCheck={false}
-          />
-          <button type="button" className="teardown-btn" onClick={() => remove(i)}>
-            ×
-          </button>
-        </div>
-      ))}
+      {steps.map((step, i) => {
+        const isCustom = step === CUSTOM_STEP || (step !== '' && !knownNames.includes(step));
+        return (
+          <div key={i} style={{ display: 'flex', gap: 6 }}>
+            {isCustom ? (
+              <input
+                value={step === CUSTOM_STEP ? '' : step}
+                onChange={e => update(i, e.target.value)}
+                placeholder="service name"
+                spellCheck={false}
+                autoFocus={step === CUSTOM_STEP}
+              />
+            ) : (
+              <select value={step} onChange={e => update(i, e.target.value)}>
+                <option value="" disabled>
+                  select a service…
+                </option>
+                {knownNames.map(n => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+                <option value={CUSTOM_STEP}>+ Type a custom name…</option>
+              </select>
+            )}
+            <button type="button" className="teardown-btn" onClick={() => remove(i)}>
+              ×
+            </button>
+          </div>
+        );
+      })}
       <button
         type="button"
         className="card-action"
@@ -142,7 +167,10 @@ function serviceToForm(s: ServiceConfigJson): ServiceFormState {
 
 function formToService(f: ServiceFormState): ServiceConfigJson {
   const codes = (text: string) => listFromText(text).map(c => c.toUpperCase());
-  const chain = (steps: string[]) => steps.map(s => s.trim()).filter(Boolean);
+  // CUSTOM_STEP left untouched (the "+ Type a custom name…" option picked,
+  // but nothing typed into the text box it dropped to) counts as unset.
+  const chain = (steps: string[]) =>
+    steps.map(s => (s === CUSTOM_STEP ? '' : s.trim())).filter(Boolean);
   return {
     name: f.name.trim(),
     docker_container: f.matchKind === 'docker' ? f.matchValue.trim() : null,
@@ -639,12 +667,6 @@ export default function Config() {
             </label>
           )}
 
-          <datalist id={CHAIN_NAMES_LIST_ID}>
-            {knownServiceNames.map(n => (
-              <option key={n} value={n} />
-            ))}
-          </datalist>
-
           <div className="modal-field">
             <span>Proxy dependencies — independent branches, each an ordered chain</span>
             {form.dependencies.map((branch, i) => (
@@ -652,7 +674,11 @@ export default function Config() {
                 key={i}
                 style={{ border: '1px solid var(--t3)', borderRadius: 6, padding: 8, marginBottom: 8 }}
               >
-                <ChainStepList steps={branch} onChange={next => updateDependencyBranch(i, next)} />
+                <ChainStepList
+                  steps={branch}
+                  onChange={next => updateDependencyBranch(i, next)}
+                  knownNames={knownServiceNames}
+                />
                 <button
                   type="button"
                   className="teardown-btn"
@@ -687,7 +713,11 @@ export default function Config() {
                   placeholder="port observed on this host"
                   style={{ width: '100%', marginBottom: 6 }}
                 />
-                <ChainStepList steps={t.chain} onChange={next => updateTrigger(i, { chain: next })} />
+                <ChainStepList
+                  steps={t.chain}
+                  onChange={next => updateTrigger(i, { chain: next })}
+                  knownNames={knownServiceNames}
+                />
                 <button
                   type="button"
                   className="teardown-btn"
