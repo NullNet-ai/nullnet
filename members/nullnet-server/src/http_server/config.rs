@@ -8,8 +8,8 @@
 use super::AppState;
 use crate::events::Event as ServerEvent;
 use crate::services::input::{
-    RouteMap, ServicesToml, StackMap, apply_config_update, detect_port_conflicts,
-    detect_route_conflicts,
+    RouteMap, ServicesToml, StackMap, apply_config_update, detect_name_conflicts,
+    detect_port_conflicts, detect_route_conflicts,
 };
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -67,6 +67,27 @@ pub(super) fn route_conflict_message(candidate: &RouteMap, stack: &str) -> Optio
         })
 }
 
+/// Same idea as [`port_conflict_message`], for service names: they're global
+/// too, because every name-based lookup (proxy upstream, backend trigger,
+/// ingress policy) carries no stack. Dependency and trigger-chain names count
+/// — see [`detect_name_conflicts`].
+pub(super) fn name_conflict_message(candidate: &StackMap, stack: &str) -> Option<String> {
+    detect_name_conflicts(candidate)
+        .into_iter()
+        .find(|c| c.stack_a == stack || c.stack_b == stack)
+        .map(|c| {
+            let other_stack = if c.stack_a == stack {
+                c.stack_b
+            } else {
+                c.stack_a
+            };
+            format!(
+                "service name '{}' already used in stack '{other_stack}'",
+                c.service
+            )
+        })
+}
+
 #[derive(Serialize)]
 pub(super) struct SaveResult {
     ok: bool,
@@ -107,7 +128,8 @@ pub(super) async fn reload_and_apply(state: &AppState) -> Result<(), Error> {
     let (loaded_services, loaded_index, loaded_routes) = ServicesToml::load(&state.db).await?;
     let conflicts = detect_port_conflicts(&loaded_services);
     let route_conflicts = detect_route_conflicts(&loaded_routes);
-    if conflicts.is_empty() && route_conflicts.is_empty() {
+    let name_conflicts = detect_name_conflicts(&loaded_services);
+    if conflicts.is_empty() && route_conflicts.is_empty() && name_conflicts.is_empty() {
         {
             let mut services_mut = state.services.write().await;
             apply_config_update(&mut services_mut, loaded_services, &state.orchestrator).await;
@@ -138,6 +160,15 @@ pub(super) async fn reload_and_apply(state: &AppState) -> Result<(), Error> {
                 .events
                 .emit(ServerEvent::route_conflict(
                     c.stack_a, c.stack_b, c.host, c.path,
+                ))
+                .await;
+        }
+        for c in name_conflicts {
+            state
+                .orchestrator
+                .events
+                .emit(ServerEvent::service_name_conflict(
+                    c.stack_a, c.stack_b, c.service,
                 ))
                 .await;
         }

@@ -90,6 +90,7 @@ export type EventJson =
   | WithSeverity & { type: 'config_reloaded'; stack: string }
   | WithSeverity & { type: 'config_stack_removed'; stack: string }
   | WithSeverity & { type: 'route_conflict'; stack_a: string; stack_b: string; host: string; path: string }
+  | WithSeverity & { type: 'service_name_conflict'; stack_a: string; stack_b: string; service: string }
   | WithSeverity & { type: 'all_replicas_removed'; service: string; stack: string; ip: string }
   | WithSeverity & { type: 'service_reachability_toggled'; service: string; stack: string; reachable: boolean }
   | WithSeverity & { type: 'proxy_client_timed_out'; service: string; client_ip: string }
