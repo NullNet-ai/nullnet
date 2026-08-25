@@ -45,7 +45,7 @@ Every change ships only after it has run end-to-end on real hosts.
 
 - The gRPC control channel is TLS. Each host needs `JWT_SIGNING_KEY`,
   `MFA_ENCRYPTION_KEY`, `CONTROL_SERVICE_TLS_SAN`, and `ca-cert.pem` present in
-  `/root/nullnet/`, plus a rebuilt proxy. See README.md for the full setup.
+  `/root/nullnet/`, plus a rebuilt proxy. See SETUP.md for the full setup.
 - Containers need a restart after nullnet restarts.
 - To restart a Swarm stack, use `docker service update --force`.
 - The default-deny eBPF firewall blocks Swarm ports. `2377`, `7946`, and `4789`
@@ -71,7 +71,7 @@ A change that is invisible when it misbehaves is not finished.
   the UI half does not. Finish it in `nullnet-server/ui/src/`: the member in
   `types.ts`, and both a filter entry and a render arm in `pages/Events.tsx`.
   Otherwise, the event is emitted and silently never shown.
-- Update `README.md` when the change alters set up and configuration,
+- Update `SETUP.md` when the change alters set up and configuration,
   but only include the essential info without being verbose.
 - Update `CHANGELOG.md` with a one-line description of the change, following the existing format,
   and including a link to the PR and the issue it fixes (if any).
