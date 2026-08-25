@@ -230,9 +230,12 @@ pub(crate) fn build_service_triggers(
     service_triggers
 }
 
-/// Return the stack name that holds `service_name`, if any. Service names
-/// are unique within a stack but may collide across stacks; this returns
-/// the first match in iteration order.
+/// Return the stack name that holds `service_name`, if any.
+///
+/// Every name in the live map is held by exactly one stack: a name claimed by
+/// two is a conflict, and `detect_name_conflicts` drops both stacks at startup
+/// and rejects the save/reload that would introduce one (issue #129). So the
+/// iteration order this walks in cannot change the answer.
 fn find_service_stack<'a>(services: &'a StackMap, service_name: &str) -> Option<&'a str> {
     services
         .iter()
@@ -279,6 +282,14 @@ impl NullnetGrpcImpl {
             orchestrator
                 .events
                 .emit(Event::route_conflict(c.stack_a, c.stack_b, c.host, c.path))
+                .await;
+        }
+        for c in startup_conflicts.names {
+            orchestrator
+                .events
+                .emit(Event::service_name_conflict(
+                    c.stack_a, c.stack_b, c.service,
+                ))
                 .await;
         }
 

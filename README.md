@@ -209,8 +209,7 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
 - each `[[services.triggers]]` block pairs a port observed on the initiator's host with a linear
   chain walked when the service is reached via a `BackendTrigger` RPC from nullnet-client (one
   chain per port)
-- service names are unique within a stack; dependency chains stay intra-stack. Service names may
-  be reused across different stacks
+- service names must be globally unique across every stack, and dependency chains stay intra-stack.
 - `protocol` selects how a proxy-reachable service is exposed: `http` (the default — routed by
   `Host` header on the shared 80/443 listeners) or `tcp`/`udp`, which each require `listen_port` —
   the external port nullnet-proxy binds directly and forwards raw traffic from. `listen_port` must

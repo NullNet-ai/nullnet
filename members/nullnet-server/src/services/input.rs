@@ -184,6 +184,7 @@ pub(crate) struct RouteConflict {
 pub(crate) struct StartupConflicts {
     pub(crate) ports: Vec<PortConflict>,
     pub(crate) routes: Vec<RouteConflict>,
+    pub(crate) names: Vec<NameConflict>,
 }
 
 /// Scan every stack for `(host, path)` pairs claimed by more than one route,
@@ -365,10 +366,10 @@ impl ServicesToml {
         Ok(parse_file(Path::new(path)).await?.0)
     }
 
-    /// Load every stack and fail loudly if any `(protocol, listen_port)` pair
-    /// or `(host, path)` route pair is claimed by more than one service/route
-    /// — both are global on the proxy, unlike service names which only need
-    /// to be unique within a stack.
+    /// Load every stack and fail loudly if any `(protocol, listen_port)` pair,
+    /// `(host, path)` route pair, or service name is claimed by more than one
+    /// stack — all three are global, since the proxy dispatches on ports and
+    /// routes and every name-based lookup carries no stack (issue #129).
     ///
     /// The conflicts are returned rather than reported here: the event store
     /// doesn't exist yet this early in startup, so the caller emits them once
@@ -403,6 +404,16 @@ impl ServicesToml {
             bad.insert(c.stack_a.clone());
             bad.insert(c.stack_b.clone());
         }
+        let name_conflicts = detect_name_conflicts(&stacks);
+        for c in &name_conflicts {
+            eprintln!(
+                "[config] service name conflict on startup: '{}' claimed by both '{}' and '{}' — \
+                 dropping these stacks until fixed",
+                c.service, c.stack_a, c.stack_b
+            );
+            bad.insert(c.stack_a.clone());
+            bad.insert(c.stack_b.clone());
+        }
         for stack in &bad {
             stacks.remove(stack);
             index.remove(stack);
@@ -415,6 +426,7 @@ impl ServicesToml {
             StartupConflicts {
                 ports: conflicts,
                 routes: route_conflicts,
+                names: name_conflicts,
             },
         ))
     }
@@ -554,6 +566,47 @@ pub(crate) fn detect_port_conflicts(stacks: &StackMap) -> Vec<PortConflict> {
                 }),
                 None => {
                     claimed.insert(key, (stack.clone(), name.clone()));
+                }
+            }
+        }
+    }
+    conflicts
+}
+
+/// Two stacks that both hold a service of the same name. Every lookup that
+/// starts from a bare service name — the proxy's upstream resolution, backend
+/// triggers, ingress policy — has only the name to go on, so a name shared by
+/// two stacks resolves to an arbitrary one of them (issue #129). Names are
+/// therefore global, like `(protocol, listen_port)` and `(host, path)`.
+pub(crate) struct NameConflict {
+    pub(crate) stack_a: String,
+    pub(crate) stack_b: String,
+    pub(crate) service: String,
+}
+
+/// Scan every stack for service names claimed by more than one stack.
+/// Placeholder entries count: `services_map` registers every dependency and
+/// trigger-chain name as one, and they are keys `find_service_stack` can
+/// resolve to just like a declared service. Stacks and names are visited in
+/// sorted order so the reported pair doesn't itself depend on `HashMap`
+/// iteration order.
+pub(crate) fn detect_name_conflicts(stacks: &StackMap) -> Vec<NameConflict> {
+    let mut claimed: HashMap<&str, &str> = HashMap::new();
+    let mut conflicts = Vec::new();
+    let mut stack_names: Vec<&String> = stacks.keys().collect();
+    stack_names.sort_unstable();
+    for stack in stack_names {
+        let mut names: Vec<&String> = stacks[stack].keys().collect();
+        names.sort_unstable();
+        for name in names {
+            match claimed.get(name.as_str()) {
+                Some(other_stack) => conflicts.push(NameConflict {
+                    stack_a: (*other_stack).to_string(),
+                    stack_b: stack.clone(),
+                    service: name.clone(),
+                }),
+                None => {
+                    claimed.insert(name.as_str(), stack.as_str());
                 }
             }
         }
@@ -1621,6 +1674,85 @@ redirect_status = 200
                 .unwrap_err()
                 .contains("must be one of 301/302/307/308")
         );
+    }
+
+    fn named_service(name: &str) -> (String, ServiceInfo) {
+        (
+            name.to_string(),
+            ServiceInfo::new(
+                vec![],
+                HashMap::new(),
+                Some(30),
+                None,
+                ServiceProtocol::Http,
+                None,
+                CountryPolicy::None,
+                CountryPolicy::None,
+            ),
+        )
+    }
+
+    #[test]
+    fn detect_name_conflicts_flags_cross_stack_collision() {
+        let stacks: StackMap = HashMap::from([
+            (
+                "bravo".to_string(),
+                HashMap::from([named_service("api"), named_service("bravo-only")]),
+            ),
+            (
+                "alpha".to_string(),
+                HashMap::from([named_service("api"), named_service("alpha-only")]),
+            ),
+        ]);
+
+        let conflicts = detect_name_conflicts(&stacks);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].service, "api");
+        // Sorted visit order, so the pair doesn't depend on HashMap ordering.
+        assert_eq!(conflicts[0].stack_a, "alpha");
+        assert_eq!(conflicts[0].stack_b, "bravo");
+    }
+
+    #[test]
+    fn detect_name_conflicts_allows_distinct_names() {
+        let stacks: StackMap = HashMap::from([
+            ("alpha".to_string(), HashMap::from([named_service("api.a")])),
+            ("bravo".to_string(), HashMap::from([named_service("api.b")])),
+        ]);
+
+        assert!(detect_name_conflicts(&stacks).is_empty());
+    }
+
+    /// A dependency name is a real key in its stack's map (`services_map`
+    /// registers a placeholder for it), so it shadows another stack's
+    /// declared service of that name just as effectively.
+    #[test]
+    fn detect_name_conflicts_flags_dependency_placeholder() {
+        let declaring: ServicesToml = toml::from_str(
+            r#"
+[[services]]
+name = "api"
+timeout = 30
+"#,
+        )
+        .unwrap();
+        let referencing: ServicesToml = toml::from_str(
+            r#"
+[[services]]
+name = "web"
+timeout = 30
+proxy_dependencies = [["api"]]
+"#,
+        )
+        .unwrap();
+        let stacks: StackMap = HashMap::from([
+            ("alpha".to_string(), declaring.services_map().unwrap()),
+            ("bravo".to_string(), referencing.services_map().unwrap()),
+        ]);
+
+        let conflicts = detect_name_conflicts(&stacks);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].service, "api");
     }
 
     #[test]

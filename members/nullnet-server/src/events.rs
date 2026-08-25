@@ -127,6 +127,15 @@ pub(crate) enum Event {
         path: String,
         timestamp: u64,
     },
+    /// Two stacks declare (or reference, via a dependency/trigger chain) a
+    /// service of the same name. Name-based lookups carry no stack, so both
+    /// stacks are dropped rather than served from an arbitrary one.
+    ServiceNameConflict {
+        stack_a: String,
+        stack_b: String,
+        service: String,
+        timestamp: u64,
+    },
     AllReplicasRemoved {
         service: String,
         stack: String,
@@ -482,6 +491,7 @@ impl Event {
             Self::ConfigStackRemoved { .. } => "config_stack_removed",
             Self::PortMappingConflict { .. } => "port_mapping_conflict",
             Self::RouteConflict { .. } => "route_conflict",
+            Self::ServiceNameConflict { .. } => "service_name_conflict",
             Self::AllReplicasRemoved { .. } => "all_replicas_removed",
             Self::ServiceReachabilityToggled { .. } => "service_reachability_toggled",
             Self::ProxyClientTimedOut { .. } => "proxy_client_timed_out",
@@ -616,6 +626,7 @@ impl Event {
             | Self::TlsCertificateInvalid { .. }
             | Self::PortMappingConflict { .. }
             | Self::RouteConflict { .. }
+            | Self::ServiceNameConflict { .. }
             | Self::TcpListenerBindFailed { .. }
             | Self::UdpListenerBindFailed { .. }
             | Self::TcpUpstreamConnectFailed { .. }
@@ -763,6 +774,15 @@ impl Event {
             stack_b,
             host,
             path,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn service_name_conflict(stack_a: String, stack_b: String, service: String) -> Self {
+        Self::ServiceNameConflict {
+            stack_a,
+            stack_b,
+            service,
             timestamp: now_secs(),
         }
     }

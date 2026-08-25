@@ -1,8 +1,8 @@
 use super::AppState;
 use super::auth::{AuthContext, require_scope};
 use super::config::{
-    port_conflict_message, rejected, reload_and_apply, route_conflict_message, saved_ok,
-    valid_stack_name,
+    name_conflict_message, port_conflict_message, rejected, reload_and_apply,
+    route_conflict_message, saved_ok, valid_stack_name,
 };
 use crate::auth::Scope;
 use crate::services::input::{
@@ -81,10 +81,13 @@ pub(super) async fn save_handler(
             Err(e) => return rejected(StatusCode::UNPROCESSABLE_ENTITY, e.to_str().to_string()),
         };
 
-    // 2. Cross-stack port/route conflicts — same pre-check the route editor uses.
+    // 2. Cross-stack port/name/route conflicts — same pre-check the route editor uses.
     let mut candidate = state.services.read().await.clone();
     candidate.insert(stack.clone(), parsed);
     if let Some(msg) = port_conflict_message(&candidate, &stack) {
+        return rejected(StatusCode::UNPROCESSABLE_ENTITY, msg);
+    }
+    if let Some(msg) = name_conflict_message(&candidate, &stack) {
         return rejected(StatusCode::UNPROCESSABLE_ENTITY, msg);
     }
     let mut candidate_routes = state.routes.read().await.clone();
@@ -219,10 +222,13 @@ pub(super) async fn import_handler(
         Err(e) => return rejected(StatusCode::UNPROCESSABLE_ENTITY, e),
     };
 
-    // 2. Cross-stack port/route conflicts — same pre-check the widget editor uses.
+    // 2. Cross-stack port/name/route conflicts — same pre-check the widget editor uses.
     let mut candidate = state.services.read().await.clone();
     candidate.insert(stack.clone(), parsed);
     if let Some(msg) = port_conflict_message(&candidate, &stack) {
+        return rejected(StatusCode::UNPROCESSABLE_ENTITY, msg);
+    }
+    if let Some(msg) = name_conflict_message(&candidate, &stack) {
         return rejected(StatusCode::UNPROCESSABLE_ENTITY, msg);
     }
     let mut candidate_routes = state.routes.read().await.clone();
