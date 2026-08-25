@@ -99,6 +99,7 @@ pub(super) fn require_admin(ctx: &AuthContext) -> Result<(), Response> {
 /// `role` parsed, plus the effective scope list: admins implicitly have
 /// every scope (no DB row needed); `user`-role accounts get whatever's been
 /// explicitly granted in `user_scopes`.
+#[allow(clippy::result_large_err)]
 async fn role_and_scopes(
     db: &Db,
     user_id: &str,

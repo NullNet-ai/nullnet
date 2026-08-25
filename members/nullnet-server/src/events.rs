@@ -178,12 +178,6 @@ pub(crate) enum Event {
         port: u16,
         timestamp: u64,
     },
-    /// A `services/*.toml` change was picked up but could not be parsed, so the
-    /// previous configuration is still in force.
-    ConfigReloadFailed {
-        error_message: String,
-        timestamp: u64,
-    },
     /// A file watcher never started (or died), so changes to what it watched are
     /// no longer picked up for the lifetime of this process.
     FileWatchFailed {
@@ -497,7 +491,6 @@ impl Event {
             Self::NetIdPoolExhausted { .. } => "net_id_pool_exhausted",
             Self::ProxyChainSetupFailed { .. } => "proxy_chain_setup_failed",
             Self::BackendTriggerSetupBailed { .. } => "backend_trigger_setup_bailed",
-            Self::ConfigReloadFailed { .. } => "config_reload_failed",
             Self::FileWatchFailed { .. } => "file_watch_failed",
             Self::UdpPortPoolExhausted { .. } => "udp_port_pool_exhausted",
             Self::BackendTriggerSetupTimedOut { .. } => "backend_trigger_setup_timed_out",
@@ -594,7 +587,6 @@ impl Event {
             | Self::CertificateCredentialsStoreFailed { .. }
             | Self::NetIdPoolExhausted { .. }
             | Self::UdpPortPoolExhausted { .. }
-            | Self::ConfigReloadFailed { .. }
             | Self::FileWatchFailed { .. }
             | Self::BackendTriggerSetupTimedOut { .. }
             | Self::EgressSteerSetupTimedOut { .. }
@@ -1203,13 +1195,6 @@ impl Event {
     ) -> Self {
         Self::CertificateCredentialsStoreFailed {
             domain,
-            error_message,
-            timestamp: now_secs(),
-        }
-    }
-
-    pub(crate) fn config_reload_failed(error_message: String) -> Self {
-        Self::ConfigReloadFailed {
             error_message,
             timestamp: now_secs(),
         }

@@ -37,7 +37,6 @@ const KIND_LABELS: Record<string, string> = {
   proxy_chain_setup_failed: 'proxy_chain_setup_failed',
   backend_trigger_setup_bailed: 'backend_trigger_setup_bailed',
   udp_port_pool_exhausted: 'udp_port_pool_exhausted',
-  config_reload_failed: 'config_reload_failed',
   file_watch_failed: 'file_watch_failed',
   port_mapping_conflict: 'port_mapping_conflict',
   // Client error
@@ -139,8 +138,6 @@ function eventDetail(e: EventJson): string {
       return `${e.service} · ${e.client_ip}`;
     case 'backend_trigger_setup_bailed':
       return `${e.service} · port ${e.port}`;
-    case 'config_reload_failed':
-      return e.error_message;
     case 'file_watch_failed':
       return `${e.target} · ${e.error_message}`;
     case 'port_mapping_conflict':

@@ -275,10 +275,6 @@ body {
 /* ── Pool ── */
 
 /* ── Config ── */
-.cfg-pre { font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.7; color: var(--t1); background: rgba(0,0,0,.3); border: 1px solid var(--gb); border-radius: 12px; padding: 20px 24px; overflow-x: auto; white-space: pre; }
-.cfg-edit { display: block; width: 100%; box-sizing: border-box; min-height: 460px; resize: vertical; font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.7; color: var(--t1); background: rgba(0,0,0,.3); border: 1px solid var(--gb); border-radius: 12px; padding: 20px 24px; white-space: pre; tab-size: 2; outline: none; transition: border-color .12s; }
-.cfg-edit:focus { border-color: rgba(91,156,246,.5); }
-.cfg-actions { display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
 .save-btn { padding: 6px 16px; background: var(--green-g); border: 1px solid rgba(52,211,153,.3); color: var(--green); font-family: 'Plus Jakarta Sans', sans-serif; font-size: 12px; font-weight: 600; border-radius: 8px; cursor: pointer; transition: background .12s; }
 .save-btn:hover:not(:disabled) { background: rgba(52,211,153,.18); }
 .save-btn:disabled { opacity: .4; cursor: default; }
@@ -294,7 +290,11 @@ body {
 
 /* ── Modal ── */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px; }
-.modal-panel { width: 100%; max-width: 440px; max-height: 85vh; overflow-y: auto; border-radius: 14px; }
+/* Overrides `.glass`/`.card`'s ~4%-opacity background: a modal sits over
+   whatever page it was opened from, so it needs to read as a solid surface
+   regardless of how busy that page is — matches `.modal-head`'s existing
+   opacity rather than the ambient glass tint used for in-page cards. */
+.modal-panel { width: 100%; max-width: 440px; max-height: 85vh; overflow-y: auto; border-radius: 14px; background: rgba(10,12,16,.96); }
 .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--t3); position: sticky; top: 0; background: rgba(10,12,16,.9); backdrop-filter: blur(8px); }
 .modal-close { background: none; border: none; color: var(--t2); font-size: 18px; cursor: pointer; line-height: 1; padding: 2px 6px; }
 .modal-close:hover { color: var(--t0); }

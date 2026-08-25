@@ -128,9 +128,25 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   same address clients are told to connect to) → `localhost`. Set `CONTROL_SERVICE_TLS_SAN`
   explicitly if the server's address isn't in its own `.env` or differs from what clients use.
 
-- service configuration is split per **stack** — one TOML file per stack under
-  `members/nullnet-server/services/`. The filename (minus `.toml`) is the stack name.
-  For example, to define a stack called `my-app`, create `services/my-app.toml`:
+- service configuration is split per **stack** and lives in the server's SQLite database as
+  normalized rows (`stacks`/`services`/`service_triggers`/`service_dependencies`/`routes` — one
+  service's triggers/dependency branches are child rows of its own row, keyed by an autoincrement
+  id). Edit it through the admin UI's Config page (per-service widgets), or directly via
+  `GET`/`POST`/`DELETE /api/service-config/{stack}` (services, structured JSON) and
+  `GET`/`POST /api/routes/{stack}` (routes) — both validate and apply live, no restart needed. The
+  Config page's **Export**/**Import** buttons (`GET`/`POST /api/service-config/{stack}/export`/
+  `import`) round-trip a stack as a single TOML file — a hand-editable backup/version-history format
+  outside the DB, validated through the exact same path as the widget UI on import.
+
+  **Upgrading a host still on pre-`v0.2` file-based config?** There is no automatic migration —
+  `./services/<stack>.toml` files are no longer read at all, by anything, once this build starts. For
+  each stack, create it (Config page → name it → "Create stack") and use **Import from TOML** to
+  paste/upload that stack's existing `.toml` file *before* relying on this build in production, or the
+  stack comes up with zero services/routes until you do.
+
+  The TOML shown below is that Export/Import format, and the clearest way to document the field set,
+  which the JSON wire format (and the widget UI) mirrors field-for-field. For example, this defines a
+  stack called `my-app`:
   ```
   [[services]]                 # http entry point, backed by a Docker container
   name = "color.com"

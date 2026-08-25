@@ -52,8 +52,9 @@ async fn main() -> Result<(), Error> {
     auth::jwt::init_from_env()?;
     auth::mfa_crypto::init_from_env()?;
 
-    // SQLite-backed storage for server data (certs/services, going forward):
-    // pending schema migrations run automatically before anything else starts.
+    // SQLite-backed storage for server data (stack configs, auth, events;
+    // certs are still file-based): pending schema migrations run
+    // automatically before anything else starts.
     let database_url =
         std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string());
     let db = db::Db::open(&database_url).await?;
@@ -103,9 +104,13 @@ async fn main() -> Result<(), Error> {
     let app_state = http_server::AppState {
         services: nullnet.services().clone(),
         routes: nullnet.routes().clone(),
+        match_index: nullnet.match_index().clone(),
         events: nullnet.orchestrator().events.clone(),
         orchestrator: nullnet.orchestrator().clone(),
         db,
+        config_changed: nullnet.config_changed().clone(),
+        port_mappings_changed: nullnet.port_mappings_changed().clone(),
+        http_routes_changed: nullnet.http_routes_changed().clone(),
     };
 
     // auto-renew ACME certs nearing expiry (those with stored DNS credentials)
