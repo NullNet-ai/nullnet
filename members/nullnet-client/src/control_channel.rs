@@ -505,7 +505,12 @@ async fn handle_vxlan_setup(
         eprintln!("[vxlan_setup] {}", e.to_str());
     }
     println!(
-        "VXLAN {vxlan_id} setup completed in {} ms (docker: {})",
+        "VXLAN {vxlan_id} {} in {} ms (docker: {})",
+        if setup_result.is_ok() {
+            "setup completed"
+        } else {
+            "setup FAILED"
+        },
         init_t.elapsed().as_millis(),
         message.docker_container.as_deref().unwrap_or("none"),
     );
@@ -799,7 +804,12 @@ async fn handle_vxlan_teardown(
     }
 
     println!(
-        "VXLAN teardown completed in {} ms",
+        "VXLAN {} in {} ms",
+        if teardown_result.is_ok() {
+            "teardown completed"
+        } else {
+            "teardown FAILED"
+        },
         init_t.elapsed().as_millis()
     );
 

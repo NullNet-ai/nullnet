@@ -114,23 +114,37 @@ pub(crate) async fn setup(
     // Move the namespace end into its target namespace. This is a normal
     // RTM_NEWLINK from the root namespace (IFLA_NET_NS_PID/FD) — no need to
     // actually enter the target namespace ourselves.
-    let setns_req = if let Some(pid) = ns_pid {
-        LinkUnspec::new_with_index(link_in.header.index)
-            .setns_by_pid(pid)
-            .build()
-    } else {
-        let netns_file =
-            File::open(format!("/var/run/netns/{}", params.ns_name)).handle_err(location!())?;
-        LinkUnspec::new_with_index(link_in.header.index)
-            .setns_by_fd(netns_file.as_raw_fd())
-            .build()
-    };
-    handle
-        .link()
-        .set(setns_req)
-        .execute()
-        .await
-        .handle_err(location!())?;
+    match ns_pid {
+        Some(pid) => {
+            let setns_req = LinkUnspec::new_with_index(link_in.header.index)
+                .setns_by_pid(pid)
+                .build();
+            handle
+                .link()
+                .set(setns_req)
+                .execute()
+                .await
+                .handle_err(location!())?;
+        }
+        None => {
+            // Kept alive across the `.execute().await` below: it's only the
+            // raw fd *number* that goes into the netlink message, so if the
+            // `File` were dropped (closing the fd) before the message is
+            // actually sent, the kernel would read a closed/reused fd —
+            // "Bad file descriptor" (EBADF) — instead of the namespace.
+            let netns_file =
+                File::open(format!("/var/run/netns/{}", params.ns_name)).handle_err(location!())?;
+            let setns_req = LinkUnspec::new_with_index(link_in.header.index)
+                .setns_by_fd(netns_file.as_raw_fd())
+                .build();
+            handle
+                .link()
+                .set(setns_req)
+                .execute()
+                .await
+                .handle_err(location!())?;
+        }
+    }
 
     // Once moved, the veth's ifindex only exists inside the target
     // namespace's own link table — configuring it needs a netlink socket
