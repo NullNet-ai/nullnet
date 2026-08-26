@@ -162,8 +162,8 @@ pub struct VxlanSetup {
     pub dstport: u32,
     /// Whether this tunnel is encrypted, mirroring the server's ENCRYPTION_ENABLED
     /// env var at the time this edge was set up. When false, the client skips
-    /// `encryption_key` and vxlan-setup.sh sets up a bare vxlan/veth link with no
-    /// XFRM SA/policy or MACsec.
+    /// `encryption_key` and sets up a bare vxlan/veth link with no XFRM
+    /// SA/policy or MACsec (see nullnet-client's commands/vxlan.rs).
     #[prost(bool, tag = "16")]
     pub encrypted: bool,
 }

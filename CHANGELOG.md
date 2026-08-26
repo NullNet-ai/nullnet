@@ -5,6 +5,7 @@ All Nullnet releases with the relative changes are documented in this file.
 ## [UNRELEASED]
 ### Added
 ### Changed
+- Create/tear down VXLAN tunnels via `rtnetlink` in-process instead of spawning `vxlan-setup.sh`/`vxlan-teardown.sh`, following the same strategy as VLAN access ports; MACsec SA/key installation and XFRM state/policy stay CLI-based, since neither is exposed by rtnetlink (fixes [#141](https://github.com/NullNet-ai/nullnet/issues/141))
 - Tear edges down on proven connection liveness instead of routing-event timers ([#164](https://github.com/NullNet-ai/nullnet/pull/164) — fixes [#126](https://github.com/NullNet-ai/nullnet/issues/126))
 - Move stack service configuration from TOML files to normalized SQLite tables, and rework the Config page to edit services through per-field widgets instead of a raw TOML textarea; the whole configuration can still be imported from or exported to a TOML file via dedicated buttons ([#163](https://github.com/NullNet-ai/nullnet/pull/163) — fixes [#140](https://github.com/NullNet-ai/nullnet/issues/140))
 - Persist events to SQLite with time-based retention ([#157](https://github.com/NullNet-ai/nullnet/pull/157) — fixes [#151](https://github.com/NullNet-ai/nullnet/issues/151))

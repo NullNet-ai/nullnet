@@ -44,7 +44,7 @@ is chosen globally by the server env var `NET_TYPE` (`VLAN` | `VXLAN`, see
 
 ### VXLAN data plane (kernel overlay, per-edge bridge/namespace)
 - Each edge gets a dedicated bridge (`br_<id>_{s,c}`) and namespace
-  (`ns_<id>_{s,c}`), wired by `vxlan_scripts/vxlan-setup.sh`, connected by a
+  (`ns_<id>_{s,c}`), wired by `commands/vxlan.rs`, connected by a
   kernel VXLAN tunnel (UDP `4789`) — or a veth pair for the same-host case.
 - Container mode plumbs the container's netns into the bridge via `nsenter` +
   `ip link set … netns <pid>`; standalone (host) mode creates a throwaway
@@ -149,7 +149,7 @@ let server_net_ip = if is_server_docker { ns_net_server.ip() } else { br_net_ser
 ```
 The initiator's **host** `/etc/hosts` is updated (`add_host_mapping` with
 `docker_container = None` → host-targeted file) to resolve `server_name → br IP`.
-`vxlan-setup.sh` standalone mode assigns that bridge IP in the root namespace and
+`commands::vxlan::setup` standalone mode assigns that bridge IP in the root namespace and
 attaches the VXLAN to the bridge; a host process listening on `0.0.0.0:port` is
 reachable there by ordinary local delivery. The throwaway `ns_<id>` namespace is
 created but unused for a host service (its default route stays *inside* the ns —
@@ -215,5 +215,5 @@ eBPF peer+port, not fine-grained rules.
   unmapped source, pass-through.
 - `members/nullnet-client/src/ebpf/mod.rs`, `ebpf/src/main.rs` — firewall peer
   allow for VLAN forward port.
-- `members/nullnet-client/vxlan_scripts/vxlan-setup.sh` — standalone (host) vs
+- `members/nullnet-client/src/commands/vxlan.rs` — standalone (host) vs
   docker plumbing.

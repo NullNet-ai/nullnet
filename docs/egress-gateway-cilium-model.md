@@ -325,7 +325,7 @@ Until D lands, egress remains allow-all and the trigger stays on NFQUEUE.
 
 - Same-node case (proxy co-located with the service): the veth-pair overlay path
   from the old design still applies; confirm masquerade + forward behave under the
-  `LOCAL_IP == REMOTE_IP` veth branch of `vxlan-setup.sh`.
+  `local_ip == remote_ip` veth branch of `commands::vxlan::setup`.
 - Edge teardown: **node disconnect** reverses both sides; **container death /
   dereg** (node still up) is reaped via the per-node `services_list` (edges whose
   initiator container is no longer running are torn down —

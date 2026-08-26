@@ -10,6 +10,7 @@ pub(crate) mod egress;
 mod netlink;
 pub(crate) mod nfqueue;
 mod ovs;
+pub(crate) mod vxlan;
 
 pub(crate) async fn setup_br0(rtnetlink_handle: &RtNetLinkHandle) {
     // create the bridge
@@ -145,7 +146,7 @@ pub(crate) async fn cleanup_network(rtnetlink_handle: &RtNetLinkHandle) -> Optio
     mss_error
 }
 
-/// SPI range `vxlan-setup.sh` can install: it offsets the net id by 1000 to
+/// SPI range `vxlan::xfrm_spi` can install: it offsets the net id by 1000 to
 /// clear the IANA-reserved 1–255 band, and the server's pool spans 101 up to
 /// the VXLAN maximum (see nullnet-server's `net_id_pool`).
 const XFRM_SPI_MIN: u32 = 1_000 + 101;
@@ -153,7 +154,7 @@ const XFRM_SPI_MAX: u32 = 1_000 + 2_097_151;
 
 /// Delete IPsec state/policy pairs left behind by a previous run.
 ///
-/// `vxlan-teardown.sh` removes them per edge, but a client that was killed
+/// `vxlan::teardown` removes them per edge, but a client that was killed
 /// never ran it. Net ids are recycled, so a survivor makes the next `ip xfrm
 /// state add` for that id fail `EEXIST` and the new tunnel silently runs under
 /// the *old* key — both ends then disagree and the tunnel black-holes. Scoped
@@ -339,7 +340,7 @@ src 10.20.30.1/32 dst 10.20.30.2/32
 
 /// Clamp TCP MSS on forwarded SYN / SYN-ACK packets so traffic over the VXLAN
 /// service chains can't exceed the underlay MTU. The chains (see
-/// `vxlan_scripts/vxlan-setup.sh`) leave the veth/bridge/vxlan at the default
+/// `vxlan::setup`) leave the veth/bridge/vxlan at the default
 /// 1500 MTU, but VXLAN adds 50 bytes of encap → a full-size segment becomes
 /// 1550, the DF bit blocks fragmentation, and it's silently dropped. The
 /// result: small requests work while large payloads (big responses,
@@ -352,7 +353,7 @@ src 10.20.30.1/32 dst 10.20.30.2/32
 /// position.
 fn install_mss_clamp() -> Option<String> {
     prune_superseded_mss_rules();
-    // Must match OVERLAY_MTU in vxlan_scripts/vxlan-setup.sh (1080) minus the
+    // Must match OVERLAY_MTU in commands/vxlan.rs (1080) minus the
     // 40-byte IP+TCP headers. The previous 1400 came from a theoretical
     // 1500-VXLAN budget and exceeds what the chain interfaces actually carry,
     // so `--set-mss` could raise an endpoint's advertised MSS above the path.

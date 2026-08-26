@@ -127,12 +127,14 @@ pub(crate) async fn control_channel(
                 });
             }
             Some(net_message::Message::VxlanSetup(vxlan_setup)) => {
+                let rtnetlink_handle = rtnetlink_handle.clone();
                 let triggers_state = triggers_state.clone();
                 let egress_state = egress_state.clone();
                 let sets = sets.clone();
                 tokio::spawn(async move {
                     let _ = handle_vxlan_setup(
                         vxlan_setup,
+                        rtnetlink_handle,
                         outbound,
                         triggers_state,
                         host_mappings_state,
@@ -146,12 +148,14 @@ pub(crate) async fn control_channel(
                 });
             }
             Some(net_message::Message::VxlanTeardown(vxlan_teardown)) => {
+                let rtnetlink_handle = rtnetlink_handle.clone();
                 let triggers_state = triggers_state.clone();
                 let egress_state = egress_state.clone();
                 let sets = sets.clone();
                 tokio::spawn(async move {
                     handle_vxlan_teardown(
                         vxlan_teardown,
+                        rtnetlink_handle,
                         triggers_state,
                         outbound,
                         host_mappings_state,
@@ -379,6 +383,7 @@ async fn handle_vlan_teardown(
 #[allow(clippy::too_many_arguments)]
 async fn handle_vxlan_setup(
     message: VxlanSetup,
+    rtnetlink_handle: RtNetLinkHandle,
     outbound: Sender<MsgId>,
     triggers_state: Arc<TriggersState>,
     host_mappings_state: Arc<HostMappingsState>,
@@ -413,12 +418,13 @@ async fn handle_vxlan_setup(
         .remote_ip
         .parse::<Ipv4Addr>()
         .handle_err(location!())?;
+    let dstport = u16::try_from(message.dstport).handle_err(location!())?;
     // Fail before touching the network if the key is malformed — running
     // this tunnel without a valid key would mean forwarding traffic in the
     // clear instead of encrypted. Skipped entirely when the server had
     // encryption disabled (ENCRYPTION_ENABLED=false) — `encryption_key` is
-    // just placeholder zero bytes in that case, and vxlan-setup.sh ignores
-    // it (see the `encrypted` arg passed below).
+    // just placeholder zero bytes in that case, and `commands::vxlan::setup`
+    // ignores it (see the `encrypted` field passed below).
     let encryption_key: [u8; 32] = if message.encrypted {
         message
             .encryption_key
@@ -458,39 +464,36 @@ async fn handle_vxlan_setup(
     // legitimately reused by many concurrent tunnels at once, so it can't be
     // paired to one specific peer here — it's already allowed via the eBPF
     // firewall's own VXLAN_PORT constant check instead (any known peer).
-    if let Ok(dstport) = u16::try_from(message.dstport)
-        && dstport != crate::DEFAULT_VXLAN_DSTPORT
-    {
+    if dstport != crate::DEFAULT_VXLAN_DSTPORT {
         firewall_vxlan_ports.add(vxlan_id, dstport, remote_ip);
     }
 
     // setup VXLAN on this machine (optionally attaching a Docker container)
     let init_t = std::time::Instant::now();
-    let mut cmd = std::process::Command::new("./vxlan_scripts/vxlan-setup.sh");
-    cmd.arg(vxlan_id.to_string())
-        .arg(&ns_name)
-        .arg(ns_net.to_string())
-        .arg(&br_name)
-        .arg(br_net.to_string())
-        .arg(local_ip.to_string())
-        .arg(remote_ip.to_string())
-        .arg(hex_encode(&encryption_key))
-        .arg(message.dstport.to_string())
-        .arg(if message.encrypted { "true" } else { "false" });
-    // Egress-steer edges keep their tunnel endpoint in the host root namespace
-    // (no `docker_container` arg) so the initiator container's *forwarded*
-    // external traffic can be policy-routed into the bridge. Other edges attach
-    // the endpoint to the container as before.
-    if !egress_steer && let Some(container) = &message.docker_container {
-        cmd.arg(container);
-    }
-    let script_result = cmd.spawn().and_then(|mut c| c.wait());
-    let error_code = match &script_result {
-        Ok(status) if !status.success() => status.code().unwrap_or(-1),
-        Err(_) => -1,
-        _ => 0,
+    let vxlan_params = crate::commands::vxlan::VxlanSetupParams {
+        vxlan_id,
+        ns_name: ns_name.clone(),
+        ns_net,
+        br_name: br_name.clone(),
+        br_net,
+        local_ip,
+        remote_ip,
+        key_hex: hex_encode(&encryption_key),
+        dstport,
+        encrypted: message.encrypted,
+        // Egress-steer edges keep their tunnel endpoint in the host root
+        // namespace so the initiator container's *forwarded* external traffic
+        // can be policy-routed into the bridge. Other edges attach the
+        // endpoint to the container as before.
+        docker_container: if egress_steer {
+            None
+        } else {
+            message.docker_container.clone()
+        },
     };
-    if error_code != 0 {
+    let setup_result = crate::commands::vxlan::setup(&rtnetlink_handle, &vxlan_params).await;
+    let error_code = if setup_result.is_err() { -1 } else { 0 };
+    if let Err(e) = &setup_result {
         fire_event(
             &grpc,
             AgentEventKind::VxlanSetupFailed(AgentVxlanSetupFailed {
@@ -499,8 +502,8 @@ async fn handle_vxlan_setup(
                 error_code,
             }),
         );
+        eprintln!("[vxlan_setup] {}", e.to_str());
     }
-    let _ = script_result.handle_err(location!());
     println!(
         "VXLAN {vxlan_id} setup completed in {} ms (docker: {})",
         init_t.elapsed().as_millis(),
@@ -701,6 +704,7 @@ async fn handle_vxlan_setup(
 #[allow(clippy::too_many_arguments)]
 async fn handle_vxlan_teardown(
     message: VxlanTeardown,
+    rtnetlink_handle: RtNetLinkHandle,
     triggers_state: Arc<TriggersState>,
     outbound: Sender<MsgId>,
     host_mappings_state: Arc<HostMappingsState>,
@@ -772,33 +776,27 @@ async fn handle_vxlan_teardown(
     let ns_name = message.ns_name.clone();
     let br_name = message.br_name;
 
-    let mut cmd = std::process::Command::new("./vxlan_scripts/vxlan-teardown.sh");
-    cmd.arg(vxlan_id.to_string())
-        .arg(&ns_name)
-        .arg(&br_name)
-        .arg(&message.local_ip)
-        .arg(&message.remote_ip)
-        .arg(message.dstport.to_string());
-    if let Some(container) = &message.docker_container {
-        cmd.arg(container);
-    }
-    let script_result = cmd.spawn().and_then(|mut c| c.wait());
-    let error_code = match &script_result {
-        Ok(status) if !status.success() => status.code().unwrap_or(-1),
-        Err(_) => -1,
-        _ => 0,
+    let vxlan_params = crate::commands::vxlan::VxlanTeardownParams {
+        vxlan_id,
+        ns_name: ns_name.clone(),
+        br_name,
+        // A malformed dstport just means the (already-idempotent) XFRM
+        // policy cleanup below is skipped — everything else still tears down.
+        dstport: u16::try_from(message.dstport).unwrap_or(crate::DEFAULT_VXLAN_DSTPORT),
+        docker_container: message.docker_container.clone(),
     };
-    if error_code != 0 {
+    let teardown_result = crate::commands::vxlan::teardown(&rtnetlink_handle, &vxlan_params).await;
+    if let Err(e) = &teardown_result {
         fire_event(
             &grpc,
             AgentEventKind::VxlanTeardownFailed(AgentVxlanTeardownFailed {
                 vxlan_id,
                 ns_name,
-                error_code,
+                error_code: -1,
             }),
         );
+        eprintln!("[vxlan_teardown] {}", e.to_str());
     }
-    let _ = script_result.handle_err(location!());
 
     println!(
         "VXLAN teardown completed in {} ms",
@@ -1028,7 +1026,8 @@ fn remove_hosts_entry(content: &str, name: &str, ip: &str) -> String {
 }
 
 /// Lowercase hex encoding, used to pass the tunnel's AES key to
-/// `vxlan-setup.sh`/`vxlan-teardown.sh` as a shell argument.
+/// `commands::vxlan::setup` (which in turn feeds it to the `ip macsec`/
+/// `ip xfrm` calls it still shells out to for key installation).
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
