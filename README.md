@@ -2,13 +2,11 @@
 
 **Routing in the dark 🥷**
 
-Networks that don't exist until they're needed &bull; No standing connections &bull; No attack surface
-
 Nullnet is a control plane for default-deny networking: no host can reach another until a
 real request arrives, and the path that carries it is built for that request and torn down
 when it goes idle.
 
-***
+> _Networks that don't exist until they're needed &bull; No standing connections &bull; No attack surface_
 
 ## The idea
 
@@ -28,8 +26,6 @@ There is no standing internal network for an intruder to move around in, because
 standing internal network at all — only the narrow, temporary paths that current legitimate
 traffic has asked for.
 
-<p align="center"><img src="docs/architecture.png" alt="nullnet architecture"></p>
-
 ## How it works
 
 Three binaries coordinate over a gRPC control plane:
@@ -39,6 +35,8 @@ Three binaries coordinate over a gRPC control plane:
 | **nullnet-proxy**  | It's the front door. Requests arrive looking for a named service; the proxy asks the server to build the path that delivers them. Terminates TLS, does host/path routing, and forwards raw tcp/udp on demand.                        |
 | **nullnet-server** | It's the brain, and the only piece that sees the whole picture. Holds the topology of which services may talk to which, decides when to build each link, and tears it down once it's idle.                                           |
 | **nullnet-client** | It runs on each machine using eBPF. Announces the services running locally, and watches for them reaching out. It intercepts the first packet of a new connection, asks the server for a path, and releases it once the path exists. |
+
+<p align="center"><img src="docs/architecture.png" alt="nullnet architecture"></p>
 
 ## What you get
 

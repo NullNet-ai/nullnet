@@ -1,6 +1,6 @@
+use crate::nullnet_grpc_impl::ChainBranch;
 use crate::orchestrator::Orchestrator;
 use crate::services::clients::{Client, ClientInfo, Clients};
-use crate::services::edge::Edge;
 use nullnet_grpc_lib::nullnet_grpc::{ServiceProtocol, Upstream};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
@@ -403,48 +403,58 @@ pub(crate) struct RegisteredServiceInfo {
 }
 
 impl RegisteredServiceInfo {
-    /// Build the edges for a proxy-triggered chain. Each branch in `proxy_deps`
-    /// is an independent linear chain rooted at this service; the per-branch
-    /// edges are concatenated.
-    pub(crate) fn proxy_dependency_chain(
+    /// The branches of a proxy-triggered chain, rooted at this replica. Each
+    /// entry of `proxy_deps` is one independent linear branch.
+    ///
+    /// Structure only — no replica is chosen here. Each hop's target is picked
+    /// when that hop is claimed, so it can be rooted on where its predecessor
+    /// actually landed (see `run_net_chain_setup`).
+    pub(crate) fn proxy_branches(
         &self,
-        service_name: String,
+        service_name: &str,
         service_ip: IpAddr,
         service_docker: Option<&str>,
-        services: &HashMap<String, ServiceInfo>,
-    ) -> Vec<Edge> {
+    ) -> Vec<ChainBranch> {
         self.proxy_deps
             .iter()
-            .flat_map(|branch| {
-                build_linear_chain(
-                    branch,
-                    service_name.clone(),
-                    service_ip,
-                    service_docker,
-                    services,
-                )
+            .map(|branch| ChainBranch {
+                root_name: service_name.to_string(),
+                root_ip: service_ip,
+                root_docker: service_docker.map(String::from),
+                deps: branch.clone(),
+                entry_port: None,
             })
             .collect()
     }
 
-    /// Build the chain of edges for the trigger at `port`, if one exists.
-    /// Each chain starts at this service's replica.
-    pub(crate) fn backend_dependency_chain(
+    /// The single branch of the trigger chain at `port`. The first hop carries
+    /// the DNAT port the initiator observed.
+    ///
+    /// Returns `None` if the trigger does not exist, or if any hop of its
+    /// chain names a service that is unregistered or has no replicas. A chain
+    /// that cannot be built must bail before anything is dispatched, so the
+    /// trigger records no hold on an increment it never took.
+    pub(crate) fn backend_branch(
         &self,
         service_name: &str,
         service_ip: IpAddr,
         service_docker: Option<&str>,
         port: u16,
         services: &HashMap<String, ServiceInfo>,
-    ) -> Option<Vec<Edge>> {
-        let chain = self.triggers.get(&port)?;
-        Some(build_linear_chain(
-            chain,
-            service_name.to_string(),
-            service_ip,
-            service_docker,
-            services,
-        ))
+    ) -> Option<ChainBranch> {
+        let deps = self.triggers.get(&port)?;
+        if !deps.iter().all(|dep| {
+            matches!(services.get(dep), Some(ServiceInfo::Registered(reg)) if !reg.replicas.is_empty())
+        }) {
+            return None;
+        }
+        Some(ChainBranch {
+            root_name: service_name.to_string(),
+            root_ip: service_ip,
+            root_docker: service_docker.map(String::from),
+            deps: deps.clone(),
+            entry_port: Some(u32::from(port)),
+        })
     }
 
     /// Invariant: a given `Client` exists on exactly one replica (sticky sessions).
@@ -501,6 +511,11 @@ impl RegisteredServiceInfo {
     ) {
         for replica in &mut self.replicas {
             if let Some(ci) = replica.clients.clients_mut().get_mut(client) {
+                // A reservation's single refcount belongs to the task building
+                // it; nothing else may spend it.
+                if ci.is_pending() {
+                    return;
+                }
                 ci.remove_active_chains(1);
                 if ci.active_chains() == 0
                     && let Some(ci) = replica.clients.clients_mut().remove(client)
@@ -556,13 +571,40 @@ impl RegisteredServiceInfo {
         }
     }
 
-    /// Find which server replica hosts a given client entry.
-    /// Returns the server replica's `(ip, docker_container)`.
+    /// Find which server replica hosts a given client entry, reservations
+    /// included. Used when resolving a chain, where a reservation is exactly
+    /// the binding a concurrent chain must agree with.
     pub(crate) fn client_replica(&self, client: &Client) -> Option<(IpAddr, Option<String>)> {
         self.replicas
             .iter()
             .find(|r| r.clients.clients().contains_key(client))
             .map(|r| (r.ip, r.docker_container.clone()))
+    }
+
+    /// As `client_replica`, but only for edges that are actually built. Every
+    /// teardown walk and intactness check uses this: a reservation is not an
+    /// edge, and treating it as one is what lets a walk decrement a refcount
+    /// it never contributed.
+    pub(crate) fn client_replica_live(&self, client: &Client) -> Option<(IpAddr, Option<String>)> {
+        self.replicas
+            .iter()
+            .find(|r| {
+                r.clients
+                    .clients()
+                    .get(client)
+                    .is_some_and(|ci| !ci.is_pending())
+            })
+            .map(|r| (r.ip, r.docker_container.clone()))
+    }
+
+    /// The wake-up for an edge another task is already building, if any.
+    pub(crate) fn pending_notify(
+        &self,
+        client: &Client,
+    ) -> Option<std::sync::Arc<tokio::sync::Notify>> {
+        self.replicas
+            .iter()
+            .find_map(|r| r.clients.pending_notify(client))
     }
 
     /// Count total proxy clients across all replicas.
@@ -635,19 +677,35 @@ impl RegisteredServiceInfo {
             .min_by_key(|r| r.clients.clients().len())
     }
 
+    /// Returns whether the entry actually landed. A replica can disappear
+    /// while its edge is in flight (Swarm reschedules the task), and silently
+    /// dropping the entry leaves a tunnel up on both hosts that the server has
+    /// no record of — so callers have to treat `false` as a failed edge.
     pub(crate) fn add_client_to_replica(
         &mut self,
         replica_ip: IpAddr,
         replica_docker: Option<&str>,
         client: Client,
         client_info: ClientInfo,
-    ) {
+    ) -> bool {
         if let Some(replica) = self
             .replicas
             .iter_mut()
             .find(|r| r.matches_identity(replica_ip, replica_docker))
         {
             replica.clients.add_client(client, client_info);
+            return true;
+        }
+        false
+    }
+
+    /// Release a reservation whose edge never came up. No-op on a promoted
+    /// entry, so a rollback can never take a refcount it does not own.
+    pub(crate) fn remove_pending_client(&mut self, client: &Client) {
+        for replica in &mut self.replicas {
+            if replica.clients.remove_pending_client(client) {
+                return;
+            }
         }
     }
 
@@ -693,6 +751,7 @@ impl RegisteredServiceInfo {
                     .iter()
                     .filter(|(c, ci)| {
                         c.is_proxy().is_some()
+                            && !ci.is_pending()
                             && ci.open_connections() == 0
                             && now.duration_since(ci.latest()) >= timeout
                     })
@@ -713,7 +772,9 @@ impl RegisteredServiceInfo {
                     // A client with connections open is pinned, not counting
                     // down: its grace only starts at the last close, so it must
                     // not pull the loop's sleep short every cycle.
-                    .filter(|(c, ci)| c.is_proxy().is_some() && ci.open_connections() == 0)
+                    .filter(|(c, ci)| {
+                        c.is_proxy().is_some() && !ci.is_pending() && ci.open_connections() == 0
+                    })
                     .map(|(_, ci)| timeout.saturating_sub(now.duration_since(ci.latest())))
             })
             .min()
@@ -724,9 +785,9 @@ impl RegisteredServiceInfo {
         self.replicas
             .iter()
             .filter(|r| r.ip == ip)
-            .flat_map(|r| r.clients.clients().keys())
-            .filter(|c| c.is_proxy().is_none())
-            .cloned()
+            .flat_map(|r| r.clients.clients().iter())
+            .filter(|(c, ci)| c.is_proxy().is_none() && !ci.is_pending())
+            .map(|(c, _)| c.clone())
             .collect()
     }
 
@@ -739,9 +800,9 @@ impl RegisteredServiceInfo {
         self.replicas
             .iter()
             .filter(|r| r.matches_identity(ip, docker_container))
-            .flat_map(|r| r.clients.clients().keys())
-            .filter(|c| c.is_proxy().is_none())
-            .cloned()
+            .flat_map(|r| r.clients.clients().iter())
+            .filter(|(c, ci)| c.is_proxy().is_none() && !ci.is_pending())
+            .map(|(c, _)| c.clone())
             .collect()
     }
 
@@ -769,70 +830,20 @@ impl RegisteredServiceInfo {
         self.replicas
             .iter()
             .flat_map(|replica| {
-                replica.clients.clients().iter().map(move |(c, ci)| {
-                    (
-                        c.clone(),
-                        ci.clone(),
-                        replica.ip,
-                        replica.docker_container.clone(),
-                    )
-                })
+                replica
+                    .clients
+                    .clients()
+                    .iter()
+                    .filter(|(_, ci)| !ci.is_pending())
+                    .map(move |(c, ci)| {
+                        (
+                            c.clone(),
+                            ci.clone(),
+                            replica.ip,
+                            replica.docker_container.clone(),
+                        )
+                    })
             })
             .collect()
     }
-}
-
-/// Build a linear chain of edges from `start` → deps[0] → deps[1] → … → deps[N-1].
-fn build_linear_chain(
-    deps: &[String],
-    service_name: String,
-    service_ip: IpAddr,
-    service_docker: Option<&str>,
-    services: &HashMap<String, ServiceInfo>,
-) -> Vec<Edge> {
-    let mut chain = Vec::new();
-    let mut current_ip: Option<IpAddr> = Some(service_ip);
-    let mut current_docker: Option<String> = service_docker.map(String::from);
-    let mut current_name = service_name;
-    for dep in deps {
-        let (dep_ip, dep_docker) = match services.get(dep) {
-            Some(ServiceInfo::Registered(reg)) => {
-                // Sticky by source replica: a source replica can only route to a
-                // single replica of a given dependency (its /etc/hosts entry for
-                // the service name holds one overlay IP), so reuse the target it's
-                // already bound to. Only the first chain from this source picks a
-                // fresh least-loaded replica.
-                let sticky = current_ip.and_then(|ip| {
-                    let client =
-                        Client::new_service(current_name.clone(), ip, current_docker.clone());
-                    reg.client_replica(&client)
-                });
-                match sticky {
-                    Some((ip, docker)) => (Some(ip), docker),
-                    None => match reg.pick_replica_least_clients() {
-                        Some(r) => (Some(r.ip()), r.docker_container().map(String::from)),
-                        None => (None, None),
-                    },
-                }
-            }
-            _ => (None, None),
-        };
-        let client = match current_ip {
-            Some(ip) => Client::new_service(current_name.clone(), ip, current_docker.clone()),
-            None => Client::new(current_name.clone(), None),
-        };
-        let edge = Edge::new(
-            current_ip,
-            client,
-            current_docker,
-            dep_ip,
-            Client::new(dep.clone(), None),
-            dep_docker.clone(),
-        );
-        chain.push(edge);
-        current_ip = dep_ip;
-        current_docker = dep_docker;
-        current_name.clone_from(dep);
-    }
-    chain
 }

@@ -1,5 +1,7 @@
 use crate::orchestrator::Orchestrator;
-use crate::services::changes::{ServiceChange, apply_changes, release_backend_chain};
+use crate::services::changes::{
+    ServiceChange, apply_changes, dep_chain_has_pending, release_backend_chain,
+};
 use crate::services::input::StackMap;
 use crate::services::service_info::{ServiceInfo, backend_involved_services};
 use std::collections::HashMap;
@@ -144,6 +146,14 @@ fn collect_timed_out_clients(services: &HashMap<String, ServiceInfo>) -> Vec<Ser
         };
 
         for client in reg.expired_proxy_clients(Duration::from_secs(timeout)) {
+            // Skip a client whose chain still has a hop in flight — see
+            // `dep_chain_has_pending`. It becomes reapable the moment the
+            // chain settles, one poll later at worst.
+            if reg.client_replica(&client).is_some_and(|(ip, docker)| {
+                dep_chain_has_pending(name, ip, docker.as_deref(), services)
+            }) {
+                continue;
+            }
             changes.push(ServiceChange::ProxyClientTimedOut {
                 name: name.clone(),
                 client,

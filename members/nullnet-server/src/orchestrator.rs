@@ -1037,6 +1037,59 @@ impl Orchestrator {
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
     }
 
+    /// Like `register_recording_client`, but every ack is withheld until the
+    /// test hands out a permit. Lets a test park one edge of a chain in the
+    /// window between its placeholder reservation and its promotion, which is
+    /// where setup holds no lock and a teardown can interleave.
+    pub(crate) async fn register_gated_client(
+        &self,
+        ip: IpAddr,
+    ) -> (Arc<Mutex<Vec<NetMessage>>>, Arc<tokio::sync::Semaphore>) {
+        use nullnet_grpc_lib::nullnet_grpc::net_message;
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let (tx, mut rx) = mpsc::channel::<Result<NetMessage, Status>>(64);
+        self.clients.write().await.insert(ip, tx);
+
+        let pending = self.pending.clone();
+        let log_task = log.clone();
+        let gate_task = gate.clone();
+        tokio::spawn(async move {
+            while let Some(Ok(msg)) = rx.recv().await {
+                let ack_id = match &msg.message {
+                    Some(net_message::Message::VlanSetup(
+                        nullnet_grpc_lib::nullnet_grpc::VlanSetup { msg_id, .. },
+                    ))
+                    | Some(net_message::Message::VxlanSetup(
+                        nullnet_grpc_lib::nullnet_grpc::VxlanSetup { msg_id, .. },
+                    ))
+                    | Some(net_message::Message::ContainerResume(ContainerResume {
+                        msg_id, ..
+                    }))
+                    | Some(net_message::Message::VlanTeardown(
+                        nullnet_grpc_lib::nullnet_grpc::VlanTeardown { msg_id, .. },
+                    ))
+                    | Some(net_message::Message::VxlanTeardown(
+                        nullnet_grpc_lib::nullnet_grpc::VxlanTeardown { msg_id, .. },
+                    )) => msg_id.clone(),
+                    _ => None,
+                };
+                log_task.lock().await.push(msg);
+                if let Some(msg_id) = ack_id {
+                    if let Ok(permit) = gate_task.acquire().await {
+                        permit.forget();
+                    }
+                    if let Some(tx) = pending.lock().await.remove(&msg_id.id) {
+                        let _ = tx.send(());
+                    }
+                }
+            }
+        });
+
+        (log, gate)
+    }
+
     /// Like `register_fake_client`, but returns a log of every `NetMessage` sent
     /// to the client so tests can assert suspend/resume commands were issued.
     pub(crate) async fn register_recording_client(

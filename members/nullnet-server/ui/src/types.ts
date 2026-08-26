@@ -84,6 +84,13 @@ export type EventJson =
   | WithSeverity & { type: 'setup_started'; net_id: number; service: string; client_ip: string }
   | WithSeverity & { type: 'setup_ack'; net_id: number; service: string; latency_ms: number }
   | WithSeverity & { type: 'setup_timeout'; net_id: number; service: string }
+  | WithSeverity & { type: 'chain_owner_lost'; stack: string }
+  | WithSeverity & {
+      type: 'edge_promotion_lost'
+      net_id: number
+      service: string
+      replica_ip: string
+    }
   | WithSeverity & { type: 'session_created'; net_id: number; service: string; client_ip: string }
   | WithSeverity & { type: 'session_torn_down'; net_id: number; service: string; client_ip: string }
   | WithSeverity & { type: 'net_teardown_unconfirmed'; net_id: number; node_ip: string }

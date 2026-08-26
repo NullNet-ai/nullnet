@@ -12,7 +12,7 @@ use crate::services::changes::{
     detect_services_list_changes,
 };
 use crate::services::clients::{Client, ClientInfo};
-use crate::services::edge::{Edge, RegisteredEdge};
+use crate::services::edge::RegisteredEdge;
 use crate::services::input::{MatchIndex, RouteMap, RouteTarget, ServicesToml, StackMap};
 use crate::services::service_info::{
     CountryPolicy, RegisteredServiceInfo, ServiceInfo, backend_involved_services,
@@ -31,7 +31,7 @@ use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex as StdMutex};
-use tokio::sync::{Notify, RwLock, mpsc, watch};
+use tokio::sync::{Notify, RwLock, mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
@@ -83,6 +83,16 @@ type ProxyKey = (String, String, IpAddr);
 
 /// Build the live TCP/UDP port→service table from the current `StackMap`.
 /// `Http` services are excluded — they stay on Host-header routing.
+/// How long an edge task waits for another task's reservation of the same edge
+/// to resolve. Covers the worst case that task can take — a container resume
+/// plus both setup acks, each capped at 30s — with a little headroom.
+const EDGE_CLAIM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// One wait round before re-reading the map. A reservation resolving wakes the
+/// waiter immediately; this only bounds the cost of a wake-up that arrives
+/// while the waiter is between the guard and its registration.
+const EDGE_CLAIM_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
 fn build_port_mapping_bundle(stacks: &StackMap) -> PortMappingBundle {
     let mappings: Vec<PortMapping> = stacks
         .values()
@@ -635,22 +645,44 @@ impl NullnetGrpcImpl {
             return Ok(upstream);
         }
 
-        match self
-            .new_proxy_chain(&stack, service_name, proxy_ip, client_ip)
-            .await
-        {
-            Ok(response) => Ok(response.into_inner()),
-            Err(e) => {
-                self.orchestrator
-                    .events
-                    .emit(Event::proxy_chain_setup_failed(
-                        service_name.to_string(),
-                        client_ip.to_string(),
-                    ))
-                    .await;
-                Err(e)
+        // One retry. A chain unwound because its client entry was torn down
+        // mid-build handed every edge back, so building again is the whole
+        // repair — and the request that triggered it still deserves an
+        // upstream. Bounded at one attempt so a teardown loop cannot spin here.
+        for attempt in 0..2 {
+            match self
+                .new_proxy_chain(&stack, service_name, proxy_ip, client_ip)
+                .await
+            {
+                Ok(Some(response)) => return Ok(response.into_inner()),
+                Ok(None) if attempt == 0 => {}
+                Ok(None) => {
+                    self.orchestrator
+                        .events
+                        .emit(Event::chain_owner_lost(stack.clone()))
+                        .await;
+                    break;
+                }
+                Err(e) => {
+                    self.orchestrator
+                        .events
+                        .emit(Event::proxy_chain_setup_failed(
+                            service_name.to_string(),
+                            client_ip.to_string(),
+                        ))
+                        .await;
+                    return Err(e);
+                }
             }
         }
+        self.orchestrator
+            .events
+            .emit(Event::proxy_chain_setup_failed(
+                service_name.to_string(),
+                client_ip.to_string(),
+            ))
+            .await;
+        Err("Chain was torn down while it was being built").handle_err(location!())?
     }
 
     async fn services_list_impl(
@@ -740,7 +772,7 @@ impl NullnetGrpcImpl {
         service_name: &str,
         proxy_ip: IpAddr,
         client_ip: &str,
-    ) -> Result<Response<Upstream>, Error> {
+    ) -> Result<Option<Response<Upstream>>, Error> {
         let guard = self.services.read().await;
         let stack_map = guard
             .get(stack)
@@ -759,7 +791,7 @@ impl NullnetGrpcImpl {
         let service_docker = replica.docker_container().map(String::from);
         drop(guard);
 
-        let upstream_ip = self
+        let outcome = self
             .setup_proxy_chain(
                 stack,
                 service_name,
@@ -773,19 +805,24 @@ impl NullnetGrpcImpl {
         // Suspended replicas are unpaused per-edge inside `net_chain_setup`, so by
         // the time the chain is built every container in it is already serving.
 
-        Ok(Response::new(Upstream {
+        let upstream_ip = match outcome {
+            ChainOutcome::Built(Some(ip)) => ip,
+            ChainOutcome::Built(None) | ChainOutcome::OwnerLost => return Ok(None),
+        };
+
+        Ok(Some(Response::new(Upstream {
             ip: upstream_ip.to_string(),
             port: u32::from(service_port),
-        }))
+        })))
     }
 
-    async fn build_proxy_dep_chain(
+    async fn proxy_branches(
         &self,
         stack: &str,
         service_name: &str,
         service_ip: IpAddr,
         service_docker: Option<&str>,
-    ) -> Result<Vec<RegisteredEdge>, Error> {
+    ) -> Result<Vec<ChainBranch>, Error> {
         let guard = self.services.read().await;
         let stack_map = guard
             .get(stack)
@@ -798,34 +835,18 @@ impl NullnetGrpcImpl {
         let ServiceInfo::Registered(registered) = service_info else {
             Err("Service is not registered").handle_err(location!())?
         };
-        let dep_chain = registered.proxy_dependency_chain(
-            service_name.to_string(),
-            service_ip,
-            service_docker,
-            stack_map,
-        );
-        drop(guard);
-
-        dep_chain
-            .into_iter()
-            .map(|edge| {
-                edge.into_registered()
-                    .ok_or("Dependency not registered")
-                    .handle_err(location!())
-            })
-            .collect::<Result<_, Error>>()
+        Ok(registered.proxy_branches(service_name, service_ip, service_docker))
     }
 
-    /// Build the registered chain for the trigger at `port`. Returns `None`
-    /// if the trigger does not exist or any dep along the chain is unregistered.
-    async fn build_backend_dep_chain(
+    /// The trigger chain at `port`, if the trigger exists.
+    async fn backend_branch(
         &self,
         stack: &str,
         service_name: &str,
         service_ip: IpAddr,
         service_docker: Option<&str>,
         port: u16,
-    ) -> Result<Option<Vec<RegisteredEdge>>, Error> {
+    ) -> Result<Option<ChainBranch>, Error> {
         let guard = self.services.read().await;
         let stack_map = guard
             .get(stack)
@@ -838,20 +859,7 @@ impl NullnetGrpcImpl {
         let ServiceInfo::Registered(registered) = service_info else {
             Err("Service is not registered").handle_err(location!())?
         };
-        let Some(raw_chain) = registered.backend_dependency_chain(
-            service_name,
-            service_ip,
-            service_docker,
-            port,
-            stack_map,
-        ) else {
-            return Ok(None);
-        };
-        drop(guard);
-
-        let chain: Option<Vec<RegisteredEdge>> =
-            raw_chain.into_iter().map(Edge::into_registered).collect();
-        Ok(chain)
+        Ok(registered.backend_branch(service_name, service_ip, service_docker, port, stack_map))
     }
 
     pub(crate) async fn setup_proxy_chain(
@@ -862,24 +870,26 @@ impl NullnetGrpcImpl {
         client_ip: &str,
         service_ip: IpAddr,
         service_docker: Option<&str>,
-    ) -> Result<Ipv4Addr, Error> {
-        let mut dep_chain = self
-            .build_proxy_dep_chain(stack, service_name, service_ip, service_docker)
+    ) -> Result<ChainOutcome, Error> {
+        let branches = self
+            .proxy_branches(stack, service_name, service_ip, service_docker)
             .await?;
 
-        dep_chain.push(RegisteredEdge::new(
+        let entry = RegisteredEdge::new(
             proxy_ip,
             Client::new(client_ip.to_string(), Some(proxy_ip)),
             None,
             service_ip,
             Client::new(service_name.to_string(), None),
             service_docker.map(String::from),
-        ));
+        );
 
-        self.net_chain_setup(stack, dep_chain)
-            .await?
-            .ok_or("No valid upstream IP found after NET chain setup")
-            .handle_err(location!())
+        match self.net_chain_setup(stack, Some(entry), branches).await? {
+            ChainOutcome::Built(None) => {
+                Err("No valid upstream IP found after NET chain setup").handle_err(location!())
+            }
+            other => Ok(other),
+        }
     }
 
     /// Resolve the proxy client entry and apply `f` to its service.
@@ -1098,12 +1108,16 @@ impl NullnetGrpcImpl {
                 initiator_docker.clone(),
             );
 
+            // `client_replica`, not `is_client_setup`: a reservation counts as
+            // already building. Rebuilding on top of one would take a second
+            // refcount on every hop while `hold_backend_session` records only
+            // one, pinning the chain forever.
             let needs_rebuild = match first_dep {
                 None => false,
                 Some(name) => !matches!(
                     stack_map.get(&name),
                     Some(ServiceInfo::Registered(dep_reg))
-                        if dep_reg.is_client_setup(&initiator_client).is_some()
+                        if dep_reg.client_replica(&initiator_client).is_some()
                 ),
             };
 
@@ -1161,13 +1175,12 @@ impl NullnetGrpcImpl {
         initiator_docker: Option<&str>,
         port: u16,
     ) -> Result<bool, Error> {
-        let Some(mut chain) = self
-            .build_backend_dep_chain(stack, initiator_name, initiator_ip, initiator_docker, port)
+        let Some(branch) = self
+            .backend_branch(stack, initiator_name, initiator_ip, initiator_docker, port)
             .await?
+            .filter(|b| !b.deps.is_empty())
         else {
-            println!(
-                "[trigger] build_backend_dep_chain returned None for '{initiator_name}' port {port}"
-            );
+            println!("[trigger] no chain to build for '{initiator_name}' port {port}");
             self.orchestrator
                 .events
                 .emit(Event::backend_trigger_setup_bailed(
@@ -1177,22 +1190,20 @@ impl NullnetGrpcImpl {
                 .await;
             return Ok(false);
         };
+
         println!(
-            "[trigger] built dep chain with {} edge(s) for '{initiator_name}' port {port}",
-            chain.len()
+            "[trigger] dispatching net_chain_setup for '{initiator_name}' port {port} \
+             ({} hop(s))",
+            branch.deps.len()
         );
-
-        if let Some(first) = chain.first_mut() {
-            first.backend_entry_port = Some(u32::from(port));
-        } else {
-            println!("[trigger] dep chain is empty for '{initiator_name}' port {port}");
-            return Ok(false);
-        }
-
-        println!("[trigger] dispatching net_chain_setup for '{initiator_name}' port {port}");
-        self.net_chain_setup(stack, chain).await?;
+        // A trigger chain has no entry edge, so `OwnerLost` cannot arise here;
+        // treat it as "built nothing" if it ever does, so no hold is recorded.
+        let built = matches!(
+            self.net_chain_setup(stack, None, vec![branch]).await?,
+            ChainOutcome::Built(_)
+        );
         println!("[trigger] net_chain_setup completed for '{initiator_name}' port {port}");
-        Ok(true)
+        Ok(built)
     }
 
     async fn egress_trigger_impl(
@@ -1553,359 +1564,601 @@ impl NullnetGrpcImpl {
     }
 
     #[allow(clippy::too_many_lines)]
+    /// Detached wrapper around [`run_net_chain_setup`] — see its docs for why
+    /// the chain must not be able to die with its caller.
     pub(crate) async fn net_chain_setup(
         &self,
         stack: &str,
-        dep_chain: Vec<RegisteredEdge>,
-    ) -> Result<Option<Ipv4Addr>, Error> {
-        let mut join_set_outer = JoinSet::new();
-        for edge in dep_chain {
-            let (client_ethernet, client) = edge.client;
-            let (server_ethernet, server) = edge.server;
-            let client_docker = edge.client_docker;
-            let server_docker = edge.server_docker;
-            let backend_entry_port = edge.backend_entry_port;
-            // Egress edges steer on the initiator (client) side and intercept on
-            // the proxy (server) side; non-egress edges pass EgressRole::None.
-            let (server_egress, client_egress) = if edge.egress {
-                (EgressRole::Intercept, EgressRole::Steer)
-            } else {
-                (EgressRole::None, EgressRole::None)
-            };
+        entry: Option<RegisteredEdge>,
+        branches: Vec<ChainBranch>,
+    ) -> Result<ChainOutcome, Error> {
+        let services = self.services.clone();
+        let orchestrator = self.orchestrator.clone();
+        let stack = stack.to_string();
+        let (tx, rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let _ =
+                tx.send(run_net_chain_setup(services, orchestrator, stack, entry, branches).await);
+        });
+        rx.await.handle_err(location!())?
+    }
+}
 
-            let services = self.services.clone();
-            let orchestrator = self.orchestrator.clone();
-            let stack = stack.to_string();
-            join_set_outer.spawn(async move {
-                let init_time = std::time::Instant::now();
+/// What building a chain produced.
+pub(crate) enum ChainOutcome {
+    /// Built (or reused). Carries the proxy upstream if the chain had an entry
+    /// edge, `None` for a chain of dependency hops only.
+    Built(Option<Ipv4Addr>),
+    /// Unwound because the client entry that owns the chain was torn down while
+    /// it was still being built. Every edge this chain took was handed back, so
+    /// nothing is left behind and the caller may simply build it again — a
+    /// request should not fail because a teardown landed inside its window.
+    OwnerLost,
+}
 
-                let mut services_guard = services.write().await;
-                let Some(stack_map) = services_guard.get_mut(&stack) else {
-                    return EdgeOutcome::Failed;
-                };
-                let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(server.name()) else {
-                    return EdgeOutcome::Failed;
-                };
-                // Reuse if this client is already connected to ANY replica of the
-                // dependency. Proxy clients are keyed by (client, proxy); dep
-                // clients by source replica — and a source replica can only route
-                // to one replica of a given dep, so an existing entry (even an
-                // in-progress placeholder from a concurrent request) means reuse,
-                // not a new network. Checking across all replicas under this write
-                // lock is what makes concurrent first-time setup race-free.
-                let already_setup = reg.is_client_setup(&client).is_some();
-                if already_setup {
-                    reg.add_chain(&client);
-                    return EdgeOutcome::Success {
-                        client,
-                        server_name: server.name().to_string(),
-                        proxy_upstream: None,
-                    };
-                }
-                // reserve the slot so concurrent requests see it as in-progress
-                reg.add_client_to_replica(
-                    server_ethernet,
-                    server_docker.as_deref(),
-                    client.clone(),
-                    ClientInfo::placeholder(client_ethernet),
-                );
-                // Does the target replica need unpausing before traffic flows?
-                let server_suspended =
-                    reg.replica_suspended(server_ethernet, server_docker.as_deref());
+/// Where an edge's server side comes from.
+enum EdgeTarget {
+    /// A dependency whose replica is chosen when the edge is claimed. Choosing
+    /// it any earlier is what finding 5 was: the pick and the binding have to
+    /// happen in the same locked pass, or the hop after this one gets rooted on
+    /// a replica that lost the race.
+    Dependency,
+    /// A replica the caller already fixed — the proxy entry edge, whose target
+    /// is picked when the request selects an upstream.
+    Fixed(IpAddr, Option<String>),
+}
 
-                drop(services_guard);
-
-                // Resume the target container before bringing up the link, so it is
-                // serving by the time traffic arrives. This covers the proxy entry,
-                // proxy dependencies, and every hop of a backend-triggered chain
-                // uniformly (it mirrors the per-edge suspend in `decrement_chain`).
-                if server_suspended && let Some(container) = server_docker.clone() {
-                    if orchestrator
-                        .send_container_resume(server_ethernet, container.clone())
-                        .await
-                    {
-                        if let Some(stack_map) = services.write().await.get_mut(&stack)
-                            && let Some(ServiceInfo::Registered(reg)) =
-                                stack_map.get_mut(server.name())
-                        {
-                            reg.mark_replica_resumed(server_ethernet, server_docker.as_deref());
-                        }
-                    } else {
-                        orchestrator
-                            .events
-                            .emit(Event::container_resume_failed(
-                                container,
-                                format!("no ack from {server_ethernet} within timeout"),
-                            ))
-                            .await;
-                        // roll back the reserved placeholder; the idle replica stays
-                        // suspended (consistent) and the request fails fast.
-                        if let Some(stack_map) = services.write().await.get_mut(&stack)
-                            && let Some(ServiceInfo::Registered(reg)) =
-                                stack_map.get_mut(server.name())
-                        {
-                            reg.remove_client(&client);
-                        }
-                        return EdgeOutcome::Failed;
-                    }
-                }
-
-                let Some(net_id) = orchestrator.allocate_net_id().await else {
-                    eprintln!("NET ID pool exhausted");
-                    orchestrator
-                        .events
-                        .emit(Event::net_id_pool_exhausted(
-                            server.name().to_string(),
-                            client_ethernet.to_string(),
-                        ))
-                        .await;
-                    // remove placeholder
-                    if let Some(stack_map) = services.write().await.get_mut(&stack)
-                        && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(server.name())
-                    {
-                        reg.remove_client(&client);
-                    }
-                    return EdgeOutcome::Failed;
-                };
-
-                if client.is_proxy().is_some() {
-                    orchestrator
-                        .events
-                        .emit(Event::setup_started(
-                            net_id,
-                            server.name().to_string(),
-                            client_ethernet.to_string(),
-                        ))
-                        .await;
-                }
-
-                // One AES-256 key per tunnel, handed identically to both
-                // endpoints below (skipped when encryption is globally
-                // disabled). A dedicated per-tunnel UDP dstport is only
-                // needed so the two hosts' XFRM policies can tell this
-                // tunnel apart from other concurrent *encrypted* tunnels
-                // between the same host pair — same-host tunnels (MACsec on
-                // a veth, no XFRM) and unencrypted ones (no XFRM either) fall
-                // back to the shared default port instead. The 40k-entry pool
-                // is also scoped per host pair (see `Orchestrator::allocate_vxlan_port`),
-                // not global, so it only actually caps concurrent encrypted
-                // tunnels between the same two hosts.
-                let encrypted = *ENCRYPTION_ENABLED;
-                let encryption_key = if encrypted { generate_key() } else { [0u8; 32] };
-                let needs_dedicated_port =
-                    *NET_TYPE == Net::Vxlan && encrypted && server_ethernet != client_ethernet;
-                let dstport = if needs_dedicated_port {
-                    match orchestrator
-                        .allocate_vxlan_port(net_id, server_ethernet, client_ethernet)
-                        .await
-                    {
-                        Some(port) => Some(u32::from(port)),
-                        None => {
-                            eprintln!("UDP port pool exhausted");
-                            orchestrator
-                                .events
-                                .emit(Event::udp_port_pool_exhausted(
-                                    server.name().to_string(),
-                                    client_ethernet.to_string(),
-                                ))
-                                .await;
-                            orchestrator.free_net_id(net_id).await;
-                            if let Some(stack_map) = services.write().await.get_mut(&stack)
-                                && let Some(ServiceInfo::Registered(reg)) =
-                                    stack_map.get_mut(server.name())
-                            {
-                                reg.remove_client(&client);
-                            }
-                            return EdgeOutcome::Failed;
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                let orch = orchestrator.clone();
-                let cd = client_docker.clone();
-                let sd = server_docker.clone();
-                let server_res = orch.send_net_setup(
-                    server_ethernet,
-                    None,
-                    net_id,
-                    client_ethernet,
-                    (cd, sd),
-                    None,
-                    encryption_key,
-                    dstport,
-                    encrypted,
-                    server_egress,
-                );
-                let orch2 = orchestrator.clone();
-                let cd = client_docker.clone();
-                let sd = server_docker.clone();
-                let client_res = orch2.send_net_setup(
-                    client_ethernet,
-                    Some(server.name().to_string()),
-                    net_id,
-                    server_ethernet,
-                    (cd, sd),
-                    backend_entry_port,
-                    encryption_key,
-                    dstport,
-                    encrypted,
-                    client_egress,
-                );
-
-                let (server_ok, client_ok) = tokio::join!(server_res, client_res);
-
-                if server_ok.is_none() || client_ok.is_none() {
-                    if client.is_proxy().is_some() {
-                        orchestrator
-                            .events
-                            .emit(Event::setup_timeout(net_id, server.name().to_string()))
-                            .await;
-                    }
-                    // rollback
-                    orchestrator
-                        .send_net_teardown(
-                            client_ethernet,
-                            client_docker.clone(),
-                            server_ethernet,
-                            server_docker.clone(),
-                            net_id,
-                        )
-                        .await;
-                    // remove placeholder
-                    if let Some(stack_map) = services.write().await.get_mut(&stack)
-                        && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(server.name())
-                    {
-                        reg.remove_client(&client);
-                    }
-                    return EdgeOutcome::Failed;
-                }
-
-                let (Some(net_ip_server), Some(net_ip_client)) = (server_ok, client_ok) else {
-                    return EdgeOutcome::Failed;
-                };
-
-                println!("{server_ethernet} acknowledged");
-                println!("{client_ethernet} acknowledged");
-
-                if client.is_proxy().is_some() {
-                    orchestrator
-                        .events
-                        .emit(Event::setup_ack(
-                            net_id,
-                            server.name().to_string(),
-                            init_time.elapsed().as_millis() as u64,
-                        ))
-                        .await;
-                }
-
-                // register the link between the two services
-                let mut guard = services.write().await;
-                let stack_map_opt = guard.get_mut(&stack);
-                let registered_match = stack_map_opt
-                    .as_ref()
-                    .and_then(|m| m.get(server.name()))
-                    .is_some_and(|si| matches!(si, ServiceInfo::Registered(_)));
-                if registered_match
-                    && let Some(stack_map) = stack_map_opt
-                    && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(server.name())
-                {
-                    let time_ms = init_time.elapsed().as_millis();
-                    let ci = ClientInfo::new(
-                        client_ethernet,
-                        net_ip_client,
-                        net_ip_server,
-                        net_id,
-                        time_ms,
-                        client_docker.clone(),
-                    );
-                    reg.add_client_to_replica(
-                        server_ethernet,
-                        server_docker.as_deref(),
-                        client.clone(),
-                        ci,
-                    );
-                    reg.add_chain(&client);
-                } else {
-                    // service was unregistered during setup — teardown NETs
-                    drop(guard);
-                    orchestrator
-                        .send_net_teardown(
-                            client_ethernet,
-                            client_docker,
-                            server_ethernet,
-                            server_docker,
-                            net_id,
-                        )
-                        .await;
-                    return EdgeOutcome::Failed;
-                }
-
-                let proxy_upstream = if client.is_proxy().is_some() {
-                    orchestrator
-                        .events
-                        .emit(Event::session_created(
-                            net_id,
-                            server.name().to_string(),
-                            client_ethernet.to_string(),
-                        ))
-                        .await;
-                    Some(net_ip_server)
-                } else {
-                    None
-                };
-
-                EdgeOutcome::Success {
-                    client,
-                    server_name: server.name().to_string(),
-                    proxy_upstream,
-                }
-            });
+impl EdgeTarget {
+    fn resolve(&self, reg: &RegisteredServiceInfo) -> Option<(IpAddr, Option<String>)> {
+        match self {
+            Self::Fixed(ip, docker) => Some((*ip, docker.clone())),
+            Self::Dependency => reg
+                .pick_replica_least_clients()
+                .map(|r| (r.ip(), r.docker_container().map(String::from))),
         }
+    }
+}
 
-        let mut successful: Vec<SuccessfulEdge> = Vec::new();
-        let mut any_failure = false;
-        while let Some(res) = join_set_outer.join_next().await {
-            match res {
-                Ok(EdgeOutcome::Success {
+/// One linear branch of a chain, rooted at a specific replica. Hops are walked
+/// in order and each is resolved only once its predecessor is bound.
+pub(crate) struct ChainBranch {
+    pub(crate) root_name: String,
+    pub(crate) root_ip: IpAddr,
+    pub(crate) root_docker: Option<String>,
+    pub(crate) deps: Vec<String>,
+    /// DNAT port for the first hop, set only on a backend-trigger chain.
+    pub(crate) entry_port: Option<u32>,
+}
+
+struct BranchOutcome {
+    edges: Vec<SuccessfulEdge>,
+    ok: bool,
+}
+
+/// Build every branch of a chain, plus the proxy entry edge if there is one,
+/// and return the upstream that entry edge resolved to.
+///
+/// Branches run in parallel; the hops *within* a branch run in order, because
+/// a hop cannot be resolved before the one it hangs off is bound. That
+/// ordering is the fix for finding 5 — the old code resolved every hop up
+/// front from one read-locked snapshot and applied the result later, so a
+/// shared hop that got bound to a different replica in between left the rest
+/// of the branch rooted on a replica nothing routes through.
+///
+/// A free function, and always run detached (see `net_chain_setup`): the tasks
+/// spawned here live in a `JoinSet` owned by this future, and dropping a
+/// `JoinSet` aborts its tasks. If a request future could carry it, a proxy that
+/// hung up mid-setup would abort edges that had already reserved their slot,
+/// leaving reservations with nothing left to resolve them.
+async fn run_net_chain_setup(
+    services: Arc<RwLock<StackMap>>,
+    orchestrator: Orchestrator,
+    stack: String,
+    entry: Option<RegisteredEdge>,
+    branches: Vec<ChainBranch>,
+) -> Result<ChainOutcome, Error> {
+    let mut join_set_outer = JoinSet::new();
+
+    if let Some(edge) = entry {
+        let (client_ethernet, client) = edge.client;
+        let (server_ethernet, server) = edge.server;
+        let services = services.clone();
+        let orchestrator = orchestrator.clone();
+        let stack = stack.clone();
+        join_set_outer.spawn(async move {
+            let outcome = setup_edge(
+                &services,
+                &orchestrator,
+                &stack,
+                client_ethernet,
+                client,
+                edge.client_docker,
+                server.name().to_string(),
+                EdgeTarget::Fixed(server_ethernet, edge.server_docker),
+                edge.backend_entry_port,
+                edge.egress,
+            )
+            .await;
+            match outcome {
+                EdgeOutcome::Success {
                     client,
                     server_name,
                     proxy_upstream,
-                }) => {
-                    successful.push(SuccessfulEdge {
+                    ..
+                } => BranchOutcome {
+                    edges: vec![SuccessfulEdge {
                         client,
                         server_name,
                         proxy_upstream,
-                    });
-                }
-                Ok(EdgeOutcome::Failed) | Err(_) => {
-                    any_failure = true;
-                }
+                    }],
+                    ok: true,
+                },
+                EdgeOutcome::Failed => BranchOutcome {
+                    edges: Vec::new(),
+                    ok: false,
+                },
             }
-        }
+        });
+    }
 
-        if any_failure {
-            let mut services_mut = self.services.write().await;
-            if let Some(stack_map) = services_mut.get_mut(stack) {
-                let pinned = backend_involved_services(stack_map);
-                for edge in &successful {
-                    if let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&edge.server_name)
-                    {
-                        reg.decrement_chain(
-                            &edge.client,
-                            &self.orchestrator,
-                            pinned.contains(&edge.server_name),
-                        )
-                        .await;
+    for branch in branches {
+        let services = services.clone();
+        let orchestrator = orchestrator.clone();
+        let stack = stack.clone();
+        join_set_outer.spawn(async move {
+            let mut edges = Vec::new();
+            let mut current_name = branch.root_name;
+            let mut current_ip = branch.root_ip;
+            let mut current_docker = branch.root_docker;
+            for (i, dep) in branch.deps.iter().enumerate() {
+                let client =
+                    Client::new_service(current_name.clone(), current_ip, current_docker.clone());
+                let entry_port = if i == 0 { branch.entry_port } else { None };
+                let outcome = setup_edge(
+                    &services,
+                    &orchestrator,
+                    &stack,
+                    current_ip,
+                    client,
+                    current_docker.clone(),
+                    dep.clone(),
+                    EdgeTarget::Dependency,
+                    entry_port,
+                    false,
+                )
+                .await;
+                match outcome {
+                    EdgeOutcome::Success {
+                        client,
+                        server_name,
+                        server,
+                        proxy_upstream,
+                    } => {
+                        edges.push(SuccessfulEdge {
+                            client,
+                            server_name,
+                            proxy_upstream,
+                        });
+                        // The next hop hangs off wherever this one actually
+                        // landed, not off a guess made before it was claimed.
+                        current_name.clone_from(dep);
+                        current_ip = server.0;
+                        current_docker = server.1;
                     }
+                    EdgeOutcome::Failed => return BranchOutcome { edges, ok: false },
                 }
             }
-            Err("NET chain setup failed").handle_err(location!())?;
-        }
+            BranchOutcome { edges, ok: true }
+        });
+    }
 
-        let upstream = successful.iter().find_map(|e| e.proxy_upstream);
-        Ok(upstream)
+    let mut successful: Vec<SuccessfulEdge> = Vec::new();
+    let mut any_failure = false;
+    while let Some(res) = join_set_outer.join_next().await {
+        match res {
+            Ok(BranchOutcome { edges, ok }) => {
+                successful.extend(edges);
+                any_failure |= !ok;
+            }
+            Err(_) => {
+                any_failure = true;
+            }
+        }
+    }
+
+    // A proxy chain is owned by the client entry its entry edge created. If
+    // that entry is gone by the time the chain finishes — its replica moved, a
+    // teardown walked through, config changed under it — every edge this chain
+    // built is holding a refcount nobody will ever spend. Hand them back
+    // instead of stranding them and their net ids.
+    let orphaned = {
+        let guard = services.read().await;
+        successful
+            .iter()
+            .filter(|e| e.client.is_proxy().is_some())
+            .any(|e| {
+                !guard
+                    .get(&stack)
+                    .and_then(|stack_map| stack_map.get(&e.server_name))
+                    .is_some_and(|si| {
+                        matches!(si, ServiceInfo::Registered(reg)
+                            if reg.client_replica_live(&e.client).is_some())
+                    })
+            })
+    };
+
+    if any_failure || orphaned {
+        let mut services_mut = services.write().await;
+        if let Some(stack_map) = services_mut.get_mut(&stack) {
+            let pinned = backend_involved_services(stack_map);
+            for edge in &successful {
+                if let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&edge.server_name) {
+                    reg.decrement_chain(
+                        &edge.client,
+                        &orchestrator,
+                        pinned.contains(&edge.server_name),
+                    )
+                    .await;
+                }
+            }
+        }
+        if orphaned && !any_failure {
+            // Recoverable: nothing of this chain survives, so say so rather
+            // than failing the request outright.
+            return Ok(ChainOutcome::OwnerLost);
+        }
+        Err("NET chain setup failed").handle_err(location!())?;
+    }
+
+    Ok(ChainOutcome::Built(
+        successful.iter().find_map(|e| e.proxy_upstream),
+    ))
+}
+
+/// Claim one edge and, if this task is the one that reserved it, build it.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn setup_edge(
+    services: &Arc<RwLock<StackMap>>,
+    orchestrator: &Orchestrator,
+    stack: &str,
+    client_ethernet: IpAddr,
+    client: Client,
+    client_docker: Option<String>,
+    server_name: String,
+    target: EdgeTarget,
+    backend_entry_port: Option<u32>,
+    egress: bool,
+) -> EdgeOutcome {
+    let init_time = std::time::Instant::now();
+    // Egress edges steer on the initiator (client) side and intercept on the
+    // proxy (server) side; non-egress edges pass EgressRole::None.
+    let (server_egress, client_egress) = if egress {
+        (EgressRole::Intercept, EgressRole::Steer)
+    } else {
+        (EgressRole::None, EgressRole::None)
+    };
+
+    // Claim this edge. Three outcomes: it is already live and we just take a
+    // refcount; another task is building it and we wait for their result
+    // rather than reporting a hop that has no tunnel yet; or it is ours, and
+    // we pick the replica and reserve it in one locked pass.
+    //
+    // Reuse is across ALL replicas of the dependency: proxy clients are keyed
+    // by (client, proxy) and dep clients by source replica, and a source
+    // replica can only route to one replica of a given dep.
+    let deadline = std::time::Instant::now() + EDGE_CLAIM_TIMEOUT;
+    let (server_ethernet, server_docker, server_suspended) = loop {
+        let waiting_on = {
+            let mut services_guard = services.write().await;
+            let Some(stack_map) = services_guard.get_mut(stack) else {
+                return EdgeOutcome::Failed;
+            };
+            let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name) else {
+                return EdgeOutcome::Failed;
+            };
+            if let Some(bound) = reg.client_replica_live(&client) {
+                reg.add_chain(&client);
+                return EdgeOutcome::Success {
+                    client,
+                    server_name,
+                    server: bound,
+                    proxy_upstream: None,
+                };
+            }
+            match reg.pending_notify(&client) {
+                Some(notify) => notify,
+                None => {
+                    let Some((ip, docker)) = target.resolve(reg) else {
+                        return EdgeOutcome::Failed;
+                    };
+                    // Reserving takes the refcount too, so the slot is never
+                    // visible at zero.
+                    if !reg.add_client_to_replica(
+                        ip,
+                        docker.as_deref(),
+                        client.clone(),
+                        ClientInfo::reservation(client_ethernet),
+                    ) {
+                        return EdgeOutcome::Failed;
+                    }
+                    // Does the target replica need unpausing first?
+                    let suspended = reg.replica_suspended(ip, docker.as_deref());
+                    break (ip, docker, suspended);
+                }
+            }
+        };
+
+        if std::time::Instant::now() >= deadline {
+            eprintln!(
+                "timed out waiting for a concurrent setup of '{server_name}' <- {client_ethernet}"
+            );
+            return EdgeOutcome::Failed;
+        }
+        // Short bounded wait, then re-check under the lock: `notify_waiters`
+        // only reaches futures already registered, and we cannot register one
+        // while holding the guard, so a missed wake-up must cost a poll
+        // interval and not the whole request.
+        let _ = tokio::time::timeout(EDGE_CLAIM_POLL, waiting_on.notified()).await;
+    };
+
+    // Resume the target container before bringing up the link, so it is
+    // serving by the time traffic arrives. This covers the proxy entry,
+    // proxy dependencies, and every hop of a backend-triggered chain
+    // uniformly (it mirrors the per-edge suspend in `decrement_chain`).
+    if server_suspended && let Some(container) = server_docker.clone() {
+        if orchestrator
+            .send_container_resume(server_ethernet, container.clone())
+            .await
+        {
+            if let Some(stack_map) = services.write().await.get_mut(stack)
+                && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
+            {
+                reg.mark_replica_resumed(server_ethernet, server_docker.as_deref());
+            }
+        } else {
+            orchestrator
+                .events
+                .emit(Event::container_resume_failed(
+                    container,
+                    format!("no ack from {server_ethernet} within timeout"),
+                ))
+                .await;
+            // roll back the reserved placeholder; the idle replica stays
+            // suspended (consistent) and the request fails fast.
+            if let Some(stack_map) = services.write().await.get_mut(stack)
+                && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
+            {
+                reg.remove_pending_client(&client);
+            }
+            return EdgeOutcome::Failed;
+        }
+    }
+
+    let Some(net_id) = orchestrator.allocate_net_id().await else {
+        eprintln!("NET ID pool exhausted");
+        orchestrator
+            .events
+            .emit(Event::net_id_pool_exhausted(
+                server_name.clone(),
+                client_ethernet.to_string(),
+            ))
+            .await;
+        // remove placeholder
+        if let Some(stack_map) = services.write().await.get_mut(stack)
+            && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
+        {
+            reg.remove_pending_client(&client);
+        }
+        return EdgeOutcome::Failed;
+    };
+
+    if client.is_proxy().is_some() {
+        orchestrator
+            .events
+            .emit(Event::setup_started(
+                net_id,
+                server_name.clone(),
+                client_ethernet.to_string(),
+            ))
+            .await;
+    }
+
+    // One AES-256 key per tunnel, handed identically to both
+    // endpoints below (skipped when encryption is globally
+    // disabled). A dedicated per-tunnel UDP dstport is only
+    // needed so the two hosts' XFRM policies can tell this
+    // tunnel apart from other concurrent *encrypted* tunnels
+    // between the same host pair — same-host tunnels (MACsec on
+    // a veth, no XFRM) and unencrypted ones (no XFRM either) fall
+    // back to the shared default port instead. The 40k-entry pool
+    // is also scoped per host pair (see `Orchestrator::allocate_vxlan_port`),
+    // not global, so it only actually caps concurrent encrypted
+    // tunnels between the same two hosts.
+    let encrypted = *ENCRYPTION_ENABLED;
+    let encryption_key = if encrypted { generate_key() } else { [0u8; 32] };
+    let needs_dedicated_port =
+        *NET_TYPE == Net::Vxlan && encrypted && server_ethernet != client_ethernet;
+    let dstport = if needs_dedicated_port {
+        match orchestrator
+            .allocate_vxlan_port(net_id, server_ethernet, client_ethernet)
+            .await
+        {
+            Some(port) => Some(u32::from(port)),
+            None => {
+                eprintln!("UDP port pool exhausted");
+                orchestrator
+                    .events
+                    .emit(Event::udp_port_pool_exhausted(
+                        server_name.clone(),
+                        client_ethernet.to_string(),
+                    ))
+                    .await;
+                orchestrator.free_net_id(net_id).await;
+                if let Some(stack_map) = services.write().await.get_mut(stack)
+                    && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
+                {
+                    reg.remove_pending_client(&client);
+                }
+                return EdgeOutcome::Failed;
+            }
+        }
+    } else {
+        None
+    };
+
+    let orch = orchestrator.clone();
+    let cd = client_docker.clone();
+    let sd = server_docker.clone();
+    let server_res = orch.send_net_setup(
+        server_ethernet,
+        None,
+        net_id,
+        client_ethernet,
+        (cd, sd),
+        None,
+        encryption_key,
+        dstport,
+        encrypted,
+        server_egress,
+    );
+    let orch2 = orchestrator.clone();
+    let cd = client_docker.clone();
+    let sd = server_docker.clone();
+    let client_res = orch2.send_net_setup(
+        client_ethernet,
+        Some(server_name.clone()),
+        net_id,
+        server_ethernet,
+        (cd, sd),
+        backend_entry_port,
+        encryption_key,
+        dstport,
+        encrypted,
+        client_egress,
+    );
+
+    let (server_ok, client_ok) = tokio::join!(server_res, client_res);
+
+    if server_ok.is_none() || client_ok.is_none() {
+        if client.is_proxy().is_some() {
+            orchestrator
+                .events
+                .emit(Event::setup_timeout(net_id, server_name.clone()))
+                .await;
+        }
+        // rollback
+        orchestrator
+            .send_net_teardown(
+                client_ethernet,
+                client_docker.clone(),
+                server_ethernet,
+                server_docker.clone(),
+                net_id,
+            )
+            .await;
+        // remove placeholder
+        if let Some(stack_map) = services.write().await.get_mut(stack)
+            && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
+        {
+            reg.remove_pending_client(&client);
+        }
+        return EdgeOutcome::Failed;
+    }
+
+    let (Some(net_ip_server), Some(net_ip_client)) = (server_ok, client_ok) else {
+        return EdgeOutcome::Failed;
+    };
+
+    println!("{server_ethernet} acknowledged");
+    println!("{client_ethernet} acknowledged");
+
+    if client.is_proxy().is_some() {
+        orchestrator
+            .events
+            .emit(Event::setup_ack(
+                net_id,
+                server_name.clone(),
+                init_time.elapsed().as_millis() as u64,
+            ))
+            .await;
+    }
+
+    // Promote the reservation to a live edge. No refcount is added
+    // here — the reservation already carries this chain's one.
+    let mut guard = services.write().await;
+    let promoted = match guard
+        .get_mut(stack)
+        .and_then(|stack_map| stack_map.get_mut(&server_name))
+    {
+        Some(ServiceInfo::Registered(reg)) => {
+            let ci = ClientInfo::new(
+                client_ethernet,
+                net_ip_client,
+                net_ip_server,
+                net_id,
+                init_time.elapsed().as_millis(),
+                client_docker.clone(),
+            );
+            reg.add_client_to_replica(
+                server_ethernet,
+                server_docker.as_deref(),
+                client.clone(),
+                ci,
+            )
+        }
+        _ => false,
+    };
+    if !promoted {
+        // The service was unregistered, or the target replica went
+        // away, while the edge was in flight. The tunnel is up on
+        // both hosts and nothing here can own it, so take it down
+        // rather than leaving it stranded.
+        if let Some(ServiceInfo::Registered(reg)) = guard
+            .get_mut(stack)
+            .and_then(|stack_map| stack_map.get_mut(&server_name))
+        {
+            reg.remove_pending_client(&client);
+        }
+        drop(guard);
+        orchestrator
+            .events
+            .emit(Event::edge_promotion_lost(
+                net_id,
+                server_name.clone(),
+                server_ethernet.to_string(),
+            ))
+            .await;
+        orchestrator
+            .send_net_teardown(
+                client_ethernet,
+                client_docker,
+                server_ethernet,
+                server_docker,
+                net_id,
+            )
+            .await;
+        return EdgeOutcome::Failed;
+    }
+
+    let proxy_upstream = if client.is_proxy().is_some() {
+        orchestrator
+            .events
+            .emit(Event::session_created(
+                net_id,
+                server_name.clone(),
+                client_ethernet.to_string(),
+            ))
+            .await;
+        Some(net_ip_server)
+    } else {
+        None
+    };
+
+    EdgeOutcome::Success {
+        client,
+        server_name,
+        server: (server_ethernet, server_docker),
+        proxy_upstream,
     }
 }
 
@@ -1913,6 +2166,9 @@ enum EdgeOutcome {
     Success {
         client: Client,
         server_name: String,
+        /// The replica this edge is bound to. The next hop of the branch is
+        /// rooted here, so it must be what was claimed, not what was guessed.
+        server: (IpAddr, Option<String>),
         proxy_upstream: Option<Ipv4Addr>,
     },
     Failed,

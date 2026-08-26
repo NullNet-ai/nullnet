@@ -1,0 +1,13 @@
+# Same topology, but `entry` is an entry point whose idle reaping is disabled
+# (timeout = 0) — the configuration the deployed instaprotek stack runs. With
+# no reaper walking the chain, nothing ever revisits a half-built edge.
+[[services]]
+name = "entry"
+timeout = 0
+proxy_dependencies = [["a", "b"]]
+
+[[services]]
+name = "a"
+
+[[services]]
+name = "b"

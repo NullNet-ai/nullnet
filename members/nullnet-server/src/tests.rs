@@ -3500,3 +3500,502 @@ async fn a_bailed_setup_records_no_hold() {
         "a setup that built the chain holds exactly one refcount"
     );
 }
+
+// ===========================================================================
+// setup_teardown_race: entry --> a --> b.
+//
+// Setup releases the services lock for the whole time it waits on the two
+// endpoints of an edge, so a teardown can run while a chain is half built.
+// These tests park the a->b edge in exactly that window (its host acks only
+// when the test hands out a permit) and drive a real teardown against it.
+// ===========================================================================
+
+const SETUP_TEARDOWN_RACE: &str = "setup_teardown_race";
+
+/// The `Client` key for the a->b edge: keyed by the *source* replica.
+fn a_to_b_client(a_ip: IpAddr) -> Client {
+    Client::new_service("a".to_string(), a_ip, None)
+}
+
+/// The net id of `client`'s entry on `service`, if one exists. A slot that has
+/// been reserved but not yet promoted (the edge is still being built) reads
+/// back as net id 0.
+fn client_entry_net_id(guard: &StackMap, service: &str, client: &Client) -> Option<u32> {
+    match stack_view(guard).get(service) {
+        Some(ServiceInfo::Registered(reg)) => reg.replicas().iter().find_map(|r| {
+            r.clients()
+                .get(client)
+                .map(crate::services::clients::ClientInfo::net_id)
+        }),
+        _ => None,
+    }
+}
+
+fn client_entry_chains(guard: &StackMap, service: &str, client: &Client) -> Option<usize> {
+    match stack_view(guard).get(service) {
+        Some(ServiceInfo::Registered(reg)) => reg.replicas().iter().find_map(|r| {
+            r.clients()
+                .get(client)
+                .map(crate::services::clients::ClientInfo::active_chains)
+        }),
+        _ => None,
+    }
+}
+
+/// Net ids carried by every teardown message in the log, either net type.
+fn teardown_net_ids(log: &[NetMessage]) -> Vec<u32> {
+    log.iter()
+        .filter_map(|m| match &m.message {
+            Some(net_message::Message::VxlanTeardown(t)) => Some(t.vxlan_id),
+            Some(net_message::Message::VlanTeardown(t)) => Some(t.vlan_id),
+            _ => None,
+        })
+        .collect()
+}
+
+fn setup_net_ids(log: &[NetMessage]) -> Vec<u32> {
+    log.iter()
+        .filter_map(|m| match &m.message {
+            Some(net_message::Message::VxlanSetup(s)) => Some(s.vxlan_id),
+            Some(net_message::Message::VlanSetup(s)) => Some(s.vlan_id),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Poll until the a->b slot has been reserved, i.e. the chain is now parked in
+/// the window where setup holds no lock. Bounded so a failure terminates.
+async fn wait_for_reserved_slot(server: &NullnetGrpcImpl, a_ip: IpAddr) {
+    for _ in 0..400 {
+        {
+            let guard = server.services().read().await;
+            if client_entry_net_id(&guard, "b", &a_to_b_client(a_ip)) == Some(0) {
+                return;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("the a->b slot was never reserved");
+}
+
+/// entry@1, a@2, b@3, proxy@5. Host `b` is gated: the a->b edge cannot finish
+/// until the returned semaphore is topped up. The other two edges of the chain
+/// (proxy->entry and entry->a) complete normally, which is what leaves one
+/// edge of a single chain in flight while the rest of it is live.
+#[allow(clippy::type_complexity)]
+async fn race_server(
+    config: &str,
+) -> (
+    std::sync::Arc<NullnetGrpcImpl>,
+    std::sync::Arc<tokio::sync::Mutex<Vec<NetMessage>>>,
+    std::sync::Arc<tokio::sync::Semaphore>,
+    std::sync::Arc<tokio::sync::Mutex<Vec<NetMessage>>>,
+) {
+    let services = load_config(SETUP_TEARDOWN_RACE, config).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+    {
+        let mut guard = server.services().write().await;
+        let stack = stack_view_mut(&mut guard);
+        stack
+            .get_mut("entry")
+            .unwrap()
+            .add_replica(ip(1, 1, 1, 1), 8080, None);
+        stack
+            .get_mut("a")
+            .unwrap()
+            .add_replica(ip(2, 2, 2, 2), 8080, None);
+        stack
+            .get_mut("b")
+            .unwrap()
+            .add_replica(ip(3, 3, 3, 3), 8080, None);
+    }
+    server
+        .orchestrator()
+        .register_fake_client(ip(1, 1, 1, 1))
+        .await;
+    let a_log = server
+        .orchestrator()
+        .register_recording_client(ip(2, 2, 2, 2))
+        .await;
+    let (b_log, gate) = server
+        .orchestrator()
+        .register_gated_client(ip(3, 3, 3, 3))
+        .await;
+    server
+        .orchestrator()
+        .register_fake_client(ip(5, 5, 5, 5))
+        .await;
+    (std::sync::Arc::new(server), b_log, gate, a_log)
+}
+
+/// Finding 1. A teardown walk cannot tell a reserved slot from a live edge:
+/// `collect_dep_chain_edges` probes `client_replica`, which matches both. It
+/// then decrements the reservation's zero refcount, removes the entry, and
+/// dispatches a teardown for net id 0 — an id the pool never issues
+/// (`MIN_NET_ID` is 101), naming kernel objects that do not exist.
+#[tokio::test]
+async fn teardown_must_not_fire_for_an_unallocated_net_id() {
+    let (server, _b_log, gate, a_log) = race_server("services.toml").await;
+    let a_ip = ip(2, 2, 2, 2);
+
+    let srv = std::sync::Arc::clone(&server);
+    let chain = tokio::spawn(async move {
+        srv.handle_proxy_request("entry", ip(5, 5, 5, 5), "10.0.0.1")
+            .await
+    });
+    wait_for_reserved_slot(&server, a_ip).await;
+
+    // A teardown walks the mesh while this chain is still building: host 1
+    // stops reporting its replica of `entry`, which tears down every chain
+    // rooted there. The walk reaches the a->b hop that is still in flight.
+    server
+        .apply_services_list(ip(1, 1, 1, 1), &[])
+        .await
+        .expect("apply_services_list failed");
+
+    // Wait for the teardown burst to drain, then inspect what was sent.
+    wait_for_log(&a_log, |l| !teardown_net_ids(l).is_empty()).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let ids = teardown_net_ids(&a_log.lock().await);
+    assert!(
+        !ids.contains(&0),
+        "a teardown was dispatched for net id 0, which the pool never issues: \
+         the walk decremented an edge that was still being set up (saw {ids:?})"
+    );
+
+    gate.add_permits(64);
+    let _ = chain.await.expect("chain task panicked");
+}
+
+/// Finding 1, second half. Once the walk has removed the reservation, the
+/// setup task that owns it promotes anyway and re-inserts the edge — now held
+/// by a chain whose proxy client no longer exists. Nothing will ever decrement
+/// it again, so both the edge and its net id are stranded.
+#[tokio::test]
+async fn an_edge_torn_down_mid_setup_is_not_stranded() {
+    let (server, _b_log, gate, _a_log) = race_server("services.toml").await;
+    let a_ip = ip(2, 2, 2, 2);
+
+    let srv = std::sync::Arc::clone(&server);
+    let chain = tokio::spawn(async move {
+        srv.handle_proxy_request("entry", ip(5, 5, 5, 5), "10.0.0.1")
+            .await
+    });
+    wait_for_reserved_slot(&server, a_ip).await;
+
+    // Same mid-setup teardown as above.
+    server
+        .apply_services_list(ip(1, 1, 1, 1), &[])
+        .await
+        .expect("apply_services_list failed");
+
+    gate.add_permits(64);
+    let _ = chain.await.expect("chain task panicked");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let guard = server.services().read().await;
+    let held = client_entry_chains(&guard, "b", &a_to_b_client(a_ip));
+    let entry_has_clients = stack_view(&guard)
+        .get("entry")
+        .is_some_and(|si| matches!(si, ServiceInfo::Registered(r) if r.has_clients()));
+    drop(guard);
+    server.orchestrator().settle_teardowns().await;
+    let in_use = server.orchestrator().net_ids_in_use().await;
+
+    assert!(
+        held.is_none() || entry_has_clients,
+        "the a->b edge finished with {held:?} chain(s) but the client that \
+         owns it is gone, so no teardown path will ever reach it again; \
+         {in_use} net id(s) still held"
+    );
+    assert_eq!(in_use, 0, "{in_use} net id(s) leaked");
+}
+
+/// Finding 3. The chain is built by a `JoinSet` owned by the request future,
+/// so a caller that goes away mid-setup aborts the tasks and leaves the
+/// reservation behind. With reaping disabled (`timeout = 0`, what the deployed
+/// stack runs) nothing ever revisits it — and the next chain *reuses* it,
+/// completing over a hop whose tunnel was never built.
+#[tokio::test]
+async fn an_abandoned_reservation_is_not_reused_by_the_next_chain() {
+    let (server, b_log, _gate, _a_log) = race_server("services_pinned.toml").await;
+    let a_ip = ip(2, 2, 2, 2);
+
+    let srv = std::sync::Arc::clone(&server);
+    let chain = tokio::spawn(async move {
+        srv.handle_proxy_request("entry", ip(5, 5, 5, 5), "10.0.0.1")
+            .await
+    });
+    wait_for_reserved_slot(&server, a_ip).await;
+
+    // The proxy hangs up / times out: tonic drops the handler future.
+    chain.abort();
+    let _ = chain.await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    {
+        let mut guard = server.services().write().await;
+        apply_timeouts(
+            stack_view_mut(&mut guard),
+            server.orchestrator(),
+            TEST_STACK,
+        )
+        .await;
+    }
+
+    // A second, unrelated client asks for the same entry point.
+    let second = server
+        .handle_proxy_request("entry", ip(5, 5, 5, 5), "10.0.0.2")
+        .await;
+
+    let guard = server.services().read().await;
+    let net_id = client_entry_net_id(&guard, "b", &a_to_b_client(a_ip));
+    let held = client_entry_chains(&guard, "b", &a_to_b_client(a_ip));
+    let intact = dep_chain_intact("entry", ip(1, 1, 1, 1), None, stack_view(&guard));
+    drop(guard);
+    // b was told to set the tunnel up but never acked, so it is not there.
+    let attempted = setup_net_ids(&b_log.lock().await);
+
+    assert!(
+        !(second.is_ok() && net_id == Some(0)),
+        "the second chain reported success over an a->b hop that was never \
+         built (reservation net id {net_id:?}, now held by {held:?} chain(s), \
+         dep_chain_intact={intact}, only setup attempt to b was {attempted:?})"
+    );
+}
+
+/// Finding 4. If the target replica disappears while the edge is in flight,
+/// promotion silently no-ops: `add_client_to_replica` finds no matching
+/// replica and drops the entry on the floor, while the guard above it only
+/// checks that the *service* is still registered. The tunnel exists on both
+/// hosts, the chain reports success, and the server has no record of it.
+#[tokio::test]
+async fn a_replica_lost_mid_setup_does_not_strand_its_tunnel() {
+    let (server, b_log, gate, _a_log) = race_server("services.toml").await;
+    let a_ip = ip(2, 2, 2, 2);
+    // A second replica of `b`, so losing the first leaves `b` registered.
+    {
+        let mut guard = server.services().write().await;
+        stack_view_mut(&mut guard)
+            .get_mut("b")
+            .unwrap()
+            .add_replica(ip(4, 4, 4, 4), 8080, None);
+    }
+    server
+        .orchestrator()
+        .register_fake_client(ip(4, 4, 4, 4))
+        .await;
+
+    let srv = std::sync::Arc::clone(&server);
+    let chain = tokio::spawn(async move {
+        srv.handle_proxy_request("entry", ip(5, 5, 5, 5), "10.0.0.1")
+            .await
+    });
+    wait_for_reserved_slot(&server, a_ip).await;
+
+    // Host 3 stops reporting its replica of `b` (Swarm rescheduled the task).
+    server
+        .apply_services_list(ip(3, 3, 3, 3), &[])
+        .await
+        .expect("apply_services_list failed");
+
+    gate.add_permits(64);
+    let res = chain.await.expect("chain task panicked");
+
+    let built = setup_net_ids(&b_log.lock().await);
+    let guard = server.services().read().await;
+    let recorded = client_entry_net_id(&guard, "b", &a_to_b_client(a_ip));
+    drop(guard);
+    server.orchestrator().settle_teardowns().await;
+    let in_use = server.orchestrator().net_ids_in_use().await;
+
+    assert!(!built.is_empty(), "no setup ever reached host b");
+    assert!(
+        !(res.is_ok() && recorded.is_none()),
+        "the chain reported success with no server-side record of the a->b \
+         edge (tunnel {built:?} was built on b, {in_use} net id(s) now held \
+         with no owner)"
+    );
+}
+
+/// Finding 2. Every failure path in `net_chain_setup` rolls its edge back with
+/// `remove_client`, which drops the whole entry rather than the one refcount
+/// the failing chain contributed. A second chain that reused the edge while it
+/// was in flight has already been told the hop is up, and loses it.
+///
+/// Slow by construction: host `b` is registered but never acks, so the failing
+/// chain only gives up after `send_net_setup`'s 30s timeout.
+#[tokio::test]
+async fn a_failed_edge_rollback_keeps_a_concurrent_holder() {
+    let services = load_config(SETUP_TEARDOWN_RACE, "services.toml").await;
+    let server = std::sync::Arc::new(NullnetGrpcImpl::new_for_test(services));
+    {
+        let mut guard = server.services().write().await;
+        let stack = stack_view_mut(&mut guard);
+        stack
+            .get_mut("entry")
+            .unwrap()
+            .add_replica(ip(1, 1, 1, 1), 8080, None);
+        stack
+            .get_mut("a")
+            .unwrap()
+            .add_replica(ip(2, 2, 2, 2), 8080, None);
+        stack
+            .get_mut("b")
+            .unwrap()
+            .add_replica(ip(3, 3, 3, 3), 8080, None);
+    }
+    server
+        .orchestrator()
+        .register_fake_client(ip(1, 1, 1, 1))
+        .await;
+    let a_log = server
+        .orchestrator()
+        .register_recording_client(ip(2, 2, 2, 2))
+        .await;
+    // Registered but wedged: it receives the setup and never answers.
+    server
+        .orchestrator()
+        .register_silent_client(ip(3, 3, 3, 3))
+        .await;
+    server
+        .orchestrator()
+        .register_fake_client(ip(5, 5, 5, 5))
+        .await;
+
+    let a_ip = ip(2, 2, 2, 2);
+    let srv = std::sync::Arc::clone(&server);
+    let doomed = tokio::spawn(async move {
+        srv.handle_proxy_request("entry", ip(5, 5, 5, 5), "10.0.0.1")
+            .await
+    });
+    wait_for_reserved_slot(&server, a_ip).await;
+
+    // A second client arrives while a->b is still in flight. It must not be
+    // handed a hop that has no tunnel: either it waits for the first chain and
+    // then gets a real edge, or it fails — but success and a missing edge can
+    // never both be true.
+    let srv = std::sync::Arc::clone(&server);
+    let second = tokio::spawn(async move {
+        srv.handle_proxy_request("entry", ip(5, 5, 5, 5), "10.0.0.2")
+            .await
+    });
+
+    let first = doomed.await.expect("chain task panicked");
+    assert!(first.is_err(), "the wedged chain was expected to fail");
+    let second = second.await.expect("second chain task panicked");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let guard = server.services().read().await;
+    let net_id = client_entry_net_id(&guard, "b", &a_to_b_client(a_ip));
+    let held = client_entry_chains(&guard, "b", &a_to_b_client(a_ip));
+    let live = match stack_view(&guard).get("b") {
+        Some(ServiceInfo::Registered(reg)) => reg.client_replica_live(&a_to_b_client(a_ip)),
+        _ => None,
+    };
+    drop(guard);
+    let torn = teardown_net_ids(&a_log.lock().await);
+    server.orchestrator().settle_teardowns().await;
+    let in_use = server.orchestrator().net_ids_in_use().await;
+
+    assert!(
+        !(second.is_ok() && live.is_none()),
+        "the second chain reported success while the a->b edge is absent or \
+         still only reserved (net id {net_id:?}, held by {held:?}, \
+         teardowns sent: {torn:?})"
+    );
+    // No assertion on the pool here: host b never acks its teardown either, so
+    // the id is deliberately held until `TEARDOWN_ACK_GRACE` expires. What must
+    // hold immediately is that no entry is left behind for it.
+    let _ = in_use;
+    assert_eq!(
+        net_id, None,
+        "an entry for the a->b edge survived both chains giving up"
+    );
+}
+
+/// Finding 5. Two chains that meet at a shared hop must both hold a refcount
+/// on the edge they actually traverse, and no edge may be built from a replica
+/// nothing routes through.
+///
+/// The old code resolved every hop from one read-locked snapshot and applied
+/// the result later. With `b` bound to a different replica in between, the
+/// stale snapshot reused that binding for the shared hop but kept building the
+/// rest of the branch from the replica it had picked — orphaning `b->c` on one
+/// replica while the `b->c` both chains really used carried a single refcount.
+/// Hops are now resolved as they are claimed, so the two cannot disagree.
+#[tokio::test]
+async fn chains_sharing_a_hop_agree_on_the_replica_after_it() {
+    let services = load_config(SETUP_TEARDOWN_RACE, "services_shared_dep.toml").await;
+    let server = std::sync::Arc::new(NullnetGrpcImpl::new_for_test(services));
+    let (entry_ip, a_ip, b1, b2, c_ip, d_ip, proxy) = (
+        ip(1, 1, 1, 1),
+        ip(2, 2, 2, 2),
+        ip(3, 3, 3, 3),
+        ip(4, 4, 4, 4),
+        ip(7, 7, 7, 7),
+        ip(8, 8, 8, 8),
+        ip(5, 5, 5, 5),
+    );
+    {
+        let mut guard = server.services().write().await;
+        let stack = stack_view_mut(&mut guard);
+        stack
+            .get_mut("entry")
+            .unwrap()
+            .add_replica(entry_ip, 8080, None);
+        stack.get_mut("a").unwrap().add_replica(a_ip, 8080, None);
+        stack.get_mut("b").unwrap().add_replica(b1, 8080, None);
+        stack.get_mut("b").unwrap().add_replica(b2, 8080, None);
+        stack.get_mut("c").unwrap().add_replica(c_ip, 8080, None);
+        stack.get_mut("d").unwrap().add_replica(d_ip, 8080, None);
+    }
+    for host in [entry_ip, a_ip, b1, b2, c_ip, d_ip, proxy] {
+        server.orchestrator().register_fake_client(host).await;
+    }
+
+    // Two chains through entry->a->b->c, concurrent with an independent
+    // consumer of `b` that shifts which of its replicas is least loaded.
+    let s1 = std::sync::Arc::clone(&server);
+    let s2 = std::sync::Arc::clone(&server);
+    let s3 = std::sync::Arc::clone(&server);
+    let one =
+        tokio::spawn(async move { s1.handle_proxy_request("entry", proxy, "10.0.0.1").await });
+    let other = tokio::spawn(async move { s2.handle_proxy_request("d", proxy, "10.0.0.9").await });
+    let two =
+        tokio::spawn(async move { s3.handle_proxy_request("entry", proxy, "10.0.0.2").await });
+    one.await.unwrap().expect("first entry chain failed");
+    other.await.unwrap().expect("d chain failed");
+    two.await.unwrap().expect("second entry chain failed");
+
+    let guard = server.services().read().await;
+    let bound = match stack_view(&guard).get("b") {
+        Some(ServiceInfo::Registered(reg)) => reg.client_replica_live(&a_to_b_client(a_ip)),
+        _ => None,
+    };
+    let bound_ip = bound.map(|(i, _)| i).expect("a->b was never bound");
+    let other_ip = if bound_ip == b1 { b2 } else { b1 };
+
+    let live_src = Client::new_service("b".to_string(), bound_ip, None);
+    let orphan_src = Client::new_service("b".to_string(), other_ip, None);
+    let live_held = client_entry_chains(&guard, "c", &live_src);
+    let orphan_held = client_entry_chains(&guard, "c", &orphan_src);
+    let shared_held = client_entry_chains(&guard, "b", &a_to_b_client(a_ip));
+    drop(guard);
+
+    assert!(
+        orphan_held.is_none(),
+        "a b->c edge was built from {other_ip} (held by {orphan_held:?} chain(s)), \
+         a replica nothing routes through"
+    );
+    assert_eq!(
+        shared_held,
+        Some(2),
+        "both chains traverse the shared a->b edge but it carries {shared_held:?} refcount(s)"
+    );
+    assert_eq!(
+        live_held,
+        Some(2),
+        "both chains traverse b({bound_ip})->c but it carries {live_held:?} refcount(s): \
+         the first chain's teardown would take it down under the second"
+    );
+}

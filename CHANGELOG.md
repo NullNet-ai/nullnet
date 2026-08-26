@@ -11,6 +11,7 @@ All Nullnet releases with the relative changes are documented in this file.
 - Install BPF linker as a prebuilt binary rather than compiling it from source ([#158](https://github.com/NullNet-ai/nullnet/pull/158))
 ### Removed
 ### Fixed
+- Stop a teardown from corrupting a chain that is still being set up ([#167](https://github.com/NullNet-ai/nullnet/pull/167) — fixes [#166](https://github.com/NullNet-ai/nullnet/issues/166))
 - Reject a service name claimed by more than one stack, instead of resolving it to an arbitrary stack ([#165](https://github.com/NullNet-ai/nullnet/pull/165) — fixes [#129](https://github.com/NullNet-ai/nullnet/issues/129))
 - Show the date alongside the time for timestamps from before today, instead of `hh:mm:ss` only, in the topology panels, Sessions, and Events pages ([#159](https://github.com/NullNet-ai/nullnet/pull/159) — fixes [#135](https://github.com/NullNet-ai/nullnet/issues/135))
 
