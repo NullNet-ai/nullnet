@@ -13,6 +13,7 @@
 
 use super::RtNetLinkHandle;
 use super::netlink::{delete_link, get_link_by_name, set_link_mtu_up};
+use futures::StreamExt;
 use ipnetwork::Ipv4Network;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use rtnetlink::packet_route::link::{LinkMessage, MacSecCipherId};
@@ -453,8 +454,16 @@ pub(crate) async fn teardown(
 
 // helpers -----------------------------------------------------------------------------------------
 
+/// Deletes `name` if it exists; a no-op otherwise. Called on essentially
+/// every setup — "doesn't exist yet" is the routine, expected case (this is
+/// a purge-before-create, not a lookup of something that's supposed to be
+/// there), so this checks existence directly rather than through
+/// `get_link_by_name`: that goes through `handle_err()`, which prints
+/// immediately on construction, and would log an `[ERROR]` for the normal
+/// case on every single call.
 async fn delete_if_exists(handle: &Handle, name: &str) -> Result<(), Error> {
-    if let Ok(link) = get_link_by_name(handle, name).await {
+    let mut links = handle.link().get().match_name(name.to_string()).execute();
+    if let Some(Ok(link)) = links.next().await {
         delete_link(handle, link).await?;
     }
     Ok(())
