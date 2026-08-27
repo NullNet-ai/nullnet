@@ -4,7 +4,13 @@ import Modal from '../components/Modal';
 import { useApi } from '../hooks/useApi';
 import { apiFetch } from '../lib/apiFetch';
 import { useStack } from '../StackContext';
-import type { ServiceConfigJson, ServiceConfigListJson } from '../types';
+import type {
+  FilterConditionJson,
+  FilterFieldJson,
+  FilterPolicyJson,
+  ServiceConfigJson,
+  ServiceConfigListJson,
+} from '../types';
 
 // A service is only ever discoverable via a host match — `build_match_entries`
 // (server-side) never registers a replica for a service without one. There is
@@ -13,7 +19,206 @@ import type { ServiceConfigJson, ServiceConfigListJson } from '../types';
 // dependency branch or trigger chain already registers it implicitly).
 type MatchKind = 'docker' | 'process';
 type ProtocolKind = 'http' | 'tcp' | 'udp';
-type CountryMode = 'none' | 'block' | 'allow';
+
+// Traffic filter (issue #143) form state — mirrors `FilterPolicyJson`, but
+// `values` stays a comma-separated string while being edited (same
+// convention the old country-code input used).
+type FilterAction = 'none' | 'block' | 'allow';
+
+interface FilterRuleForm {
+  field: FilterFieldJson;
+  condition: FilterConditionJson;
+  values: string;
+}
+
+interface FilterPolicyForm {
+  action: FilterAction;
+  // OR-of-ANDs: every rule within a group must match; groups are OR'ed.
+  groups: FilterRuleForm[][];
+}
+
+const EMPTY_FILTER: FilterPolicyForm = { action: 'none', groups: [] };
+
+const FIELD_LABELS: Record<FilterFieldJson, string> = {
+  country: 'Country',
+  asn: 'ASN',
+  src_ip: 'Src IP',
+  dst_ip: 'Dst IP',
+};
+
+function conditionsForField(field: FilterFieldJson): { value: FilterConditionJson; label: string }[] {
+  return field === 'src_ip' || field === 'dst_ip'
+    ? [
+        { value: 'contains', label: 'is within' },
+        { value: 'not_contains', label: 'is not within' },
+      ]
+    : [
+        { value: 'equal', label: 'is one of' },
+        { value: 'not_equal', label: 'is none of' },
+      ];
+}
+
+function emptyRule(field: FilterFieldJson): FilterRuleForm {
+  return { field, condition: conditionsForField(field)[0].value, values: '' };
+}
+
+function filterToForm(json: FilterPolicyJson | undefined | null): FilterPolicyForm {
+  if (!json || json === 'none') return { action: 'none', groups: [] };
+  const [action, body] = 'block' in json ? (['block', json.block] as const) : (['allow', json.allow] as const);
+  return {
+    action,
+    groups: body.groups.map(group =>
+      group.map(r => ({ field: r.field, condition: r.condition, values: textFromList(r.values) })),
+    ),
+  };
+}
+
+function formToFilter(form: FilterPolicyForm): FilterPolicyJson {
+  if (form.action === 'none') return 'none';
+  const groups = form.groups
+    .map(group =>
+      group
+        .map(r => ({
+          field: r.field,
+          condition: r.condition,
+          values: listFromText(r.values).map(v => (r.field === 'country' ? v.toUpperCase() : v)),
+        }))
+        .filter(r => r.values.length > 0),
+    )
+    .filter(group => group.length > 0);
+  return form.action === 'block' ? { block: { groups } } : { allow: { groups } };
+}
+
+// Used for both the egress (Country/ASN/Dst IP) and ingress (Country/ASN/Src
+// IP) instances of the widget below.
+function FilterPolicyEditor({
+  label,
+  value,
+  onChange,
+  fields,
+}: {
+  label: string;
+  value: FilterPolicyForm;
+  onChange: (next: FilterPolicyForm) => void;
+  fields: FilterFieldJson[];
+}) {
+  function updateGroup(gi: number, next: FilterRuleForm[]) {
+    onChange({ ...value, groups: value.groups.map((g, i) => (i === gi ? next : g)) });
+  }
+  function removeGroup(gi: number) {
+    onChange({ ...value, groups: value.groups.filter((_, i) => i !== gi) });
+  }
+  function addGroup() {
+    onChange({ ...value, groups: [...value.groups, [emptyRule(fields[0])]] });
+  }
+  function updateRule(gi: number, ri: number, patch: Partial<FilterRuleForm>) {
+    updateGroup(
+      gi,
+      value.groups[gi].map((r, i) => (i === ri ? { ...r, ...patch } : r)),
+    );
+  }
+  function removeRule(gi: number, ri: number) {
+    updateGroup(
+      gi,
+      value.groups[gi].filter((_, i) => i !== ri),
+    );
+  }
+  function addRule(gi: number) {
+    updateGroup(gi, [...value.groups[gi], emptyRule(fields[0])]);
+  }
+
+  return (
+    <div className="modal-field">
+      <span>{label}</span>
+      <select
+        value={value.action}
+        onChange={e => {
+          const action = e.target.value as FilterAction;
+          onChange({
+            action,
+            groups: action === 'none' ? [] : value.groups.length > 0 ? value.groups : [[emptyRule(fields[0])]],
+          });
+        }}
+      >
+        <option value="none">None</option>
+        <option value="block">Block matching traffic</option>
+        <option value="allow">Allow only matching traffic</option>
+      </select>
+      {value.action !== 'none' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+          {value.groups.map((group, gi) => (
+            <div key={gi}>
+              {gi > 0 && (
+                <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--t2)', margin: '4px 0' }}>OR</div>
+              )}
+              <div style={{ border: '1px solid var(--t3)', borderRadius: 6, padding: 8 }}>
+                {group.map((rule, ri) => (
+                  <div key={ri} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
+                    {ri > 0 && <span style={{ fontSize: 11, color: 'var(--t2)' }}>AND</span>}
+                    <select
+                      value={rule.field}
+                      onChange={e => {
+                        const field = e.target.value as FilterFieldJson;
+                        updateRule(gi, ri, { field, condition: conditionsForField(field)[0].value });
+                      }}
+                    >
+                      {fields.map(f => (
+                        <option key={f} value={f}>
+                          {FIELD_LABELS[f]}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={rule.condition}
+                      onChange={e => updateRule(gi, ri, { condition: e.target.value as FilterConditionJson })}
+                    >
+                      {conditionsForField(rule.field).map(c => (
+                        <option key={c.value} value={c.value}>
+                          {c.label}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      value={rule.values}
+                      onChange={e => updateRule(gi, ri, { values: e.target.value })}
+                      placeholder={rule.field === 'country' ? 'US, CA' : rule.field === 'asn' ? 'AS15169' : '10.0.0.0/8'}
+                      spellCheck={false}
+                      style={{ flex: 1 }}
+                    />
+                    <button type="button" className="teardown-btn" onClick={() => removeRule(gi, ri)}>
+                      ×
+                    </button>
+                  </div>
+                ))}
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
+                  <button
+                    type="button"
+                    className="card-action"
+                    style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+                    onClick={() => addRule(gi)}
+                  >
+                    + Add condition (AND)
+                  </button>
+                  <button type="button" className="teardown-btn" onClick={() => removeGroup(gi)}>
+                    Remove group
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="card-action"
+            style={{ background: 'none', border: 'none', cursor: 'pointer', alignSelf: 'start' }}
+            onClick={addGroup}
+          >
+            + Add group (OR)
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Sentinel for "+ Type a custom name…", picked from a chain step's <select>
 // below — never a real value, replaced with '' on save if left untouched.
@@ -36,10 +241,8 @@ interface ServiceFormState {
   listenPort: string;
   dependencies: string[][];
   triggers: TriggerFormState[];
-  egressMode: CountryMode;
-  egressCodes: string;
-  ingressMode: CountryMode;
-  ingressCodes: string;
+  egressFilter: FilterPolicyForm;
+  ingressFilter: FilterPolicyForm;
 }
 
 const EMPTY_FORM: ServiceFormState = {
@@ -54,10 +257,8 @@ const EMPTY_FORM: ServiceFormState = {
   listenPort: '',
   dependencies: [],
   triggers: [],
-  egressMode: 'none',
-  egressCodes: '',
-  ingressMode: 'none',
-  ingressCodes: '',
+  egressFilter: EMPTY_FILTER,
+  ingressFilter: EMPTY_FILTER,
 };
 
 // One step of a dependency branch or trigger chain: a `<select>` of every
@@ -158,15 +359,12 @@ function serviceToForm(s: ServiceConfigJson): ServiceFormState {
     listenPort: s.listen_port != null ? String(s.listen_port) : '',
     dependencies: s.proxy_dependencies.map(branch => [...branch]),
     triggers: s.triggers.map(t => ({ port: String(t.port), chain: [...t.chain] })),
-    egressMode: s.egress_blocked_countries ? 'block' : s.egress_allowed_countries ? 'allow' : 'none',
-    egressCodes: textFromList(s.egress_blocked_countries ?? s.egress_allowed_countries),
-    ingressMode: s.ingress_blocked_countries ? 'block' : s.ingress_allowed_countries ? 'allow' : 'none',
-    ingressCodes: textFromList(s.ingress_blocked_countries ?? s.ingress_allowed_countries),
+    egressFilter: filterToForm(s.egress_filter),
+    ingressFilter: filterToForm(s.ingress_filter),
   };
 }
 
 function formToService(f: ServiceFormState): ServiceConfigJson {
-  const codes = (text: string) => listFromText(text).map(c => c.toUpperCase());
   // CUSTOM_STEP left untouched (the "+ Type a custom name…" option picked,
   // but nothing typed into the text box it dropped to) counts as unset.
   const chain = (steps: string[]) =>
@@ -184,10 +382,8 @@ function formToService(f: ServiceFormState): ServiceConfigJson {
     max_networks: f.maxNetworks.trim() !== '' ? Number(f.maxNetworks) : null,
     protocol: f.protocol,
     listen_port: f.protocol !== 'http' && f.listenPort.trim() !== '' ? Number(f.listenPort) : null,
-    egress_blocked_countries: f.egressMode === 'block' ? codes(f.egressCodes) : null,
-    egress_allowed_countries: f.egressMode === 'allow' ? codes(f.egressCodes) : null,
-    ingress_blocked_countries: f.ingressMode === 'block' ? codes(f.ingressCodes) : null,
-    ingress_allowed_countries: f.ingressMode === 'allow' ? codes(f.ingressCodes) : null,
+    egress_filter: formToFilter(f.egressFilter),
+    ingress_filter: formToFilter(f.ingressFilter),
   };
 }
 
@@ -738,57 +934,23 @@ export default function Config() {
             </button>
           </div>
 
-          <label className="modal-field">
-            <span>Egress country policy (destination of this service's outbound traffic)</span>
-            <select
-              value={form.egressMode}
-              onChange={e => setForm(f => ({ ...f, egressMode: e.target.value as CountryMode }))}
-            >
-              <option value="none">None</option>
-              <option value="block">Block listed countries</option>
-              <option value="allow">Allow only listed countries</option>
-            </select>
-          </label>
-          {form.egressMode !== 'none' && (
-            <label className="modal-field">
-              <span>ISO country codes (comma-separated)</span>
-              <input
-                value={form.egressCodes}
-                onChange={e => setForm(f => ({ ...f, egressCodes: e.target.value }))}
-                placeholder="RU, CN"
-                spellCheck={false}
-              />
-            </label>
-          )}
+          <FilterPolicyEditor
+            label="Egress traffic filter (destination of this service's outbound traffic)"
+            value={form.egressFilter}
+            onChange={next => setForm(f => ({ ...f, egressFilter: next }))}
+            fields={['country', 'asn', 'dst_ip']}
+          />
 
-          <label className="modal-field">
-            <span>Ingress country policy (source of proxy clients reaching this service)</span>
-            <select
-              value={form.ingressMode}
-              onChange={e => setForm(f => ({ ...f, ingressMode: e.target.value as CountryMode }))}
-            >
-              <option value="none">None</option>
-              <option value="block">Block listed countries</option>
-              <option value="allow">Allow only listed countries</option>
-            </select>
-          </label>
-          {form.ingressMode !== 'none' && (
-            <>
-              <label className="modal-field">
-                <span>ISO country codes (comma-separated)</span>
-                <input
-                  value={form.ingressCodes}
-                  onChange={e => setForm(f => ({ ...f, ingressCodes: e.target.value }))}
-                  placeholder="US, IT"
-                  spellCheck={false}
-                />
-              </label>
-              {!form.reachable && (
-                <div style={{ fontSize: 11, color: 'var(--t2)', marginTop: -8 }}>
-                  Requires "Proxy-reachable entry point" above — ingress policy is enforced at the proxy.
-                </div>
-              )}
-            </>
+          <FilterPolicyEditor
+            label="Ingress traffic filter (proxy clients reaching this service)"
+            value={form.ingressFilter}
+            onChange={next => setForm(f => ({ ...f, ingressFilter: next }))}
+            fields={['country', 'asn', 'src_ip']}
+          />
+          {form.ingressFilter.action !== 'none' && !form.reachable && (
+            <div style={{ fontSize: 11, color: 'var(--t2)', marginTop: -8 }}>
+              Requires "Proxy-reachable entry point" above — ingress filters are enforced at the proxy.
+            </div>
           )}
 
           {formError && <div className="modal-err">{formError}</div>}

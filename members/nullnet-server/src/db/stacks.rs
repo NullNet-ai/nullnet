@@ -23,10 +23,9 @@ pub(crate) struct ServiceInsert<'a> {
     pub(crate) max_networks: Option<i32>,
     pub(crate) protocol: Option<&'a str>,
     pub(crate) listen_port: Option<i32>,
-    pub(crate) egress_blocked_countries: Option<String>,
-    pub(crate) egress_allowed_countries: Option<String>,
-    pub(crate) ingress_blocked_countries: Option<String>,
-    pub(crate) ingress_allowed_countries: Option<String>,
+    /// JSON-encoded `FilterPolicy` (issue #143), `None` for no filter.
+    pub(crate) egress_filter: Option<String>,
+    pub(crate) ingress_filter: Option<String>,
     /// `(port, JSON-encoded chain)`, one per `[[services.triggers]]` entry.
     pub(crate) triggers: Vec<(i32, String)>,
     /// JSON-encoded chain, one per `proxy_dependencies` branch, in order.
@@ -174,10 +173,8 @@ impl StackRepository {
                 max_networks: s.max_networks,
                 protocol: s.protocol,
                 listen_port: s.listen_port,
-                egress_blocked_countries: s.egress_blocked_countries.clone(),
-                egress_allowed_countries: s.egress_allowed_countries.clone(),
-                ingress_blocked_countries: s.ingress_blocked_countries.clone(),
-                ingress_allowed_countries: s.ingress_allowed_countries.clone(),
+                egress_filter: s.egress_filter.clone(),
+                ingress_filter: s.ingress_filter.clone(),
             };
             let service_id: i32 = diesel::insert_into(services::table)
                 .values(&new_row)
@@ -291,10 +288,8 @@ mod tests {
             max_networks: None,
             protocol: None,
             listen_port: None,
-            egress_blocked_countries: None,
-            egress_allowed_countries: None,
-            ingress_blocked_countries: None,
-            ingress_allowed_countries: None,
+            egress_filter: None,
+            ingress_filter: None,
             triggers: vec![(5555, "[\"worker\"]".to_string())],
             dependencies: vec!["[\"db\",\"cache\"]".to_string()],
         }

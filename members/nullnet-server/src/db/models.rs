@@ -76,10 +76,9 @@ pub(crate) struct ServiceRow {
     pub(crate) max_networks: Option<i32>,
     pub(crate) protocol: Option<String>,
     pub(crate) listen_port: Option<i32>,
-    pub(crate) egress_blocked_countries: Option<String>,
-    pub(crate) egress_allowed_countries: Option<String>,
-    pub(crate) ingress_blocked_countries: Option<String>,
-    pub(crate) ingress_allowed_countries: Option<String>,
+    /// JSON-encoded `FilterPolicy` (issue #143), `NULL` for no filter.
+    pub(crate) egress_filter: Option<String>,
+    pub(crate) ingress_filter: Option<String>,
 }
 
 #[derive(Insertable, Debug, Clone)]
@@ -95,10 +94,8 @@ pub(crate) struct NewServiceRow<'a> {
     pub(crate) max_networks: Option<i32>,
     pub(crate) protocol: Option<&'a str>,
     pub(crate) listen_port: Option<i32>,
-    pub(crate) egress_blocked_countries: Option<String>,
-    pub(crate) egress_allowed_countries: Option<String>,
-    pub(crate) ingress_blocked_countries: Option<String>,
-    pub(crate) ingress_allowed_countries: Option<String>,
+    pub(crate) egress_filter: Option<String>,
+    pub(crate) ingress_filter: Option<String>,
 }
 
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone)]

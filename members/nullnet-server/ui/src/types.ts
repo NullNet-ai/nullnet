@@ -223,6 +223,25 @@ export interface TriggerConfigJson {
   chain: string[];
 }
 
+// Per-service traffic filter (issue #143) — mirrors the server's
+// `FilterField`/`FilterCondition`/`FilterRule`/`FilterPolicy`
+// (services/firewall.rs). `values` holds ISO country codes, ASNs, or
+// CIDR/addresses depending on `field`. `groups` is OR-of-ANDs: every rule
+// within a group must match (AND), and groups are OR'ed together.
+export type FilterFieldJson = 'country' | 'asn' | 'src_ip' | 'dst_ip';
+export type FilterConditionJson = 'equal' | 'not_equal' | 'contains' | 'not_contains';
+
+export interface FilterRuleJson {
+  field: FilterFieldJson;
+  condition: FilterConditionJson;
+  values: string[];
+}
+
+export type FilterPolicyJson =
+  | 'none'
+  | { block: { groups: FilterRuleJson[][] } }
+  | { allow: { groups: FilterRuleJson[][] } };
+
 export interface ServiceConfigJson {
   name: string;
   docker_container?: string | null;
@@ -234,10 +253,8 @@ export interface ServiceConfigJson {
   max_networks?: number | null;
   protocol?: 'http' | 'tcp' | 'udp' | null;
   listen_port?: number | null;
-  egress_blocked_countries?: string[] | null;
-  egress_allowed_countries?: string[] | null;
-  ingress_blocked_countries?: string[] | null;
-  ingress_allowed_countries?: string[] | null;
+  egress_filter?: FilterPolicyJson;
+  ingress_filter?: FilterPolicyJson;
 }
 
 export interface ServiceConfigListJson {
