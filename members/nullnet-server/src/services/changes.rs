@@ -395,7 +395,29 @@ pub(crate) fn dep_chain_intact(
     collect_dep_chain_edges(service_name, replica_ip, replica_docker, services)
         .into_iter()
         .all(|(client, dep_name)| match services.get(&dep_name) {
-            Some(ServiceInfo::Registered(dep_reg)) => dep_reg.client_replica(&client).is_some(),
+            Some(ServiceInfo::Registered(dep_reg)) => {
+                dep_reg.client_replica_live(&client).is_some()
+            }
+            _ => false,
+        })
+}
+
+/// Whether any hop of `service_name`'s chain is currently being built.
+///
+/// A chain that is still coming up is not idle, however long its entry edge
+/// has sat without connections: the request that started it has not returned
+/// yet. Reaping it strands whichever edges finish after the walk, because the
+/// proxy client whose refcount they were taken against is gone by then.
+pub(crate) fn dep_chain_has_pending(
+    service_name: &str,
+    replica_ip: IpAddr,
+    replica_docker: Option<&str>,
+    services: &HashMap<String, ServiceInfo>,
+) -> bool {
+    collect_dep_chain_edges(service_name, replica_ip, replica_docker, services)
+        .into_iter()
+        .any(|(client, dep_name)| match services.get(&dep_name) {
+            Some(ServiceInfo::Registered(dep_reg)) => dep_reg.pending_notify(&client).is_some(),
             _ => false,
         })
 }
@@ -579,8 +601,10 @@ fn emit_edge_and_probe_hop(
         current_ip,
         current_docker.map(String::from),
     );
+    // Live edges only: a reservation is an edge being built by somebody else,
+    // and walking into it would decrement a refcount this teardown never took.
     let hop = match services.get(dep_name) {
-        Some(ServiceInfo::Registered(dep_reg)) => dep_reg.client_replica(&client),
+        Some(ServiceInfo::Registered(dep_reg)) => dep_reg.client_replica_live(&client),
         _ => None,
     };
     edges.push((client, dep_name.to_string()));

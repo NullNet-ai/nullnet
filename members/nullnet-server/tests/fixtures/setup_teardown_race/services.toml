@@ -1,0 +1,13 @@
+# entry --> a --> b, one linear branch. Long enough that the edges of a single
+# chain finish at different times, which is what opens the window these tests
+# drive: setup holds no lock while it waits on the endpoints.
+[[services]]
+name = "entry"
+timeout = 1
+proxy_dependencies = [["a", "b"]]
+
+[[services]]
+name = "a"
+
+[[services]]
+name = "b"

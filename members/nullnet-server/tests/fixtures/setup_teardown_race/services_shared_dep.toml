@@ -1,0 +1,23 @@
+# Two entry points whose chains meet at `b`, which has two replicas. `entry`
+# runs on past `b` to `c`, so the hop *after* the shared one is chosen from a
+# replica identity frozen at snapshot time.
+[[services]]
+name = "entry"
+timeout = 0
+proxy_dependencies = [["a", "b", "c"]]
+
+# A second, independent consumer of `b`. Its chain coming up is what shifts
+# the least-loaded replica between two snapshots of `entry`'s chain.
+[[services]]
+name = "d"
+timeout = 0
+proxy_dependencies = [["b"]]
+
+[[services]]
+name = "a"
+
+[[services]]
+name = "b"
+
+[[services]]
+name = "c"

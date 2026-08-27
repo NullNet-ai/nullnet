@@ -83,6 +83,23 @@ pub(crate) enum Event {
         service: String,
         timestamp: u64,
     },
+    /// A chain finished building but the proxy client that owns it had been
+    /// torn down meanwhile, so the whole chain was unwound. Means a teardown
+    /// crossed a setup; repeated occurrences point at a timeout shorter than
+    /// the time the chain takes to come up.
+    ChainOwnerLost {
+        stack: String,
+        timestamp: u64,
+    },
+    /// An edge came up on both hosts but the replica it was built for was gone
+    /// by the time it was recorded, so the tunnel was taken back down. Means a
+    /// replica moved mid-setup; a run of these points at a flapping service.
+    EdgePromotionLost {
+        net_id: u32,
+        service: String,
+        replica_ip: String,
+        timestamp: u64,
+    },
     SessionCreated {
         net_id: u32,
         service: String,
@@ -484,6 +501,8 @@ impl Event {
             Self::SetupStarted { .. } => "setup_started",
             Self::SetupAck { .. } => "setup_ack",
             Self::SetupTimeout { .. } => "setup_timeout",
+            Self::EdgePromotionLost { .. } => "edge_promotion_lost",
+            Self::ChainOwnerLost { .. } => "chain_owner_lost",
             Self::SessionCreated { .. } => "session_created",
             Self::SessionTornDown { .. } => "session_torn_down",
             Self::NetTeardownUnconfirmed { .. } => "net_teardown_unconfirmed",
@@ -592,6 +611,8 @@ impl Event {
             | Self::ProxyDisconnected { .. } => Severity::Warning,
 
             Self::SetupTimeout { .. }
+            | Self::EdgePromotionLost { .. }
+            | Self::ChainOwnerLost { .. }
             | Self::NetTeardownUnconfirmed { .. }
             | Self::ConntrackFlushFailed { .. }
             | Self::CertificateCredentialsStoreFailed { .. }
@@ -699,6 +720,22 @@ impl Event {
         Self::SetupTimeout {
             net_id,
             service,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn chain_owner_lost(stack: String) -> Self {
+        Self::ChainOwnerLost {
+            stack,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn edge_promotion_lost(net_id: u32, service: String, replica_ip: String) -> Self {
+        Self::EdgePromotionLost {
+            net_id,
+            service,
+            replica_ip,
             timestamp: now_secs(),
         }
     }

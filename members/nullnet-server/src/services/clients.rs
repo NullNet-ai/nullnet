@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
 use std::time::{Instant, SystemTime};
+use tokio::sync::Notify;
 
 #[derive(Clone, Default, Debug)]
 pub(super) struct Clients {
@@ -10,20 +12,52 @@ pub(super) struct Clients {
 
 impl Clients {
     pub(super) fn add_client(&mut self, client: Client, mut client_info: ClientInfo) {
-        // Preserve counts accumulated on an existing entry (e.g. a placeholder a
-        // concurrent request already incremented) so promoting it to a live
-        // entry doesn't reset them and cause a premature teardown. Open
-        // connections matter as much as chains: dropping them would strand a
-        // live connection's close, underflowing to zero and reaping under it.
-        if let Some(existing) = self.clients.get(&client) {
-            client_info.set_active_chains(existing.active_chains());
-            client_info.set_open_connections(existing.open_connections());
-        }
+        // Preserve counts accumulated on an existing entry so promoting a
+        // reservation to a live entry doesn't reset them and cause a premature
+        // teardown. Open connections matter as much as chains: dropping them
+        // would strand a live connection's close, underflowing to zero and
+        // reaping under it.
+        let waiters = match self.clients.get(&client) {
+            Some(existing) => {
+                client_info.set_active_chains(existing.active_chains());
+                client_info.set_open_connections(existing.open_connections());
+                existing.pending.clone()
+            }
+            None => None,
+        };
         self.clients.insert(client, client_info);
+        // The edge is live now: release anything blocked on the reservation.
+        if let Some(notify) = waiters {
+            notify.notify_waiters();
+        }
     }
 
+    /// Drop a reservation that never became an edge, waking whoever waits on
+    /// it so they rebuild instead of blocking for the full window. Only
+    /// removes a *reserved* entry: a promoted one belongs to whoever holds its
+    /// refcount, not to the task that reserved it.
+    pub(super) fn remove_pending_client(&mut self, client: &Client) -> bool {
+        let Some(notify) = self.clients.get(client).and_then(|ci| ci.pending.clone()) else {
+            return false;
+        };
+        self.clients.remove(client);
+        notify.notify_waiters();
+        true
+    }
+
+    /// The live overlay IP for `client`, or `None` while the edge is only
+    /// reserved. A reservation names no network yet, so answering with one
+    /// hands out an upstream for a tunnel that does not exist.
     pub(super) fn is_client_setup(&self, client: &Client) -> Option<Ipv4Addr> {
-        self.clients.get(client).map(|ci| ci.server_net)
+        self.clients
+            .get(client)
+            .filter(|ci| ci.pending.is_none())
+            .map(|ci| ci.server_net)
+    }
+
+    /// The handle to wait on when another task is already building this edge.
+    pub(super) fn pending_notify(&self, client: &Client) -> Option<Arc<Notify>> {
+        self.clients.get(client).and_then(|ci| ci.pending.clone())
     }
 
     pub(super) fn clients(&self) -> &HashMap<Client, ClientInfo> {
@@ -107,6 +141,12 @@ pub(crate) struct ClientInfo {
     latest: Instant,
     created_at: SystemTime,
     docker_container: Option<String>,
+    /// Set while the edge is reserved but not yet built. Everything that walks
+    /// the graph — teardown, intactness, idle reaping — has to treat a
+    /// reservation as *not an edge*, or it decrements a refcount it never
+    /// contributed and collects a slot whose owner is still using it. Doubles
+    /// as the wake-up for tasks waiting on this edge to resolve.
+    pending: Option<Arc<Notify>>,
 }
 
 impl ClientInfo {
@@ -129,22 +169,31 @@ impl ClientInfo {
             latest: Instant::now(),
             created_at: SystemTime::now(),
             docker_container,
+            pending: None,
         }
     }
 
-    pub(crate) fn placeholder(client_ip: IpAddr) -> Self {
+    /// Reserve the slot for an edge that is about to be built. The refcount is
+    /// taken here, not on promotion: between the two the task holds no lock,
+    /// and a slot sitting at zero is one any teardown walk would collect.
+    pub(crate) fn reservation(client_ip: IpAddr) -> Self {
         Self {
             client_ip,
             client_net: Ipv4Addr::UNSPECIFIED,
             server_net: Ipv4Addr::UNSPECIFIED,
             net_id: 0,
             time_ms: 0,
-            active_chains: 0,
+            active_chains: 1,
             open_connections: 0,
             latest: Instant::now(),
             created_at: SystemTime::now(),
             docker_container: None,
+            pending: Some(Arc::new(Notify::new())),
         }
+    }
+
+    pub(crate) fn is_pending(&self) -> bool {
+        self.pending.is_some()
     }
 
     pub(crate) fn client_ip(&self) -> IpAddr {
