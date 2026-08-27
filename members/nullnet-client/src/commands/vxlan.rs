@@ -1,10 +1,11 @@
 //! VXLAN overlay creation/teardown, following the same rtnetlink-first
 //! strategy as `netlink.rs` (VLAN access ports): every operation that stays
 //! in the host's root network namespace — veth pairs, the bridge, the VXLAN
-//! tunnel itself, MACsec (same-host case) — goes through `rtnetlink`
-//! in-process instead of spawning `ip`. What's left on the CLI is what
-//! genuinely has no rtnetlink equivalent (namespace creation, MACsec SA/key
-//! installation, XFRM state/policy) or that needs a netlink socket bound
+//! tunnel itself — goes through `rtnetlink` in-process instead of spawning
+//! `ip`. What's left on the CLI is what genuinely has no rtnetlink equivalent
+//! (namespace creation, MACsec SA/key installation, XFRM state/policy), what
+//! rtnetlink encodes wrongly (the MACsec device itself — see `setup_same_host`)
+//! or that needs a netlink socket bound
 //! inside the target namespace, which rtnetlink has no way to reach from
 //! here (address/mtu/route on the namespace's own veth end).
 //!
@@ -16,8 +17,8 @@ use super::netlink::{delete_link, get_link_by_name, set_link_mtu_up};
 use futures::StreamExt;
 use ipnetwork::Ipv4Network;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
-use rtnetlink::packet_route::link::{LinkMessage, MacSecCipherId};
-use rtnetlink::{Handle, LinkBridge, LinkMacSec, LinkUnspec, LinkVeth, LinkVxlan};
+use rtnetlink::packet_route::link::LinkMessage;
+use rtnetlink::{Handle, LinkBridge, LinkUnspec, LinkVeth, LinkVxlan};
 use std::collections::HashMap;
 use std::fs::File;
 use std::net::{IpAddr, Ipv4Addr};
@@ -252,10 +253,10 @@ async fn setup_same_host(
         .await
         .handle_err(location!())?;
 
-    let (local_link, peer_mac, macsec_suffix) = if params.br_name.ends_with("_s") {
-        (link_s, mac_c, "s")
+    let (local_link, local_veth, peer_mac, macsec_suffix) = if params.br_name.ends_with("_s") {
+        (link_s, veth_s.as_str(), mac_c, "s")
     } else {
-        (link_c, mac_s, "c")
+        (link_c, veth_c.as_str(), mac_s, "c")
     };
 
     if params.encrypted {
@@ -263,18 +264,27 @@ async fn setup_same_host(
 
         let macsec_if = format!("macsec-{}-{macsec_suffix}", params.vxlan_id);
         delete_if_exists(handle, &macsec_if).await?;
-        handle
-            .link()
-            .add(
-                LinkMacSec::new(&macsec_if, local_link.header.index)
-                    .port(1)
-                    .cipher_suite(MacSecCipherId::GcmAes256)
-                    .encrypt(true)
-                    .build(),
-            )
-            .execute()
-            .await
-            .handle_err(location!())?;
+        // Stays on iproute2: netlink-packet-route emits IFLA_MACSEC_PORT with
+        // `emit_u16` (little-endian) where the kernel reads it big-endian, so
+        // rtnetlink's `.port(1)` builds an SCI on port 256 while the `ip macsec
+        // rx port 1` calls below key on port 1 — no frame ever matches.
+        // `port` must precede `cipher`: iproute2's parser is positional here.
+        sudo_checked(&[
+            "ip",
+            "link",
+            "add",
+            "link",
+            local_veth,
+            &macsec_if,
+            "type",
+            "macsec",
+            "port",
+            "1",
+            "cipher",
+            "gcm-aes-256",
+            "encrypt",
+            "on",
+        ])?;
 
         // SA/key installation is a separate genl family ("macsec"), not
         // covered by rtnetlink — stays the same `ip macsec` calls the script
