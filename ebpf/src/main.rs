@@ -33,8 +33,8 @@ use network_types::{
 //     independent sets, so one tunnel's port can't be satisfied by a
 //     different concurrent tunnel's peer IP.
 //   - ESP (proto 50) to/from a peer: cross-host VXLAN tunnels are wrapped in
-//     kernel IPsec/ESP (see vxlan-setup.sh); ESP is portless like ICMP, so it's
-//     scoped to known peers instead of a port check
+//     kernel IPsec/ESP (see nullnet-client's commands/vxlan.rs); ESP is
+//     portless like ICMP, so it's scoped to known peers instead of a port check
 // Stateful additions:
 //   - any packet whose flow is already in the CT map is allowed (established
 //     return); every allowed non-ARP packet (re)inserts its canonical 5-tuple,

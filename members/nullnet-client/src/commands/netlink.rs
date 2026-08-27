@@ -8,7 +8,7 @@ use rtnetlink::packet_route::route::{RouteAttribute, RouteHeader};
 use rtnetlink::{Handle, LinkUnspec, LinkVeth, RouteMessageBuilder};
 use std::net::{IpAddr, Ipv4Addr};
 
-/// Matches `vxlan-setup.sh`'s `OVERLAY_MTU`: this environment's physical
+/// Matches `vxlan.rs`'s `OVERLAY_MTU`: this environment's physical
 /// underlay (likely the host's own SDN/overlay layer) adds enough hidden
 /// overhead that a full 1500-byte frame gets silently dropped past a
 /// measured ~1104-byte ceiling. VLAN tunnels share the same physical path,
@@ -196,7 +196,7 @@ async fn ipv4_on_link(handle: &Handle, oif: u32) -> Option<Ipv4Addr> {
 
 // helpers -----------------------------------------------------------------------------------------
 
-async fn get_link_by_name(handle: &Handle, name: &str) -> Result<LinkMessage, Error> {
+pub(super) async fn get_link_by_name(handle: &Handle, name: &str) -> Result<LinkMessage, Error> {
     let link = handle
         .link()
         .get()
@@ -223,7 +223,11 @@ async fn set_link_up(handle: &Handle, link: &LinkMessage) -> Result<(), Error> {
     Ok(())
 }
 
-async fn set_link_mtu_up(handle: &Handle, link: &LinkMessage, mtu: u32) -> Result<(), Error> {
+pub(super) async fn set_link_mtu_up(
+    handle: &Handle,
+    link: &LinkMessage,
+    mtu: u32,
+) -> Result<(), Error> {
     let req = LinkUnspec::new_with_index(link.header.index)
         .mtu(mtu)
         .up()
@@ -238,7 +242,7 @@ async fn set_link_mtu_up(handle: &Handle, link: &LinkMessage, mtu: u32) -> Resul
     Ok(())
 }
 
-async fn delete_link(handle: &Handle, link: LinkMessage) -> Result<(), Error> {
+pub(super) async fn delete_link(handle: &Handle, link: LinkMessage) -> Result<(), Error> {
     handle
         .link()
         .del(link.header.index)

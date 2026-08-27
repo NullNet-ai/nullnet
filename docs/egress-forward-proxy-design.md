@@ -119,7 +119,7 @@ host `Hp`.
 |---|---|---|
 | First-packet observe + hold | NFQUEUE listener, `triggers.rs` | eBPF match: dst ∉ peers ∧ ≠ server |
 | Control RPC | `BackendTrigger` shape | `EgressTrigger(svc, dst_ip, dst_port)` |
-| Overlay edge | `net_chain_setup`, `vxlan-setup.sh` | edge type = egress (1 tunnel, no dep chain) |
+| Overlay edge | `net_chain_setup`, `commands/vxlan.rs` | edge type = egress (1 tunnel, no dep chain) |
 | Steering on initiator | — | **policy route** (fwmark→table), *not* DNAT |
 | Interception on proxy | — | TPROXY rules + `IP_TRANSPARENT` L4 loop |
 | Policy / identity | proxy already maps overlay IP → svc | per-service egress allowlist |
@@ -152,10 +152,11 @@ ports (`ebpf/src/main.rs`). Two additions:
 ## Same-node case (proxy co-located with the service)
 
 When the initiator service and the proxy run on the **same host**, the egress
-edge must still work. This falls out of the existing overlay: `vxlan-setup.sh`
-already detects `LOCAL_IP == REMOTE_IP` and builds a **same-host veth pair**
-(`veth-<id>-s`/`veth-<id>-c`) between the two bridges instead of a VXLAN tunnel
-(script lines 58-71). So the egress edge reuses that path automatically:
+edge must still work. This falls out of the existing overlay:
+`commands::vxlan::setup` already detects `local_ip == remote_ip` and builds a
+**same-host veth pair** (`veth-<id>-s`/`veth-<id>-c`) between the two bridges
+instead of a VXLAN tunnel (`setup_same_host`). So the egress edge reuses that
+path automatically:
 
 - The initiator's steering (fwmark → policy route → SNAT to overlay IP) routes the
   service's external-bound packets over its overlay bridge; on the same host that

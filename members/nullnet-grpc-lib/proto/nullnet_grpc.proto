@@ -216,8 +216,8 @@ message VxlanSetup {
   uint32 dstport = 15;
   // Whether this tunnel is encrypted, mirroring the server's ENCRYPTION_ENABLED
   // env var at the time this edge was set up. When false, the client skips
-  // `encryption_key` and vxlan-setup.sh sets up a bare vxlan/veth link with no
-  // XFRM SA/policy or MACsec.
+  // `encryption_key` and sets up a bare vxlan/veth link with no XFRM
+  // SA/policy or MACsec (see nullnet-client's commands/vxlan.rs).
   bool encrypted = 16;
 }
 
