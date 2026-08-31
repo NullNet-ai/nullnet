@@ -188,12 +188,23 @@ export default function Sessions() {
     padding: '2px 4px',
     fontSize: 10,
     cursor: 'pointer',
+    // A long option would otherwise set the control's intrinsic width and drag
+    // the whole column wide, since the table is auto-layout. Clamp it to the
+    // cell and let the closed box ellipsise; the native popup still shows each
+    // name in full, and the title carries the current one.
     width: '100%',
+    maxWidth: '100%',
+    minWidth: 0,
+    boxSizing: 'border-box' as const,
+    textOverflow: 'ellipsis' as const,
     fontWeight: 400,
     textTransform: 'none' as const,
     letterSpacing: 'normal',
   };
   const optionStyle = { background: 'var(--bg)', color: 'var(--t0)' };
+  // The filter columns are taller than the rest; without this the plain labels
+  // would centre against them instead of lining up.
+  const th = (width?: number) => ({ verticalAlign: 'top' as const, ...(width ? { width } : {}) });
   const mono = { fontFamily: "'JetBrains Mono',monospace" };
   return (
     <Layout
@@ -215,7 +226,7 @@ export default function Sessions() {
           <table className="tbl">
             <thead>
               <tr>
-                <th style={{ width: 100 }}>
+                <th style={th(100)}>
                   Status
                   <select value={statusFilter} onChange={e => setFilter('status', e.target.value)} style={selectStyle}>
                     <option value="" style={optionStyle}>All</option>
@@ -223,16 +234,21 @@ export default function Sessions() {
                     <option value="ended" style={optionStyle}>Ended</option>
                   </select>
                 </th>
-                <th style={{ width: 140 }}>
+                <th style={th(140)}>
                   Service
-                  <select value={serviceFilter} onChange={e => setFilter('service', e.target.value)} style={selectStyle}>
+                  <select
+                    value={serviceFilter}
+                    onChange={e => setFilter('service', e.target.value)}
+                    style={selectStyle}
+                    title={serviceFilter || 'All services'}
+                  >
                     <option value="" style={optionStyle}>All</option>
                     {services.map(s => (
                       <option key={s} value={s} style={optionStyle}>{s}</option>
                     ))}
                   </select>
                 </th>
-                <th style={{ width: 110 }}>
+                <th style={th(110)}>
                   Direction
                   {/* The popup list is a native surface, not composited over the
                       page — it needs an explicit opaque background (see Events.tsx). */}
@@ -242,7 +258,7 @@ export default function Sessions() {
                     <option value="egress" style={optionStyle}>Egress</option>
                   </select>
                 </th>
-                <th style={{ width: 110 }}>
+                <th style={th(110)}>
                   Policy
                   <select value={policyFilter} onChange={e => setFilter('policy', e.target.value)} style={selectStyle}>
                     <option value="" style={optionStyle}>All</option>
@@ -250,12 +266,12 @@ export default function Sessions() {
                     <option value="blocked" style={optionStyle}>Blocked</option>
                   </select>
                 </th>
-                <th style={{ width: 60 }}>Net ID</th>
-                <th>Peer</th>
-                <th style={{ width: 110 }}>Started</th>
-                <th style={{ width: 110 }}>Ended</th>
-                <th style={{ width: 80 }}>Duration</th>
-                <th style={{ width: 80 }}></th>
+                <th style={th(60)}>Net ID</th>
+                <th style={th()}>Peer</th>
+                <th style={th(110)}>Started</th>
+                <th style={th(110)}>Ended</th>
+                <th style={th(80)}>Duration</th>
+                <th style={th(80)}></th>
               </tr>
             </thead>
             <tbody>
@@ -277,7 +293,9 @@ export default function Sessions() {
                         {active ? 'active' : 'ended'}
                       </span>
                     </td>
-                    <td style={{ fontWeight: 500 }}>{s.service}</td>
+                    <td style={{ fontWeight: 500, overflowWrap: 'anywhere' }} title={s.service}>
+                      {s.service}
+                    </td>
                     <td>
                       <span className={`badge ${DIRECTION_BADGE[s.direction]}`}>{s.direction}</span>
                     </td>
