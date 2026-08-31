@@ -138,6 +138,10 @@ pub struct Orchestrator {
     net_id_ports: Arc<Mutex<HashMap<u32, AllocatedPort>>>,
     /// Live egress edges, keyed by initiator replica. Separate from the service
     /// StackMap because the proxy end is infrastructure, not a registered service.
+    ///
+    /// Never `remove` from this map directly — go through
+    /// [`Self::remove_egress_edges`], which is what closes the removed edges'
+    /// session-history rows.
     egress_edges: Arc<RwLock<HashMap<EgressKey, EgressEdge>>>,
     /// Trigger chains this server holds a refcount on, keyed per trigger port.
     /// The chain edges themselves live in the service StackMap; this records
@@ -275,7 +279,7 @@ impl Orchestrator {
         }
 
         let Some(net_id) = self.allocate_net_id().await else {
-            self.egress_edges.write().await.remove(&key);
+            self.remove_egress_edges(|k, _| k == &key).await;
             return Err("NET ID pool exhausted").handle_err(location!());
         };
 
@@ -297,7 +301,7 @@ impl Orchestrator {
                 Some(port) => Some(u32::from(port)),
                 None => {
                     self.free_net_id(net_id).await;
-                    self.egress_edges.write().await.remove(&key);
+                    self.remove_egress_edges(|k, _| k == &key).await;
                     return Err("UDP port pool exhausted").handle_err(location!());
                 }
             }
@@ -337,7 +341,7 @@ impl Orchestrator {
         if proxy_ok.is_none() || init_ok.is_none() {
             self.send_net_teardown(initiator_ip, initiator_docker, proxy_ip, None, net_id)
                 .await;
-            self.egress_edges.write().await.remove(&key);
+            self.remove_egress_edges(|k, _| k == &key).await;
             return Err("egress edge NET setup failed").handle_err(location!());
         }
 
@@ -499,23 +503,47 @@ impl Orchestrator {
             .map(|c| c.to_uppercase())
     }
 
-    /// Tear down every egress edge anchored on `node_ip` (as initiator or proxy).
-    async fn teardown_egress_edges_for_node(&self, node_ip: IpAddr) {
+    /// The single way an egress edge leaves `egress_edges`, and therefore the
+    /// single place its session-history rows are closed. Every reap path funnels
+    /// through here so that a future one cannot remove an edge and leave its
+    /// destinations reading as live forever — which a recycled net id would then
+    /// be adopted onto.
+    ///
+    /// Reservations (`net_id == 0`) carry no rows yet, so they are just dropped.
+    /// Tunnel teardown is deliberately *not* part of this: the rollback paths in
+    /// `ensure_egress_edge` unwind a tunnel whose edge never got its net id, so
+    /// they own that half themselves.
+    async fn remove_egress_edges(
+        &self,
+        pred: impl Fn(&EgressKey, &EgressEdge) -> bool,
+    ) -> Vec<EgressEdge> {
         let removed: Vec<EgressEdge> = {
             let mut edges = self.egress_edges.write().await;
             let keys: Vec<EgressKey> = edges
                 .iter()
-                .filter(|(_, e)| e.initiator_ip == node_ip || e.proxy_ip == node_ip)
+                .filter(|(k, e)| pred(k, e))
                 .map(|(k, _)| k.clone())
                 .collect();
             keys.into_iter().filter_map(|k| edges.remove(&k)).collect()
         };
+        for e in &removed {
+            if e.net_id != 0 {
+                self.sessions.close_egress_edge(e.net_id).await;
+            }
+        }
+        removed
+    }
+
+    /// Tear down every egress edge anchored on `node_ip` (as initiator or proxy).
+    async fn teardown_egress_edges_for_node(&self, node_ip: IpAddr) {
+        let removed = self
+            .remove_egress_edges(|_, e| e.initiator_ip == node_ip || e.proxy_ip == node_ip)
+            .await;
         for e in removed {
             // Skip reservations that never completed (net_id still 0).
             if e.net_id == 0 {
                 continue;
             }
-            self.sessions.close_egress_edge(e.net_id).await;
             self.send_net_teardown(
                 e.initiator_ip,
                 e.initiator_docker,
@@ -555,19 +583,13 @@ impl Orchestrator {
     /// peer.
     pub(crate) async fn reap_idle_egress_edges(&self, debounce: Duration) {
         let now = Instant::now();
-        let removed: Vec<EgressEdge> = {
-            let mut edges = self.egress_edges.write().await;
-            let keys: Vec<EgressKey> = edges
-                .iter()
-                .filter(|(_, e)| {
-                    e.net_id != 0
-                        && e.idle_since
-                            .is_some_and(|since| now.duration_since(since) >= debounce)
-                })
-                .map(|(k, _)| k.clone())
-                .collect();
-            keys.into_iter().filter_map(|k| edges.remove(&k)).collect()
-        };
+        let removed = self
+            .remove_egress_edges(|_, e| {
+                e.net_id != 0
+                    && e.idle_since
+                        .is_some_and(|since| now.duration_since(since) >= debounce)
+            })
+            .await;
         for e in removed {
             println!(
                 "Egress edge for '{}' ({}) idle past the debounce; tearing down net {}",
@@ -575,7 +597,6 @@ impl Orchestrator {
                 e.initiator_ip,
                 e.net_id
             );
-            self.sessions.close_egress_edge(e.net_id).await;
             self.send_net_teardown(
                 e.initiator_ip,
                 e.initiator_docker,
@@ -704,20 +725,14 @@ impl Orchestrator {
         node_ip: IpAddr,
         live: &std::collections::HashSet<String>,
     ) {
-        let removed: Vec<EgressEdge> = {
-            let mut edges = self.egress_edges.write().await;
-            let keys: Vec<EgressKey> = edges
-                .iter()
-                .filter(|(_, e)| {
-                    e.initiator_ip == node_ip
-                        && e.initiator_docker
-                            .as_ref()
-                            .is_some_and(|c| !live.contains(c))
-                })
-                .map(|(k, _)| k.clone())
-                .collect();
-            keys.into_iter().filter_map(|k| edges.remove(&k)).collect()
-        };
+        let removed = self
+            .remove_egress_edges(|_, e| {
+                e.initiator_ip == node_ip
+                    && e.initiator_docker
+                        .as_ref()
+                        .is_some_and(|c| !live.contains(c))
+            })
+            .await;
         for e in removed {
             if e.net_id == 0 {
                 continue;
@@ -726,7 +741,6 @@ impl Orchestrator {
                 "[egress] reaping edge for gone container {:?} on {}",
                 e.initiator_docker, e.initiator_ip
             );
-            self.sessions.close_egress_edge(e.net_id).await;
             self.send_net_teardown(
                 e.initiator_ip,
                 e.initiator_docker,
@@ -1559,6 +1573,38 @@ mod egress_session_history_tests {
             .unwrap();
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].started_at, 300);
+    }
+
+    /// The third reap path (container died, node still up). All three now share
+    /// `remove_egress_edges`, so this is really asserting the choke point holds
+    /// for every caller of it.
+    #[tokio::test]
+    async fn a_dead_container_closes_its_destination_rows() {
+        let (orch, db) = orch_with_db().await;
+        let dead = (ip(10, 0, 0, 1), Some("gone".to_string()));
+        let alive = (ip(10, 0, 0, 1), Some("still-here".to_string()));
+        insert_edge(&orch, dead.clone(), 21, Duration::ZERO).await;
+        insert_edge(&orch, alive.clone(), 22, Duration::ZERO).await;
+        for (k, dst) in [
+            (&dead, Ipv4Addr::new(8, 8, 8, 8)),
+            (&alive, Ipv4Addr::new(9, 9, 9, 9)),
+        ] {
+            orch.record_egress_destination(k.0, k.1.clone(), dst, 1, 100, false)
+                .await;
+        }
+
+        let live: std::collections::HashSet<String> =
+            ["still-here".to_string()].into_iter().collect();
+        orch.teardown_egress_edges_for_missing_containers(ip(10, 0, 0, 1), &live)
+            .await;
+
+        let open = db
+            .sessions()
+            .query("prod", None, None, Some(true), None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].net_id, 22);
     }
 
     /// A node going away takes its edges down; the history must follow.
