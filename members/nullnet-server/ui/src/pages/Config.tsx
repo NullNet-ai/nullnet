@@ -86,6 +86,10 @@ function formToFilter(form: FilterPolicyForm): FilterPolicyJson {
         .filter(r => r.values.length > 0),
     )
     .filter(group => group.length > 0);
+  // An empty group (no conditions with a value) or no groups at all can't be
+  // validated server-side — rather than error on submit, treat it as if the
+  // action were still "none".
+  if (groups.length === 0) return 'none';
   return form.action === 'block' ? { block: { groups } } : { allow: { groups } };
 }
 
@@ -153,7 +157,10 @@ function FilterPolicyEditor({
               )}
               <div style={{ border: '1px solid var(--t3)', borderRadius: 6, padding: 8 }}>
                 {group.map((rule, ri) => (
-                  <div key={ri} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
+                  <div
+                    key={ri}
+                    style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6, alignItems: 'center' }}
+                  >
                     {ri > 0 && <span style={{ fontSize: 11, color: 'var(--t2)' }}>AND</span>}
                     <select
                       value={rule.field}
@@ -183,7 +190,7 @@ function FilterPolicyEditor({
                       onChange={e => updateRule(gi, ri, { values: e.target.value })}
                       placeholder={rule.field === 'country' ? 'US, CA' : rule.field === 'asn' ? 'AS15169' : '10.0.0.0/8'}
                       spellCheck={false}
-                      style={{ flex: 1 }}
+                      style={{ flex: '1 1 120px', minWidth: 0 }}
                     />
                     <button type="button" className="teardown-btn" onClick={() => removeRule(gi, ri)}>
                       ×
