@@ -1,6 +1,6 @@
 use crate::db::schema::{
     certificates, dns_credentials, events, login_attempts, refresh_tokens, routes,
-    service_dependencies, service_triggers, services, stacks, user_scopes, users,
+    service_dependencies, service_triggers, services, sessions, stacks, user_scopes, users,
 };
 use diesel::prelude::*;
 
@@ -301,4 +301,48 @@ pub(crate) struct NewEventRow<'a> {
     pub(crate) severity: &'a str,
     pub(crate) timestamp: i64,
     pub(crate) payload: &'a str,
+}
+
+/// One persisted session row — an ingress session (external client -> service)
+/// or one egress destination (service -> external host). `ended_at` is NULL
+/// exactly while the session is live. Like `EventRow`, the columns are the
+/// filterable/queryable fields and everything direction-specific stays in
+/// `detail` as JSON rather than one sparse column per variant.
+#[derive(Queryable, Selectable, Identifiable, Debug, Clone)]
+#[diesel(table_name = sessions)]
+#[diesel(primary_key(id))]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub(crate) struct SessionRow {
+    pub(crate) id: i64,
+    pub(crate) direction: String,
+    pub(crate) stack: String,
+    pub(crate) service: String,
+    pub(crate) net_id: i32,
+    pub(crate) peer_ip: String,
+    pub(crate) country_code: Option<String>,
+    pub(crate) asn: Option<String>,
+    pub(crate) org: Option<String>,
+    pub(crate) blocked: bool,
+    pub(crate) detail: String,
+    pub(crate) started_at: i64,
+    pub(crate) last_seen: i64,
+    pub(crate) ended_at: Option<i64>,
+}
+
+#[derive(Insertable, Debug, Clone)]
+#[diesel(table_name = sessions)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub(crate) struct NewSessionRow<'a> {
+    pub(crate) direction: &'a str,
+    pub(crate) stack: &'a str,
+    pub(crate) service: &'a str,
+    pub(crate) net_id: i32,
+    pub(crate) peer_ip: &'a str,
+    pub(crate) country_code: Option<&'a str>,
+    pub(crate) asn: Option<&'a str>,
+    pub(crate) org: Option<&'a str>,
+    pub(crate) blocked: bool,
+    pub(crate) detail: &'a str,
+    pub(crate) started_at: i64,
+    pub(crate) last_seen: i64,
 }

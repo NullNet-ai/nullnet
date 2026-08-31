@@ -4,6 +4,7 @@ All Nullnet releases with the relative changes are documented in this file.
 
 ## [UNRELEASED]
 ### Added
+- Persist ingress and egress sessions to SQLite and show the full history on the Sessions page, filterable by direction and service, with its own retention window ([#170](https://github.com/NullNet-ai/nullnet/pull/170))
 ### Changed
 - Create/tear down VXLAN tunnels via `rtnetlink` in-process instead of spawning `vxlan-setup.sh`/`vxlan-teardown.sh`, following the same strategy as VLAN access ports; MACsec SA/key installation and XFRM state/policy stay CLI-based, since neither is exposed by rtnetlink ([#168](https://github.com/NullNet-ai/nullnet/pull/168) — fixes [#141](https://github.com/NullNet-ai/nullnet/issues/141))
 - Tear edges down on proven connection liveness instead of routing-event timers ([#164](https://github.com/NullNet-ai/nullnet/pull/164) — fixes [#126](https://github.com/NullNet-ai/nullnet/issues/126))

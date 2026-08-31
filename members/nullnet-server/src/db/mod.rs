@@ -13,7 +13,9 @@
 //! repositories
 //! (`users`/`user_scopes`/`refresh_tokens`/`login_attempts`) back the
 //! server's JWT auth system and are fully wired up, as is `events` (durable
-//! storage for `crate::events::Event`, pruned by `events_retention.rs`).
+//! storage for `crate::events::Event`) and `sessions` (ingress/egress
+//! session history behind the UI's Sessions page) — both pruned by
+//! `retention.rs`.
 #![allow(dead_code)]
 
 mod certs;
@@ -22,6 +24,7 @@ mod login_attempts;
 mod models;
 mod refresh_tokens;
 mod schema;
+mod sessions;
 mod stacks;
 mod user_scopes;
 mod users;
@@ -31,6 +34,7 @@ pub(crate) use events::EventRepository;
 pub(crate) use login_attempts::LoginAttemptRepository;
 pub(crate) use models::{RouteRow, ServiceDependencyRow, ServiceRow, ServiceTriggerRow};
 pub(crate) use refresh_tokens::RefreshTokenRepository;
+pub(crate) use sessions::{SessionGeo, SessionRepository};
 pub(crate) use stacks::{RouteInsert, ServiceInsert, StackRepository};
 pub(crate) use user_scopes::ScopeRepository;
 pub(crate) use users::UserRepository;
@@ -127,6 +131,10 @@ impl Db {
 
     pub(crate) fn events(&self) -> EventRepository {
         EventRepository::new(self.conn.clone())
+    }
+
+    pub(crate) fn sessions(&self) -> SessionRepository {
+        SessionRepository::new(self.conn.clone())
     }
 }
 

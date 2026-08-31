@@ -329,6 +329,10 @@ async fn teardown_chain(
                     client_ip.to_string(),
                 ))
                 .await;
+            orchestrator
+                .sessions
+                .close_ingress(*net_id, name, &client_ip.to_string())
+                .await;
         }
     }
 }

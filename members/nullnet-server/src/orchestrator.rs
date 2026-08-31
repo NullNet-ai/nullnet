@@ -5,6 +5,7 @@ use crate::net::{EgressRole, NetExt};
 use crate::net_id_pool::{NetIdPool, UdpPortPool, generate_key};
 use crate::services::changes::{apply_changes, detect_node_disconnect_changes};
 use crate::services::input::StackMap;
+use crate::sessions::SessionStore;
 use nullnet_grpc_lib::nullnet_grpc::{
     ContainerResume, ContainerSuspend, EgressPolicyChanged, MsgId, Net, NetMessage, net_message,
 };
@@ -70,6 +71,11 @@ struct DestStat {
 #[derive(Debug, Clone)]
 struct EgressEdge {
     net_id: u32,
+    /// Stack + service the initiator replica is registered under. Resolved once
+    /// at trigger time and carried here: the destination reports that feed the
+    /// session history arrive with only an `(ip, docker)` key.
+    stack: String,
+    service: String,
     initiator_ip: IpAddr,
     initiator_docker: Option<String>,
     proxy_ip: IpAddr,
@@ -144,6 +150,7 @@ pub struct Orchestrator {
     /// steady state instead of racing the detached free task.
     inflight_teardowns: Arc<AtomicUsize>,
     pub(crate) events: EventStore,
+    pub(crate) sessions: SessionStore,
 }
 
 impl Orchestrator {
@@ -159,6 +166,7 @@ impl Orchestrator {
             geo: GeoCache::from_env(),
             inflight_teardowns: Arc::new(AtomicUsize::new(0)),
             events: EventStore::new(),
+            sessions: SessionStore::new(),
         }
     }
 
@@ -237,6 +245,8 @@ impl Orchestrator {
     /// lock before the async NET setup, so concurrent triggers collapse to one.
     pub(crate) async fn ensure_egress_edge(
         &self,
+        stack: &str,
+        service: &str,
         initiator_ip: IpAddr,
         initiator_docker: Option<String>,
         proxy_ip: IpAddr,
@@ -253,6 +263,8 @@ impl Orchestrator {
                 key.clone(),
                 EgressEdge {
                     net_id: 0,
+                    stack: stack.to_string(),
+                    service: service.to_string(),
                     initiator_ip,
                     initiator_docker: initiator_docker.clone(),
                     proxy_ip,
@@ -412,38 +424,69 @@ impl Orchestrator {
         blocked: bool,
     ) {
         let key = (initiator_ip, initiator_docker);
-        let mut edges = self.egress_edges.write().await;
-        let Some(edge) = edges.get_mut(&key) else {
+        let persist = {
+            let mut edges = self.egress_edges.write().await;
+            let Some(edge) = edges.get_mut(&key) else {
+                return;
+            };
+            // Kick off (cached, once-per-IP) geo/ASN enrichment for the UI.
+            self.geo.ensure(dst_ip);
+            match edge.destinations.get_mut(&dst_ip) {
+                Some(stat) => {
+                    stat.last_seen = last_seen;
+                    stat.count = count;
+                    stat.blocked = blocked;
+                }
+                None => {
+                    if edge.destinations.len() >= MAX_DESTS_PER_EDGE
+                        && let Some(oldest) = edge
+                            .destinations
+                            .iter()
+                            .min_by_key(|(_, s)| s.last_seen)
+                            .map(|(ip, _)| *ip)
+                    {
+                        edge.destinations.remove(&oldest);
+                    }
+                    edge.destinations.insert(
+                        dst_ip,
+                        DestStat {
+                            last_seen,
+                            count,
+                            blocked,
+                        },
+                    );
+                }
+            }
+            // A reservation still being built has no id to file the row under;
+            // the client's next flush re-sends the running totals, by which
+            // point the edge is promoted. Mirrors `egress_edges_snapshot`.
+            (edge.net_id != 0).then(|| {
+                (
+                    edge.stack.clone(),
+                    edge.service.clone(),
+                    edge.net_id,
+                    edge.proxy_ip,
+                )
+            })
+        };
+
+        let Some((stack, service, net_id, proxy_ip)) = persist else {
             return;
         };
-        // Kick off (cached, once-per-IP) geo/ASN enrichment for the UI.
-        self.geo.ensure(dst_ip);
-        match edge.destinations.get_mut(&dst_ip) {
-            Some(stat) => {
-                stat.last_seen = last_seen;
-                stat.count = count;
-                stat.blocked = blocked;
-            }
-            None => {
-                if edge.destinations.len() >= MAX_DESTS_PER_EDGE
-                    && let Some(oldest) = edge
-                        .destinations
-                        .iter()
-                        .min_by_key(|(_, s)| s.last_seen)
-                        .map(|(ip, _)| *ip)
-                {
-                    edge.destinations.remove(&oldest);
-                }
-                edge.destinations.insert(
-                    dst_ip,
-                    DestStat {
-                        last_seen,
-                        count,
-                        blocked,
-                    },
-                );
-            }
-        }
+        self.sessions
+            .record_egress_destination(
+                &stack,
+                &service,
+                net_id,
+                &dst_ip.to_string(),
+                &key.0.to_string(),
+                key.1.as_deref(),
+                &proxy_ip.to_string(),
+                last_seen as i64,
+                blocked,
+                self.geo.get(dst_ip),
+            )
+            .await;
     }
 
     /// Country (uppercase alpha-2) of `ip` for the egress policy check,
@@ -472,6 +515,7 @@ impl Orchestrator {
             if e.net_id == 0 {
                 continue;
             }
+            self.sessions.close_egress_edge(e.net_id).await;
             self.send_net_teardown(
                 e.initiator_ip,
                 e.initiator_docker,
@@ -531,6 +575,7 @@ impl Orchestrator {
                 e.initiator_ip,
                 e.net_id
             );
+            self.sessions.close_egress_edge(e.net_id).await;
             self.send_net_teardown(
                 e.initiator_ip,
                 e.initiator_docker,
@@ -681,6 +726,7 @@ impl Orchestrator {
                 "[egress] reaping edge for gone container {:?} on {}",
                 e.initiator_docker, e.initiator_ip
             );
+            self.sessions.close_egress_edge(e.net_id).await;
             self.send_net_teardown(
                 e.initiator_ip,
                 e.initiator_docker,
@@ -1296,6 +1342,8 @@ mod egress_liveness_tests {
             key.clone(),
             EgressEdge {
                 net_id,
+                stack: "s".to_string(),
+                service: "svc".to_string(),
                 initiator_ip: key.0,
                 initiator_docker: key.1,
                 proxy_ip: ip(10, 0, 0, 9),
@@ -1353,5 +1401,201 @@ mod egress_liveness_tests {
             None,
             "reaping it removes the deadline, so the loop can sleep again"
         );
+    }
+}
+
+#[cfg(test)]
+mod egress_session_history_tests {
+    use super::*;
+    use crate::db::Db;
+
+    fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+    }
+
+    async fn orch_with_db() -> (Orchestrator, Db) {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "nullnet-server-egress-history-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Db::open(dir.join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+        let orch = Orchestrator::new();
+        orch.sessions.attach_db(db.clone());
+        (orch, db)
+    }
+
+    async fn insert_edge(orch: &Orchestrator, key: EgressKey, net_id: u32, idle_for: Duration) {
+        orch.egress_edges.write().await.insert(
+            key.clone(),
+            EgressEdge {
+                net_id,
+                stack: "prod".to_string(),
+                service: "api".to_string(),
+                initiator_ip: key.0,
+                initiator_docker: key.1,
+                proxy_ip: ip(10, 0, 0, 9),
+                destinations: HashMap::new(),
+                idle_since: Some(Instant::now() - idle_for),
+            },
+        );
+    }
+
+    /// A destination reported while the edge is still a reservation has no net
+    /// id to file under. It must stay out of the history rather than land on a
+    /// row nothing can ever close; the client's next flush re-sends it.
+    #[tokio::test]
+    async fn a_reservation_records_no_history_until_it_is_promoted() {
+        let (orch, db) = orch_with_db().await;
+        let key = (ip(10, 0, 0, 1), Some("c1".to_string()));
+        insert_edge(&orch, key.clone(), 0, Duration::ZERO).await;
+
+        orch.record_egress_destination(
+            key.0,
+            key.1.clone(),
+            Ipv4Addr::new(8, 8, 8, 8),
+            1,
+            100,
+            false,
+        )
+        .await;
+        assert!(
+            db.sessions()
+                .query("prod", None, None, None, None, None, None, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // Promote, re-report: now it is recorded.
+        orch.egress_edges
+            .write()
+            .await
+            .get_mut(&key)
+            .unwrap()
+            .net_id = 5;
+        orch.record_egress_destination(
+            key.0,
+            key.1.clone(),
+            Ipv4Addr::new(8, 8, 8, 8),
+            2,
+            110,
+            false,
+        )
+        .await;
+        let rows = db
+            .sessions()
+            .query("prod", None, None, None, None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].service, "api");
+        assert_eq!(rows[0].net_id, 5);
+        assert_eq!(rows[0].peer_ip, "8.8.8.8");
+        assert!(rows[0].ended_at.is_none());
+    }
+
+    /// Repeat reports of the same destination update one row; distinct
+    /// destinations each get their own; the reap closes all of the edge's.
+    #[tokio::test]
+    async fn destinations_get_one_row_each_and_close_together_on_reap() {
+        let (orch, db) = orch_with_db().await;
+        let key = (ip(10, 0, 0, 1), Some("c1".to_string()));
+        insert_edge(&orch, key.clone(), 7, Duration::from_secs(600)).await;
+
+        for (dst, last_seen, blocked) in [
+            (Ipv4Addr::new(8, 8, 8, 8), 100, false),
+            (Ipv4Addr::new(8, 8, 8, 8), 150, false),
+            (Ipv4Addr::new(1, 1, 1, 1), 120, true),
+        ] {
+            orch.record_egress_destination(key.0, key.1.clone(), dst, 1, last_seen, blocked)
+                .await;
+        }
+
+        let rows = db
+            .sessions()
+            .query("prod", None, None, None, None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        let google = rows.iter().find(|r| r.peer_ip == "8.8.8.8").unwrap();
+        assert_eq!(google.last_seen, 150);
+        assert!(!google.blocked);
+        assert!(
+            rows.iter()
+                .find(|r| r.peer_ip == "1.1.1.1")
+                .unwrap()
+                .blocked
+        );
+
+        orch.reap_idle_egress_edges(Duration::from_secs(1)).await;
+        let rows = db
+            .sessions()
+            .query("prod", None, None, None, None, None, None, 10)
+            .await
+            .unwrap();
+        assert!(rows.iter().all(|r| r.ended_at.is_some()));
+
+        // The next generation of the same net id opens fresh rows rather than
+        // reviving the closed ones.
+        insert_edge(&orch, key.clone(), 7, Duration::ZERO).await;
+        orch.record_egress_destination(
+            key.0,
+            key.1.clone(),
+            Ipv4Addr::new(8, 8, 8, 8),
+            1,
+            300,
+            false,
+        )
+        .await;
+        let open = db
+            .sessions()
+            .query("prod", None, None, Some(true), None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].started_at, 300);
+    }
+
+    /// A node going away takes its edges down; the history must follow.
+    #[tokio::test]
+    async fn a_node_teardown_closes_that_nodes_destination_rows() {
+        let (orch, db) = orch_with_db().await;
+        let gone = (ip(10, 0, 0, 1), Some("c1".to_string()));
+        let survivor = (ip(10, 0, 0, 2), Some("c2".to_string()));
+        insert_edge(&orch, gone.clone(), 11, Duration::ZERO).await;
+        insert_edge(&orch, survivor.clone(), 12, Duration::ZERO).await;
+        orch.record_egress_destination(
+            gone.0,
+            gone.1.clone(),
+            Ipv4Addr::new(8, 8, 8, 8),
+            1,
+            100,
+            false,
+        )
+        .await;
+        orch.record_egress_destination(
+            survivor.0,
+            survivor.1.clone(),
+            Ipv4Addr::new(9, 9, 9, 9),
+            1,
+            100,
+            false,
+        )
+        .await;
+
+        orch.teardown_egress_edges_for_node(gone.0).await;
+
+        let open = db
+            .sessions()
+            .query("prod", None, None, Some(true), None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].net_id, 12);
     }
 }

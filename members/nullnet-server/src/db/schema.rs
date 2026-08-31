@@ -127,6 +127,25 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    sessions (id) {
+        id -> BigInt,
+        direction -> Text,
+        stack -> Text,
+        service -> Text,
+        net_id -> Integer,
+        peer_ip -> Text,
+        country_code -> Nullable<Text>,
+        asn -> Nullable<Text>,
+        org -> Nullable<Text>,
+        blocked -> Bool,
+        detail -> Text,
+        started_at -> BigInt,
+        last_seen -> BigInt,
+        ended_at -> Nullable<BigInt>,
+    }
+}
+
 diesel::joinable!(dns_credentials -> certificates (domain));
 diesel::joinable!(user_scopes -> users (user_id));
 diesel::joinable!(refresh_tokens -> users (user_id));
@@ -142,6 +161,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     refresh_tokens,
     login_attempts,
     events,
+    sessions,
     stacks,
     services,
     service_triggers,
