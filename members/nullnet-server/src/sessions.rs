@@ -18,6 +18,7 @@ use crate::db::{Db, SessionGeo};
 use crate::geo::GeoInfo;
 use serde::Serialize;
 use serde_json::json;
+use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -268,6 +269,20 @@ impl SessionStore {
             sessions,
             next_before_id,
         }
+    }
+
+    /// `(net_id, peer_ip)` of every live ingress session in `stack`.
+    pub(crate) async fn open_ingress_keys(&self, stack: &str) -> HashSet<(u32, String)> {
+        let Some(db) = self.db.get() else {
+            return HashSet::new();
+        };
+        db.sessions()
+            .open_ingress_keys(stack)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(net_id, peer_ip)| (net_id as u32, peer_ip))
+            .collect()
     }
 
     /// Live session count for `stack`, unfiltered.

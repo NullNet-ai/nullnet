@@ -231,6 +231,22 @@ impl SessionRepository {
             .handle_err(location!())
     }
 
+    /// `(net_id, peer_ip)` of every live ingress session in `stack`. The
+    /// handler diffs the in-memory map against this to find sessions with no
+    /// row at all — which must be the *whole* open set, not one page of it, or
+    /// a live session paged out of view reads as missing and gets duplicated.
+    pub(crate) async fn open_ingress_keys(&self, stack: &str) -> Result<Vec<(i32, String)>, Error> {
+        let mut conn = self.conn.lock().await;
+        sessions::table
+            .filter(sessions::stack.eq(stack.to_owned()))
+            .filter(sessions::direction.eq("ingress"))
+            .filter(sessions::ended_at.is_null())
+            .select((sessions::net_id, sessions::peer_ip))
+            .load::<(i32, String)>(&mut *conn)
+            .await
+            .handle_err(location!())
+    }
+
     /// How many of `stack`'s sessions are live, unfiltered — the Sessions
     /// page's headline count, which must not move when the view is narrowed.
     pub(crate) async fn count_active(&self, stack: &str) -> Result<i64, Error> {
@@ -585,6 +601,46 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    /// The open set must be complete regardless of how much history sits on
+    /// top of it — that is the whole point of asking the table rather than a page.
+    #[tokio::test]
+    async fn open_ingress_keys_sees_past_a_page_of_newer_history() {
+        let db = test_db().await;
+        let repo = db.sessions();
+        let geo = SessionGeo::default();
+
+        // one long-lived session, then a pile of newer closed ones on top
+        repo.open("ingress", "s1", "web", 1, "1.1.1.1", &geo, false, "{}", 100)
+            .await
+            .unwrap();
+        for i in 0..150u32 {
+            let peer = format!("2.2.2.{}", i % 250);
+            repo.open(
+                "ingress",
+                "s1",
+                "web",
+                1000 + i,
+                &peer,
+                &geo,
+                false,
+                "{}",
+                200,
+            )
+            .await
+            .unwrap();
+            repo.close_ingress(1000 + i, "web", &peer, 300)
+                .await
+                .unwrap();
+        }
+        // also an egress row, which must not appear in an ingress-only answer
+        repo.open("egress", "s1", "api", 9, "8.8.8.8", &geo, false, "{}", 400)
+            .await
+            .unwrap();
+
+        let keys = repo.open_ingress_keys("s1").await.unwrap();
+        assert_eq!(keys, vec![(1, "1.1.1.1".to_string())]);
     }
 
     #[tokio::test]

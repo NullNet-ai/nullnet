@@ -166,7 +166,7 @@ pub(super) async fn history_handler(
             continue;
         }
         if s.direction == INGRESS
-            && let Some(l) = live.remove(&(s.net_id, s.peer_ip.clone()))
+            && let Some(l) = live.get(&(s.net_id, s.peer_ip.clone()))
             && let Some(obj) = s.detail.as_object_mut()
         {
             obj.insert("chain_depth".into(), l.chain_depth.into());
@@ -185,12 +185,25 @@ pub(super) async fn history_handler(
         }
     }
 
-    // Anything still live that the table has no open row for — a row whose
+    // Anything still live that the table has no row for at all — a row whose
     // write failed, or a session predating this history. The in-memory map is
     // the ground truth for what is live, so surface it rather than letting the
-    // session disappear from the page (and with it its Teardown button). Only
-    // on the first page: a later page must not re-list what page one showed.
-    if params.before_id.is_none() && params.active != Some(false) && direction != Some(EGRESS) {
+    // session disappear from the page (and with it its Teardown button).
+    //
+    // Diffed against every open row, NOT against the page above: a long-lived
+    // session sits on a low id, so enough newer history pushes its row off page
+    // one, and diffing against the page would synthesize a phantom beside the
+    // real row the reader reaches by paging back. Only on the first page, and
+    // only when no time window is set — a synthesized row has no id for the
+    // cursor to walk and no stored timestamps to filter on.
+    if params.before_id.is_none()
+        && params.active != Some(false)
+        && direction != Some(EGRESS)
+        && params.since.is_none()
+        && params.until.is_none()
+    {
+        let stored = state.sessions.open_ingress_keys(&stack).await;
+        live.retain(|key, _| !stored.contains(key));
         let unmatched = synthesize_live(live, params.service.as_deref());
         page.sessions.splice(0..0, unmatched);
     }
