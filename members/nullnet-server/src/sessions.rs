@@ -225,6 +225,7 @@ impl SessionStore {
         direction: Option<&str>,
         service: Option<&str>,
         active: Option<bool>,
+        blocked: Option<bool>,
         since: Option<i64>,
         until: Option<i64>,
         before_id: Option<i64>,
@@ -239,7 +240,7 @@ impl SessionStore {
         let rows = db
             .sessions()
             .query(
-                stack, direction, service, active, since, until, before_id, limit,
+                stack, direction, service, active, blocked, since, until, before_id, limit,
             )
             .await
             .unwrap_or_default();

@@ -1479,7 +1479,7 @@ mod egress_session_history_tests {
         .await;
         assert!(
             db.sessions()
-                .query("prod", None, None, None, None, None, None, 10)
+                .query("prod", None, None, None, None, None, None, None, 10)
                 .await
                 .unwrap()
                 .is_empty()
@@ -1503,7 +1503,7 @@ mod egress_session_history_tests {
         .await;
         let rows = db
             .sessions()
-            .query("prod", None, None, None, None, None, None, 10)
+            .query("prod", None, None, None, None, None, None, None, 10)
             .await
             .unwrap();
         assert_eq!(rows.len(), 1);
@@ -1532,7 +1532,7 @@ mod egress_session_history_tests {
 
         let rows = db
             .sessions()
-            .query("prod", None, None, None, None, None, None, 10)
+            .query("prod", None, None, None, None, None, None, None, 10)
             .await
             .unwrap();
         assert_eq!(rows.len(), 2);
@@ -1549,7 +1549,7 @@ mod egress_session_history_tests {
         orch.reap_idle_egress_edges(Duration::from_secs(1)).await;
         let rows = db
             .sessions()
-            .query("prod", None, None, None, None, None, None, 10)
+            .query("prod", None, None, None, None, None, None, None, 10)
             .await
             .unwrap();
         assert!(rows.iter().all(|r| r.ended_at.is_some()));
@@ -1568,7 +1568,7 @@ mod egress_session_history_tests {
         .await;
         let open = db
             .sessions()
-            .query("prod", None, None, Some(true), None, None, None, 10)
+            .query("prod", None, None, Some(true), None, None, None, None, 10)
             .await
             .unwrap();
         assert_eq!(open.len(), 1);
@@ -1600,7 +1600,7 @@ mod egress_session_history_tests {
 
         let open = db
             .sessions()
-            .query("prod", None, None, Some(true), None, None, None, 10)
+            .query("prod", None, None, Some(true), None, None, None, None, 10)
             .await
             .unwrap();
         assert_eq!(open.len(), 1);
@@ -1638,7 +1638,7 @@ mod egress_session_history_tests {
 
         let open = db
             .sessions()
-            .query("prod", None, None, Some(true), None, None, None, 10)
+            .query("prod", None, None, Some(true), None, None, None, None, 10)
             .await
             .unwrap();
         assert_eq!(open.len(), 1);

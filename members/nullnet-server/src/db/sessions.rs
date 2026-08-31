@@ -184,8 +184,8 @@ impl SessionRepository {
     }
 
     /// Most-recent-first page of sessions in `stack`, filtered by any of
-    /// `direction`/`service`/`active`/`since`/`until`, cursor-paginated via
-    /// `before_id` (strictly less than — pass the previous page's oldest `id`).
+    /// `direction`/`service`/`active`/`blocked`/`since`/`until`, cursor-paginated
+    /// via `before_id` (strictly less than — pass the previous page's oldest `id`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn query(
         &self,
@@ -193,6 +193,7 @@ impl SessionRepository {
         direction: Option<&str>,
         service: Option<&str>,
         active: Option<bool>,
+        blocked: Option<bool>,
         since: Option<i64>,
         until: Option<i64>,
         before_id: Option<i64>,
@@ -211,6 +212,9 @@ impl SessionRepository {
             Some(true) => query = query.filter(sessions::ended_at.is_null()),
             Some(false) => query = query.filter(sessions::ended_at.is_not_null()),
             None => {}
+        }
+        if let Some(blocked) = blocked {
+            query = query.filter(sessions::blocked.eq(blocked));
         }
         if let Some(since) = since {
             query = query.filter(sessions::started_at.ge(since));
@@ -333,7 +337,7 @@ mod tests {
 
         // stack scoping
         let s1 = repo
-            .query("s1", None, None, None, None, None, None, 10)
+            .query("s1", None, None, None, None, None, None, None, 10)
             .await
             .unwrap();
         assert_eq!(s1.len(), 2);
@@ -342,7 +346,7 @@ mod tests {
 
         // direction filter
         let egress = repo
-            .query("s1", Some("egress"), None, None, None, None, None, 10)
+            .query("s1", Some("egress"), None, None, None, None, None, None, 10)
             .await
             .unwrap();
         assert_eq!(egress.len(), 1);
@@ -350,7 +354,7 @@ mod tests {
 
         // service filter
         let web = repo
-            .query("s1", None, Some("web"), None, None, None, None, 10)
+            .query("s1", None, Some("web"), None, None, None, None, None, 10)
             .await
             .unwrap();
         assert_eq!(web.len(), 1);
@@ -363,13 +367,13 @@ mod tests {
             1
         );
         let active = repo
-            .query("s1", None, None, Some(true), None, None, None, 10)
+            .query("s1", None, None, Some(true), None, None, None, None, 10)
             .await
             .unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].direction, "egress");
         let closed = repo
-            .query("s1", None, None, Some(false), None, None, None, 10)
+            .query("s1", None, None, Some(false), None, None, None, None, 10)
             .await
             .unwrap();
         assert_eq!(closed.len(), 1);
@@ -409,7 +413,7 @@ mod tests {
             1
         );
         let row = &repo
-            .query("s1", None, None, None, None, None, None, 10)
+            .query("s1", None, None, None, None, None, None, None, 10)
             .await
             .unwrap()[0];
         assert_eq!(row.last_seen, 150);
@@ -426,7 +430,7 @@ mod tests {
             .await
             .unwrap();
         let row = &repo
-            .query("s1", None, None, None, None, None, None, 10)
+            .query("s1", None, None, None, None, None, None, None, 10)
             .await
             .unwrap()[0];
         assert_eq!(row.country_code.as_deref(), Some("US"));
@@ -459,7 +463,7 @@ mod tests {
 
         assert_eq!(repo.close_egress_edge(42, 300).await.unwrap(), 3);
         let active = repo
-            .query("s1", None, None, Some(true), None, None, None, 10)
+            .query("s1", None, None, Some(true), None, None, None, None, 10)
             .await
             .unwrap();
         assert_eq!(active.len(), 1);
@@ -481,7 +485,7 @@ mod tests {
 
         assert_eq!(repo.close_all_open(900).await.unwrap(), 1);
         let rows = repo
-            .query("s1", None, None, None, None, None, None, 10)
+            .query("s1", None, None, None, None, None, None, None, 10)
             .await
             .unwrap();
         assert!(rows.iter().all(|r| r.ended_at.is_some()));
@@ -508,11 +512,42 @@ mod tests {
         // net 2 is still live and older than the cutoff: it must survive.
         assert_eq!(repo.delete_ended_before(200).await.unwrap(), 1);
         let rows = repo
-            .query("s1", None, None, None, None, None, None, 10)
+            .query("s1", None, None, None, None, None, None, None, 10)
             .await
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].net_id, 2);
+    }
+
+    #[tokio::test]
+    async fn blocked_filter_splits_denied_from_allowed() {
+        let db = test_db().await;
+        let repo = db.sessions();
+        let geo = SessionGeo::default();
+        repo.open("egress", "s1", "api", 1, "8.8.8.8", &geo, false, "{}", 100)
+            .await
+            .unwrap();
+        repo.open("egress", "s1", "api", 1, "77.88.8.8", &geo, true, "{}", 100)
+            .await
+            .unwrap();
+        // ingress is never policy-denied, so it belongs to the allowed side
+        repo.open("ingress", "s1", "web", 2, "1.2.3.4", &geo, false, "{}", 100)
+            .await
+            .unwrap();
+
+        let blocked = repo
+            .query("s1", None, None, None, Some(true), None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].peer_ip, "77.88.8.8");
+
+        let allowed = repo
+            .query("s1", None, None, None, Some(false), None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(allowed.len(), 2);
+        assert!(allowed.iter().all(|r| !r.blocked));
     }
 
     /// Net ids are recycled. Successive generations of the same id must each
@@ -539,7 +574,7 @@ mod tests {
         .unwrap();
 
         let rows = repo
-            .query("s1", None, None, None, None, None, None, 10)
+            .query("s1", None, None, None, None, None, None, None, 10)
             .await
             .unwrap();
         assert_eq!(rows.len(), 2, "both generations are kept as history");
@@ -567,7 +602,7 @@ mod tests {
             1
         );
         let open = repo
-            .query("s1", None, None, Some(true), None, None, None, 10)
+            .query("s1", None, None, Some(true), None, None, None, None, 10)
             .await
             .unwrap();
         assert_eq!(open.len(), 2);
@@ -595,7 +630,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            repo.query("s1", None, None, None, None, None, None, 10)
+            repo.query("s1", None, None, None, None, None, None, None, 10)
                 .await
                 .unwrap()
                 .len(),
@@ -665,13 +700,13 @@ mod tests {
         }
 
         let page1 = repo
-            .query("s1", None, None, None, None, None, None, 2)
+            .query("s1", None, None, None, None, None, None, None, 2)
             .await
             .unwrap();
         assert_eq!(page1.len(), 2);
         let oldest = page1.last().unwrap().id;
         let page2 = repo
-            .query("s1", None, None, None, None, None, Some(oldest), 2)
+            .query("s1", None, None, None, None, None, None, Some(oldest), 2)
             .await
             .unwrap();
         assert_eq!(page2.len(), 2);

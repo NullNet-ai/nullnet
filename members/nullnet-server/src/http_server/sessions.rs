@@ -99,6 +99,9 @@ pub(crate) struct HistoryQuery {
     service: Option<String>,
     /// `true` = live only, `false` = ended only, absent = both.
     active: Option<bool>,
+    /// Egress policy verdict: `true` = denied only, `false` = allowed only,
+    /// absent = both. Ingress rows are always allowed.
+    blocked: Option<bool>,
     since: Option<i64>,
     until: Option<i64>,
     before_id: Option<i64>,
@@ -149,6 +152,7 @@ pub(super) async fn history_handler(
             direction,
             params.service.as_deref(),
             params.active,
+            params.blocked,
             params.since,
             params.until,
             params.before_id,
@@ -199,6 +203,7 @@ pub(super) async fn history_handler(
     if params.before_id.is_none()
         && params.active != Some(false)
         && direction != Some(EGRESS)
+        && params.blocked != Some(true)
         && params.since.is_none()
         && params.until.is_none()
     {

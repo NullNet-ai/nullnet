@@ -10,34 +10,45 @@ import { formatTimestamp, formatTimestampFull } from '../lib/time';
 const PAGE_SIZE = 100;
 const REFRESH_MS = 5000;
 
-const DIRECTIONS: SessionDirection[] = ['ingress', 'egress'];
-const DIRECTION_COLOR: Record<SessionDirection, string> = {
-  ingress: 'var(--cyan)',
-  egress: 'var(--amber)',
+// Matches the topology: session/ingress edges are blue, egress edges purple
+// (see TopologyGraphSvg's arr-egress marker, TopologyMatrix, EdgePanel's
+// b-blue/b-purple badges). Amber is reserved for proxy hops there, so it must
+// not be reused for a direction here.
+const DIRECTION_BADGE: Record<SessionDirection, string> = {
+  ingress: 'b-blue',
+  egress: 'b-purple',
 };
-// Which way the external peer sits relative to the service.
-const DIRECTION_ARROW: Record<SessionDirection, string> = { ingress: '←', egress: '→' };
 
 type StatusFilter = '' | 'active' | 'ended';
+type PolicyFilter = '' | 'blocked' | 'allowed';
 
 function buildQuery(
   direction: string,
   service: string,
   status: StatusFilter,
+  policy: PolicyFilter,
   beforeId: number | null,
 ): string {
   const params = new URLSearchParams();
   if (direction) params.set('direction', direction);
   if (service) params.set('service', service);
   if (status) params.set('active', String(status === 'active'));
+  if (policy) params.set('blocked', String(policy === 'blocked'));
   if (beforeId != null) params.set('before_id', String(beforeId));
   params.set('limit', String(PAGE_SIZE));
   return params.toString();
 }
 
-/// Newest first. `started_at` rather than `id` so the live rows the server
-/// synthesizes for sessions with no stored row (negative ids) still sort by age.
-function byRecency(a: SessionRecordJson, b: SessionRecordJson): number {
+/// Most recently ended first. A session that has not ended sorts above every
+/// one that has — it is still running, so its end is later than any of them.
+/// Ties fall back to start time (`started_at` rather than `id`, so the active
+/// rows the server synthesizes for sessions with no stored row still sort by age).
+function byEnd(a: SessionRecordJson, b: SessionRecordJson): number {
+  const ae = a.ended_at;
+  const be = b.ended_at;
+  if (ae != null && be != null && ae !== be) return be - ae;
+  if (ae == null && be != null) return -1;
+  if (ae != null && be == null) return 1;
   return b.started_at - a.started_at || b.id - a.id;
 }
 
@@ -46,18 +57,8 @@ function duration(from: number, to: number): string {
   if (secs < 60) return `${secs}s`;
   if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
   const hours = Math.floor(secs / 3600);
-  return `${hours}h ${Math.floor((secs % 3600) / 60)}m`;
-}
-
-/// The direction-specific middle column: the path the session actually takes.
-function detailText(s: SessionRecordJson): string {
-  if (s.direction === 'ingress') {
-    const hop = `${s.detail.client_net ?? '?'} → ${s.detail.server_net ?? '?'}`;
-    const depth = s.detail.chain_depth;
-    return depth != null && depth > 1 ? `${hop} · ${depth} chains` : hop;
-  }
-  const from = s.detail.container ?? s.detail.node_ip ?? '?';
-  return `${from} → proxy ${s.detail.proxy_ip ?? '?'}`;
+  if (hours < 24) return `${hours}h ${Math.floor((secs % 3600) / 60)}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
 export default function Sessions() {
@@ -66,6 +67,7 @@ export default function Sessions() {
   const directionFilter = searchParams.get('direction') ?? '';
   const serviceFilter = searchParams.get('service') ?? '';
   const statusFilter = (searchParams.get('status') ?? '') as StatusFilter;
+  const policyFilter = (searchParams.get('policy') ?? '') as PolicyFilter;
 
   function setFilter(key: string, value: string) {
     setSearchParams(prev => {
@@ -82,13 +84,15 @@ export default function Sessions() {
   const [loading, setLoading] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [tearing, setTearing] = useState<Set<number>>(new Set());
+  // Ticks with the poll so an active session's duration keeps counting up.
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
 
   const fetchPage = useCallback(async (beforeId: number | null): Promise<SessionsHistoryPage> => {
-    const qs = buildQuery(directionFilter, serviceFilter, statusFilter, beforeId);
+    const qs = buildQuery(directionFilter, serviceFilter, statusFilter, policyFilter, beforeId);
     const res = await apiFetch(`/api/sessions/${stack}/history?${qs}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
-  }, [stack, directionFilter, serviceFilter, statusFilter]);
+  }, [stack, directionFilter, serviceFilter, statusFilter, policyFilter]);
 
   // Refresh the newest page. Older pages already pulled in stay put: their rows
   // are merged by id, so a session that ended since the last poll updates in
@@ -102,11 +106,11 @@ export default function Sessions() {
       setRows(prev => {
         if (replace) return page.sessions;
         const byId = new Map(prev.map(r => [r.id, r]));
-        // Synthesized live rows (negative ids) only exist while the server still
+        // Synthesized active rows (negative ids) only exist while the server still
         // reports them; drop the stale ones rather than pinning them forever.
         for (const r of prev) if (r.id < 0) byId.delete(r.id);
         for (const r of page.sessions) byId.set(r.id, r);
-        return [...byId.values()].sort(byRecency);
+        return [...byId.values()];
       });
     } catch {
       if (replace) {
@@ -138,7 +142,10 @@ export default function Sessions() {
   }, [fetchPage]);
 
   useEffect(() => {
-    const id = setInterval(() => refresh(false), REFRESH_MS);
+    const id = setInterval(() => {
+      setNow(Math.floor(Date.now() / 1000));
+      refresh(false);
+    }, REFRESH_MS);
     return () => clearInterval(id);
   }, [refresh]);
 
@@ -147,7 +154,7 @@ export default function Sessions() {
     setLoadingOlder(true);
     try {
       const page = await fetchPage(nextBeforeId);
-      setRows(prev => [...prev, ...page.sessions].sort(byRecency));
+      setRows(prev => [...prev, ...page.sessions]);
       setNextBeforeId(page.next_before_id);
     } catch {
       // leave the cursor as-is; the button stays clickable to retry
@@ -167,31 +174,27 @@ export default function Sessions() {
     }
   }
 
-  const sorted = useMemo(() => rows.slice().sort(byRecency), [rows]);
+  const sorted = useMemo(() => rows.slice().sort(byEnd), [rows]);
 
-  const chipStyle = (active: boolean, color: string) => ({
-    background: active ? color : 'var(--g1)',
-    border: `1px solid ${active ? color : 'var(--gb)'}`,
-    color: active ? 'var(--bg, #0a0a0a)' : 'var(--t2)',
-    borderRadius: 4,
-    padding: '2px 10px',
-    fontSize: 11,
-    cursor: 'pointer',
-    fontWeight: active ? 600 : 400,
-  });
-
+  // Sits inside its column's <th>, so it has to opt out of the uppercase +
+  // letter-spacing `.tbl th` applies to its own label.
   const selectStyle = {
+    display: 'block',
+    marginTop: 5,
     background: 'var(--g1)',
     border: '1px solid var(--gb)',
     color: 'var(--t1)',
     borderRadius: 4,
-    padding: '2px 6px',
-    fontSize: 11,
+    padding: '2px 4px',
+    fontSize: 10,
     cursor: 'pointer',
+    width: '100%',
+    fontWeight: 400,
+    textTransform: 'none' as const,
+    letterSpacing: 'normal',
   };
   const optionStyle = { background: 'var(--bg)', color: 'var(--t0)' };
   const mono = { fontFamily: "'JetBrains Mono',monospace" };
-
   return (
     <Layout
       page="sessions"
@@ -204,91 +207,87 @@ export default function Sessions() {
         </div>
 
         <div className="card">
-          <div className="card-head" style={{ gap: 8, flexWrap: 'wrap' }}>
+          <div className="card-head">
             <span className="card-label">Session History</span>
-            <div style={{ display: 'flex', gap: 6, flex: 1, flexWrap: 'wrap', alignItems: 'center' }}>
-              <button style={chipStyle(directionFilter === '', 'var(--t2)')} onClick={() => setFilter('direction', '')}>
-                All
-              </button>
-              {DIRECTIONS.map(d => (
-                <button
-                  key={d}
-                  style={chipStyle(directionFilter === d, DIRECTION_COLOR[d])}
-                  onClick={() => setFilter('direction', directionFilter === d ? '' : d)}
-                >
-                  {d.charAt(0).toUpperCase() + d.slice(1)}
-                </button>
-              ))}
-
-              <span style={{ width: 1, height: 16, background: 'var(--gb)', margin: '0 2px' }} />
-
-              {/* The popup list is a native surface, not composited over the page —
-                  it needs an explicit opaque background (see Events.tsx). */}
-              <select value={serviceFilter} onChange={e => setFilter('service', e.target.value)} style={selectStyle}>
-                <option value="" style={optionStyle}>All services</option>
-                {services.map(s => (
-                  <option key={s} value={s} style={optionStyle}>{s}</option>
-                ))}
-              </select>
-
-              <select
-                value={statusFilter}
-                onChange={e => setFilter('status', e.target.value)}
-                style={selectStyle}
-              >
-                <option value="" style={optionStyle}>Active &amp; ended</option>
-                <option value="active" style={optionStyle}>Active only</option>
-                <option value="ended" style={optionStyle}>Ended only</option>
-              </select>
-            </div>
             <span style={{ fontSize: 11, color: 'var(--t2)' }}>auto-refresh 5s</span>
           </div>
 
           <table className="tbl">
             <thead>
               <tr>
-                <th style={{ width: 70 }}>Status</th>
-                <th style={{ width: 80 }}>Flow</th>
+                <th style={{ width: 100 }}>
+                  Status
+                  <select value={statusFilter} onChange={e => setFilter('status', e.target.value)} style={selectStyle}>
+                    <option value="" style={optionStyle}>All</option>
+                    <option value="active" style={optionStyle}>Active</option>
+                    <option value="ended" style={optionStyle}>Ended</option>
+                  </select>
+                </th>
+                <th style={{ width: 140 }}>
+                  Service
+                  <select value={serviceFilter} onChange={e => setFilter('service', e.target.value)} style={selectStyle}>
+                    <option value="" style={optionStyle}>All</option>
+                    {services.map(s => (
+                      <option key={s} value={s} style={optionStyle}>{s}</option>
+                    ))}
+                  </select>
+                </th>
+                <th style={{ width: 110 }}>
+                  Direction
+                  {/* The popup list is a native surface, not composited over the
+                      page — it needs an explicit opaque background (see Events.tsx). */}
+                  <select value={directionFilter} onChange={e => setFilter('direction', e.target.value)} style={selectStyle}>
+                    <option value="" style={optionStyle}>All</option>
+                    <option value="ingress" style={optionStyle}>Ingress</option>
+                    <option value="egress" style={optionStyle}>Egress</option>
+                  </select>
+                </th>
+                <th style={{ width: 110 }}>
+                  Policy
+                  <select value={policyFilter} onChange={e => setFilter('policy', e.target.value)} style={selectStyle}>
+                    <option value="" style={optionStyle}>All</option>
+                    <option value="allowed" style={optionStyle}>Allowed</option>
+                    <option value="blocked" style={optionStyle}>Blocked</option>
+                  </select>
+                </th>
                 <th style={{ width: 60 }}>Net ID</th>
-                <th>Service</th>
                 <th>Peer</th>
-                <th>Path</th>
                 <th style={{ width: 110 }}>Started</th>
                 <th style={{ width: 110 }}>Ended</th>
-                <th></th>
+                <th style={{ width: 80 }}>Duration</th>
+                <th style={{ width: 80 }}></th>
               </tr>
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={9} style={{ color: 'var(--t2)', padding: '20px 16px' }}>Loading…</td></tr>
+                <tr><td colSpan={10} style={{ color: 'var(--t2)', padding: '20px 16px' }}>Loading…</td></tr>
               )}
               {sorted.map(s => {
-                const live = s.ended_at == null;
+                const active = s.ended_at == null;
                 return (
-                  <tr key={s.id} style={live ? undefined : { opacity: 0.72 }}>
+                  <tr key={s.id} style={active ? undefined : { opacity: 0.72 }}>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       <span
                         style={{
                           width: 6, height: 6, borderRadius: '50%', display: 'inline-block',
-                          background: live ? 'var(--green)' : 'var(--t3)', marginRight: 5,
+                          background: active ? 'var(--green)' : 'var(--t3)', marginRight: 5,
                         }}
                       />
-                      <span style={{ fontSize: 10, color: live ? 'var(--green)' : 'var(--t2)' }}>
-                        {live ? 'live' : 'ended'}
+                      <span style={{ fontSize: 10, color: active ? 'var(--green)' : 'var(--t2)' }}>
+                        {active ? 'active' : 'ended'}
                       </span>
+                    </td>
+                    <td style={{ fontWeight: 500 }}>{s.service}</td>
+                    <td>
+                      <span className={`badge ${DIRECTION_BADGE[s.direction]}`}>{s.direction}</span>
                     </td>
                     <td>
-                      <span style={{ ...mono, fontSize: 10, color: DIRECTION_COLOR[s.direction] }}>
-                        {s.direction}
+                      <span className={`badge ${s.blocked ? 'b-red' : 'b-green'}`}>
+                        {s.blocked ? 'blocked' : 'allowed'}
                       </span>
-                      {s.blocked && (
-                        <div style={{ fontSize: 9, color: 'var(--red, #f87171)', fontWeight: 600 }}>blocked</div>
-                      )}
                     </td>
                     <td style={{ ...mono, fontWeight: 500, color: 'var(--blue)' }}>{s.net_id}</td>
-                    <td style={{ fontWeight: 500 }}>{s.service}</td>
                     <td style={{ ...mono, color: 'var(--t1)' }}>
-                      <span style={{ color: 'var(--t3)', marginRight: 4 }}>{DIRECTION_ARROW[s.direction]}</span>
                       {flagEmoji(s.country_code) && (
                         <span title={countryName(s.country_code)} style={{ marginRight: 5, cursor: 'default' }}>
                           {flagEmoji(s.country_code)}
@@ -297,7 +296,6 @@ export default function Sessions() {
                       {s.peer_ip}
                       {s.org && <div style={{ fontSize: 9, color: 'var(--t2)' }}>{s.org}</div>}
                     </td>
-                    <td style={{ ...mono, fontSize: 11, color: 'var(--cyan)' }}>{detailText(s)}</td>
                     <td
                       style={{ ...mono, fontSize: 10, color: 'var(--t2)' }}
                       title={formatTimestampFull(s.started_at)}
@@ -308,12 +306,16 @@ export default function Sessions() {
                       style={{ ...mono, fontSize: 10, color: 'var(--t2)' }}
                       title={s.ended_at != null ? formatTimestampFull(s.ended_at) : undefined}
                     >
-                      {s.ended_at != null
-                        ? `${formatTimestamp(s.ended_at)} (${duration(s.started_at, s.ended_at)})`
-                        : '—'}
+                      {s.ended_at != null ? formatTimestamp(s.ended_at) : '—'}
+                    </td>
+                    <td
+                      style={{ ...mono, fontSize: 10, color: active ? 'var(--green)' : 'var(--t2)' }}
+                      title={active ? 'Still running' : undefined}
+                    >
+                      {duration(s.started_at, s.ended_at ?? now)}
                     </td>
                     <td>
-                      {live && s.direction === 'ingress' && (
+                      {active && s.direction === 'ingress' && (
                         <button
                           className="teardown-btn"
                           onClick={() => teardown(s.net_id)}
@@ -328,8 +330,8 @@ export default function Sessions() {
               })}
               {!loading && sorted.length === 0 && (
                 <tr>
-                  <td colSpan={9} style={{ color: 'var(--t2)', padding: '20px 16px' }}>
-                    {directionFilter || serviceFilter || statusFilter
+                  <td colSpan={10} style={{ color: 'var(--t2)', padding: '20px 16px' }}>
+                    {directionFilter || serviceFilter || statusFilter || policyFilter
                       ? 'No matching sessions'
                       : 'No sessions recorded yet'}
                   </td>
@@ -337,7 +339,7 @@ export default function Sessions() {
               )}
               {nextBeforeId != null && (
                 <tr>
-                  <td colSpan={9} style={{ padding: '10px 16px', textAlign: 'center' }}>
+                  <td colSpan={10} style={{ padding: '10px 16px', textAlign: 'center' }}>
                     <button
                       onClick={loadOlder}
                       disabled={loadingOlder}
