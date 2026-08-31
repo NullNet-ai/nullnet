@@ -499,6 +499,94 @@ mod tests {
         assert_eq!(rows[0].net_id, 2);
     }
 
+    /// Net ids are recycled. Successive generations of the same id must each
+    /// get their own row: the closed one stays as history, the new one opens
+    /// fresh rather than the reports reviving its predecessor.
+    #[tokio::test]
+    async fn a_recycled_net_id_starts_a_new_row_beside_the_closed_one() {
+        let db = test_db().await;
+        let repo = db.sessions();
+        let geo = SessionGeo::default();
+
+        repo.open(
+            "ingress", "s1", "web", 50, "1.2.3.4", &geo, false, "{}", 100,
+        )
+        .await
+        .unwrap();
+        repo.close_ingress(50, "web", "1.2.3.4", 200).await.unwrap();
+        // same net id, same service, same client — a returning client after the
+        // id cycled back around
+        repo.open(
+            "ingress", "s1", "web", 50, "1.2.3.4", &geo, false, "{}", 300,
+        )
+        .await
+        .unwrap();
+
+        let rows = repo
+            .query("s1", None, None, None, None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2, "both generations are kept as history");
+        let open: Vec<_> = rows.iter().filter(|r| r.ended_at.is_none()).collect();
+        assert_eq!(open.len(), 1, "only the current generation is live");
+        assert_eq!(open[0].started_at, 300);
+    }
+
+    /// `max_networks` multiplexes several external clients onto one net_id.
+    /// Each is its own session and closes independently — closing one must not
+    /// close, or be mistaken for, its co-tenants.
+    #[tokio::test]
+    async fn clients_sharing_a_net_id_are_separate_sessions() {
+        let db = test_db().await;
+        let repo = db.sessions();
+        let geo = SessionGeo::default();
+        for peer in ["1.1.1.1", "2.2.2.2", "3.3.3.3"] {
+            repo.open("ingress", "s1", "web", 60, peer, &geo, false, "{}", 100)
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            repo.close_ingress(60, "web", "2.2.2.2", 200).await.unwrap(),
+            1
+        );
+        let open = repo
+            .query("s1", None, None, Some(true), None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(open.len(), 2);
+        assert!(open.iter().all(|r| r.peer_ip != "2.2.2.2"));
+    }
+
+    /// The partial unique index is the backstop for the above: while a session
+    /// is open, nothing may open a second row for it.
+    #[tokio::test]
+    async fn a_second_open_row_for_the_same_session_is_rejected() {
+        let db = test_db().await;
+        let repo = db.sessions();
+        let geo = SessionGeo::default();
+        repo.open("egress", "s1", "api", 70, "8.8.8.8", &geo, false, "{}", 100)
+            .await
+            .unwrap();
+        assert!(
+            repo.open("egress", "s1", "api", 70, "8.8.8.8", &geo, false, "{}", 110)
+                .await
+                .is_err()
+        );
+        // ...but once closed, the next generation opens normally.
+        repo.close_egress_edge(70, 200).await.unwrap();
+        repo.open("egress", "s1", "api", 70, "8.8.8.8", &geo, false, "{}", 300)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.query("s1", None, None, None, None, None, None, 10)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
     #[tokio::test]
     async fn pagination_cursor_walks_backwards_through_pages() {
         let db = test_db().await;

@@ -18,6 +18,11 @@ CREATE TABLE sessions (
 CREATE INDEX sessions_started_at_idx ON sessions (started_at);
 CREATE INDEX sessions_direction_idx ON sessions (direction);
 CREATE INDEX sessions_stack_service_idx ON sessions (stack, service);
--- Every open/touch/close matches on the open rows only; partial index keeps
--- that lookup independent of how much closed history has piled up.
-CREATE INDEX sessions_open_idx ON sessions (direction, net_id, peer_ip) WHERE ended_at IS NULL;
+-- Every open/touch/close matches on the open rows only, so the partial index
+-- keeps that lookup independent of how much closed history has piled up. UNIQUE
+-- because net ids are recycled: at most one row per session may be open at a
+-- time, or a later generation's reports would land on a predecessor's row.
+-- Closed rows are deliberately outside the constraint — successive generations
+-- of the same net id are supposed to accumulate as separate history.
+CREATE UNIQUE INDEX sessions_open_idx
+    ON sessions (direction, net_id, service, peer_ip) WHERE ended_at IS NULL;

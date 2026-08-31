@@ -1,0 +1,11 @@
+digraph G {
+	bgcolor=grey10;
+	node [color=white, fontcolor=white];
+	edge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];
+
+	"color.com" [label=<color.com>] [style=solid, color=red];
+
+	"fs.color.com" [label=<fs.color.com>] [style=solid, color=red];
+
+	"ts.color.com" [label=<ts.color.com>] [style=dashed, color=red];
+}

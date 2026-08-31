@@ -301,6 +301,18 @@ async fn teardown_chain(
         }
     }
 
+    // Every torn-down proxy client had its own `session_created`, so each one's
+    // history row is closed here — including clients that share a net_id with
+    // another. The network teardown below is per-net_id and stays deduped; a
+    // row is per-client, and leaving one open would both read as permanently
+    // live and let a later reuse of that net id land on it.
+    for (_, client_ip, net_id, _, _, _) in &proxy_teardowns {
+        orchestrator
+            .sessions
+            .close_ingress(*net_id, name, &client_ip.to_string())
+            .await;
+    }
+
     let mut torn_down_net_ids = HashSet::new();
     for (_, client_ip, net_id, client_docker, service_ip, service_docker) in &proxy_teardowns {
         if !torn_down_net_ids.insert(*net_id) {
@@ -328,10 +340,6 @@ async fn teardown_chain(
                     name.to_string(),
                     client_ip.to_string(),
                 ))
-                .await;
-            orchestrator
-                .sessions
-                .close_ingress(*net_id, name, &client_ip.to_string())
                 .await;
         }
     }
