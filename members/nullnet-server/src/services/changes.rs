@@ -306,10 +306,12 @@ async fn teardown_chain(
     // another. The network teardown below is per-net_id and stays deduped; a
     // row is per-client, and leaving one open would both read as permanently
     // live and let a later reuse of that net id land on it.
-    for (_, client_ip, net_id, _, _, _) in &proxy_teardowns {
+    for (client, _, net_id, _, _, _) in &proxy_teardowns {
+        // Keyed on the client's name — the external peer the row was opened
+        // under, not the tunnel's near end (which is the shared proxy host).
         orchestrator
             .sessions
-            .close_ingress(*net_id, name, &client_ip.to_string())
+            .close_ingress(*net_id, name, client.name())
             .await;
     }
 

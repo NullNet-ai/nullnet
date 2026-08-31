@@ -648,6 +648,28 @@ impl NullnetGrpcImpl {
                     }
                 }
             }
+            drop(services_mut);
+
+            // Reusing a network still starts a session for *this* client: it
+            // gets its own client entry and its own teardown, so it needs its
+            // own history row. `setup_edge` — where a session is normally
+            // recorded — never runs here, because no edge is built.
+            let geo = client_ip.parse::<Ipv4Addr>().ok().and_then(|v4| {
+                self.orchestrator.ensure_geo(v4);
+                self.orchestrator.geo_get(v4)
+            });
+            self.orchestrator
+                .sessions
+                .open_ingress(
+                    &stack,
+                    service_name,
+                    net_id,
+                    client_ip,
+                    &client_net.to_string(),
+                    &server_net.to_string(),
+                    geo,
+                )
+                .await;
             return Ok(upstream);
         }
 
@@ -2159,32 +2181,32 @@ async fn setup_edge(
     }
 
     let proxy_upstream = if client.is_proxy().is_some() {
-        let client_ip = client_ethernet.to_string();
         orchestrator
             .events
             .emit(Event::session_created(
                 net_id,
                 server_name.clone(),
-                client_ip.clone(),
+                client_ethernet.to_string(),
             ))
             .await;
-        // Geo of the external client is usually still unresolved this early;
-        // `ensure` starts the (cached, once-per-IP) lookup so the row can be
-        // enriched, and the list handler falls back to the cache meanwhile.
-        let geo = match client_ethernet {
-            IpAddr::V4(v4) => {
-                orchestrator.ensure_geo(v4);
-                orchestrator.geo_get(v4)
-            }
-            IpAddr::V6(_) => None,
-        };
+        // The session's peer is the *external* client the proxy is serving,
+        // which is the client's name — `client_ethernet` is the proxy host,
+        // i.e. this tunnel's near end, and is the same for every client it
+        // serves. Geo is usually still unresolved this early; `ensure` starts
+        // the (cached, once-per-IP) lookup so the row can be enriched, and the
+        // list handler falls back to the cache meanwhile.
+        let peer_ip = client.name().to_string();
+        let geo = peer_ip.parse::<Ipv4Addr>().ok().and_then(|v4| {
+            orchestrator.ensure_geo(v4);
+            orchestrator.geo_get(v4)
+        });
         orchestrator
             .sessions
             .open_ingress(
                 stack,
                 &server_name,
                 net_id,
-                &client_ip,
+                &peer_ip,
                 &net_ip_client.to_string(),
                 &net_ip_server.to_string(),
                 geo,

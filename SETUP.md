@@ -116,13 +116,14 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
 
 - sessions (UI: *Sessions* page) are persisted the same way: every ingress session and every
   external destination reached over an egress edge is stored, so the page shows the full
-  history and not just what is live right now. Filter it by direction (ingress/egress),
-  service, and active/ended. Ended sessions are pruned on the same sweep as events:
+  history and not just what is active right now. Filter it by status (active/ended),
+  service, direction (ingress/egress), and egress policy verdict (allowed/blocked).
+  Ended sessions are pruned on the same sweep as events:
   ```
   SESSION_RETENTION_DAYS=30                    # how long an ended session is kept
   ```
-  A live session is never pruned, however old. Sessions still marked live are closed at
-  startup, since the state they described died with the previous process.
+  An active session is never pruned, however old. Sessions still marked active are closed
+  at startup, since the state they described died with the previous process.
 
 - the gRPC control channel itself (nullnet-client/nullnet-proxy ↔ nullnet-server) is TLS-only,
   authenticated by a private CA. On first boot the server generates its own CA

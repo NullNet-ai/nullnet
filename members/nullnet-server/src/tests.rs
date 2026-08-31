@@ -3999,3 +3999,149 @@ async fn chains_sharing_a_hop_agree_on_the_replica_after_it() {
          the first chain's teardown would take it down under the second"
     );
 }
+
+// ===========================================================================
+// Session history — the ingress half, through the real setup/teardown path.
+//
+// Every other test in this file runs with no DB attached, so `SessionStore`
+// no-ops and `open_ingress`/`close_ingress` never actually write. These attach
+// one, so the two ingress call sites are exercised for real rather than only
+// at the repository level.
+// ===========================================================================
+
+async fn attach_session_db(server: &NullnetGrpcImpl) -> crate::db::Db {
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "nullnet-server-ingress-history-{}-{n}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = crate::db::Db::open(dir.join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+    server.orchestrator().sessions.attach_db(db.clone());
+    db
+}
+
+async fn session_rows(db: &crate::db::Db) -> Vec<crate::db::SessionRow> {
+    db.sessions()
+        .query(TEST_STACK, None, None, None, None, None, None, None, 50)
+        .await
+        .unwrap()
+}
+
+/// A proxy request writes an ingress row; letting it time out closes that row.
+/// Asserts the row's contents too — the stack, service and client IP are all
+/// resolved on the setup path, so a wrong one would be invisible to any test
+/// that only counted rows.
+#[tokio::test]
+async fn an_ingress_session_opens_and_closes_a_row() {
+    let services = load_fixture(MAX_NETWORKS).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+    let db = attach_session_db(&server).await;
+
+    let ip_map = HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]);
+    let proxy = ip(5, 5, 5, 5);
+    register_services(&server, &ip_map, 8080).await;
+    server.orchestrator().register_fake_client(proxy).await;
+
+    setup_proxy_chain(&server, "A", proxy, "10.0.0.1").await;
+
+    // Exactly one row: the proxy→A edge. A→B is a dependency hop, not a
+    // session, and must not produce one.
+    let rows = session_rows(&db).await;
+    assert_eq!(rows.len(), 1, "expected one ingress row, got {rows:?}");
+    let row = &rows[0];
+    assert_eq!(row.direction, "ingress");
+    assert_eq!(row.stack, TEST_STACK);
+    assert_eq!(row.service, "A");
+    assert_eq!(row.peer_ip, "10.0.0.1");
+    assert!(row.ended_at.is_none(), "should still be live");
+    let detail: serde_json::Value = serde_json::from_str(&row.detail).unwrap();
+    assert!(
+        detail["client_net"].is_string() && detail["server_net"].is_string(),
+        "overlay addresses should be recorded: {detail}"
+    );
+    let net_id = row.net_id;
+
+    // Time it out; the teardown path must close the row it opened.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let mut guard = server.services().write().await;
+    apply_timeouts(
+        stack_view_mut(&mut guard),
+        server.orchestrator(),
+        TEST_STACK,
+    )
+    .await;
+    drop(guard);
+
+    let rows = session_rows(&db).await;
+    assert_eq!(rows.len(), 1, "closing must not add a second row");
+    assert_eq!(rows[0].net_id, net_id);
+    assert!(rows[0].ended_at.is_some(), "should have been closed");
+}
+
+/// `max_networks` multiplexes several external clients onto one net_id. Each is
+/// its own session, so each needs its own row closed — the teardown dedupes by
+/// net_id and skips while the id is still shared, which for a while closed only
+/// one of them and left the rest reading as live forever.
+#[tokio::test]
+async fn clients_sharing_a_net_id_each_close_their_own_row() {
+    let services = load_fixture(MAX_NETWORKS).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+    let db = attach_session_db(&server).await;
+
+    let ip_map = HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]);
+    let proxy = ip(5, 5, 5, 5);
+    register_services(&server, &ip_map, 8080).await;
+    server.orchestrator().register_fake_client(proxy).await;
+
+    // Two clients, 2s apart so the first is comfortably expired while the
+    // second is comfortably alive (same margins as max_networks_reuse_lifecycle
+    // — timeouts use real `Instant`, not tokio's pausable clock).
+    setup_proxy_chain(&server, "A", proxy, "10.0.0.1").await;
+    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+    setup_proxy_chain(&server, "A", proxy, "10.0.0.2").await;
+
+    let rows = session_rows(&db).await;
+    assert_eq!(rows.len(), 2, "one row per client, got {rows:?}");
+    let net_ids: HashSet<i32> = rows.iter().map(|r| r.net_id).collect();
+    assert_eq!(net_ids.len(), 1, "both clients share one net_id");
+    assert!(rows.iter().all(|r| r.ended_at.is_none()));
+
+    // First client expires; the network stays up for the second, so the
+    // per-net_id teardown is skipped — the row must close regardless.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let mut guard = server.services().write().await;
+    apply_timeouts(
+        stack_view_mut(&mut guard),
+        server.orchestrator(),
+        TEST_STACK,
+    )
+    .await;
+    drop(guard);
+
+    let rows = session_rows(&db).await;
+    let closed: Vec<_> = rows.iter().filter(|r| r.ended_at.is_some()).collect();
+    assert_eq!(closed.len(), 1, "only the expired client's row closes");
+    assert_eq!(closed[0].peer_ip, "10.0.0.1");
+
+    // Second client expires; now everything is closed and nothing lingers.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let mut guard = server.services().write().await;
+    apply_timeouts(
+        stack_view_mut(&mut guard),
+        server.orchestrator(),
+        TEST_STACK,
+    )
+    .await;
+    drop(guard);
+
+    let rows = session_rows(&db).await;
+    assert_eq!(rows.len(), 2, "no extra rows appeared");
+    assert!(
+        rows.iter().all(|r| r.ended_at.is_some()),
+        "every client's row must close: {rows:?}"
+    );
+}
