@@ -44,6 +44,51 @@ export interface SessionJson {
   org?: string;
 }
 
+/// One row of the persisted session history (`GET /api/sessions/{stack}/history`).
+/// `ended_at` absent means the session is still live. `peer_ip` is the external
+/// client for an ingress session and the external destination for an egress one.
+export interface SessionRecordJson {
+  id: number;
+  direction: SessionDirection;
+  service: string;
+  net_id: number;
+  peer_ip: string;
+  country_code?: string;
+  asn?: string;
+  org?: string;
+  /// Egress only: the latest attempt to this destination was denied by policy.
+  blocked: boolean;
+  started_at: number;
+  last_seen: number;
+  ended_at?: number;
+  detail: SessionDetail;
+}
+
+export type SessionDirection = 'ingress' | 'egress';
+
+/// Direction-specific fields, stored as JSON on the row.
+export interface SessionDetail {
+  // ingress
+  client_net?: string;
+  server_net?: string;
+  chain_depth?: number;
+  // egress
+  node_ip?: string;
+  container?: string | null;
+  proxy_ip?: string;
+}
+
+/// Response shape of `GET /api/sessions/{stack}/history` — a most-recent-first
+/// page. `next_before_id`, when present, is the cursor to pass back as
+/// `before_id` for the next (older) page. `active_count` and `services` describe
+/// the whole stack, not the filtered page.
+export interface SessionsHistoryPage {
+  sessions: SessionRecordJson[];
+  next_before_id: number | null;
+  services: string[];
+  active_count: number;
+}
+
 export interface CertJson {
   domain: string;
   expires_at: number | null;

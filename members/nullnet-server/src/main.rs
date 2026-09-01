@@ -6,7 +6,6 @@ mod crypto;
 mod db;
 mod env;
 mod events;
-mod events_retention;
 mod geo;
 mod graphviz;
 mod grpc_tls;
@@ -15,7 +14,9 @@ mod net;
 mod net_id_pool;
 mod nullnet_grpc_impl;
 mod orchestrator;
+mod retention;
 mod services;
+mod sessions;
 #[cfg(test)]
 mod tests;
 mod timeout;
@@ -106,6 +107,7 @@ async fn main() -> Result<(), Error> {
         routes: nullnet.routes().clone(),
         match_index: nullnet.match_index().clone(),
         events: nullnet.orchestrator().events.clone(),
+        sessions: nullnet.orchestrator().sessions.clone(),
         orchestrator: nullnet.orchestrator().clone(),
         db,
         config_changed: nullnet.config_changed().clone(),
@@ -118,11 +120,8 @@ async fn main() -> Result<(), Error> {
         app_state.events.clone(),
         cert_renewal::RenewalConfig::from_env(),
     );
-    // prune persisted events past the retention window (issue #151)
-    events_retention::start(
-        app_state.db.clone(),
-        events_retention::RetentionConfig::from_env(),
-    );
+    // prune persisted events + ended sessions past their retention windows (issue #151)
+    retention::start(app_state.db.clone(), retention::RetentionConfig::from_env());
 
     tokio::select! {
         result = server

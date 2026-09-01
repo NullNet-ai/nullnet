@@ -2,6 +2,7 @@ use crate::db::Db;
 use crate::events::EventStore;
 use crate::orchestrator::Orchestrator;
 use crate::services::input::{MatchIndex, RouteMap, StackMap};
+use crate::sessions::SessionStore;
 use axum::Router;
 use axum::routing::{delete, get, patch, post};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -39,6 +40,8 @@ pub(crate) struct AppState {
     pub(crate) match_index: Arc<RwLock<MatchIndex>>,
     pub(crate) orchestrator: Orchestrator,
     pub(crate) events: EventStore,
+    /// Persisted ingress/egress session history behind the Sessions page.
+    pub(crate) sessions: SessionStore,
     pub(crate) db: Db,
     /// Notified by the config/route save/delete handlers after a successful
     /// DB write — the in-process replacement for what the removed
@@ -77,6 +80,10 @@ pub async fn serve(state: AppState) {
         )
         .route("/api/graph/{stack}", get(graph::graph_handler))
         .route("/api/sessions/{stack}", get(sessions::list_handler))
+        .route(
+            "/api/sessions/{stack}/history",
+            get(sessions::history_handler),
+        )
         .route(
             "/api/sessions/{stack}/{id}",
             delete(sessions::teardown_handler),

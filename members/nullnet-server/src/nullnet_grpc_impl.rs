@@ -261,6 +261,12 @@ impl NullnetGrpcImpl {
         // events just below are persisted, not just broadcast to (currently
         // nonexistent) live subscribers.
         orchestrator.events.attach_db(db.clone());
+        // Session history shares the same DB handle. Whatever the previous run
+        // left marked live died with that process, so close those rows before
+        // anything can open a new one — otherwise dead sessions read as active
+        // and a recycled net id would collide with a stale open row.
+        orchestrator.sessions.attach_db(db.clone());
+        orchestrator.sessions.close_stale_on_startup().await;
 
         let (stacks, index, route_map, startup_conflicts) =
             ServicesToml::load_validated(&db).await?;
@@ -643,6 +649,28 @@ impl NullnetGrpcImpl {
                     }
                 }
             }
+            drop(services_mut);
+
+            // Reusing a network still starts a session for *this* client: it
+            // gets its own client entry and its own teardown, so it needs its
+            // own history row. `setup_edge` — where a session is normally
+            // recorded — never runs here, because no edge is built.
+            let geo = client_ip.parse::<Ipv4Addr>().ok().and_then(|v4| {
+                self.orchestrator.ensure_geo(v4);
+                self.orchestrator.geo_get(v4)
+            });
+            self.orchestrator
+                .sessions
+                .open_ingress(
+                    &stack,
+                    service_name,
+                    net_id,
+                    client_ip,
+                    &client_net.to_string(),
+                    &server_net.to_string(),
+                    geo,
+                )
+                .await;
             return Ok(upstream);
         }
 
@@ -1261,7 +1289,7 @@ impl NullnetGrpcImpl {
                 .handle_err(location!())?
         };
 
-        let Some((initiator_name, initiator_ip, initiator_docker)) = self
+        let Some((initiator_stack, initiator_name, initiator_ip, initiator_docker)) = self
             .resolve_registered_replica(sender_ip, initiator_container)
             .await
         else {
@@ -1270,7 +1298,13 @@ impl NullnetGrpcImpl {
 
         let built = self
             .orchestrator
-            .ensure_egress_edge(initiator_ip, initiator_docker, proxy_ip)
+            .ensure_egress_edge(
+                &initiator_stack,
+                &initiator_name,
+                initiator_ip,
+                initiator_docker,
+                proxy_ip,
+            )
             .await?;
         if built {
             println!(
@@ -1281,17 +1315,18 @@ impl NullnetGrpcImpl {
     }
 
     /// Resolve an egress sender `(sender_ip, container)` to the *registered*
-    /// replica identity `(service_name, ip, docker)` — scanning every stack,
+    /// replica identity `(stack, service_name, ip, docker)` — scanning every stack,
     /// since the client sends no logical service name. The returned `(ip, docker)`
     /// is the canonical `EgressKey` used by `ensure_egress_edge`, so callers keying
-    /// the egress edge (trigger + destination report) stay in agreement.
+    /// the egress edge (trigger + destination report) stay in agreement; the
+    /// `(stack, service_name)` half is what the edge files its session history under.
     async fn resolve_registered_replica(
         &self,
         sender_ip: IpAddr,
         initiator_container: Option<&str>,
-    ) -> Option<(String, IpAddr, Option<String>)> {
+    ) -> Option<(String, String, IpAddr, Option<String>)> {
         let guard = self.services.read().await;
-        for stack_map in guard.values() {
+        for (stack, stack_map) in guard.iter() {
             for (name, si) in stack_map.iter() {
                 let ServiceInfo::Registered(reg) = si else {
                     continue;
@@ -1304,7 +1339,12 @@ impl NullnetGrpcImpl {
                         }
                 });
                 if let Some(r) = replica {
-                    return Some((name.clone(), r.ip(), r.docker_container().map(String::from)));
+                    return Some((
+                        stack.clone(),
+                        name.clone(),
+                        r.ip(),
+                        r.docker_container().map(String::from),
+                    ));
                 }
             }
         }
@@ -1343,7 +1383,7 @@ impl NullnetGrpcImpl {
                 let r = self
                     .resolve_registered_replica(sender_ip, container.as_deref())
                     .await
-                    .map(|(_, ip, docker)| (ip, docker));
+                    .map(|(_, _, ip, docker)| (ip, docker));
                 resolved.insert(container.clone(), r.clone());
                 r
             };
@@ -2153,6 +2193,29 @@ async fn setup_edge(
                 server_name.clone(),
                 client_ethernet.to_string(),
             ))
+            .await;
+        // The session's peer is the *external* client the proxy is serving,
+        // which is the client's name — `client_ethernet` is the proxy host,
+        // i.e. this tunnel's near end, and is the same for every client it
+        // serves. Geo is usually still unresolved this early; `ensure` starts
+        // the (cached, once-per-IP) lookup so the row can be enriched, and the
+        // list handler falls back to the cache meanwhile.
+        let peer_ip = client.name().to_string();
+        let geo = peer_ip.parse::<Ipv4Addr>().ok().and_then(|v4| {
+            orchestrator.ensure_geo(v4);
+            orchestrator.geo_get(v4)
+        });
+        orchestrator
+            .sessions
+            .open_ingress(
+                stack,
+                &server_name,
+                net_id,
+                &peer_ip,
+                &net_ip_client.to_string(),
+                &net_ip_server.to_string(),
+                geo,
+            )
             .await;
         Some(net_ip_server)
     } else {
