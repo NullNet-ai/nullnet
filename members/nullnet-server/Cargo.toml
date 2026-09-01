@@ -36,7 +36,7 @@ anyhow = "1.0"
 instant-acme = { version = "0.8", features = ["hyper-rustls"] }
 reqwest = { version = "0.13", features = ["json", "query", "form"] }
 openssl.workspace = true
-quick-xml = "0.41"
+quick-xml = "0.42"
 aws-sdk-route53 = "1"
 aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
 diesel = { workspace = true, features = ["sqlite", "returning_clauses_for_sqlite_3_35"] }
