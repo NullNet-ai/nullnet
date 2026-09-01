@@ -4,7 +4,6 @@ import { useAuth } from '../AuthContext';
 import { useApi } from '../hooks/useApi';
 import { apiFetch } from '../lib/apiFetch';
 import MfaSetupDialog from './MfaSetupDialog';
-import type { SessionJson } from '../types';
 import { useRef, useState, useEffect } from 'react';
 
 type Page = 'dashboard' | 'topology' | 'services' | 'nodes' | 'sessions' | 'config' | 'routes' | 'certificates' | 'events' | 'users';
@@ -46,7 +45,7 @@ const NAV = [
 export default function Layout({ page, topbarRight, children }: Props) {
   const { stack, setStack, editing, setEditing } = useStack();
   const { user } = useAuth();
-  const { data: sessions } = useApi<SessionJson[]>(`/api/sessions/${stack}`, 5000);
+  const { data: sessionCounts } = useApi<{ active: number }>(`/api/sessions/${stack}/count`, 5000);
   const { data: availableStacks } = useApi<string[]>('/api/stacks', 10000);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -70,7 +69,7 @@ export default function Layout({ page, topbarRight, children }: Props) {
     return () => document.removeEventListener('mousedown', onClickOutside);
   }, [dropdownOpen]);
 
-  const sessionCount = sessions?.length ?? null;
+  const sessionCount = sessionCounts?.active ?? null;
 
   return (
     <>

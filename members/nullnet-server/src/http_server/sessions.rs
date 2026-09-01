@@ -1,8 +1,7 @@
 //! Two views of the same thing.
 //!
 //! `list_handler` (`GET /api/sessions/{stack}`) is a snapshot of the live
-//! in-memory map: the active ingress sessions the topology views and the
-//! sidebar count are built on.
+//! in-memory map: the active ingress sessions the topology views are built on.
 //!
 //! `history_handler` (`GET /api/sessions/{stack}/history`) serves the persisted
 //! `sessions` table — ingress *and* egress, live and ended, filtered and
@@ -305,6 +304,28 @@ fn synthesize_live(
         .collect();
     rows.sort_by_key(|r| std::cmp::Reverse(r.started_at));
     rows
+}
+
+#[derive(Serialize)]
+struct CountJson {
+    active: i64,
+}
+
+/// `GET /api/sessions/{stack}/count` — the live session count the sidebar
+/// badge shows. Ingress *and* egress, matching the Sessions page headline,
+/// without paging a whole history response to read one number.
+pub(super) async fn count_handler(
+    Extension(ctx): Extension<AuthContext>,
+    Path(stack): Path<String>,
+    State(state): State<AppState>,
+) -> Response {
+    if let Err(resp) = require_scope(&ctx, Scope::SessionsRead) {
+        return resp;
+    }
+    axum::Json(CountJson {
+        active: state.sessions.count_active(&stack).await,
+    })
+    .into_response()
 }
 
 pub(super) async fn teardown_handler(

@@ -84,6 +84,7 @@ pub async fn serve(state: AppState) {
             "/api/sessions/{stack}/history",
             get(sessions::history_handler),
         )
+        .route("/api/sessions/{stack}/count", get(sessions::count_handler))
         .route(
             "/api/sessions/{stack}/{id}",
             delete(sessions::teardown_handler),
