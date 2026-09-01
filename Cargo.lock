@@ -3289,6 +3289,7 @@ dependencies = [
  "quick-xml",
  "rcgen",
  "reqwest 0.13.4",
+ "rpn-predicate-interpreter",
  "rust-embed",
  "serde",
  "serde_json",
@@ -4406,6 +4407,15 @@ dependencies = [
  "netlink-packet-route 0.31.0",
  "netlink-sys 0.8.8",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rpn-predicate-interpreter"
+version = "0.1.0"
+source = "git+https://github.com/GyulyVGC/postfix-predicate-interpreter.git?branch=appguard#94bc5411b41b32a89346802ab46edbed614a1cee"
+dependencies = [
+ "async-trait",
+ "serde",
 ]
 
 [[package]]

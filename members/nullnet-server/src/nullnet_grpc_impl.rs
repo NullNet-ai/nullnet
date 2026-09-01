@@ -13,9 +13,10 @@ use crate::services::changes::{
 };
 use crate::services::clients::{Client, ClientInfo};
 use crate::services::edge::RegisteredEdge;
+use crate::services::firewall::{FilterContext, FilterPolicy};
 use crate::services::input::{MatchIndex, RouteMap, RouteTarget, ServicesToml, StackMap};
 use crate::services::service_info::{
-    CountryPolicy, RegisteredServiceInfo, ServiceInfo, backend_involved_services,
+    RegisteredServiceInfo, ServiceInfo, backend_involved_services,
 };
 use crate::timeout::check_timeouts;
 use nullnet_grpc_lib::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
@@ -1425,7 +1426,7 @@ impl NullnetGrpcImpl {
 
         // One pass over the stacks: find the registered replica and its
         // service's policy together (mirrors resolve_registered_replica).
-        let resolved: Option<(String, CountryPolicy)> = {
+        let resolved: Option<(String, FilterPolicy)> = {
             let guard = self.services.read().await;
             guard.values().find_map(|stack_map| {
                 stack_map.iter().find_map(|(name, si)| {
@@ -1449,11 +1450,13 @@ impl NullnetGrpcImpl {
             Err("No registered replica matches the egress policy check").handle_err(location!())?
         };
 
-        let allowed = if policy == CountryPolicy::None {
+        let allowed = if policy.is_none() {
             true
         } else {
-            let country = self.orchestrator.destination_country(dst_ip).await;
-            let allowed = policy.allows(country.as_deref());
+            let geo = self.orchestrator.destination_geo(dst_ip).await;
+            let country = geo.as_ref().and_then(|g| g.country_code.clone());
+            let ctx = FilterContext { ip: dst_ip, geo };
+            let allowed = policy.allows(&ctx).await;
             if !allowed {
                 println!(
                     "[egress-policy] deny '{service_name}' -> {dst_ip} ({})",
@@ -1486,16 +1489,18 @@ impl NullnetGrpcImpl {
                 .unwrap_or_default()
         };
 
-        let allowed = if policy == CountryPolicy::None {
+        let allowed = if policy.is_none() {
             true
         } else {
-            // Unresolvable/non-IPv4 source → unknown country, evaluated by policy
+            // Unresolvable/non-IPv4 source → no geo data, evaluated by policy
             // (allow-list unknown → deny; block-list unknown → allow), mirroring egress.
-            let country = match req.client_ip.parse::<Ipv4Addr>() {
-                Ok(ip) => self.orchestrator.destination_country(ip).await,
-                Err(_) => None,
+            let (ip, geo) = match req.client_ip.parse::<Ipv4Addr>() {
+                Ok(ip) => (ip, self.orchestrator.destination_geo(ip).await),
+                Err(_) => (Ipv4Addr::UNSPECIFIED, None),
             };
-            let allowed = policy.allows(country.as_deref());
+            let country = geo.as_ref().and_then(|g| g.country_code.clone());
+            let ctx = FilterContext { ip, geo };
+            let allowed = policy.allows(&ctx).await;
             if !allowed {
                 println!(
                     "[ingress-policy] deny {} ({}) -> '{}'",
@@ -2618,8 +2623,8 @@ impl NullnetGrpc for NullnetGrpcImpl {
 #[cfg(test)]
 mod http_route_bundle_tests {
     use super::*;
+    use crate::services::firewall::FilterPolicy;
     use crate::services::input::{RouteEntry, RouteTarget};
-    use crate::services::service_info::CountryPolicy;
 
     fn http_service(timeout: Option<u64>) -> ServiceInfo {
         ServiceInfo::new(
@@ -2629,8 +2634,8 @@ mod http_route_bundle_tests {
             None,
             ServiceProtocol::Http,
             None,
-            CountryPolicy::None,
-            CountryPolicy::None,
+            FilterPolicy::None,
+            FilterPolicy::None,
         )
     }
 
@@ -2642,8 +2647,8 @@ mod http_route_bundle_tests {
             None,
             ServiceProtocol::Tcp,
             Some(listen_port),
-            CountryPolicy::None,
-            CountryPolicy::None,
+            FilterPolicy::None,
+            FilterPolicy::None,
         )
     }
 

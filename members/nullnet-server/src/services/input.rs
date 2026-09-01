@@ -3,7 +3,8 @@ use crate::events::Event as ServerEvent;
 use crate::orchestrator::Orchestrator;
 use crate::services::changes::{ServiceChange, apply_changes, detect_config_changes};
 use crate::services::clients::Client;
-use crate::services::service_info::{CountryPolicy, ServiceInfo};
+use crate::services::firewall::{Direction, FilterContext, FilterPolicy};
+use crate::services::service_info::ServiceInfo;
 use nullnet_grpc_lib::nullnet_grpc::ServiceProtocol;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use serde::{Deserialize, Serialize};
@@ -458,8 +459,8 @@ impl ServicesToml {
                     None,
                     ServiceProtocol::Http,
                     None,
-                    CountryPolicy::None,
-                    CountryPolicy::None,
+                    FilterPolicy::None,
+                    FilterPolicy::None,
                 ),
             );
         }
@@ -489,24 +490,16 @@ impl ServicesToml {
                 }
                 _ => {}
             }
-            let egress_policy = country_policy(
-                s.egress_blocked_countries,
-                s.egress_allowed_countries,
-                "egress",
-                &s.name,
-            )?;
-            let ingress_policy = country_policy(
-                s.ingress_blocked_countries,
-                s.ingress_allowed_countries,
-                "ingress",
-                &s.name,
-            )?;
+            let mut egress_policy = s.egress_filter;
+            egress_policy.validate(Direction::Egress, &s.name)?;
+            let mut ingress_policy = s.ingress_filter;
+            ingress_policy.validate(Direction::Ingress, &s.name)?;
             // Ingress policy is enforced at the proxy, which only routes reachable
             // entry points. On a backend-only service it would be dead config, so
             // reject it rather than silently ignore.
-            if ingress_policy != CountryPolicy::None && s.timeout.is_none() {
+            if !ingress_policy.is_none() && s.timeout.is_none() {
                 return Err(format!(
-                    "service '{}': ingress country policy requires a proxy-reachable service (set a 'timeout')",
+                    "service '{}': ingress traffic filter requires a proxy-reachable service (set a 'timeout')",
                     s.name
                 ))
                 .handle_err(location!());
@@ -614,31 +607,6 @@ pub(crate) fn detect_name_conflicts(stacks: &StackMap) -> Vec<NameConflict> {
     conflicts
 }
 
-/// Normalize country codes for case-insensitive matching.
-fn upper(list: Vec<String>) -> Vec<String> {
-    list.into_iter().map(|c| c.to_uppercase()).collect()
-}
-
-/// Build a `CountryPolicy` from one direction's blocked/allowed lists. The two
-/// lists are mutually exclusive; `dir` ("ingress"/"egress") only shapes the
-/// error message so it names the offending fields.
-fn country_policy(
-    blocked: Option<Vec<String>>,
-    allowed: Option<Vec<String>>,
-    dir: &str,
-    service: &str,
-) -> Result<CountryPolicy, Error> {
-    match (blocked, allowed) {
-        (Some(_), Some(_)) => Err(format!(
-            "service '{service}': '{dir}_blocked_countries' and '{dir}_allowed_countries' are mutually exclusive"
-        ))
-        .handle_err(location!()),
-        (Some(list), None) => Ok(CountryPolicy::Blocked(upper(list))),
-        (None, Some(list)) => Ok(CountryPolicy::Allowed(upper(list))),
-        (None, None) => Ok(CountryPolicy::None),
-    }
-}
-
 /// One stack file's parsed, validated contents: its service map, host-match
 /// index entries, and route entries.
 pub(crate) type ParsedStack = (
@@ -688,13 +656,15 @@ pub(crate) fn stack_services(content: &str) -> Result<Vec<ServiceToml>, String> 
         .map_err(|e| e.to_string())
 }
 
-fn encode_list(list: &Option<Vec<String>>) -> Option<String> {
-    list.as_ref()
-        .map(|l| serde_json::to_string(l).unwrap_or_default())
+/// `None` policies are stored as `NULL` rather than the serialized
+/// `FilterPolicy::None` variant.
+fn encode_filter(policy: &FilterPolicy) -> Option<String> {
+    (!policy.is_none()).then(|| serde_json::to_string(policy).unwrap_or_default())
 }
 
-fn decode_list(json: Option<String>) -> Option<Vec<String>> {
+fn decode_filter(json: Option<String>) -> FilterPolicy {
     json.and_then(|j| serde_json::from_str(&j).ok())
+        .unwrap_or_default()
 }
 
 /// Group `service_triggers`/`service_dependencies` rows by `service_id` and
@@ -743,10 +713,8 @@ fn services_from_rows(
                 _ => ProtocolToml::Http,
             }),
             listen_port: row.listen_port.and_then(|p| u16::try_from(p).ok()),
-            egress_blocked_countries: decode_list(row.egress_blocked_countries),
-            egress_allowed_countries: decode_list(row.egress_allowed_countries),
-            ingress_blocked_countries: decode_list(row.ingress_blocked_countries),
-            ingress_allowed_countries: decode_list(row.ingress_allowed_countries),
+            egress_filter: decode_filter(row.egress_filter),
+            ingress_filter: decode_filter(row.ingress_filter),
         })
         .collect()
 }
@@ -771,10 +739,8 @@ pub(crate) fn services_to_inserts(services: &[ServiceToml]) -> Vec<crate::db::Se
                 ProtocolToml::Udp => "udp",
             }),
             listen_port: s.listen_port.map(i32::from),
-            egress_blocked_countries: encode_list(&s.egress_blocked_countries),
-            egress_allowed_countries: encode_list(&s.egress_allowed_countries),
-            ingress_blocked_countries: encode_list(&s.ingress_blocked_countries),
-            ingress_allowed_countries: encode_list(&s.ingress_allowed_countries),
+            egress_filter: encode_filter(&s.egress_filter),
+            ingress_filter: encode_filter(&s.ingress_filter),
             triggers: s
                 .triggers
                 .iter()
@@ -855,12 +821,12 @@ async fn parse_file(path: &Path) -> Result<ParsedStack, Error> {
 
 /// All non-default egress policies, keyed by (stack, service) — the comparable
 /// footprint used to detect a policy change across a reload.
-fn egress_policies(services: &StackMap) -> BTreeMap<(String, String), CountryPolicy> {
+fn egress_policies(services: &StackMap) -> BTreeMap<(String, String), FilterPolicy> {
     services
         .iter()
         .flat_map(|(stack, map)| {
             map.iter()
-                .filter(|(_, si)| *si.egress_policy() != CountryPolicy::None)
+                .filter(|(_, si)| !si.egress_policy().is_none())
                 .map(|(name, si)| ((stack.clone(), name.clone()), si.egress_policy().clone()))
         })
         .collect()
@@ -868,25 +834,25 @@ fn egress_policies(services: &StackMap) -> BTreeMap<(String, String), CountryPol
 
 /// All non-default ingress policies, keyed by (stack, service) — the comparable
 /// footprint used to detect an ingress-policy change across a reload.
-fn ingress_policies(services: &StackMap) -> BTreeMap<(String, String), CountryPolicy> {
+fn ingress_policies(services: &StackMap) -> BTreeMap<(String, String), FilterPolicy> {
     services
         .iter()
         .flat_map(|(stack, map)| {
             map.iter()
-                .filter(|(_, si)| *si.ingress_policy() != CountryPolicy::None)
+                .filter(|(_, si)| !si.ingress_policy().is_none())
                 .map(|(name, si)| ((stack.clone(), name.clone()), si.ingress_policy().clone()))
         })
         .collect()
 }
 
-/// Tear down every active proxy session whose client country the current ingress
-/// policy denies — the same `ForceSessionTeardown` the manual teardown button
-/// uses, so the nullnet overlay is cleaned up. tcp/udp streams close when their
-/// path drops; HTTP/S is already 403'd per-request.
+/// Tear down every active proxy session the current ingress filter denies —
+/// the same `ForceSessionTeardown` the manual teardown button uses, so the
+/// nullnet overlay is cleaned up. tcp/udp streams close when their path
+/// drops; HTTP/S is already 403'd per-request.
 ///
-/// Only the services in `changed` (whose ingress policy actually differs on this
-/// reload) are re-evaluated, so an unrelated policy edit can't disturb others.
-/// Country comes from the cached geo (`geo_get`, no network I/O) — this runs
+/// Only the services in `changed` (whose ingress filter actually differs on
+/// this reload) are re-evaluated, so an unrelated policy edit can't disturb
+/// others. Geo comes from the cache (`geo_get`, no network I/O) — this runs
 /// under the `services` write lock, so it must not block; ingress IPs are warmed
 /// by `check_ingress`, and an unresolved one is treated per policy (allow-list
 /// unknown → deny), consistent with the door check that re-evaluates on reconnect.
@@ -903,7 +869,7 @@ async fn teardown_ingress_denied_sessions(
                 continue;
             }
             let policy = info.ingress_policy();
-            if *policy == CountryPolicy::None {
+            if policy.is_none() {
                 continue;
             }
             let ServiceInfo::Registered(reg) = info else {
@@ -916,11 +882,11 @@ async fn teardown_ingress_denied_sessions(
                 let Ok(ip) = client.name().parse::<Ipv4Addr>() else {
                     continue;
                 };
-                let country = orchestrator
-                    .geo_get(ip)
-                    .and_then(|g| g.country_code)
-                    .map(|c| c.to_uppercase());
-                if !policy.allows(country.as_deref()) {
+                let ctx = FilterContext {
+                    ip,
+                    geo: orchestrator.geo_get(ip),
+                };
+                if !policy.allows(&ctx).await {
                     denied.push((stack.clone(), svc_name.clone(), client));
                 }
             }
@@ -1056,15 +1022,16 @@ pub(crate) struct ServiceToml {
     /// External port the proxy listens on for this service. Required (and
     /// only meaningful) when `protocol` is `tcp` or `udp`.
     listen_port: Option<u16>,
-    /// Country policies (ISO alpha-2 codes). Within each direction the blocked/
-    /// allowed lists are mutually exclusive: `*_blocked_countries` denies the
-    /// listed countries (unknown → allow); `*_allowed_countries` permits only the
-    /// listed ones (unknown → deny). Egress = destination country of the service's
-    /// outbound traffic; ingress = source country of proxy clients reaching it.
-    egress_blocked_countries: Option<Vec<String>>,
-    egress_allowed_countries: Option<Vec<String>>,
-    ingress_blocked_countries: Option<Vec<String>>,
-    ingress_allowed_countries: Option<Vec<String>>,
+    /// Traffic filters (issue #143): an arbitrary AND/OR combination of
+    /// Country/ASN/IP conditions. `Block` denies a match (unknown → allow);
+    /// `Allow` permits only a match (unknown → deny). Egress matches the
+    /// destination of the service's outbound traffic (Country/ASN/Dst IP);
+    /// ingress matches the proxy client reaching it (Country/ASN/Src IP).
+    /// Omitted (or explicit `none`) means no filter.
+    #[serde(default, skip_serializing_if = "FilterPolicy::is_none")]
+    egress_filter: FilterPolicy,
+    #[serde(default, skip_serializing_if = "FilterPolicy::is_none")]
+    ingress_filter: FilterPolicy,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -1119,6 +1086,7 @@ fn default_route_path() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::firewall::{FilterCondition, FilterField, FilterRule};
 
     #[test]
     fn parses_explicit_and_implicit_services() {
@@ -1322,8 +1290,8 @@ listen_port = 6379
                 None,
                 ServiceProtocol::Tcp,
                 Some(6379),
-                CountryPolicy::None,
-                CountryPolicy::None,
+                FilterPolicy::None,
+                FilterPolicy::None,
             ),
         );
         let mut bravo = HashMap::new();
@@ -1336,8 +1304,8 @@ listen_port = 6379
                 None,
                 ServiceProtocol::Tcp,
                 Some(6379),
-                CountryPolicy::None,
-                CountryPolicy::None,
+                FilterPolicy::None,
+                FilterPolicy::None,
             ),
         );
         let stacks: StackMap =
@@ -1361,8 +1329,8 @@ listen_port = 6379
                 None,
                 ServiceProtocol::Tcp,
                 Some(53),
-                CountryPolicy::None,
-                CountryPolicy::None,
+                FilterPolicy::None,
+                FilterPolicy::None,
             ),
         );
         alpha.insert(
@@ -1374,8 +1342,8 @@ listen_port = 6379
                 None,
                 ServiceProtocol::Udp,
                 Some(53),
-                CountryPolicy::None,
-                CountryPolicy::None,
+                FilterPolicy::None,
+                FilterPolicy::None,
             ),
         );
         let stacks: StackMap = HashMap::from([("alpha".to_string(), alpha)]);
@@ -1686,8 +1654,8 @@ redirect_status = 200
                 None,
                 ServiceProtocol::Http,
                 None,
-                CountryPolicy::None,
-                CountryPolicy::None,
+                FilterPolicy::None,
+                FilterPolicy::None,
             ),
         )
     }
@@ -1819,10 +1787,8 @@ proxy_dependencies = [["api"]]
             max_networks: None,
             protocol: None,
             listen_port: None,
-            egress_blocked_countries: None,
-            egress_allowed_countries: None,
-            ingress_blocked_countries: None,
-            ingress_allowed_countries: None,
+            egress_filter: FilterPolicy::None,
+            ingress_filter: FilterPolicy::None,
         }
     }
 
@@ -1847,8 +1813,20 @@ proxy_dependencies = [["api"]]
             max_networks: Some(2),
             protocol: Some(ProtocolToml::Tcp),
             listen_port: Some(6379),
-            egress_blocked_countries: Some(vec!["RU".to_string(), "CN".to_string()]),
-            ingress_allowed_countries: Some(vec!["US".to_string()]),
+            egress_filter: FilterPolicy::Block {
+                groups: vec![vec![FilterRule {
+                    field: FilterField::Country,
+                    condition: FilterCondition::Equal,
+                    values: vec!["RU".to_string(), "CN".to_string()],
+                }]],
+            },
+            ingress_filter: FilterPolicy::Allow {
+                groups: vec![vec![FilterRule {
+                    field: FilterField::Country,
+                    condition: FilterCondition::Equal,
+                    values: vec!["US".to_string()],
+                }]],
+            },
             ..empty_service("color.com")
         }];
 
@@ -1869,10 +1847,8 @@ proxy_dependencies = [["api"]]
             max_networks: insert.max_networks,
             protocol: insert.protocol.map(str::to_string),
             listen_port: insert.listen_port,
-            egress_blocked_countries: insert.egress_blocked_countries.clone(),
-            egress_allowed_countries: insert.egress_allowed_countries.clone(),
-            ingress_blocked_countries: insert.ingress_blocked_countries.clone(),
-            ingress_allowed_countries: insert.ingress_allowed_countries.clone(),
+            egress_filter: insert.egress_filter.clone(),
+            ingress_filter: insert.ingress_filter.clone(),
         };
         let trigger_rows: Vec<crate::db::ServiceTriggerRow> = insert
             .triggers
@@ -1914,11 +1890,25 @@ proxy_dependencies = [["api"]]
         assert_eq!(s.protocol, Some(ProtocolToml::Tcp));
         assert_eq!(s.listen_port, Some(6379));
         assert_eq!(
-            s.egress_blocked_countries,
-            Some(vec!["RU".to_string(), "CN".to_string()])
+            s.egress_filter,
+            FilterPolicy::Block {
+                groups: vec![vec![FilterRule {
+                    field: FilterField::Country,
+                    condition: FilterCondition::Equal,
+                    values: vec!["RU".to_string(), "CN".to_string()],
+                }]],
+            }
         );
-        assert_eq!(s.egress_allowed_countries, None);
-        assert_eq!(s.ingress_allowed_countries, Some(vec!["US".to_string()]));
+        assert_eq!(
+            s.ingress_filter,
+            FilterPolicy::Allow {
+                groups: vec![vec![FilterRule {
+                    field: FilterField::Country,
+                    condition: FilterCondition::Equal,
+                    values: vec!["US".to_string()],
+                }]],
+            }
+        );
     }
 
     #[test]
@@ -2046,5 +2036,51 @@ proxy_dependencies = [["api"]]
         assert_eq!(map["web"].triggers()[&5555], vec!["worker".to_string()]);
         assert!(map.contains_key("db")); // implicit dependency placeholder
         assert_eq!(routes, route_entries);
+    }
+
+    /// A multi-group, multi-field traffic filter (issue #143) must survive a
+    /// TOML export/re-import unchanged — the `toml` crate's handling of a
+    /// `Vec<Vec<FilterRule>>` (an enum field nested two arrays deep) is worth
+    /// pinning down explicitly, not just its JSON round trip through the DB.
+    #[tokio::test]
+    async fn multi_group_filter_round_trips_through_toml_export_import() {
+        let db = test_db().await;
+        let services = vec![ServiceToml {
+            timeout: Some(0),
+            egress_filter: FilterPolicy::Block {
+                groups: vec![
+                    vec![
+                        FilterRule {
+                            field: FilterField::Country,
+                            condition: FilterCondition::Equal,
+                            values: vec!["RU".to_string(), "CN".to_string()],
+                        },
+                        FilterRule {
+                            field: FilterField::Asn,
+                            condition: FilterCondition::NotEqual,
+                            values: vec!["AS15169".to_string()],
+                        },
+                    ],
+                    vec![FilterRule {
+                        field: FilterField::DstIp,
+                        condition: FilterCondition::Contains,
+                        values: vec!["10.0.0.0/8".to_string()],
+                    }],
+                ],
+            },
+            ..empty_service("web")
+        }];
+        db.stacks()
+            .put_services("alpha", &services_to_inserts(&services))
+            .await
+            .unwrap();
+
+        let text = ServicesToml::export_toml(&db, "alpha")
+            .await
+            .unwrap()
+            .unwrap();
+        let round_tripped = stack_services(&text).unwrap();
+        let web = round_tripped.iter().find(|s| s.name == "web").unwrap();
+        assert_eq!(web.egress_filter, services[0].egress_filter);
     }
 }

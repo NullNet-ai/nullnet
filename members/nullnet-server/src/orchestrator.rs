@@ -493,14 +493,10 @@ impl Orchestrator {
             .await;
     }
 
-    /// Country (uppercase alpha-2) of `ip` for the egress policy check,
-    /// awaiting the (cached, once-per-IP) geo lookup. `None` = unknown.
-    pub(crate) async fn destination_country(&self, ip: Ipv4Addr) -> Option<String> {
-        self.geo
-            .lookup_now(ip)
-            .await?
-            .country_code
-            .map(|c| c.to_uppercase())
+    /// Geo/ASN data for `ip`, for a traffic filter check — awaits the
+    /// (cached, once-per-IP) geo lookup. `None` = unresolved.
+    pub(crate) async fn destination_geo(&self, ip: Ipv4Addr) -> Option<GeoInfo> {
+        self.geo.lookup_now(ip).await
     }
 
     /// The single way an egress edge leaves `egress_edges`, and therefore the

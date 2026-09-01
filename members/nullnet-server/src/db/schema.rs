@@ -37,10 +37,8 @@ diesel::table! {
         max_networks -> Nullable<Integer>,
         protocol -> Nullable<Text>,
         listen_port -> Nullable<Integer>,
-        egress_blocked_countries -> Nullable<Text>,
-        egress_allowed_countries -> Nullable<Text>,
-        ingress_blocked_countries -> Nullable<Text>,
-        ingress_allowed_countries -> Nullable<Text>,
+        egress_filter -> Nullable<Text>,
+        ingress_filter -> Nullable<Text>,
     }
 }
 

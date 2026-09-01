@@ -4,7 +4,8 @@ All Nullnet releases with the relative changes are documented in this file.
 
 ## [UNRELEASED]
 ### Added
-- Persist ingress and egress sessions to SQLite and show the full history on the Sessions page, filterable by status, service, direction, and egress policy verdict, with its own retention window ([#170](https://github.com/NullNet-ai/nullnet/pull/170))
+- Per-service egress/ingress traffic filters: arbitrary AND/OR/group combinations of Country, ASN, Src IP (ingress), and Dst IP (egress) conditions, evaluated via `rpn-predicate-interpreter` — replaces the country-only egress/ingress policy ([#171](https://github.com/NullNet-ai/nullnet/pull/171) — fixes [#143](https://github.com/NullNet-ai/nullnet/issues/143))
+- Persist ingress and egress sessions to SQLite and show the full history on the Sessions page, filterable by status, service, direction, and egress policy verdict, with its own retention window ([#170](https://github.com/NullNet-ai/nullnet/pull/170) — fixes [#156](https://github.com/NullNet-ai/nullnet/issues/156))
 ### Changed
 - Create/tear down VXLAN tunnels via `rtnetlink` in-process instead of spawning `vxlan-setup.sh`/`vxlan-teardown.sh`, following the same strategy as VLAN access ports; MACsec SA/key installation and XFRM state/policy stay CLI-based, since neither is exposed by rtnetlink ([#168](https://github.com/NullNet-ai/nullnet/pull/168) — fixes [#141](https://github.com/NullNet-ai/nullnet/issues/141))
 - Tear edges down on proven connection liveness instead of routing-event timers ([#164](https://github.com/NullNet-ai/nullnet/pull/164) — fixes [#126](https://github.com/NullNet-ai/nullnet/issues/126))
