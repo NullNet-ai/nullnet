@@ -1480,13 +1480,22 @@ impl NullnetGrpcImpl {
             self.orchestrator.ensure_geo(ip);
         }
 
-        // The service's ingress policy, or None if the service is unknown (the
-        // proxy will fail to resolve an upstream anyway — don't block here).
-        let policy = {
+        // The service's ingress policy and the stack holding it — the stack is
+        // what a denial's history row is filed under. None if the service is
+        // unknown: the proxy will fail to resolve an upstream anyway, so don't
+        // block here.
+        let resolved: Option<(String, FilterPolicy)> = {
             let guard = self.services.read().await;
-            find_service_stack(&guard, &req.service_name)
-                .map(|stack| guard[stack][&req.service_name].ingress_policy().clone())
-                .unwrap_or_default()
+            find_service_stack(&guard, &req.service_name).map(|stack| {
+                (
+                    stack.to_string(),
+                    guard[stack][&req.service_name].ingress_policy().clone(),
+                )
+            })
+        };
+        let (stack, policy) = match resolved {
+            Some((stack, policy)) => (Some(stack), policy),
+            None => (None, FilterPolicy::default()),
         };
 
         let allowed = if policy.is_none() {
@@ -1508,6 +1517,14 @@ impl NullnetGrpcImpl {
                     country.as_deref().unwrap_or("unknown country"),
                     req.service_name
                 );
+                // A refused connection never becomes a session, so the Sessions
+                // page is the only place it can surface. Throttled per peer.
+                if let Some(stack) = stack.as_deref() {
+                    self.orchestrator
+                        .sessions
+                        .record_blocked_ingress(stack, &req.service_name, &req.client_ip, ctx.geo)
+                        .await;
+                }
             }
             allowed
         };

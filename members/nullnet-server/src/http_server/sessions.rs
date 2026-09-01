@@ -98,8 +98,9 @@ pub(crate) struct HistoryQuery {
     service: Option<String>,
     /// `true` = live only, `false` = ended only, absent = both.
     active: Option<bool>,
-    /// Egress policy verdict: `true` = denied only, `false` = allowed only,
-    /// absent = both. Ingress rows are always allowed.
+    /// Policy verdict: `true` = denied only, `false` = allowed only, absent =
+    /// both. Denied rows are egress destinations the edge refused and ingress
+    /// connections the proxy closed before an edge existed.
     blocked: Option<bool>,
     since: Option<i64>,
     until: Option<i64>,

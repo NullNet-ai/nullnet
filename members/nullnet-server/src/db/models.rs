@@ -342,4 +342,7 @@ pub(crate) struct NewSessionRow<'a> {
     pub(crate) detail: &'a str,
     pub(crate) started_at: i64,
     pub(crate) last_seen: i64,
+    /// Set only for rows that are born ended — a denied ingress attempt never
+    /// becomes a session, so there is nothing to close later.
+    pub(crate) ended_at: Option<i64>,
 }

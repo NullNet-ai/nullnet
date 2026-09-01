@@ -280,6 +280,7 @@ export default function Sessions() {
               )}
               {sorted.map(s => {
                 const active = s.ended_at == null;
+                const attempts = s.detail.attempts;
                 return (
                   <tr key={s.id} style={active ? undefined : { opacity: 0.72 }}>
                     <td style={{ whiteSpace: 'nowrap' }}>
@@ -304,7 +305,11 @@ export default function Sessions() {
                         {s.blocked ? 'blocked' : 'allowed'}
                       </span>
                     </td>
-                    <td style={{ ...mono, fontWeight: 500, color: 'var(--blue)' }}>{s.net_id}</td>
+                    <td style={{ ...mono, fontWeight: 500, color: 'var(--blue)' }}>
+                      {/* A denied ingress connection is refused before an edge
+                          exists, so it has no net id to show. */}
+                      {s.net_id === 0 ? <span style={{ color: 'var(--t3)' }}>n/a</span> : s.net_id}
+                    </td>
                     <td style={{ ...mono, color: 'var(--t1)' }}>
                       {flagEmoji(s.country_code) && (
                         <span title={countryName(s.country_code)} style={{ marginRight: 5, cursor: 'default' }}>
@@ -326,11 +331,19 @@ export default function Sessions() {
                     >
                       {s.ended_at != null ? formatTimestamp(s.ended_at) : '—'}
                     </td>
+                    {/* A denied connection never ran, so its elapsed time says
+                        nothing — how many times the peer tried does. */}
                     <td
                       style={{ ...mono, fontSize: 10, color: active ? 'var(--green)' : 'var(--t2)' }}
-                      title={active ? 'Still running' : undefined}
+                      title={
+                        attempts != null
+                          ? `Denied over ${duration(s.started_at, s.last_seen)}`
+                          : active ? 'Still running' : undefined
+                      }
                     >
-                      {duration(s.started_at, s.ended_at ?? now)}
+                      {attempts != null
+                        ? `${attempts} attempt${attempts === 1 ? '' : 's'}`
+                        : duration(s.started_at, s.ended_at ?? now)}
                     </td>
                     <td>
                       {active && s.direction === 'ingress' && (

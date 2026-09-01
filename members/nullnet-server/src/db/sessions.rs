@@ -18,6 +18,10 @@ use tokio::sync::Mutex;
 /// carry a database handle around. Net ids are recycled, so this only holds as
 /// long as every teardown path closes its rows; `close_all_open` at startup is
 /// what keeps a crash from stranding one into the next id generation.
+///
+/// Denied ingress rows are the exception: they have no net id and are never
+/// open, so [`Self::record_blocked_ingress`] keys them on the burst's
+/// `started_at` instead.
 pub(crate) struct SessionRepository {
     conn: Arc<Mutex<AsyncSqlite>>,
 }
@@ -62,6 +66,7 @@ impl SessionRepository {
             detail,
             started_at: timestamp,
             last_seen: timestamp,
+            ended_at: None,
         };
         let mut conn = self.conn.lock().await;
         diesel::insert_into(sessions::table)
@@ -123,6 +128,93 @@ impl SessionRepository {
             .handle_err(location!())?;
         }
         Ok(updated)
+    }
+
+    /// Record a burst of denied ingress attempts as a single already-ended row.
+    ///
+    /// A denial never becomes a session — the connection is refused before any
+    /// edge exists, so there is no net id and nothing to close later. Repeated
+    /// denials fold into the row the burst opened, addressed by its
+    /// `started_at` (the caller owns the burst and knows that timestamp), so a
+    /// scanner leaves one row per peer per service rather than one per packet.
+    ///
+    /// Returns having inserted the row when the update matched nothing —
+    /// a first denial, or one whose row retention has since deleted.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn record_blocked_ingress(
+        &self,
+        stack: &str,
+        service: &str,
+        peer_ip: &str,
+        geo: &SessionGeo,
+        detail: &str,
+        started_at: i64,
+        last_seen: i64,
+    ) -> Result<(), Error> {
+        let mut conn = self.conn.lock().await;
+        let updated = diesel::update(
+            sessions::table
+                .filter(sessions::direction.eq("ingress"))
+                .filter(sessions::blocked.eq(true))
+                .filter(sessions::stack.eq(stack.to_owned()))
+                .filter(sessions::service.eq(service.to_owned()))
+                .filter(sessions::peer_ip.eq(peer_ip.to_owned()))
+                .filter(sessions::started_at.eq(started_at)),
+        )
+        .set((
+            sessions::detail.eq(detail.to_owned()),
+            sessions::last_seen.eq(last_seen),
+            sessions::ended_at.eq(Some(last_seen)),
+        ))
+        .execute(&mut *conn)
+        .await
+        .handle_err(location!())?;
+        if updated > 0 {
+            // Geo resolves asynchronously, so the burst's first write usually
+            // predates it. Fill it in, never clear it — same rule as `touch`.
+            if geo.country_code.is_some() {
+                diesel::update(
+                    sessions::table
+                        .filter(sessions::direction.eq("ingress"))
+                        .filter(sessions::blocked.eq(true))
+                        .filter(sessions::stack.eq(stack.to_owned()))
+                        .filter(sessions::service.eq(service.to_owned()))
+                        .filter(sessions::peer_ip.eq(peer_ip.to_owned()))
+                        .filter(sessions::started_at.eq(started_at))
+                        .filter(sessions::country_code.is_null()),
+                )
+                .set((
+                    sessions::country_code.eq(geo.country_code.clone()),
+                    sessions::asn.eq(geo.asn.clone()),
+                    sessions::org.eq(geo.org.clone()),
+                ))
+                .execute(&mut *conn)
+                .await
+                .handle_err(location!())?;
+            }
+            return Ok(());
+        }
+        let new_row = NewSessionRow {
+            direction: "ingress",
+            stack,
+            service,
+            net_id: 0,
+            peer_ip,
+            country_code: geo.country_code.as_deref(),
+            asn: geo.asn.as_deref(),
+            org: geo.org.as_deref(),
+            blocked: true,
+            detail,
+            started_at,
+            last_seen,
+            ended_at: Some(last_seen),
+        };
+        diesel::insert_into(sessions::table)
+            .values(&new_row)
+            .execute(&mut *conn)
+            .await
+            .handle_err(location!())?;
+        Ok(())
     }
 
     /// Close the open row for one ingress session, identified by the same
@@ -445,6 +537,80 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[tokio::test]
+    async fn blocked_ingress_folds_into_its_burst_row() {
+        let db = test_db().await;
+        let repo = db.sessions();
+        let geo = SessionGeo::default();
+
+        // First denial of a burst inserts; the rest fold into it.
+        repo.record_blocked_ingress("s1", "web", "1.2.3.4", &geo, r#"{"attempts":1}"#, 100, 100)
+            .await
+            .unwrap();
+        repo.record_blocked_ingress("s1", "web", "1.2.3.4", &geo, r#"{"attempts":3}"#, 100, 140)
+            .await
+            .unwrap();
+        let rows = repo
+            .query("s1", None, None, None, None, None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].net_id, 0);
+        assert!(rows[0].blocked);
+        assert_eq!(rows[0].detail, r#"{"attempts":3}"#);
+        assert_eq!(rows[0].last_seen, 140);
+        // Born ended: a refused connection is never live, so it must not show
+        // up in the active count the sidebar badge and page headline read.
+        assert_eq!(rows[0].ended_at, Some(140));
+        assert_eq!(repo.count_active("s1").await.unwrap(), 0);
+
+        // A new burst (different start) is a new row, and a different peer or
+        // service never folds into someone else's.
+        repo.record_blocked_ingress("s1", "web", "1.2.3.4", &geo, r#"{"attempts":1}"#, 900, 900)
+            .await
+            .unwrap();
+        repo.record_blocked_ingress("s1", "web", "5.6.7.8", &geo, r#"{"attempts":1}"#, 100, 100)
+            .await
+            .unwrap();
+        repo.record_blocked_ingress("s1", "api", "1.2.3.4", &geo, r#"{"attempts":1}"#, 100, 100)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.query("s1", None, None, None, Some(true), None, None, None, 10)
+                .await
+                .unwrap()
+                .len(),
+            4
+        );
+
+        // Geo lands after the row is written, and is filled in but never cleared.
+        let resolved = SessionGeo {
+            country_code: Some("RU".into()),
+            asn: Some("AS12345".into()),
+            org: Some("Example".into()),
+        };
+        repo.record_blocked_ingress(
+            "s1",
+            "web",
+            "1.2.3.4",
+            &resolved,
+            r#"{"attempts":5}"#,
+            100,
+            150,
+        )
+        .await
+        .unwrap();
+        let row = repo
+            .query("s1", None, Some("web"), None, None, None, None, None, 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.started_at == 100 && r.peer_ip == "1.2.3.4")
+            .unwrap();
+        assert_eq!(row.country_code.as_deref(), Some("RU"));
+        assert_eq!(row.org.as_deref(), Some("Example"));
     }
 
     #[tokio::test]

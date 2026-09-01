@@ -56,7 +56,9 @@ export interface SessionRecordJson {
   country_code?: string;
   asn?: string;
   org?: string;
-  /// Egress only: the latest attempt to this destination was denied by policy.
+  /// The latest attempt was denied by policy: an egress destination the edge
+  /// refused, or an ingress connection the proxy closed before any edge existed
+  /// (those rows have no net id and are already ended).
   blocked: boolean;
   started_at: number;
   last_seen: number;
@@ -72,6 +74,8 @@ export interface SessionDetail {
   client_net?: string;
   server_net?: string;
   chain_depth?: number;
+  // blocked ingress: denials folded into this row
+  attempts?: number;
   // egress
   node_ip?: string;
   container?: string | null;
