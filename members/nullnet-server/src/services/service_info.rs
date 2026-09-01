@@ -1,6 +1,7 @@
 use crate::nullnet_grpc_impl::ChainBranch;
 use crate::orchestrator::Orchestrator;
 use crate::services::clients::{Client, ClientInfo, Clients};
+use crate::services::firewall::FilterPolicy;
 use nullnet_grpc_lib::nullnet_grpc::{ServiceProtocol, Upstream};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
@@ -28,30 +29,6 @@ pub(crate) fn backend_involved_services(
     pinned
 }
 
-/// Per-service country policy from the stack TOML (ISO alpha-2 codes, stored
-/// uppercase). Used for both directions: egress (destination country) and
-/// ingress (proxy-client source country). `Blocked` denies the listed countries
-/// (unknown → allow); `Allowed` permits only the listed ones (unknown → deny).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) enum CountryPolicy {
-    #[default]
-    None,
-    Blocked(Vec<String>),
-    Allowed(Vec<String>),
-}
-
-impl CountryPolicy {
-    /// Whether a destination in `country` (uppercase alpha-2; `None` = unknown)
-    /// may be contacted under this policy.
-    pub(crate) fn allows(&self, country: Option<&str>) -> bool {
-        match self {
-            CountryPolicy::None => true,
-            CountryPolicy::Blocked(list) => country.is_none_or(|c| !list.iter().any(|b| b == c)),
-            CountryPolicy::Allowed(list) => country.is_some_and(|c| list.iter().any(|a| a == c)),
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub(crate) enum ServiceInfo {
     Unregistered(UnregisteredServiceInfo),
@@ -67,8 +44,8 @@ impl ServiceInfo {
         max_networks: Option<u32>,
         protocol: ServiceProtocol,
         listen_port: Option<u16>,
-        egress_policy: CountryPolicy,
-        ingress_policy: CountryPolicy,
+        egress_policy: FilterPolicy,
+        ingress_policy: FilterPolicy,
     ) -> Self {
         ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
             proxy_deps,
@@ -200,17 +177,17 @@ impl ServiceInfo {
         }
     }
 
-    /// Egress country policy declared for this service (default: none).
-    pub(crate) fn egress_policy(&self) -> &CountryPolicy {
+    /// Egress traffic filter declared for this service (default: none).
+    pub(crate) fn egress_policy(&self) -> &FilterPolicy {
         match self {
             ServiceInfo::Unregistered(unreg) => &unreg.egress_policy,
             ServiceInfo::Registered(reg) => &reg.egress_policy,
         }
     }
 
-    /// Ingress country policy declared for this service — evaluated against the
-    /// proxy client's source country for proxy-reachable services (default: none).
-    pub(crate) fn ingress_policy(&self) -> &CountryPolicy {
+    /// Ingress traffic filter declared for this service — evaluated against the
+    /// proxy client for proxy-reachable services (default: none).
+    pub(crate) fn ingress_policy(&self) -> &FilterPolicy {
         match self {
             ServiceInfo::Unregistered(unreg) => &unreg.ingress_policy,
             ServiceInfo::Registered(reg) => &reg.ingress_policy,
@@ -280,10 +257,10 @@ pub(crate) struct UnregisteredServiceInfo {
     protocol: ServiceProtocol,
     /// External port the proxy binds to for `Tcp`/`Udp` services.
     listen_port: Option<u16>,
-    /// Egress country policy for this service's external traffic.
-    egress_policy: CountryPolicy,
-    /// Ingress country policy for external clients reaching this service via the proxy.
-    ingress_policy: CountryPolicy,
+    /// Egress traffic filter for this service's external traffic.
+    egress_policy: FilterPolicy,
+    /// Ingress traffic filter for external clients reaching this service via the proxy.
+    ingress_policy: FilterPolicy,
 }
 
 impl UnregisteredServiceInfo {
@@ -295,8 +272,8 @@ impl UnregisteredServiceInfo {
         max_networks: Option<u32>,
         protocol: ServiceProtocol,
         listen_port: Option<u16>,
-        egress_policy: CountryPolicy,
-        ingress_policy: CountryPolicy,
+        egress_policy: FilterPolicy,
+        ingress_policy: FilterPolicy,
     ) -> Self {
         Self {
             proxy_deps,
@@ -394,10 +371,10 @@ pub(crate) struct RegisteredServiceInfo {
     protocol: ServiceProtocol,
     /// External port the proxy binds to for `Tcp`/`Udp` services.
     listen_port: Option<u16>,
-    /// Egress country policy for this service's external traffic.
-    egress_policy: CountryPolicy,
-    /// Ingress country policy for external clients reaching this service via the proxy.
-    ingress_policy: CountryPolicy,
+    /// Egress traffic filter for this service's external traffic.
+    egress_policy: FilterPolicy,
+    /// Ingress traffic filter for external clients reaching this service via the proxy.
+    ingress_policy: FilterPolicy,
     /// Replicas of this service.
     replicas: Vec<Replica>,
 }

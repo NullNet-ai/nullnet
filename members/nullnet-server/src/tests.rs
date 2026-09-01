@@ -4,8 +4,9 @@ use crate::graphviz::render_graphviz;
 use crate::nullnet_grpc_impl::{NullnetGrpcImpl, build_service_triggers};
 use crate::services::changes::dep_chain_intact;
 use crate::services::clients::Client;
+use crate::services::firewall::FilterPolicy;
 use crate::services::input::{ServicesToml, StackMap, apply_config_update};
-use crate::services::service_info::{CountryPolicy, ServiceInfo};
+use crate::services::service_info::ServiceInfo;
 use crate::timeout::{apply_timeouts, reap_idle_backend_chains};
 use nullnet_grpc_lib::nullnet_grpc::{NetMessage, ServiceProtocol, net_message};
 use std::collections::{HashMap, HashSet};
@@ -2851,8 +2852,8 @@ fn suspend_test_server() -> NullnetGrpcImpl {
             None,
             ServiceProtocol::Http,
             None,
-            CountryPolicy::None,
-            CountryPolicy::None,
+            FilterPolicy::None,
+            FilterPolicy::None,
         ),
     );
     inner.insert(
@@ -2864,8 +2865,8 @@ fn suspend_test_server() -> NullnetGrpcImpl {
             None,
             ServiceProtocol::Http,
             None,
-            CountryPolicy::None,
-            CountryPolicy::None,
+            FilterPolicy::None,
+            FilterPolicy::None,
         ),
     );
     NullnetGrpcImpl::new_for_test(into_stack_map(inner))
@@ -2936,8 +2937,8 @@ async fn backend_involved_replicas_never_suspended() {
             None,
             ServiceProtocol::Http,
             None,
-            CountryPolicy::None,
-            CountryPolicy::None,
+            FilterPolicy::None,
+            FilterPolicy::None,
         ),
     );
     // dep is named in the trigger chain (so it "is a backend dep")
@@ -2950,8 +2951,8 @@ async fn backend_involved_replicas_never_suspended() {
             None,
             ServiceProtocol::Http,
             None,
-            CountryPolicy::None,
-            CountryPolicy::None,
+            FilterPolicy::None,
+            FilterPolicy::None,
         ),
     );
     // a plain entry-point service with no backend involvement (control)
@@ -2964,8 +2965,8 @@ async fn backend_involved_replicas_never_suspended() {
             None,
             ServiceProtocol::Http,
             None,
-            CountryPolicy::None,
-            CountryPolicy::None,
+            FilterPolicy::None,
+            FilterPolicy::None,
         ),
     );
     let server = NullnetGrpcImpl::new_for_test(into_stack_map(inner));
