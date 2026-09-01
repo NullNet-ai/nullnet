@@ -274,10 +274,11 @@ export interface TriggerConfigJson {
 
 // Per-service traffic filter (issue #143) — mirrors the server's
 // `FilterField`/`FilterCondition`/`FilterRule`/`FilterPolicy`
-// (services/firewall.rs). `values` holds ISO country codes, ASNs, or
-// CIDR/addresses depending on `field`. `groups` is OR-of-ANDs: every rule
+// (services/firewall.rs). `values` holds ISO country codes, ASN organization
+// names (the `org` shown beside a peer IP), or CIDR/addresses depending on
+// `field`. `groups` is OR-of-ANDs: every rule
 // within a group must match (AND), and groups are OR'ed together.
-export type FilterFieldJson = 'country' | 'asn' | 'src_ip' | 'dst_ip';
+export type FilterFieldJson = 'country' | 'org' | 'src_ip' | 'dst_ip';
 export type FilterConditionJson = 'equal' | 'not_equal' | 'contains' | 'not_contains';
 
 export interface FilterRuleJson {

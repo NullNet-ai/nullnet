@@ -1023,10 +1023,10 @@ pub(crate) struct ServiceToml {
     /// only meaningful) when `protocol` is `tcp` or `udp`.
     listen_port: Option<u16>,
     /// Traffic filters (issue #143): an arbitrary AND/OR combination of
-    /// Country/ASN/IP conditions. `Block` denies a match (unknown → allow);
+    /// Country/Org/IP conditions. `Block` denies a match (unknown → allow);
     /// `Allow` permits only a match (unknown → deny). Egress matches the
-    /// destination of the service's outbound traffic (Country/ASN/Dst IP);
-    /// ingress matches the proxy client reaching it (Country/ASN/Src IP).
+    /// destination of the service's outbound traffic (Country/Org/Dst IP);
+    /// ingress matches the proxy client reaching it (Country/Org/Src IP).
     /// Omitted (or explicit `none`) means no filter.
     #[serde(default, skip_serializing_if = "FilterPolicy::is_none")]
     egress_filter: FilterPolicy,
@@ -2056,9 +2056,9 @@ proxy_dependencies = [["api"]]
                             values: vec!["RU".to_string(), "CN".to_string()],
                         },
                         FilterRule {
-                            field: FilterField::Asn,
+                            field: FilterField::Org,
                             condition: FilterCondition::NotEqual,
-                            values: vec!["AS15169".to_string()],
+                            values: vec!["Google LLC".to_string()],
                         },
                     ],
                     vec![FilterRule {

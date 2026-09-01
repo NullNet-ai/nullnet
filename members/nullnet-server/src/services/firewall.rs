@@ -1,6 +1,6 @@
 //! Per-service traffic filter rules (issue #143): a generalization of the old
 //! country-only egress/ingress policy to arbitrary AND/OR combinations of
-//! Country, ASN, Src IP (ingress) and Dst IP (egress), evaluated via the
+//! Country, Org, Src IP (ingress) and Dst IP (egress), evaluated via the
 //! `rpn-predicate-interpreter` postfix expression engine — the same library
 //! and evaluation pattern `appguard-server/src/firewall/` already uses.
 //!
@@ -41,14 +41,17 @@ impl Direction {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum FilterField {
     Country,
-    Asn,
+    /// The peer's ASN organization name — matched rather than the ASN itself
+    /// because the org is what the topology and Sessions views display, so a
+    /// rule is written against the string the operator can actually see.
+    Org,
     /// Ingress only: the proxy client's source address.
     SrcIp,
     /// Egress only: the contacted destination address.
     DstIp,
 }
 
-/// `Equal`/`NotEqual` — the field value is/isn't one of `values` (Country/Asn).
+/// `Equal`/`NotEqual` — the field value is/isn't one of `values` (Country/Org).
 /// `Contains`/`NotContains` — the address is/isn't within any CIDR in
 /// `values` (`SrcIp`/`DstIp`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,14 +64,14 @@ pub(crate) enum FilterCondition {
 }
 
 impl FilterCondition {
-    /// Case-insensitive: the geo provider's casing for country/ASN strings
-    /// isn't guaranteed, and `validate` already uppercases rule values purely
+    /// Case-insensitive: the geo provider's casing for country/org strings
+    /// isn't guaranteed, and `validate` already uppercases country values purely
     /// for display consistency, not as a matching contract.
     fn compare_str(self, left: &str, right: &[String]) -> bool {
         match self {
             Self::Equal => right.iter().any(|v| v.eq_ignore_ascii_case(left)),
             Self::NotEqual => right.iter().all(|v| !v.eq_ignore_ascii_case(left)),
-            // Rejected at validation time for Country/Asn — never reached.
+            // Rejected at validation time for Country/Org — never reached.
             Self::Contains | Self::NotContains => false,
         }
     }
@@ -173,7 +176,7 @@ impl FilterPolicy {
                             .handle_err(location!())?;
                     }
                 }
-                FilterField::Asn => {}
+                FilterField::Org => {}
             }
         }
         Ok(())
@@ -241,11 +244,11 @@ impl PredicateEvaluator for FilterContext {
                 .as_ref()
                 .and_then(|g| g.country_code.as_deref())
                 .is_some_and(|c| predicate.condition.compare_str(c, &predicate.values)),
-            FilterField::Asn => self
+            FilterField::Org => self
                 .geo
                 .as_ref()
-                .and_then(|g| g.asn.as_deref())
-                .is_some_and(|a| predicate.condition.compare_str(a, &predicate.values)),
+                .and_then(|g| g.org.as_deref())
+                .is_some_and(|o| predicate.condition.compare_str(o, &predicate.values)),
             FilterField::SrcIp | FilterField::DstIp => {
                 predicate.condition.compare_ip(self.ip, &predicate.values)
             }
@@ -269,13 +272,13 @@ mod tests {
         }
     }
 
-    fn ctx(ip: &str, country: Option<&str>, asn: Option<&str>) -> FilterContext {
+    fn ctx(ip: &str, country: Option<&str>, org: Option<&str>) -> FilterContext {
         FilterContext {
             ip: ip.parse().unwrap(),
             geo: Some(GeoInfo {
                 country_code: country.map(String::from),
-                asn: asn.map(String::from),
-                org: None,
+                asn: None,
+                org: org.map(String::from),
             }),
         }
     }
@@ -285,22 +288,26 @@ mod tests {
         let policy = FilterPolicy::Block {
             groups: vec![
                 vec![rule(FilterField::Country, FilterCondition::Equal, &["US"])],
-                vec![rule(FilterField::Asn, FilterCondition::Equal, &["AS999"])],
+                vec![rule(
+                    FilterField::Org,
+                    FilterCondition::Equal,
+                    &["Evil Corp"],
+                )],
             ],
         };
         assert!(
             !policy
-                .allows(&ctx("1.1.1.1", Some("US"), Some("AS1")))
+                .allows(&ctx("1.1.1.1", Some("US"), Some("Good Corp")))
                 .await
         );
         assert!(
             !policy
-                .allows(&ctx("1.1.1.1", Some("CA"), Some("AS999")))
+                .allows(&ctx("1.1.1.1", Some("CA"), Some("evil corp")))
                 .await
         );
         assert!(
             policy
-                .allows(&ctx("1.1.1.1", Some("CA"), Some("AS1")))
+                .allows(&ctx("1.1.1.1", Some("CA"), Some("Good Corp")))
                 .await
         );
     }
@@ -310,22 +317,22 @@ mod tests {
         let policy = FilterPolicy::Allow {
             groups: vec![vec![
                 rule(FilterField::Country, FilterCondition::Equal, &["US"]),
-                rule(FilterField::Asn, FilterCondition::NotEqual, &["AS999"]),
+                rule(FilterField::Org, FilterCondition::NotEqual, &["Evil Corp"]),
             ]],
         };
         assert!(
             policy
-                .allows(&ctx("1.1.1.1", Some("US"), Some("AS1")))
+                .allows(&ctx("1.1.1.1", Some("US"), Some("Good Corp")))
                 .await
         );
         assert!(
             !policy
-                .allows(&ctx("1.1.1.1", Some("US"), Some("AS999")))
+                .allows(&ctx("1.1.1.1", Some("US"), Some("evil corp")))
                 .await
         );
         assert!(
             !policy
-                .allows(&ctx("1.1.1.1", Some("CA"), Some("AS1")))
+                .allows(&ctx("1.1.1.1", Some("CA"), Some("Good Corp")))
                 .await
         );
     }

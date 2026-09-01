@@ -41,7 +41,7 @@ const EMPTY_FILTER: FilterPolicyForm = { action: 'none', groups: [] };
 
 const FIELD_LABELS: Record<FilterFieldJson, string> = {
   country: 'Country',
-  asn: 'ASN',
+  org: 'Organization',
   src_ip: 'Src IP',
   dst_ip: 'Dst IP',
 };
@@ -93,7 +93,7 @@ function formToFilter(form: FilterPolicyForm): FilterPolicyJson {
   return form.action === 'block' ? { block: { groups } } : { allow: { groups } };
 }
 
-// Used for both the egress (Country/ASN/Dst IP) and ingress (Country/ASN/Src
+// Used for both the egress (Country/Org/Dst IP) and ingress (Country/Org/Src
 // IP) instances of the widget below.
 function FilterPolicyEditor({
   label,
@@ -188,7 +188,7 @@ function FilterPolicyEditor({
                     <input
                       value={rule.values}
                       onChange={e => updateRule(gi, ri, { values: e.target.value })}
-                      placeholder={rule.field === 'country' ? 'US, CA' : rule.field === 'asn' ? 'AS15169' : '10.0.0.0/8'}
+                      placeholder={rule.field === 'country' ? 'US, CA' : rule.field === 'org' ? 'Google LLC' : '10.0.0.0/8'}
                       spellCheck={false}
                       style={{ flex: '1 1 120px', minWidth: 0 }}
                     />
@@ -945,14 +945,14 @@ export default function Config() {
             label="Egress traffic filter (destination of this service's outbound traffic)"
             value={form.egressFilter}
             onChange={next => setForm(f => ({ ...f, egressFilter: next }))}
-            fields={['country', 'asn', 'dst_ip']}
+            fields={['country', 'org', 'dst_ip']}
           />
 
           <FilterPolicyEditor
             label="Ingress traffic filter (proxy clients reaching this service)"
             value={form.ingressFilter}
             onChange={next => setForm(f => ({ ...f, ingressFilter: next }))}
-            fields={['country', 'asn', 'src_ip']}
+            fields={['country', 'org', 'src_ip']}
           />
           {form.ingressFilter.action !== 'none' && !form.reachable && (
             <div style={{ fontSize: 11, color: 'var(--t2)', marginTop: -8 }}>

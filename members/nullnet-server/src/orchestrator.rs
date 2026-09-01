@@ -375,7 +375,7 @@ impl Orchestrator {
     }
 
     /// Cached geo/ASN for `ip`, if resolved yet — inlined into session JSON so the
-    /// UI can render an ingress IP's flag + ASN (mirrors egress destinations).
+    /// UI can render an ingress IP's flag + org (mirrors egress destinations).
     pub(crate) fn geo_get(&self, ip: Ipv4Addr) -> Option<GeoInfo> {
         self.geo.get(ip)
     }

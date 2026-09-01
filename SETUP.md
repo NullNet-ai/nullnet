@@ -238,16 +238,17 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   `appguard-server/src/firewall/` uses). `groups` is OR-of-ANDs: every condition within a group must
   match (AND), and groups are OR'ed together. `block` denies a match (no match → allow); `allow`
   permits only a match (no match → deny) — same either way if the filter is omitted (no policy).
-  Matchable fields: `country`/`asn` (`condition` = `equal`/`not_equal`, `values` = ISO alpha-2 codes /
-  ASNs — resolved server-side, from one shared geo cache), and `src_ip`/`dst_ip` (`condition` =
+  Matchable fields: `country`/`org` (`condition` = `equal`/`not_equal`, `values` = ISO alpha-2 codes /
+  ASN organization names, matched case-insensitively — resolved server-side, from one shared geo
+  cache; the org is what the topology and Sessions views display), and `src_ip`/`dst_ip` (`condition` =
   `contains`/`not_contains`, `values` = CIDRs/addresses the peer IP is checked against). `src_ip` only
   applies to ingress filters, `dst_ip` only to egress — the server rejects the other. Two directions:
-  - **egress** — where a service may reach on the internet (destination country/ASN/IP). Enforced at
+  - **egress** — where a service may reach on the internet (destination country/org/IP). Enforced at
     the initiator's nullnet-client: the first packet of each new external flow is held and verdicted,
     denied destinations show a `BLOCKED` chip in the topology UI, and editing the filter at runtime
     tears down already-established flows the new filter forbids.
   - **ingress** — which external clients may reach a **proxy-reachable** service (client source
-    country/ASN/IP). Enforced server-side at the nullnet-proxy chokepoint: HTTP denials get a `403`,
+    country/org/IP). Enforced server-side at the nullnet-proxy chokepoint: HTTP denials get a `403`,
     raw tcp/udp denials close the connection. Only valid on a service with a `timeout` (an entry
     point) — the server rejects an ingress filter on a backend-only service.
 
