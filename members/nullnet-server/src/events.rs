@@ -393,14 +393,6 @@ pub(crate) enum Event {
         error_message: String,
         timestamp: u64,
     },
-    ProxyRequestMissingHost {
-        client_ip: String,
-        timestamp: u64,
-    },
-    ProxyRequestInvalidHost {
-        client_ip: String,
-        timestamp: u64,
-    },
     UpstreamIpParseFailed {
         raw_ip: String,
         service_name: String,
@@ -557,8 +549,6 @@ impl Event {
             Self::ControlChannelEstablished { .. } => "control_channel_established",
             Self::ServicesListUpdated { .. } => "services_list_updated",
             Self::UpstreamLookupFailed { .. } => "upstream_lookup_failed",
-            Self::ProxyRequestMissingHost { .. } => "proxy_request_missing_host",
-            Self::ProxyRequestInvalidHost { .. } => "proxy_request_invalid_host",
             Self::UpstreamIpParseFailed { .. } => "upstream_ip_parse_failed",
             Self::ProxyClientNotInet { .. } => "proxy_client_not_inet",
             Self::TlsCertificateInvalid { .. } => "tls_certificate_invalid",
@@ -605,8 +595,6 @@ impl Event {
             | Self::BackendTriggerSetupBailed { .. }
             | Self::ControlChannelClosed { .. }
             | Self::ContainerSuspendFailed { .. }
-            | Self::ProxyRequestMissingHost { .. }
-            | Self::ProxyRequestInvalidHost { .. }
             | Self::ProxyClientNotInet { .. }
             | Self::ProxyDisconnected { .. } => Severity::Warning,
 
@@ -1109,20 +1097,6 @@ impl Event {
             service_name,
             client_ip,
             error_message,
-            timestamp: now_secs(),
-        }
-    }
-
-    pub(crate) fn proxy_request_missing_host(client_ip: String) -> Self {
-        Self::ProxyRequestMissingHost {
-            client_ip,
-            timestamp: now_secs(),
-        }
-    }
-
-    pub(crate) fn proxy_request_invalid_host(client_ip: String) -> Self {
-        Self::ProxyRequestInvalidHost {
-            client_ip,
             timestamp: now_secs(),
         }
     }

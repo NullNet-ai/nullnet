@@ -74,8 +74,6 @@ const KIND_LABELS: Record<string, string> = {
   services_list_updated: 'services_list_updated',
   // Proxy error
   upstream_lookup_failed: 'upstream_lookup_failed',
-  proxy_request_missing_host: 'proxy_request_missing_host',
-  proxy_request_invalid_host: 'proxy_request_invalid_host',
   upstream_ip_parse_failed: 'upstream_ip_parse_failed',
   proxy_client_not_inet: 'proxy_client_not_inet',
   tls_certificate_invalid: 'tls_certificate_invalid',
@@ -209,9 +207,6 @@ function eventDetail(e: EventJson): string {
     // Proxy error
     case 'upstream_lookup_failed':
       return `${e.service_name} · ${e.client_ip} · ${e.error_message}`;
-    case 'proxy_request_missing_host':
-    case 'proxy_request_invalid_host':
-      return e.client_ip;
     case 'upstream_ip_parse_failed':
       return `${e.raw_ip} · ${e.service_name}`;
     case 'proxy_client_not_inet':

@@ -2617,12 +2617,6 @@ impl NullnetGrpc for NullnetGrpcImpl {
             AgentEventKind::UpstreamLookupFailed(e) => {
                 Event::upstream_lookup_failed(e.service_name, e.client_ip, e.error_message)
             }
-            AgentEventKind::ProxyRequestMissingHost(e) => {
-                Event::proxy_request_missing_host(e.client_ip)
-            }
-            AgentEventKind::ProxyRequestInvalidHost(e) => {
-                Event::proxy_request_invalid_host(e.client_ip)
-            }
             AgentEventKind::UpstreamIpParseFailed(e) => {
                 Event::upstream_ip_parse_failed(e.raw_ip, e.service_name)
             }

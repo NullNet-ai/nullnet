@@ -191,8 +191,6 @@ export type EventJson =
   | WithSeverity & { type: 'services_list_updated'; num_services: number }
   // Proxy error events
   | WithSeverity & { type: 'upstream_lookup_failed'; service_name: string; client_ip: string; error_message: string }
-  | WithSeverity & { type: 'proxy_request_missing_host'; client_ip: string }
-  | WithSeverity & { type: 'proxy_request_invalid_host'; client_ip: string }
   | WithSeverity & { type: 'upstream_ip_parse_failed'; raw_ip: string; service_name: string }
   | WithSeverity & { type: 'proxy_client_not_inet'; address_family: string }
   | WithSeverity & { type: 'tls_certificate_invalid'; domain: string; reason: string }

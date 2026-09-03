@@ -504,7 +504,7 @@ pub struct Empty {}
 pub struct AgentEvent {
     #[prost(
         oneof = "agent_event::Event",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 25, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 26, 27, 28, 29, 22"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 22, 23, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 13, 14, 15, 16, 17, 18, 19, 21, 24, 25, 26, 27, 20"
     )]
     pub event: ::core::option::Option<agent_event::Event>,
 }
@@ -537,29 +537,29 @@ pub mod agent_event {
         BackendTriggerSendFailed(super::AgentBackendTriggerSendFailed),
         #[prost(message, tag = "12")]
         FirewallRulesLoadFailed(super::AgentFirewallRulesLoadFailed),
-        #[prost(message, tag = "24")]
+        #[prost(message, tag = "22")]
         ContainerSuspendFailed(super::AgentContainerSuspendFailed),
-        #[prost(message, tag = "25")]
+        #[prost(message, tag = "23")]
         ContainerResumeFailed(super::AgentContainerResumeFailed),
-        #[prost(message, tag = "30")]
+        #[prost(message, tag = "28")]
         EgressTriggerSendFailed(super::AgentEgressTriggerSendFailed),
-        #[prost(message, tag = "31")]
+        #[prost(message, tag = "29")]
         GatewayForwardInstallFailed(super::AgentGatewayForwardInstallFailed),
-        #[prost(message, tag = "32")]
+        #[prost(message, tag = "30")]
         BackendTriggerSetupTimedOut(super::AgentBackendTriggerSetupTimedOut),
-        #[prost(message, tag = "33")]
+        #[prost(message, tag = "31")]
         EgressSteerSetupTimedOut(super::AgentEgressSteerSetupTimedOut),
-        #[prost(message, tag = "34")]
+        #[prost(message, tag = "32")]
         EgressSteerInstallFailed(super::AgentEgressSteerInstallFailed),
-        #[prost(message, tag = "35")]
+        #[prost(message, tag = "33")]
         NfqueueBindFailed(super::AgentNfqueueBindFailed),
-        #[prost(message, tag = "36")]
+        #[prost(message, tag = "34")]
         MssClampInstallFailed(super::AgentMssClampInstallFailed),
-        #[prost(message, tag = "37")]
+        #[prost(message, tag = "35")]
         EgressPolicyCheckFailed(super::AgentEgressPolicyCheckFailed),
-        #[prost(message, tag = "38")]
+        #[prost(message, tag = "36")]
         ConntrackFlushFailed(super::AgentConntrackFlushFailed),
-        #[prost(message, tag = "39")]
+        #[prost(message, tag = "37")]
         ConntrackSubscribeFailed(super::AgentConntrackSubscribeFailed),
         /// Client info events
         #[prost(message, tag = "13")]
@@ -574,25 +574,21 @@ pub mod agent_event {
         #[prost(message, tag = "17")]
         UpstreamLookupFailed(super::AgentUpstreamLookupFailed),
         #[prost(message, tag = "18")]
-        ProxyRequestMissingHost(super::AgentProxyRequestMissingHost),
-        #[prost(message, tag = "19")]
-        ProxyRequestInvalidHost(super::AgentProxyRequestInvalidHost),
-        #[prost(message, tag = "20")]
         UpstreamIpParseFailed(super::AgentUpstreamIpParseFailed),
-        #[prost(message, tag = "21")]
+        #[prost(message, tag = "19")]
         ProxyClientNotInet(super::AgentProxyClientNotInet),
-        #[prost(message, tag = "23")]
+        #[prost(message, tag = "21")]
         TlsCertificateInvalid(super::AgentTlsCertificateInvalid),
-        #[prost(message, tag = "26")]
+        #[prost(message, tag = "24")]
         TcpListenerBindFailed(super::AgentTcpListenerBindFailed),
-        #[prost(message, tag = "27")]
+        #[prost(message, tag = "25")]
         UdpListenerBindFailed(super::AgentUdpListenerBindFailed),
-        #[prost(message, tag = "28")]
+        #[prost(message, tag = "26")]
         TcpUpstreamConnectFailed(super::AgentTcpUpstreamConnectFailed),
-        #[prost(message, tag = "29")]
+        #[prost(message, tag = "27")]
         UdpUpstreamConnectFailed(super::AgentUdpUpstreamConnectFailed),
         /// Proxy info events
-        #[prost(message, tag = "22")]
+        #[prost(message, tag = "20")]
         ProxyRequestRouted(super::AgentProxyRequestRouted),
     }
 }
@@ -808,16 +804,6 @@ pub struct AgentUpstreamLookupFailed {
     pub client_ip: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
     pub error_message: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct AgentProxyRequestMissingHost {
-    #[prost(string, tag = "1")]
-    pub client_ip: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct AgentProxyRequestInvalidHost {
-    #[prost(string, tag = "1")]
-    pub client_ip: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AgentUpstreamIpParseFailed {

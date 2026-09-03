@@ -13,8 +13,7 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentEvent, AgentProxyClientNotInet, AgentProxyRequestInvalidHost,
-    AgentProxyRequestMissingHost, AgentProxyRequestRouted, AgentTlsCertificateInvalid,
+    AgentEvent, AgentProxyClientNotInet, AgentProxyRequestRouted, AgentTlsCertificateInvalid,
     AgentUpstreamLookupFailed, ProxyRequest, agent_event::Event as AgentEventKind,
 };
 use nullnet_liberror::{ErrorHandler, Location, location};
@@ -191,34 +190,23 @@ impl ProxyHttp for NullnetProxy {
             Some(h) => match h.to_str() {
                 Ok(s) => s.to_string(),
                 Err(_) => {
-                    let server = self.server.clone();
-                    let cip = client_ip_for_events.clone();
-                    tokio::spawn(async move {
-                        let _ = server
-                            .report_event(AgentEvent {
-                                event: Some(AgentEventKind::ProxyRequestInvalidHost(
-                                    AgentProxyRequestInvalidHost { client_ip: cip },
-                                )),
-                            })
-                            .await;
-                    });
+                    eprintln!(
+                        "Ignoring proxy request with a non-UTF-8 Host header \
+                         (client {client_ip_for_events})"
+                    );
                     return Err(Error::explain(ErrorType::BindError, "Invalid host header"));
                 }
             },
             None => match session.req_header().uri.host() {
                 Some(h) => h.to_string(),
                 None => {
-                    let server = self.server.clone();
-                    let cip = client_ip_for_events.clone();
-                    tokio::spawn(async move {
-                        let _ = server
-                            .report_event(AgentEvent {
-                                event: Some(AgentEventKind::ProxyRequestMissingHost(
-                                    AgentProxyRequestMissingHost { client_ip: cip },
-                                )),
-                            })
-                            .await;
-                    });
+                    // Nothing here names a service, so it could only ever fail:
+                    // scanners and raw probes on the public port. Logged, not
+                    // evented — same as an IP `Host` below.
+                    eprintln!(
+                        "Ignoring proxy request with no Host header \
+                         (client {client_ip_for_events})"
+                    );
                     return Err(Error::explain(
                         ErrorType::BindError,
                         "No host header in request",

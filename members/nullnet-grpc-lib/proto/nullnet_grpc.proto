@@ -509,18 +509,18 @@ message AgentEvent {
     AgentServicesListUpdateFailed services_list_update_failed = 10;
     AgentBackendTriggerSendFailed backend_trigger_send_failed = 11;
     AgentFirewallRulesLoadFailed  firewall_rules_load_failed  = 12;
-    AgentContainerSuspendFailed   container_suspend_failed    = 24;
-    AgentContainerResumeFailed    container_resume_failed     = 25;
-    AgentEgressTriggerSendFailed  egress_trigger_send_failed  = 30;
-    AgentGatewayForwardInstallFailed gateway_forward_install_failed = 31;
-    AgentBackendTriggerSetupTimedOut backend_trigger_setup_timed_out = 32;
-    AgentEgressSteerSetupTimedOut egress_steer_setup_timed_out = 33;
-    AgentEgressSteerInstallFailed egress_steer_install_failed = 34;
-    AgentNfqueueBindFailed        nfqueue_bind_failed        = 35;
-    AgentMssClampInstallFailed    mss_clamp_install_failed   = 36;
-    AgentEgressPolicyCheckFailed  egress_policy_check_failed = 37;
-    AgentConntrackFlushFailed     conntrack_flush_failed     = 38;
-    AgentConntrackSubscribeFailed conntrack_subscribe_failed = 39;
+    AgentContainerSuspendFailed   container_suspend_failed    = 22;
+    AgentContainerResumeFailed    container_resume_failed     = 23;
+    AgentEgressTriggerSendFailed  egress_trigger_send_failed  = 28;
+    AgentGatewayForwardInstallFailed gateway_forward_install_failed = 29;
+    AgentBackendTriggerSetupTimedOut backend_trigger_setup_timed_out = 30;
+    AgentEgressSteerSetupTimedOut egress_steer_setup_timed_out = 31;
+    AgentEgressSteerInstallFailed egress_steer_install_failed = 32;
+    AgentNfqueueBindFailed        nfqueue_bind_failed        = 33;
+    AgentMssClampInstallFailed    mss_clamp_install_failed   = 34;
+    AgentEgressPolicyCheckFailed  egress_policy_check_failed = 35;
+    AgentConntrackFlushFailed     conntrack_flush_failed     = 36;
+    AgentConntrackSubscribeFailed conntrack_subscribe_failed = 37;
     // Client info events
     AgentVxlanSetupCompleted      vxlan_setup_completed      = 13;
     AgentVlanSetupCompleted       vlan_setup_completed       = 14;
@@ -528,17 +528,15 @@ message AgentEvent {
     AgentServicesListUpdated      services_list_updated      = 16;
     // Proxy error events
     AgentUpstreamLookupFailed     upstream_lookup_failed     = 17;
-    AgentProxyRequestMissingHost  proxy_request_missing_host = 18;
-    AgentProxyRequestInvalidHost  proxy_request_invalid_host = 19;
-    AgentUpstreamIpParseFailed    upstream_ip_parse_failed   = 20;
-    AgentProxyClientNotInet       proxy_client_not_inet      = 21;
-    AgentTlsCertificateInvalid    tls_certificate_invalid    = 23;
-    AgentTcpListenerBindFailed    tcp_listener_bind_failed   = 26;
-    AgentUdpListenerBindFailed    udp_listener_bind_failed   = 27;
-    AgentTcpUpstreamConnectFailed tcp_upstream_connect_failed = 28;
-    AgentUdpUpstreamConnectFailed udp_upstream_connect_failed = 29;
+    AgentUpstreamIpParseFailed    upstream_ip_parse_failed   = 18;
+    AgentProxyClientNotInet       proxy_client_not_inet      = 19;
+    AgentTlsCertificateInvalid    tls_certificate_invalid    = 21;
+    AgentTcpListenerBindFailed    tcp_listener_bind_failed   = 24;
+    AgentUdpListenerBindFailed    udp_listener_bind_failed   = 25;
+    AgentTcpUpstreamConnectFailed tcp_upstream_connect_failed = 26;
+    AgentUdpUpstreamConnectFailed udp_upstream_connect_failed = 27;
     // Proxy info events
-    AgentProxyRequestRouted       proxy_request_routed       = 22;
+    AgentProxyRequestRouted       proxy_request_routed       = 20;
   }
 }
 
@@ -571,8 +569,6 @@ message AgentVlanSetupCompleted     { uint32 vlan_id = 1; }
 message AgentControlChannelEstablished {}
 message AgentServicesListUpdated    { uint32 num_services = 1; }
 message AgentUpstreamLookupFailed   { string service_name = 1; string client_ip = 2; string error_message = 3; }
-message AgentProxyRequestMissingHost { string client_ip = 1; }
-message AgentProxyRequestInvalidHost { string client_ip = 1; }
 message AgentUpstreamIpParseFailed  { string raw_ip = 1; string service_name = 2; }
 message AgentProxyClientNotInet     { string address_family = 1; }
 message AgentTlsCertificateInvalid  { string domain = 1; string reason = 2; }
