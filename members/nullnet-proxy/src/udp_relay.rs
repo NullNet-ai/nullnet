@@ -1,4 +1,4 @@
-use crate::nullnet_proxy::{ConnectionGuard, NullnetProxy};
+use crate::nullnet_proxy::{ConnectionGuard, NullnetProxy, UpstreamError};
 use crate::port_mappings::MappingEntry;
 use nullnet_grpc_lib::nullnet_grpc::{
     AgentEvent, AgentUdpListenerBindFailed, AgentUdpUpstreamConnectFailed,
@@ -137,9 +137,18 @@ async fn handle_datagram(
             );
             u
         }
-        Err(e) => {
+        // A name no stack declares — a probe or a stale alias. Logged, not
+        // evented: only a name that is ours failing to resolve is an error.
+        Err(UpstreamError::UnknownService) => {
             eprintln!(
-                "[udp] upstream lookup failed for '{}' (client {src}): {e:?}",
+                "[udp] ignoring request for unknown service '{}' (client {src})",
+                entry.service_name
+            );
+            return;
+        }
+        Err(UpstreamError::Failed(error_message)) => {
+            eprintln!(
+                "[udp] upstream lookup failed for '{}' (client {src}): {error_message}",
                 entry.service_name
             );
             let _ = proxy
@@ -149,7 +158,7 @@ async fn handle_datagram(
                         AgentUpstreamLookupFailed {
                             service_name: entry.service_name,
                             client_ip: src.ip().to_string(),
-                            error_message: format!("{e:?}"),
+                            error_message,
                         },
                     )),
                 })

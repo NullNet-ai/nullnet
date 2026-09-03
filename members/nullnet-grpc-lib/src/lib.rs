@@ -17,6 +17,16 @@ pub use tonic::Streaming;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, ClientTlsConfig};
 
+/// Why a `proxy` lookup failed.
+#[derive(Debug)]
+pub enum ProxyLookupError {
+    /// No stack declares this name: a scanner, a stale alias, or an IP dialed
+    /// directly. Routine — callers log it rather than raising an event.
+    UnknownService,
+    /// The name is one of ours and resolving it failed.
+    Failed(String),
+}
+
 #[derive(Clone)]
 pub struct NullnetGrpcInterface {
     client: NullnetGrpcClient<Channel>,
@@ -87,13 +97,19 @@ impl NullnetGrpcInterface {
     }
 
     #[allow(clippy::missing_errors_doc)]
-    pub async fn proxy(&self, message: ProxyRequest) -> Result<Upstream, String> {
+    pub async fn proxy(&self, message: ProxyRequest) -> Result<Upstream, ProxyLookupError> {
         self.client
             .clone()
             .proxy(Request::new(message))
             .await
             .map(tonic::Response::into_inner)
-            .map_err(|e| e.to_string())
+            .map_err(|e| {
+                if e.code() == tonic::Code::NotFound {
+                    ProxyLookupError::UnknownService
+                } else {
+                    ProxyLookupError::Failed(e.to_string())
+                }
+            })
     }
 
     /// Report that a front connection through the proxy has closed.

@@ -417,7 +417,7 @@ impl NullnetGrpcImpl {
     async fn proxy_impl(
         &self,
         request: Request<ProxyRequest>,
-    ) -> Result<Response<Upstream>, Error> {
+    ) -> Result<Response<Upstream>, ProxyFailure> {
         let proxy_ip = request
             .remote_addr()
             .ok_or("Could not get remote address for proxy request")
@@ -428,6 +428,13 @@ impl NullnetGrpcImpl {
 
         let client_ip: IpAddr = req.client_ip.parse().handle_err(location!())?;
         let service_name = req.service_name;
+
+        // Separated from the failures below so the proxy can tell a name we
+        // have never heard of (scanner, stale alias, bare IP) from one of ours
+        // that failed to resolve. Only the latter is worth an event.
+        if find_service_stack(&*self.services.read().await, &service_name).is_none() {
+            return Err(ProxyFailure::UnknownService);
+        }
 
         let upstream = self
             .handle_proxy_request(&service_name, proxy_ip, &client_ip.to_string())
@@ -1646,6 +1653,19 @@ impl NullnetGrpcImpl {
     }
 }
 
+/// Why a proxy lookup failed, at the granularity the proxy acts on.
+pub(crate) enum ProxyFailure {
+    /// No stack declares this name. Routine: the proxy logs it and moves on.
+    UnknownService,
+    Other(Error),
+}
+
+impl From<Error> for ProxyFailure {
+    fn from(e: Error) -> Self {
+        Self::Other(e)
+    }
+}
+
 /// What building a chain produced.
 pub(crate) enum ChainOutcome {
     /// Built (or reused). Carries the proxy upstream if the chain had an entry
@@ -2366,9 +2386,10 @@ impl NullnetGrpc for NullnetGrpcImpl {
     }
 
     async fn proxy(&self, req: Request<ProxyRequest>) -> Result<Response<Upstream>, Status> {
-        self.proxy_impl(req)
-            .await
-            .map_err(|err| Status::internal(err.to_str()))
+        self.proxy_impl(req).await.map_err(|err| match err {
+            ProxyFailure::UnknownService => Status::not_found("Service not found in any stack"),
+            ProxyFailure::Other(e) => Status::internal(e.to_str()),
+        })
     }
 
     async fn proxy_connection_closed(

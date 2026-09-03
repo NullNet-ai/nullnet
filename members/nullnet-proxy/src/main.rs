@@ -6,7 +6,7 @@ mod tcp_relay;
 mod tls;
 mod udp_relay;
 
-use crate::nullnet_proxy::{NullnetProxy, send_close};
+use crate::nullnet_proxy::{NullnetProxy, UpstreamError, send_close};
 use crate::routes::{Resolution, RouteMatch, RouteTable};
 use crate::tls::{CertStore, TlsResolver};
 use arc_swap::ArcSwap;
@@ -23,7 +23,6 @@ use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::{Error, ErrorType, Result};
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{ProxyHttp, Session};
-use std::net::IpAddr;
 use std::process;
 use std::sync::Arc;
 use std::thread;
@@ -291,32 +290,36 @@ impl ProxyHttp for NullnetProxy {
                 }
                 u
             }
-            Err(_) => {
-                // Anything dialing the proxy by address instead of by name sends an
-                // IP as its `Host`: internet scanners on the public :80, or a local
-                // probe (`curl http://0.0.0.0/`). No service is ever named after an
-                // IP, so these can only ever fail — log them, but keep them out of
-                // the event buffer that real errors have to share.
-                if url.parse::<IpAddr>().is_ok() {
-                    eprintln!("Ignoring proxy request for IP host '{url}' (client {client_ip})");
-                } else {
-                    let server = self.server.clone();
-                    let cip = client_ip.clone();
-                    let svc = service_name.clone();
-                    tokio::spawn(async move {
-                        let _ = server
-                            .report_event(AgentEvent {
-                                event: Some(AgentEventKind::UpstreamLookupFailed(
-                                    AgentUpstreamLookupFailed {
-                                        service_name: svc,
-                                        client_ip: cip,
-                                        error_message: "upstream lookup failed".to_string(),
-                                    },
-                                )),
-                            })
-                            .await;
-                    });
-                }
+            // A name no stack declares: scanners on the public :80 sending a
+            // hostname or the box's own rDNS, a bare IP `Host`, a stale alias.
+            // These can only ever fail — log them, but keep them out of the
+            // event buffer that real errors have to share.
+            Err(UpstreamError::UnknownService) => {
+                eprintln!(
+                    "Ignoring proxy request for unknown service '{url}' (client {client_ip})"
+                );
+                return Err(Error::explain(
+                    ErrorType::BindError,
+                    "Failed to retrieve upstream",
+                ));
+            }
+            Err(UpstreamError::Failed(error_message)) => {
+                let server = self.server.clone();
+                let cip = client_ip.clone();
+                let svc = service_name.clone();
+                tokio::spawn(async move {
+                    let _ = server
+                        .report_event(AgentEvent {
+                            event: Some(AgentEventKind::UpstreamLookupFailed(
+                                AgentUpstreamLookupFailed {
+                                    service_name: svc,
+                                    client_ip: cip,
+                                    error_message,
+                                },
+                            )),
+                        })
+                        .await;
+                });
                 return Err(Error::explain(
                     ErrorType::BindError,
                     "Failed to retrieve upstream",

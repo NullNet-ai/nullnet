@@ -2,11 +2,11 @@ use crate::env::{CONTROL_SERVICE_ADDR, CONTROL_SERVICE_CA_CERT, CONTROL_SERVICE_
 use crate::routes::RouteTable;
 use crate::tls::CertStore;
 use arc_swap::ArcSwap;
-use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
     AgentEvent, AgentUpstreamIpParseFailed, ProxyConnectionEnd, ProxyRequest,
     agent_event::Event as AgentEventKind,
 };
+use nullnet_grpc_lib::{NullnetGrpcInterface, ProxyLookupError};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
@@ -43,11 +43,22 @@ impl NullnetProxy {
         })
     }
 
-    pub async fn get_or_add_upstream(&self, proxy_req: ProxyRequest) -> Result<SocketAddr, Error> {
+    /// Resolve the upstream for a proxy request.
+    ///
+    /// `Err(UpstreamError::UnknownService)` means the control plane has never
+    /// heard of the name — callers log that rather than raising an event.
+    pub async fn get_or_add_upstream(
+        &self,
+        proxy_req: ProxyRequest,
+    ) -> Result<SocketAddr, UpstreamError> {
         println!("requesting new upstream...");
 
         let service_name = proxy_req.service_name.clone();
-        let response = self.server.proxy(proxy_req).await.handle_err(location!())?;
+        let response = match self.server.proxy(proxy_req).await {
+            Ok(r) => r,
+            Err(ProxyLookupError::UnknownService) => return Err(UpstreamError::UnknownService),
+            Err(ProxyLookupError::Failed(msg)) => return Err(UpstreamError::Failed(msg)),
+        };
 
         let raw_ip = response.ip.clone();
         let veth_ip: IpAddr = response
@@ -70,12 +81,21 @@ impl NullnetProxy {
                         })
                         .await;
                 });
-            })?;
-        let host_port = u16::try_from(response.port).handle_err(location!())?;
+            })
+            .map_err(|e| UpstreamError::Failed(format!("{e:?}")))?;
+        let host_port =
+            u16::try_from(response.port).map_err(|e| UpstreamError::Failed(format!("{e:?}")))?;
         let upstream = SocketAddr::new(veth_ip, host_port);
 
         Ok(upstream)
     }
+}
+
+/// Why resolving an upstream failed.
+pub enum UpstreamError {
+    /// The control plane has no such service. Routine — logged, never evented.
+    UnknownService,
+    Failed(String),
 }
 
 /// How many times to retry a close report before giving up.
