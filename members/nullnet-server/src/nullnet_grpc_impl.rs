@@ -1745,13 +1745,13 @@ async fn run_net_chain_setup(
                 EdgeOutcome::Success {
                     client,
                     server_name,
-                    proxy_upstream,
+                    ingress,
                     ..
                 } => BranchOutcome {
                     edges: vec![SuccessfulEdge {
                         client,
                         server_name,
-                        proxy_upstream,
+                        ingress,
                     }],
                     ok: true,
                 },
@@ -1794,12 +1794,12 @@ async fn run_net_chain_setup(
                         client,
                         server_name,
                         server,
-                        proxy_upstream,
+                        ingress,
                     } => {
                         edges.push(SuccessfulEdge {
                             client,
                             server_name,
-                            proxy_upstream,
+                            ingress,
                         });
                         // The next hop hangs off wherever this one actually
                         // landed, not off a guess made before it was claimed.
@@ -1872,8 +1872,46 @@ async fn run_net_chain_setup(
         Err("NET chain setup failed").handle_err(location!())?;
     }
 
+    // Past the unwind check, so every branch is up and these sessions are real.
+    for edge in &successful {
+        let (Some(ingress), Some(proxy_ip)) = (&edge.ingress, edge.client.is_proxy()) else {
+            continue;
+        };
+        orchestrator
+            .events
+            .emit(Event::session_created(
+                ingress.net_id,
+                edge.server_name.clone(),
+                proxy_ip.to_string(),
+            ))
+            .await;
+        // The peer is the *external* client the proxy serves — the client's
+        // name, not the proxy host, which is the same for every client it
+        // serves. Geo is usually still unresolved; `ensure` starts the cached
+        // lookup, and the list handler falls back to the cache meanwhile.
+        let peer_ip = edge.client.name().to_string();
+        let geo = peer_ip.parse::<Ipv4Addr>().ok().and_then(|v4| {
+            orchestrator.ensure_geo(v4);
+            orchestrator.geo_get(v4)
+        });
+        orchestrator
+            .sessions
+            .open_ingress(
+                &stack,
+                &edge.server_name,
+                ingress.net_id,
+                &peer_ip,
+                &ingress.net_ip_client.to_string(),
+                &ingress.net_ip_server.to_string(),
+                geo,
+            )
+            .await;
+    }
+
     Ok(ChainOutcome::Built(
-        successful.iter().find_map(|e| e.proxy_upstream),
+        successful
+            .iter()
+            .find_map(|e| e.ingress.as_ref().map(|i| i.net_ip_server)),
     ))
 }
 
@@ -1924,7 +1962,7 @@ async fn setup_edge(
                     client,
                     server_name,
                     server: bound,
-                    proxy_upstream: None,
+                    ingress: None,
                 };
             }
             match reg.pending_notify(&client) {
@@ -2202,49 +2240,30 @@ async fn setup_edge(
         return EdgeOutcome::Failed;
     }
 
-    let proxy_upstream = if client.is_proxy().is_some() {
-        orchestrator
-            .events
-            .emit(Event::session_created(
-                net_id,
-                server_name.clone(),
-                client_ethernet.to_string(),
-            ))
-            .await;
-        // The session's peer is the *external* client the proxy is serving,
-        // which is the client's name — `client_ethernet` is the proxy host,
-        // i.e. this tunnel's near end, and is the same for every client it
-        // serves. Geo is usually still unresolved this early; `ensure` starts
-        // the (cached, once-per-IP) lookup so the row can be enriched, and the
-        // list handler falls back to the cache meanwhile.
-        let peer_ip = client.name().to_string();
-        let geo = peer_ip.parse::<Ipv4Addr>().ok().and_then(|v4| {
-            orchestrator.ensure_geo(v4);
-            orchestrator.geo_get(v4)
-        });
-        orchestrator
-            .sessions
-            .open_ingress(
-                stack,
-                &server_name,
-                net_id,
-                &peer_ip,
-                &net_ip_client.to_string(),
-                &net_ip_server.to_string(),
-                geo,
-            )
-            .await;
-        Some(net_ip_server)
-    } else {
-        None
-    };
+    // Carried rather than written here: the row is opened only once every
+    // branch of the chain is up (see `PendingIngress`).
+    let ingress = client.is_proxy().is_some().then_some(PendingIngress {
+        net_id,
+        net_ip_client,
+        net_ip_server,
+    });
 
     EdgeOutcome::Success {
         client,
         server_name,
         server: (server_ethernet, server_docker),
-        proxy_upstream,
+        ingress,
     }
+}
+
+/// The ingress session an entry edge will open once its whole chain is up.
+/// Deferred to the end of the build on purpose: a chain that fails after this
+/// edge is built unwinds it, and a row opened here would outlive the edge with
+/// no `ended_at` and no path that ever closes it.
+struct PendingIngress {
+    net_id: u32,
+    net_ip_client: Ipv4Addr,
+    net_ip_server: Ipv4Addr,
 }
 
 enum EdgeOutcome {
@@ -2254,7 +2273,9 @@ enum EdgeOutcome {
         /// The replica this edge is bound to. The next hop of the branch is
         /// rooted here, so it must be what was claimed, not what was guessed.
         server: (IpAddr, Option<String>),
-        proxy_upstream: Option<Ipv4Addr>,
+        /// `Some` only on a freshly built proxy entry edge; a reused edge takes
+        /// a refcount and opens no session of its own.
+        ingress: Option<PendingIngress>,
     },
     Failed,
 }
@@ -2262,7 +2283,7 @@ enum EdgeOutcome {
 struct SuccessfulEdge {
     client: Client,
     server_name: String,
-    proxy_upstream: Option<Ipv4Addr>,
+    ingress: Option<PendingIngress>,
 }
 
 #[cfg(test)]
