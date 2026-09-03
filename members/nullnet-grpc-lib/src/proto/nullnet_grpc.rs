@@ -504,7 +504,7 @@ pub struct Empty {}
 pub struct AgentEvent {
     #[prost(
         oneof = "agent_event::Event",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 22, 23, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 13, 14, 15, 16, 17, 18, 19, 21, 24, 25, 26, 27, 20"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37"
     )]
     pub event: ::core::option::Option<agent_event::Event>,
 }
@@ -537,58 +537,58 @@ pub mod agent_event {
         BackendTriggerSendFailed(super::AgentBackendTriggerSendFailed),
         #[prost(message, tag = "12")]
         FirewallRulesLoadFailed(super::AgentFirewallRulesLoadFailed),
-        #[prost(message, tag = "22")]
+        #[prost(message, tag = "13")]
         ContainerSuspendFailed(super::AgentContainerSuspendFailed),
-        #[prost(message, tag = "23")]
+        #[prost(message, tag = "14")]
         ContainerResumeFailed(super::AgentContainerResumeFailed),
-        #[prost(message, tag = "28")]
+        #[prost(message, tag = "15")]
         EgressTriggerSendFailed(super::AgentEgressTriggerSendFailed),
-        #[prost(message, tag = "29")]
+        #[prost(message, tag = "16")]
         GatewayForwardInstallFailed(super::AgentGatewayForwardInstallFailed),
-        #[prost(message, tag = "30")]
+        #[prost(message, tag = "17")]
         BackendTriggerSetupTimedOut(super::AgentBackendTriggerSetupTimedOut),
-        #[prost(message, tag = "31")]
+        #[prost(message, tag = "18")]
         EgressSteerSetupTimedOut(super::AgentEgressSteerSetupTimedOut),
-        #[prost(message, tag = "32")]
+        #[prost(message, tag = "19")]
         EgressSteerInstallFailed(super::AgentEgressSteerInstallFailed),
-        #[prost(message, tag = "33")]
+        #[prost(message, tag = "20")]
         NfqueueBindFailed(super::AgentNfqueueBindFailed),
-        #[prost(message, tag = "34")]
+        #[prost(message, tag = "21")]
         MssClampInstallFailed(super::AgentMssClampInstallFailed),
-        #[prost(message, tag = "35")]
+        #[prost(message, tag = "22")]
         EgressPolicyCheckFailed(super::AgentEgressPolicyCheckFailed),
-        #[prost(message, tag = "36")]
+        #[prost(message, tag = "23")]
         ConntrackFlushFailed(super::AgentConntrackFlushFailed),
-        #[prost(message, tag = "37")]
+        #[prost(message, tag = "24")]
         ConntrackSubscribeFailed(super::AgentConntrackSubscribeFailed),
         /// Client info events
-        #[prost(message, tag = "13")]
+        #[prost(message, tag = "25")]
         VxlanSetupCompleted(super::AgentVxlanSetupCompleted),
-        #[prost(message, tag = "14")]
+        #[prost(message, tag = "26")]
         VlanSetupCompleted(super::AgentVlanSetupCompleted),
-        #[prost(message, tag = "15")]
+        #[prost(message, tag = "27")]
         ControlChannelEstablished(super::AgentControlChannelEstablished),
-        #[prost(message, tag = "16")]
+        #[prost(message, tag = "28")]
         ServicesListUpdated(super::AgentServicesListUpdated),
         /// Proxy error events
-        #[prost(message, tag = "17")]
+        #[prost(message, tag = "29")]
         UpstreamLookupFailed(super::AgentUpstreamLookupFailed),
-        #[prost(message, tag = "18")]
+        #[prost(message, tag = "30")]
         UpstreamIpParseFailed(super::AgentUpstreamIpParseFailed),
-        #[prost(message, tag = "19")]
+        #[prost(message, tag = "31")]
         ProxyClientNotInet(super::AgentProxyClientNotInet),
-        #[prost(message, tag = "21")]
+        #[prost(message, tag = "32")]
         TlsCertificateInvalid(super::AgentTlsCertificateInvalid),
-        #[prost(message, tag = "24")]
+        #[prost(message, tag = "33")]
         TcpListenerBindFailed(super::AgentTcpListenerBindFailed),
-        #[prost(message, tag = "25")]
+        #[prost(message, tag = "34")]
         UdpListenerBindFailed(super::AgentUdpListenerBindFailed),
-        #[prost(message, tag = "26")]
+        #[prost(message, tag = "35")]
         TcpUpstreamConnectFailed(super::AgentTcpUpstreamConnectFailed),
-        #[prost(message, tag = "27")]
+        #[prost(message, tag = "36")]
         UdpUpstreamConnectFailed(super::AgentUdpUpstreamConnectFailed),
         /// Proxy info events
-        #[prost(message, tag = "20")]
+        #[prost(message, tag = "37")]
         ProxyRequestRouted(super::AgentProxyRequestRouted),
     }
 }
