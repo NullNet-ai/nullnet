@@ -273,6 +273,9 @@ impl SessionStore {
     /// edge — shared with every other destination — comes down. A destination
     /// contacted again later opens a fresh row, since `touch` only ever matches
     /// an open one.
+    ///
+    /// `last_seen` is when a connection to it last *started*, so it dates a row
+    /// that never ran but not one that did — see the two closes below.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn record_egress_destination(
         &self,
@@ -302,7 +305,11 @@ impl SessionStore {
             }
         };
         if touched {
-            if !active && let Err(e) = repo.close_egress_dst(net_id, dst_ip, last_seen).await {
+            // A row that was running ends *now*, not at its last new connection:
+            // `last_seen` is when a connection last started, so a destination
+            // held open for an hour by one connection would otherwise close
+            // with a zero-length duration.
+            if !active && let Err(e) = repo.close_egress_dst(net_id, dst_ip, now_secs()).await {
                 eprintln!("Sessions: failed to close egress destination {dst_ip}: {e:?}");
             }
             return;
@@ -340,6 +347,8 @@ impl SessionStore {
             eprintln!("Sessions: failed to open egress destination {dst_ip}: {e:?}");
             return;
         }
+        // Nothing ever ran on this one — it is written already ended, at the
+        // moment it was contacted.
         if !active && let Err(e) = repo.close_egress_dst(net_id, dst_ip, last_seen).await {
             eprintln!("Sessions: failed to close egress destination {dst_ip}: {e:?}");
         }

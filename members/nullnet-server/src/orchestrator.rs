@@ -1722,7 +1722,9 @@ mod egress_session_history_tests {
             .await
             .unwrap();
         assert_eq!(closed[0].peer_ip, "8.8.8.8");
-        assert_eq!(closed[0].ended_at, Some(150));
+        // Ended when the close was reported, not at its last new connection —
+        // one long-lived connection would otherwise read as zero duration.
+        assert!(closed[0].ended_at.unwrap() >= closed[0].started_at);
 
         // Contacted again later: a new period, so a new row, not a revival.
         orch.record_egress_destination(key.0, key.1.clone(), done, 2, 200, false, true)
