@@ -44,10 +44,22 @@ function DestinationList({ destinations }: { destinations: EgressDestination[] }
           const flag = flagEmoji(d.country_code);
           // thin rule between entries (not above the first)
           const sep = i > 0 ? { borderTop: '1px solid rgba(255,255,255,.07)' } : {};
+          // The edge multiplexes every destination, so its own liveness says
+          // nothing about theirs: one can be finished while the edge stays up
+          // for the others. Dim those rather than show them all as live.
+          const idle = !d.active;
           return (
-            <tr key={d.ip}>
+            <tr key={d.ip} style={idle ? { opacity: 0.6 } : undefined}>
               <td style={{ ...sep, paddingRight: 8, paddingTop: 5, paddingBottom: 4, wordBreak: 'break-all', verticalAlign: 'top' }}>
-                <div style={{ fontSize: 10, color: d.blocked ? '#f87171' : '#a78bfa' }}>
+                <div style={{ fontSize: 10, color: d.blocked ? '#f87171' : idle ? 'var(--t1)' : '#a78bfa' }}>
+                  <span
+                    title={idle ? 'No open connection' : 'Connection open'}
+                    style={{
+                      width: 5, height: 5, borderRadius: '50%', display: 'inline-block',
+                      background: idle ? 'var(--t3)' : 'var(--green)', marginRight: 6,
+                      verticalAlign: 'middle',
+                    }}
+                  />
                   {flag && (
                     <span title={countryName(d.country_code!)} style={{ marginRight: 5, cursor: 'default' }}>
                       {flag}
@@ -81,10 +93,14 @@ function DestinationList({ destinations }: { destinations: EgressDestination[] }
 export default function EdgePanel({ edges }: Props) {
   const { chains, sessions } = useTopologyData();
 
-  const egressDestCount = useMemo(() => {
+  const [egressDestCount, egressActiveCount] = useMemo(() => {
     const ips = new Set<string>();
-    for (const e of edges) for (const d of e.destinations ?? []) ips.add(d.ip);
-    return ips.size;
+    const active = new Set<string>();
+    for (const e of edges) for (const d of e.destinations ?? []) {
+      ips.add(d.ip);
+      if (d.active) active.add(d.ip);
+    }
+    return [ips.size, active.size];
   }, [edges]);
 
   const chainByProxyNetId = useMemo(() => {
@@ -124,7 +140,7 @@ export default function EdgePanel({ edges }: Props) {
           <div style={spKey}>Destinations</div>
           <div style={spCode}>
             {egressDestCount > 0
-              ? `${egressDestCount} external IP${egressDestCount !== 1 ? 's' : ''}`
+              ? `${egressDestCount} external IP${egressDestCount !== 1 ? 's' : ''} · ${egressActiveCount} active`
               : 'internet (no traffic yet)'}
           </div>
         </div>
@@ -170,7 +186,7 @@ export default function EdgePanel({ edges }: Props) {
             {e.egress && (
               <>
                 <div style={{ fontSize: 10, color: '#a78bfa', fontFamily: "'JetBrains Mono',monospace", paddingBottom: 7, borderBottom: '1px solid var(--gb)', marginBottom: 3 }}>
-                  {e.from} → {e.to} → {(e.destinations?.length ?? 0)} dest
+                  {e.from} → {e.to} → {(e.destinations?.filter(d => d.active).length ?? 0)}/{(e.destinations?.length ?? 0)} dest active
                 </div>
                 <DestinationList destinations={e.destinations ?? []} />
               </>

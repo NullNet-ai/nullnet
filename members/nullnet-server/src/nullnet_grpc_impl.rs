@@ -1430,6 +1430,7 @@ impl NullnetGrpcImpl {
                         entry.count,
                         entry.last_seen,
                         entry.blocked,
+                        entry.active,
                     )
                     .await;
             }

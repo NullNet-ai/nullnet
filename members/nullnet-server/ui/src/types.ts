@@ -238,6 +238,8 @@ export interface EgressDestination {
   count: number;
   /** Latest attempt denied by the egress country policy. */
   blocked?: boolean;
+  /** Whether a connection to this destination is still open. */
+  active: boolean;
   /** ISO alpha-2 country code (for the flag), if resolved. */
   country_code?: string;
   asn?: string;

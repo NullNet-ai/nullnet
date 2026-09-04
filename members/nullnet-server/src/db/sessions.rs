@@ -241,9 +241,75 @@ impl SessionRepository {
         .handle_err(location!())
     }
 
-    /// Close every open egress destination row carried by the edge holding
-    /// `net_id`. One edge multiplexes all of its destinations, so they end
-    /// together when the edge comes down.
+    /// Fold a repeat "closed" report into the destination's most recent ended
+    /// row on this edge, rather than leaving one row per report behind.
+    ///
+    /// What a denied destination looks like: its packets are dropped, so they
+    /// never open a connection and every flush reports it closed. Same folding
+    /// as [`Self::record_blocked_ingress`], for the same reason. Returns 0 when
+    /// the destination has no ended row yet, which is the caller's signal to
+    /// write one. Real new activity arrives as *active* and never comes here,
+    /// so it still opens a row of its own.
+    pub(crate) async fn extend_ended_egress_dst(
+        &self,
+        net_id: u32,
+        peer_ip: &str,
+        blocked: bool,
+        timestamp: i64,
+    ) -> Result<usize, Error> {
+        let mut conn = self.conn.lock().await;
+        let Some(id) = sessions::table
+            .filter(sessions::direction.eq("egress"))
+            .filter(sessions::net_id.eq(net_id as i32))
+            .filter(sessions::peer_ip.eq(peer_ip.to_owned()))
+            .filter(sessions::ended_at.is_not_null())
+            .order(sessions::id.desc())
+            .select(sessions::id)
+            .first::<i64>(&mut *conn)
+            .await
+            .optional()
+            .handle_err(location!())?
+        else {
+            return Ok(0);
+        };
+        diesel::update(sessions::table.filter(sessions::id.eq(id)))
+            .set((
+                sessions::last_seen.eq(timestamp),
+                sessions::ended_at.eq(Some(timestamp)),
+                sessions::blocked.eq(blocked),
+            ))
+            .execute(&mut *conn)
+            .await
+            .handle_err(location!())
+    }
+
+    /// Close the open row for one egress destination on the edge holding
+    /// `net_id`. The usual way an egress row ends: the client reports the
+    /// initiator's last connection to that host gone.
+    pub(crate) async fn close_egress_dst(
+        &self,
+        net_id: u32,
+        peer_ip: &str,
+        timestamp: i64,
+    ) -> Result<usize, Error> {
+        let mut conn = self.conn.lock().await;
+        diesel::update(
+            sessions::table
+                .filter(sessions::direction.eq("egress"))
+                .filter(sessions::net_id.eq(net_id as i32))
+                .filter(sessions::peer_ip.eq(peer_ip.to_owned()))
+                .filter(sessions::ended_at.is_null()),
+        )
+        .set(sessions::ended_at.eq(Some(timestamp)))
+        .execute(&mut *conn)
+        .await
+        .handle_err(location!())
+    }
+
+    /// Close every egress destination row still open on the edge holding
+    /// `net_id`. The backstop for whatever the per-destination closes did not
+    /// reach — a client that died, a `DESTROY` neither the event stream nor a
+    /// dump ever delivered.
     pub(crate) async fn close_egress_edge(
         &self,
         net_id: u32,

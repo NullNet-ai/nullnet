@@ -60,12 +60,17 @@ const TEARDOWN_ACK_GRACE: Duration = Duration::from_secs(30);
 
 /// Per-destination stats on an egress edge, reported by the client (which owns
 /// the running count and latest-seen time; the server stores them verbatim).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct DestStat {
     last_seen: u64,
     count: u64,
     /// Whether the latest attempt was denied by the egress country policy.
     blocked: bool,
+    /// Whether the initiator still has a connection open to this destination,
+    /// per the client's conntrack view. One edge multiplexes every destination
+    /// it carries, so this — not the edge's own liveness — is what says whether
+    /// a given destination is still in use.
+    active: bool,
 }
 
 /// A live egress forward-proxy edge (initiator replica -> proxy host).
@@ -102,6 +107,8 @@ pub(crate) struct EgressDestination {
     pub(crate) count: u64,
     /// Whether the latest attempt was denied by the egress country policy.
     pub(crate) blocked: bool,
+    /// Whether a connection to this destination is still open.
+    pub(crate) active: bool,
     /// Geo/ASN enrichment, if the lookup has resolved yet (else `None`).
     pub(crate) geo: Option<GeoInfo>,
 }
@@ -402,6 +409,7 @@ impl Orchestrator {
                 .await;
             return Ok(false);
         }
+        self.persist_edge_destinations(&key).await;
         Ok(true)
     }
 
@@ -434,10 +442,18 @@ impl Orchestrator {
                         last_seen: s.last_seen,
                         count: s.count,
                         blocked: s.blocked,
+                        active: s.active,
                         geo: self.geo.get(*ip),
                     })
                     .collect();
-                destinations.sort_by(|a, b| b.last_seen.cmp(&a.last_seen).then(a.ip.cmp(&b.ip)));
+                // Live destinations first — like the Sessions page, where a
+                // session still running sorts above every finished one.
+                destinations.sort_by(|a, b| {
+                    b.active
+                        .cmp(&a.active)
+                        .then(b.last_seen.cmp(&a.last_seen))
+                        .then(a.ip.cmp(&b.ip))
+                });
                 EgressEdgeInfo {
                     net_id: e.net_id,
                     initiator_ip: e.initiator_ip,
@@ -455,6 +471,7 @@ impl Orchestrator {
     /// client's authoritative values and stored verbatim. No-op if no edge exists
     /// (the client re-sends on its next flush once the edge is up). Bounded by
     /// `MAX_DESTS_PER_EDGE` with least-recently-seen eviction.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn record_egress_destination(
         &self,
         initiator_ip: IpAddr,
@@ -463,6 +480,7 @@ impl Orchestrator {
         count: u64,
         last_seen: u64,
         blocked: bool,
+        active: bool,
     ) {
         let key = (initiator_ip, initiator_docker);
         let persist = {
@@ -477,6 +495,7 @@ impl Orchestrator {
                     stat.last_seen = last_seen;
                     stat.count = count;
                     stat.blocked = blocked;
+                    stat.active = active;
                 }
                 None => {
                     if edge.destinations.len() >= MAX_DESTS_PER_EDGE
@@ -494,13 +513,15 @@ impl Orchestrator {
                             last_seen,
                             count,
                             blocked,
+                            active,
                         },
                     );
                 }
             }
-            // A reservation still being built has no id to file the row under;
-            // the client's next flush re-sends the running totals, by which
-            // point the edge is promoted. Mirrors `egress_edges_snapshot`.
+            // A reservation still being built has no id to file the row under.
+            // The client will not re-send an unchanged entry, so the row is
+            // written from the map instead, by `persist_edge_destinations` at
+            // promotion. Mirrors `egress_edges_snapshot`.
             (edge.net_id != 0).then(|| {
                 (
                     edge.stack.clone(),
@@ -525,9 +546,52 @@ impl Orchestrator {
                 &proxy_ip.to_string(),
                 last_seen as i64,
                 blocked,
+                active,
                 self.geo.get(dst_ip),
             )
             .await;
+    }
+
+    /// Write session rows for the destinations an edge accumulated while it was
+    /// still a reservation.
+    ///
+    /// Those reports arrived with no net id to file them under, and the client
+    /// only re-sends a destination whose counts changed — so without this they
+    /// stay in the topology map and never reach the history at all.
+    async fn persist_edge_destinations(&self, key: &EgressKey) {
+        let pending = {
+            let edges = self.egress_edges.read().await;
+            let Some(edge) = edges.get(key).filter(|e| e.net_id != 0) else {
+                return;
+            };
+            let dests: Vec<(Ipv4Addr, DestStat)> =
+                edge.destinations.iter().map(|(ip, s)| (*ip, *s)).collect();
+            (
+                edge.stack.clone(),
+                edge.service.clone(),
+                edge.net_id,
+                edge.proxy_ip,
+                dests,
+            )
+        };
+        let (stack, service, net_id, proxy_ip, dests) = pending;
+        for (dst_ip, stat) in dests {
+            self.sessions
+                .record_egress_destination(
+                    &stack,
+                    &service,
+                    net_id,
+                    &dst_ip.to_string(),
+                    &key.0.to_string(),
+                    key.1.as_deref(),
+                    &proxy_ip.to_string(),
+                    stat.last_seen as i64,
+                    stat.blocked,
+                    stat.active,
+                    self.geo.get(dst_ip),
+                )
+                .await;
+        }
     }
 
     /// Geo/ASN data for `ip`, for a traffic filter check — awaits the
@@ -1557,10 +1621,12 @@ mod egress_session_history_tests {
     }
 
     /// A destination reported while the edge is still a reservation has no net
-    /// id to file under. It must stay out of the history rather than land on a
-    /// row nothing can ever close; the client's next flush re-sends it.
+    /// id to file under, so it cannot be written when it arrives — and the
+    /// client will never re-send an entry whose counts have not changed. The
+    /// row is written from the map at promotion instead; without that step the
+    /// destination shows in the topology panel and never in the history.
     #[tokio::test]
-    async fn a_reservation_records_no_history_until_it_is_promoted() {
+    async fn destinations_seen_during_a_reservation_are_written_at_promotion() {
         let (orch, db) = orch_with_db().await;
         let key = (ip(10, 0, 0, 1), Some("c1".to_string()));
         insert_edge(&orch, key.clone(), 0, Duration::ZERO).await;
@@ -1572,6 +1638,7 @@ mod egress_session_history_tests {
             1,
             100,
             false,
+            true,
         )
         .await;
         assert!(
@@ -1579,25 +1646,18 @@ mod egress_session_history_tests {
                 .query("prod", None, None, None, None, None, None, None, 10)
                 .await
                 .unwrap()
-                .is_empty()
+                .is_empty(),
+            "no net id yet, so nothing to file the row under"
         );
 
-        // Promote, re-report: now it is recorded.
         orch.egress_edges
             .write()
             .await
             .get_mut(&key)
             .unwrap()
             .net_id = 5;
-        orch.record_egress_destination(
-            key.0,
-            key.1.clone(),
-            Ipv4Addr::new(8, 8, 8, 8),
-            2,
-            110,
-            false,
-        )
-        .await;
+        orch.persist_edge_destinations(&key).await;
+
         let rows = db
             .sessions()
             .query("prod", None, None, None, None, None, None, None, 10)
@@ -1607,7 +1667,121 @@ mod egress_session_history_tests {
         assert_eq!(rows[0].service, "api");
         assert_eq!(rows[0].net_id, 5);
         assert_eq!(rows[0].peer_ip, "8.8.8.8");
+        assert_eq!(rows[0].last_seen, 100);
         assert!(rows[0].ended_at.is_none());
+
+        // Idempotent: promotion is not the only writer, so a later report of the
+        // same destination must land on that row rather than a second one.
+        orch.record_egress_destination(
+            key.0,
+            key.1.clone(),
+            Ipv4Addr::new(8, 8, 8, 8),
+            2,
+            110,
+            false,
+            true,
+        )
+        .await;
+        let rows = db
+            .sessions()
+            .query("prod", None, None, None, None, None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].last_seen, 110);
+    }
+
+    /// The defect in #179: one edge carries every destination, so closing the
+    /// rows only at edge teardown left each destination reading live until the
+    /// *last* one on that edge finished. A destination now ends on its own.
+    #[tokio::test]
+    async fn a_destination_ends_while_the_edge_keeps_carrying_the_others() {
+        let (orch, db) = orch_with_db().await;
+        let key = (ip(10, 0, 0, 1), Some("c1".to_string()));
+        insert_edge(&orch, key.clone(), 9, Duration::ZERO).await;
+
+        let (done, busy) = (Ipv4Addr::new(8, 8, 8, 8), Ipv4Addr::new(1, 1, 1, 1));
+        for dst in [done, busy] {
+            orch.record_egress_destination(key.0, key.1.clone(), dst, 1, 100, false, true)
+                .await;
+        }
+        // The client's conntrack view: everything to `done` has closed.
+        orch.record_egress_destination(key.0, key.1.clone(), done, 1, 150, false, false)
+            .await;
+
+        let open = db
+            .sessions()
+            .query("prod", None, None, Some(true), None, None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(open.len(), 1, "only the still-busy destination is live");
+        assert_eq!(open[0].peer_ip, "1.1.1.1");
+        let closed = db
+            .sessions()
+            .query("prod", None, None, Some(false), None, None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(closed[0].peer_ip, "8.8.8.8");
+        // Ended when the close was reported, not at its last new connection —
+        // one long-lived connection would otherwise read as zero duration.
+        assert!(closed[0].ended_at.unwrap() >= closed[0].started_at);
+
+        // Contacted again later: a new period, so a new row, not a revival.
+        orch.record_egress_destination(key.0, key.1.clone(), done, 2, 200, false, true)
+            .await;
+        let rows = db
+            .sessions()
+            .query("prod", None, None, None, None, None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(rows.iter().filter(|r| r.peer_ip == "8.8.8.8").count(), 2);
+    }
+
+    /// A destination whose only report says "closed" — a denied attempt, whose
+    /// packet is dropped and never enters the client's open-flow set — still
+    /// belongs in the history, as a row that started and ended. Its repeats
+    /// fold into that row: a scanner reported every flush would otherwise
+    /// leave one row per interval behind.
+    #[tokio::test]
+    async fn a_denied_destination_folds_into_one_already_ended_row() {
+        let (orch, db) = orch_with_db().await;
+        let key = (ip(10, 0, 0, 1), Some("c1".to_string()));
+        insert_edge(&orch, key.clone(), 11, Duration::ZERO).await;
+        let dst = Ipv4Addr::new(5, 5, 5, 5);
+
+        for (count, last_seen) in [(1, 100), (9, 105), (20, 110)] {
+            orch.record_egress_destination(
+                key.0,
+                key.1.clone(),
+                dst,
+                count,
+                last_seen,
+                true,
+                false,
+            )
+            .await;
+        }
+
+        let rows = db
+            .sessions()
+            .query("prod", None, None, None, None, None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "one row for the whole run of denials");
+        assert!(rows[0].blocked);
+        assert_eq!(rows[0].started_at, 100);
+        assert_eq!(rows[0].ended_at, Some(110));
+
+        // Traffic that actually connects is a new period, so it opens a row.
+        orch.record_egress_destination(key.0, key.1.clone(), dst, 21, 120, false, true)
+            .await;
+        let open = db
+            .sessions()
+            .query("prod", None, None, Some(true), None, None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].started_at, 120);
     }
 
     /// Repeat reports of the same destination update one row; distinct
@@ -1621,9 +1795,9 @@ mod egress_session_history_tests {
         for (dst, last_seen, blocked) in [
             (Ipv4Addr::new(8, 8, 8, 8), 100, false),
             (Ipv4Addr::new(8, 8, 8, 8), 150, false),
-            (Ipv4Addr::new(1, 1, 1, 1), 120, true),
+            (Ipv4Addr::new(1, 1, 1, 1), 120, false),
         ] {
-            orch.record_egress_destination(key.0, key.1.clone(), dst, 1, last_seen, blocked)
+            orch.record_egress_destination(key.0, key.1.clone(), dst, 1, last_seen, blocked, true)
                 .await;
         }
 
@@ -1635,13 +1809,7 @@ mod egress_session_history_tests {
         assert_eq!(rows.len(), 2);
         let google = rows.iter().find(|r| r.peer_ip == "8.8.8.8").unwrap();
         assert_eq!(google.last_seen, 150);
-        assert!(!google.blocked);
-        assert!(
-            rows.iter()
-                .find(|r| r.peer_ip == "1.1.1.1")
-                .unwrap()
-                .blocked
-        );
+        assert!(rows.iter().all(|r| r.ended_at.is_none()));
 
         orch.reap_idle_egress_edges(Duration::from_secs(1)).await;
         let rows = db
@@ -1661,6 +1829,7 @@ mod egress_session_history_tests {
             1,
             300,
             false,
+            true,
         )
         .await;
         let open = db
@@ -1686,7 +1855,7 @@ mod egress_session_history_tests {
             (&dead, Ipv4Addr::new(8, 8, 8, 8)),
             (&alive, Ipv4Addr::new(9, 9, 9, 9)),
         ] {
-            orch.record_egress_destination(k.0, k.1.clone(), dst, 1, 100, false)
+            orch.record_egress_destination(k.0, k.1.clone(), dst, 1, 100, false, true)
                 .await;
         }
 
@@ -1719,6 +1888,7 @@ mod egress_session_history_tests {
             1,
             100,
             false,
+            true,
         )
         .await;
         orch.record_egress_destination(
@@ -1728,6 +1898,7 @@ mod egress_session_history_tests {
             1,
             100,
             false,
+            true,
         )
         .await;
 

@@ -13,9 +13,10 @@
 //!   as an already-ended row (see [`SessionStore::record_blocked_ingress`]):
 //!   it is refused before an edge exists, so it has no net id and never runs.
 //! * **egress** — one row per *destination* an initiator replica contacted through
-//!   its egress edge. The edge itself multiplexes every destination, so a row is
-//!   opened on the first client report naming that destination and all of an
-//!   edge's rows close together when the edge comes down.
+//!   its egress edge. The edge multiplexes every destination, so the row tracks
+//!   the destination's own connections: it opens on the first client report
+//!   naming it and closes when the client reports its last connection to that
+//!   host gone. Edge teardown is only the backstop for whatever is still open.
 
 use crate::db::{Db, SessionGeo};
 use crate::geo::GeoInfo;
@@ -266,6 +267,15 @@ impl SessionStore {
     /// Record one external destination on a live egress edge. Called on every
     /// client destination flush, so it updates the open row when there is one
     /// and opens it otherwise.
+    ///
+    /// `active` is the client's conntrack-backed answer for *this destination*:
+    /// false ends the row here and now, rather than leaving it live until the
+    /// edge — shared with every other destination — comes down. A destination
+    /// contacted again later opens a fresh row, since `touch` only ever matches
+    /// an open one.
+    ///
+    /// `last_seen` is when a connection to it last *started*, so it dates a row
+    /// that never ran but not one that did — see the two closes below.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn record_egress_destination(
         &self,
@@ -278,20 +288,48 @@ impl SessionStore {
         proxy_ip: &str,
         last_seen: i64,
         blocked: bool,
+        active: bool,
         geo: Option<GeoInfo>,
     ) {
         let Some(db) = self.db.get() else { return };
         let geo = geo_of(geo);
         let repo = db.sessions();
-        match repo
+        let touched = match repo
             .touch(EGRESS, net_id, dst_ip, &geo, blocked, last_seen)
             .await
         {
-            Ok(0) => {}
-            Ok(_) => return,
+            Ok(n) => n > 0,
             Err(e) => {
                 eprintln!("Sessions: failed to update egress destination {dst_ip}: {e:?}");
                 return;
+            }
+        };
+        if touched {
+            // A row that was running ends *now*, not at its last new connection:
+            // `last_seen` is when a connection last started, so a destination
+            // held open for an hour by one connection would otherwise close
+            // with a zero-length duration.
+            if !active && let Err(e) = repo.close_egress_dst(net_id, dst_ip, now_secs()).await {
+                eprintln!("Sessions: failed to close egress destination {dst_ip}: {e:?}");
+            }
+            return;
+        }
+        // No open row. A destination that is *active* is starting a new period
+        // and gets a new row. One reported closed is either a report we have
+        // already ended — fold it in, as denied ingress does, or a denied
+        // destination would leave one row per flush behind — or one whose
+        // start we never saw, which is written already ended.
+        if !active {
+            match repo
+                .extend_ended_egress_dst(net_id, dst_ip, blocked, last_seen)
+                .await
+            {
+                Ok(0) => {}
+                Ok(_) => return,
+                Err(e) => {
+                    eprintln!("Sessions: failed to extend egress destination {dst_ip}: {e:?}");
+                    return;
+                }
             }
         }
         let detail = json!({
@@ -307,10 +345,18 @@ impl SessionStore {
             .await
         {
             eprintln!("Sessions: failed to open egress destination {dst_ip}: {e:?}");
+            return;
+        }
+        // Nothing ever ran on this one — it is written already ended, at the
+        // moment it was contacted.
+        if !active && let Err(e) = repo.close_egress_dst(net_id, dst_ip, last_seen).await {
+            eprintln!("Sessions: failed to close egress destination {dst_ip}: {e:?}");
         }
     }
 
-    /// End every destination row carried by the edge holding `net_id`.
+    /// End every destination row still open on the edge holding `net_id`.
+    /// The backstop, not the usual path: a destination normally ends when the
+    /// client reports its last connection to that host gone.
     pub(crate) async fn close_egress_edge(&self, net_id: u32) {
         let Some(db) = self.db.get() else { return };
         if let Err(e) = db.sessions().close_egress_edge(net_id, now_secs()).await {

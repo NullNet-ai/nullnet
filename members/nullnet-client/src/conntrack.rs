@@ -12,6 +12,7 @@
 //! which side closed first, so it is a definitive close signal but not a prompt one.
 
 use crate::commands::egress::is_internal_dst;
+use crate::nfqueue::egress_listener::{PendingDsts, mark_dst_liveness, new_pending_dsts};
 use crate::nfqueue::parse::{Flow, IPPROTO_TCP, IPPROTO_UDP};
 use crate::nfqueue::{TriggerOwners, service_for, watched_ports};
 #[cfg(test)]
@@ -215,6 +216,11 @@ pub struct LivenessSets {
     pub egress: EgressOpenFlows,
     pub triggers: TriggerOpenFlows,
     pub owners: TriggerOwners,
+    /// The egress listener's per-destination accumulator. Held here so a close
+    /// learned from a `DESTROY` or a dump can mark the destination inactive on
+    /// the same batch flush that carries its counts, instead of an RPC per
+    /// closed connection.
+    pub dsts: PendingDsts,
 }
 
 impl LivenessSets {
@@ -223,6 +229,7 @@ impl LivenessSets {
             egress: Arc::new(Mutex::new(OpenFlows::new())),
             triggers: Arc::new(Mutex::new(OpenFlows::new())),
             owners: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            dsts: new_pending_dsts(),
         }
     }
 
@@ -271,7 +278,12 @@ async fn retire_flow(sets: &LivenessSets, grpc: &NullnetGrpcInterface, flow: &Fl
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(flow);
-    if let Some(Transition::Idle(container)) = egress {
+    // The destination half rides the next destination flush rather than an RPC
+    // of its own: it is a session-history detail, not an edge-teardown signal.
+    if let Some(owner) = &egress.owner_key {
+        mark_dst_liveness(&sets.dsts, owner, &egress.dsts);
+    }
+    if let Some(Transition::Idle(container)) = egress.owner {
         report_liveness(grpc, container, false).await;
     }
 
@@ -280,7 +292,7 @@ async fn retire_flow(sets: &LivenessSets, grpc: &NullnetGrpcInterface, flow: &Fl
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(flow);
-    if let Some(Transition::Idle((container, port))) = trigger
+    if let Some(Transition::Idle((container, port))) = trigger.owner
         && let Some(service) = service_for(&sets.owners, &container, port)
     {
         report_backend_liveness(grpc, service, container, port, false).await;
@@ -348,7 +360,11 @@ pub fn spawn_destroy_listener(sets: LivenessSets, grpc: NullnetGrpcInterface) {
 /// while other connections to that host were still open.
 #[derive(Debug, Default)]
 pub struct OpenFlows<K: Eq + std::hash::Hash + Clone> {
-    per_owner: std::collections::HashMap<K, std::collections::HashSet<Flow>>,
+    /// Nested by destination so both questions this answers — "has the owner
+    /// any flow left" and "has it any flow left *to this host*" — stay O(1).
+    /// The second is what ends one egress destination's session while the
+    /// edge carrying it stays up for the others.
+    per_owner: std::collections::HashMap<K, std::collections::HashMap<Ipv4Addr, FlowSet>>,
     /// Reverse index so a `DESTROY` finds its owner directly. Re-deriving the
     /// owner from the flow would depend on the bridge-IP cache still holding
     /// the container at close time, which is exactly when it may not.
@@ -358,6 +374,9 @@ pub struct OpenFlows<K: Eq + std::hash::Hash + Clone> {
     suppressed: std::collections::HashMap<K, std::time::Instant>,
 }
 
+/// The open flows an owner has to one destination.
+type FlowSet = std::collections::HashSet<Flow>;
+
 /// What an update did to an owner's liveness, if anything.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Transition<K> {
@@ -365,6 +384,33 @@ pub enum Transition<K> {
     Active(K),
     /// Last flow for this owner closed: 1 → 0.
     Idle(K),
+}
+
+/// What one update did, at both grains the server needs.
+///
+/// `owner` drives edge teardown, as it always has. `dsts` is the per-destination
+/// half: an egress edge multiplexes every destination the initiator contacts,
+/// so without it each destination reads as live until the *edge* comes down —
+/// i.e. until the last of them closes.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Change<K> {
+    /// Whose flows changed. Carried because `remove` resolves the owner from
+    /// the flow itself, and `dsts` is meaningless without it.
+    pub owner_key: Option<K>,
+    pub owner: Option<Transition<K>>,
+    /// Destinations whose open-flow count crossed 0<->1, and their new state.
+    pub dsts: Vec<(Ipv4Addr, bool)>,
+}
+
+impl<K> Change<K> {
+    /// Nothing changed.
+    fn none() -> Self {
+        Self {
+            owner_key: None,
+            owner: None,
+            dsts: Vec::new(),
+        }
+    }
 }
 
 impl<K: Eq + std::hash::Hash + Clone> OpenFlows<K> {
@@ -390,29 +436,63 @@ impl<K: Eq + std::hash::Hash + Clone> OpenFlows<K> {
     ///
     /// A `NEW` is also first-hand evidence that the owner is alive, so it ends
     /// any suppression: we know something real again.
-    pub fn insert(&mut self, owner: K, flow: Flow) -> Option<Transition<K>> {
+    pub fn insert(&mut self, owner: K, flow: Flow) -> Change<K> {
         self.suppressed.remove(&owner);
-        let set = self.per_owner.entry(owner.clone()).or_default();
-        let was_empty = set.is_empty();
+        let by_dst = self.per_owner.entry(owner.clone()).or_default();
+        let owner_was_empty = by_dst.is_empty();
+        let set = by_dst.entry(flow.dst_ip).or_default();
+        let dst_was_empty = set.is_empty();
         if !set.insert(flow) {
-            return None;
+            return Change::none();
         }
         self.owner_of.insert(flow, owner.clone());
-        was_empty.then(|| Transition::Active(owner))
+        Change {
+            owner_key: Some(owner.clone()),
+            owner: owner_was_empty.then(|| Transition::Active(owner)),
+            dsts: if dst_was_empty {
+                vec![(flow.dst_ip, true)]
+            } else {
+                Vec::new()
+            },
+        }
     }
 
-    /// Record a flow closing. Returns `Idle` only when this was the owner's
-    /// last open flow *and* the owner is not suppressed.
-    pub fn remove(&mut self, flow: &Flow) -> Option<Transition<K>> {
-        let owner = self.owner_of.remove(flow)?;
-        let set = self.per_owner.get_mut(&owner)?;
-        set.remove(flow);
-        if !set.is_empty() {
-            return None;
+    /// Record a flow closing. Reports `Idle` only when this was the owner's
+    /// last open flow, and the destination only when it was the last one to
+    /// that host — and neither while the owner is suppressed.
+    pub fn remove(&mut self, flow: &Flow) -> Change<K> {
+        let Some(owner) = self.owner_of.remove(flow) else {
+            return Change::none();
+        };
+        let Some(by_dst) = self.per_owner.get_mut(&owner) else {
+            return Change::none();
+        };
+        let mut dst_idle = false;
+        if let Some(set) = by_dst.get_mut(&flow.dst_ip) {
+            set.remove(flow);
+            if set.is_empty() {
+                by_dst.remove(&flow.dst_ip);
+                dst_idle = true;
+            }
         }
-        self.per_owner.remove(&owner);
-        // A suppressed owner's emptiness is our own doing, not a real close.
-        (!self.is_suppressed(&owner)).then_some(Transition::Idle(owner))
+        let owner_idle = by_dst.is_empty();
+        if owner_idle {
+            self.per_owner.remove(&owner);
+        }
+        // A suppressed owner's emptiness is our own doing, not a real close —
+        // at either grain.
+        if self.is_suppressed(&owner) {
+            return Change::none();
+        }
+        Change {
+            owner_key: Some(owner.clone()),
+            dsts: if dst_idle {
+                vec![(flow.dst_ip, false)]
+            } else {
+                Vec::new()
+            },
+            owner: owner_idle.then_some(Transition::Idle(owner)),
+        }
     }
 
     /// Stop trusting this owner's emptiness for `window`.
@@ -443,27 +523,36 @@ impl<K: Eq + std::hash::Hash + Clone> OpenFlows<K> {
     ///
     /// Used both as the periodic drift backstop (netlink drops events under
     /// churn) and as the immediate follow-up to a flush we issued.
-    pub fn reconcile(
-        &mut self,
-        owner: K,
-        flows: impl IntoIterator<Item = Flow>,
-    ) -> Option<Transition<K>> {
-        let was_active = match self.per_owner.remove(&owner) {
-            Some(old) => {
-                for f in old {
+    pub fn reconcile(&mut self, owner: K, flows: impl IntoIterator<Item = Flow>) -> Change<K> {
+        let old = self.per_owner.remove(&owner);
+        let was_active = old.is_some();
+        let old_dsts: std::collections::HashSet<Ipv4Addr> = old
+            .into_iter()
+            .flatten()
+            .map(|(dst, set)| {
+                for f in set {
                     self.owner_of.remove(&f);
                 }
-                true
-            }
-            None => false,
-        };
-        let set: std::collections::HashSet<Flow> = flows.into_iter().collect();
-        for f in &set {
-            self.owner_of.insert(*f, owner.clone());
+                dst
+            })
+            .collect();
+
+        let mut by_dst: std::collections::HashMap<Ipv4Addr, FlowSet> =
+            std::collections::HashMap::new();
+        for f in flows {
+            self.owner_of.insert(f, owner.clone());
+            by_dst.entry(f.dst_ip).or_default().insert(f);
         }
-        let now_empty = set.is_empty();
+        let now_empty = by_dst.is_empty();
+        // Both directions: a destination the dump reveals we missed needs its
+        // session opened just as much as a vanished one needs closing.
+        let mut dsts: Vec<(Ipv4Addr, bool)> = by_dst
+            .keys()
+            .filter(|d| !old_dsts.contains(d))
+            .map(|d| (*d, true))
+            .collect();
         if !now_empty {
-            self.per_owner.insert(owner.clone(), set);
+            self.per_owner.insert(owner.clone(), by_dst);
             // A non-empty dump is first-hand evidence again.
             self.suppressed.remove(&owner);
         }
@@ -472,8 +561,26 @@ impl<K: Eq + std::hash::Hash + Clone> OpenFlows<K> {
         // container per pass — every container on the host, forever.
         //
         // An empty dump during suppression is expected — we emptied the table
-        // ourselves — so that must not be reported either.
-        (was_active && now_empty && !self.is_suppressed(&owner)).then_some(Transition::Idle(owner))
+        // ourselves — so that must not be reported either. Same for the
+        // destinations it took with it.
+        let suppressed = self.is_suppressed(&owner);
+        if !suppressed {
+            let gone = old_dsts
+                .iter()
+                .filter(|d| {
+                    !self
+                        .per_owner
+                        .get(&owner)
+                        .is_some_and(|m| m.contains_key(d))
+                })
+                .map(|d| (*d, false));
+            dsts.extend(gone);
+        }
+        Change {
+            owner_key: Some(owner.clone()),
+            owner: (was_active && now_empty && !suppressed).then_some(Transition::Idle(owner)),
+            dsts,
+        }
     }
 
     #[cfg(test)]
@@ -485,7 +592,7 @@ impl<K: Eq + std::hash::Hash + Clone> OpenFlows<K> {
     pub fn flow_count(&self, owner: &K) -> usize {
         self.per_owner
             .get(owner)
-            .map_or(0, std::collections::HashSet::len)
+            .map_or(0, |by_dst| by_dst.values().map(FlowSet::len).sum())
     }
 }
 
@@ -511,22 +618,92 @@ mod tests {
     fn concurrent_flows_to_one_host_do_not_collapse() {
         let mut o: OpenFlows<&str> = OpenFlows::new();
         assert_eq!(
-            o.insert("c1", flow(1000, [1, 1, 1, 1], 443)),
+            o.insert("c1", flow(1000, [1, 1, 1, 1], 443)).owner,
             Some(Transition::Active("c1"))
         );
-        assert_eq!(o.insert("c1", flow(1001, [1, 1, 1, 1], 443)), None);
+        assert_eq!(o.insert("c1", flow(1001, [1, 1, 1, 1], 443)).owner, None);
         assert_eq!(o.flow_count(&"c1"), 2);
 
         assert_eq!(
-            o.remove(&flow(1000, [1, 1, 1, 1], 443)),
+            o.remove(&flow(1000, [1, 1, 1, 1], 443)).owner,
             None,
             "still one open"
         );
         assert_eq!(
-            o.remove(&flow(1001, [1, 1, 1, 1], 443)),
+            o.remove(&flow(1001, [1, 1, 1, 1], 443)).owner,
             Some(Transition::Idle("c1")),
             "last close reports idle"
         );
+    }
+
+    /// The defect in #179, at the grain the client sees it: one egress edge
+    /// carries every destination, so the owner going idle is the *last* one
+    /// finishing. A destination must be able to finish on its own.
+    #[test]
+    fn one_destination_finishes_while_the_owner_stays_active() {
+        let mut o: OpenFlows<&str> = OpenFlows::new();
+        let (done, busy) = ([8, 8, 8, 8], [1, 1, 1, 1]);
+        assert_eq!(
+            o.insert("c1", flow(1000, done, 443)).dsts,
+            vec![(Ipv4Addr::from(done), true)]
+        );
+        assert_eq!(
+            o.insert("c1", flow(1001, busy, 443)).dsts,
+            vec![(Ipv4Addr::from(busy), true)],
+            "a second destination is its own 0->1, not the owner's"
+        );
+
+        let change = o.remove(&flow(1000, done, 443));
+        assert_eq!(change.owner, None, "the owner is still busy");
+        assert_eq!(
+            change.dsts,
+            vec![(Ipv4Addr::from(done), false)],
+            "but this destination is finished and must be reported so"
+        );
+        assert_eq!(change.owner_key, Some("c1"), "whose destination it was");
+    }
+
+    /// Concurrent connections to one host: the destination is only finished
+    /// when its last one closes — the same trap the 5-tuple key exists for,
+    /// one level down.
+    #[test]
+    fn concurrent_flows_to_one_destination_finish_it_only_once() {
+        let mut o: OpenFlows<&str> = OpenFlows::new();
+        o.insert("c1", flow(1000, [1, 1, 1, 1], 443));
+        assert!(
+            o.insert("c1", flow(1001, [1, 1, 1, 1], 443))
+                .dsts
+                .is_empty(),
+            "already open to this host"
+        );
+        assert!(
+            o.remove(&flow(1000, [1, 1, 1, 1], 443)).dsts.is_empty(),
+            "one of two closing finishes nothing"
+        );
+        assert_eq!(
+            o.remove(&flow(1001, [1, 1, 1, 1], 443)).dsts,
+            vec![(Ipv4Addr::new(1, 1, 1, 1), false)]
+        );
+    }
+
+    /// The drift backstop has to repair the destination half too, in both
+    /// directions: a dropped DESTROY would otherwise leave a destination
+    /// reading live for as long as the edge carries any other one.
+    #[test]
+    fn reconcile_repairs_destinations_in_both_directions() {
+        let mut o: OpenFlows<&str> = OpenFlows::new();
+        o.insert("c1", flow(1000, [8, 8, 8, 8], 443));
+        // The dump says: 8.8.8.8 is gone, and there is a 2.2.2.2 we never saw.
+        let mut change = o.reconcile("c1", [flow(2000, [2, 2, 2, 2], 443)]);
+        change.dsts.sort();
+        assert_eq!(
+            change.dsts,
+            vec![
+                (Ipv4Addr::new(2, 2, 2, 2), true),
+                (Ipv4Addr::new(8, 8, 8, 8), false),
+            ]
+        );
+        assert_eq!(change.owner, None, "the owner never went idle");
     }
 
     /// A suppressed owner must not report idle: its DESTROYs came from a flush
@@ -537,7 +714,7 @@ mod tests {
         o.insert("c1", flow(1000, [1, 1, 1, 1], 443));
         o.suppress_for("c1", Duration::from_secs(60));
         assert_eq!(
-            o.remove(&flow(1000, [1, 1, 1, 1], 443)),
+            o.remove(&flow(1000, [1, 1, 1, 1], 443)).owner,
             None,
             "self-inflicted DESTROY must not reap"
         );
@@ -553,10 +730,14 @@ mod tests {
         o.suppress_for("c1", Duration::from_secs(60));
         // The flush deleted everything; DESTROYs arrive, then we re-dump.
         o.remove(&flow(1000, [1, 1, 1, 1], 443));
+        let change = o.reconcile("c1", []);
         assert_eq!(
-            o.reconcile("c1", []),
-            None,
+            change.owner, None,
             "an empty table right after our own flush means UNKNOWN, not idle"
+        );
+        assert!(
+            change.dsts.is_empty(),
+            "nor may its destinations be read as finished"
         );
     }
 
@@ -568,7 +749,7 @@ mod tests {
         o.insert("c1", flow(1000, [1, 1, 1, 1], 443));
         o.suppress_for("c1", Duration::ZERO);
         assert_eq!(
-            o.remove(&flow(1000, [1, 1, 1, 1], 443)),
+            o.remove(&flow(1000, [1, 1, 1, 1], 443)).owner,
             Some(Transition::Idle("c1")),
             "an elapsed window must not pin the edge forever"
         );
@@ -581,7 +762,7 @@ mod tests {
         o.suppress_for("c1", Duration::from_secs(60));
         o.insert("c1", flow(1000, [1, 1, 1, 1], 443));
         assert_eq!(
-            o.remove(&flow(1000, [1, 1, 1, 1], 443)),
+            o.remove(&flow(1000, [1, 1, 1, 1], 443)).owner,
             Some(Transition::Idle("c1")),
             "traffic after the flush restores trust in the set"
         );
@@ -592,7 +773,13 @@ mod tests {
     fn reconcile_to_empty_reports_idle() {
         let mut o: OpenFlows<&str> = OpenFlows::new();
         o.insert("c1", flow(1000, [1, 1, 1, 1], 443));
-        assert_eq!(o.reconcile("c1", []), Some(Transition::Idle("c1")));
+        let change = o.reconcile("c1", []);
+        assert_eq!(change.owner, Some(Transition::Idle("c1")));
+        assert_eq!(
+            change.dsts,
+            vec![(Ipv4Addr::new(1, 1, 1, 1), false)],
+            "the destination it was talking to ends with it"
+        );
         assert!(!o.is_active(&"c1"));
     }
 
@@ -601,13 +788,13 @@ mod tests {
     fn duplicate_insert_is_idempotent() {
         let mut o: OpenFlows<&str> = OpenFlows::new();
         assert_eq!(
-            o.insert("c1", flow(1000, [1, 1, 1, 1], 443)),
+            o.insert("c1", flow(1000, [1, 1, 1, 1], 443)).owner,
             Some(Transition::Active("c1"))
         );
-        assert_eq!(o.insert("c1", flow(1000, [1, 1, 1, 1], 443)), None);
+        assert_eq!(o.insert("c1", flow(1000, [1, 1, 1, 1], 443)).owner, None);
         assert_eq!(o.flow_count(&"c1"), 1);
         assert_eq!(
-            o.remove(&flow(1000, [1, 1, 1, 1], 443)),
+            o.remove(&flow(1000, [1, 1, 1, 1], 443)).owner,
             Some(Transition::Idle("c1")),
             "one close must clear a duplicated open"
         );
@@ -619,7 +806,7 @@ mod tests {
     fn unknown_flow_destroy_is_ignored() {
         let mut o: OpenFlows<&str> = OpenFlows::new();
         o.insert("c1", flow(1000, [1, 1, 1, 1], 443));
-        assert_eq!(o.remove(&flow(9999, [3, 3, 3, 3], 22)), None);
+        assert_eq!(o.remove(&flow(9999, [3, 3, 3, 3], 22)).owner, None);
         assert!(
             o.is_active(&"c1"),
             "unrelated close must not disturb the owner"
@@ -638,7 +825,7 @@ mod tests {
         o.insert(k6666.clone(), flow(1001, [10, 0, 0, 2], 6666));
 
         assert_eq!(
-            o.remove(&flow(1000, [10, 0, 0, 1], 5555)),
+            o.remove(&flow(1000, [10, 0, 0, 1], 5555)).owner,
             Some(Transition::Idle(k5555)),
             "5555 closing reports only 5555"
         );
@@ -657,7 +844,7 @@ mod tests {
         // What the client does around a flush of its own.
         o.suppress_for(key.clone(), Duration::from_secs(120));
         assert_eq!(
-            o.remove(&flow(1000, [10, 0, 0, 1], 5555)),
+            o.remove(&flow(1000, [10, 0, 0, 1], 5555)).owner,
             None,
             "our own flush must not release the chain's refcount"
         );
@@ -763,14 +950,14 @@ tcp      6 100 ESTABLISHED src=172.17.0.2 dst=2.2.2.2 sport=2 dport=80 \
 
         let mut o: OpenFlows<&str> = OpenFlows::new();
         o.insert("c1", flow(999, [8, 8, 8, 8], 53)); // stale, dropped-event leftover
-        assert_eq!(o.reconcile("c1", flows.clone()), None);
+        assert_eq!(o.reconcile("c1", flows.clone()).owner, None);
         assert_eq!(
             o.flow_count(&"c1"),
             2,
             "stale flow dropped, dumped flows adopted"
         );
         assert_eq!(
-            o.remove(&flow(999, [8, 8, 8, 8], 53)),
+            o.remove(&flow(999, [8, 8, 8, 8], 53)).owner,
             None,
             "the stale flow is no longer known"
         );
@@ -813,7 +1000,7 @@ tcp      6 100 ESTABLISHED src=172.17.0.2 dst=2.2.2.2 sport=2 dport=80 \
     #[test]
     fn reconcile_on_an_untracked_owner_reports_nothing() {
         let mut o: OpenFlows<&str> = OpenFlows::new();
-        assert_eq!(o.reconcile("never-seen", []), None);
+        assert_eq!(o.reconcile("never-seen", []).owner, None);
         assert!(!o.is_active(&"never-seen"));
     }
 
@@ -916,7 +1103,11 @@ pub async fn reconcile_container(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .reconcile(container.to_string(), external);
-    if let Some(Transition::Idle(c)) = egress {
+    // Repairs the destination half of the drift too: a dropped DESTROY would
+    // otherwise leave that destination's session reading live for as long as
+    // the edge carries any other one.
+    mark_dst_liveness(&sets.dsts, container, &egress.dsts);
+    if let Some(Transition::Idle(c)) = egress.owner {
         println!("[conntrack] reconcile: container {c} has no open egress flows");
         report_liveness(grpc, c, false).await;
     }
@@ -930,7 +1121,7 @@ pub async fn reconcile_container(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .reconcile((container.to_string(), port), on_port);
-        if let Some(Transition::Idle((c, p))) = transition
+        if let Some(Transition::Idle((c, p))) = transition.owner
             && let Some(service) = service_for(&sets.owners, &c, p)
         {
             println!("[conntrack] reconcile: container {c} has no open flows on trigger port {p}");

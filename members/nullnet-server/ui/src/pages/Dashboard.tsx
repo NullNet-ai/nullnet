@@ -13,6 +13,10 @@ function DashboardView() {
   const { panel, dispatch } = useTopologyUI();
 
   const { data: nodes } = useApi<NodeJson[]>(`/api/nodes/${stack}`, 5000);
+  // The same count the Sessions page and the sidebar badge show: ingress *and*
+  // egress. `sessions` below is the live ingress map, which the topology views
+  // key on and which reads 0 for a stack whose only traffic is outbound.
+  const { data: sessionCounts } = useApi<{ active: number }>(`/api/sessions/${stack}/count`, 5000);
 
   const chainByProxyNetId = useMemo(() => {
     const m = new Map<number, number[]>();
@@ -26,7 +30,7 @@ function DashboardView() {
     return m;
   }, [sessions]);
 
-  const sessionCount = sessions?.length ?? 0;
+  const sessionCount = sessionCounts?.active ?? 0;
   const nodeCount = nodes?.length ?? 0;
   const edgeCount = graph?.edges.length ?? 0;
   const nodeCountG = graph?.nodes.length ?? 0;

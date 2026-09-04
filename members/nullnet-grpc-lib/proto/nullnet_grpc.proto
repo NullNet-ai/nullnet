@@ -447,6 +447,10 @@ message EgressDestinationEntry {
   uint64 last_seen = 4;
   // Whether the latest attempt was denied by the egress country policy.
   bool blocked = 5;
+  // Whether the initiator still has an open connection to this destination,
+  // per the client's conntrack view. False ends the destination's session
+  // without waiting for the whole edge — one edge multiplexes many of them.
+  bool active = 6;
 }
 
 // Egress country-policy check for one held first-packet: which registered
