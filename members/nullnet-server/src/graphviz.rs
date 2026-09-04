@@ -216,6 +216,9 @@ struct EgressDestJson {
     /// Latest attempt denied by the egress country policy. Omitted when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     blocked: bool,
+    /// Whether a connection to this destination is still open. Always emitted:
+    /// the panel distinguishes live destinations from ones already finished.
+    active: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     country_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -331,6 +334,7 @@ pub(crate) fn render_graph_json(
                         last_seen: d.last_seen,
                         count: d.count,
                         blocked: d.blocked,
+                        active: d.active,
                         country_code: d.geo.as_ref().and_then(|g| g.country_code.clone()),
                         asn: d.geo.as_ref().and_then(|g| g.asn.clone()),
                         org: d.geo.as_ref().and_then(|g| g.org.clone()),

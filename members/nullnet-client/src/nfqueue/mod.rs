@@ -1,5 +1,5 @@
 mod cache;
-mod egress_listener;
+pub mod egress_listener;
 mod listener;
 pub(crate) mod parse;
 mod recv_loop;
@@ -85,6 +85,7 @@ pub fn spawn_listener(
         triggers_state.clone(),
         verdicts,
         sets.egress.clone(),
+        sets.dsts.clone(),
     );
 
     let ctx = ListenerCtx {

@@ -59,17 +59,48 @@ const MAX_PENDING_DSTS: usize = 4096;
 /// Per-destination accumulator: a running NEW-connection count and the latest
 /// contact time, plus whether it changed since the last flush.
 #[derive(Clone, Copy)]
-struct DstAccum {
+pub struct DstAccum {
     count: u64,
     last_seen: u64,
     dirty: bool,
     /// Whether the latest attempt was denied by the egress country policy.
     blocked: bool,
+    /// Whether any connection to this destination is still open, per the
+    /// conntrack view in `OpenFlows`. This is what ends one destination's
+    /// session while the edge carrying it stays up for the others.
+    active: bool,
 }
 
 /// Pending contacted destinations, keyed by (container, dst_ip). Accumulated per
 /// NEW flow and flushed to the server every `FLUSH_INTERVAL`.
-type PendingDsts = Arc<Mutex<HashMap<(String, Ipv4Addr), DstAccum>>>;
+pub type PendingDsts = Arc<Mutex<HashMap<(String, Ipv4Addr), DstAccum>>>;
+
+pub fn new_pending_dsts() -> PendingDsts {
+    Arc::new(Mutex::new(HashMap::new()))
+}
+
+/// Apply the destination transitions one conntrack update produced, so the next
+/// flush carries them.
+///
+/// Only known destinations are updated: an entry exists for every destination
+/// the NFQUEUE `NEW` path recorded, and one it never saw has no counts to
+/// report anyway.
+pub fn mark_dst_liveness(pending: &PendingDsts, container: &str, dsts: &[(Ipv4Addr, bool)]) {
+    if dsts.is_empty() {
+        return;
+    }
+    let mut pending = pending
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (dst_ip, active) in dsts {
+        if let Some(acc) = pending.get_mut(&(container.to_string(), *dst_ip))
+            && acc.active != *active
+        {
+            acc.active = *active;
+            acc.dirty = true;
+        }
+    }
+}
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -103,8 +134,8 @@ pub fn spawn_egress_recv_thread(
     triggers_state: Arc<TriggersState>,
     verdicts: Arc<PolicyVerdicts>,
     open_flows: EgressOpenFlows,
+    pending: PendingDsts,
 ) {
-    let pending: PendingDsts = Arc::new(Mutex::new(HashMap::new()));
     spawn_flush_task(grpc.clone(), pending.clone());
     let ctx = EgressCtx {
         grpc,
@@ -156,12 +187,15 @@ async fn handle_packet(mut msg: Message, ctx: EgressCtx, verdict_tx: Sender<Mess
     {
         // Take the transition out from under the lock: reporting it is an RPC,
         // and holding a std Mutex across an await would be unsound.
-        let became_active = ctx
+        let change = ctx
             .open_flows
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(container, flow);
-        if let Some(Transition::Active(container)) = became_active {
+        if let Some(owner) = &change.owner_key {
+            mark_dst_liveness(&ctx.pending, owner, &change.dsts);
+        }
+        if let Some(Transition::Active(container)) = change.owner {
             report_liveness(&ctx.grpc, container, true).await;
         }
     }
@@ -396,8 +430,17 @@ fn record_destination(ctx: &EgressCtx, container: &str, dst_ip: Ipv4Addr, blocke
     if let Some(acc) = pending.get_mut(&(container.to_string(), dst_ip)) {
         acc.count += 1;
         acc.last_seen = now;
-        acc.dirty = true;
         acc.blocked = blocked;
+        // A denied flow is dropped, so it never enters `OpenFlows` and no close
+        // will ever be reported for it: record it as an attempt that ended
+        // where it started.
+        if blocked {
+            acc.active = false;
+        }
+        // A first connection still being brokered has nothing to report yet —
+        // the Accept path starts its session by marking it active. Reporting
+        // here would open a session and immediately close it again.
+        acc.dirty = acc.dirty || blocked || acc.active;
         return;
     }
     if pending.len() >= MAX_PENDING_DSTS
@@ -413,8 +456,9 @@ fn record_destination(ctx: &EgressCtx, container: &str, dst_ip: Ipv4Addr, blocke
         DstAccum {
             count: 1,
             last_seen: now,
-            dirty: true,
+            dirty: blocked,
             blocked,
+            active: false,
         },
     );
 }
@@ -428,18 +472,21 @@ fn spawn_flush_task(grpc: NullnetGrpcInterface, pending: PendingDsts) {
         let mut ticker = tokio::time::interval(FLUSH_INTERVAL);
         loop {
             ticker.tick().await;
+            let mut sent: Vec<(String, Ipv4Addr)> = Vec::new();
             let batch: Vec<EgressDestinationEntry> = {
                 let mut map = pending.lock().unwrap();
                 map.iter_mut()
                     .filter(|(_, a)| a.dirty)
                     .map(|((container, dst_ip), a)| {
                         a.dirty = false;
+                        sent.push((container.clone(), *dst_ip));
                         EgressDestinationEntry {
                             initiator_container: container.clone(),
                             dst_ip: dst_ip.to_string(),
                             count: a.count,
                             last_seen: a.last_seen,
                             blocked: a.blocked,
+                            active: a.active,
                         }
                     })
                     .collect()
@@ -449,6 +496,16 @@ fn spawn_flush_task(grpc: NullnetGrpcInterface, pending: PendingDsts) {
             }
             if let Err(e) = grpc.report_egress_destinations(batch).await {
                 eprintln!("[egress-nfq] flush egress destinations: {e}");
+                // The map holds the latest values, so re-arming `dirty` is all
+                // it takes to re-send. Clearing it before the RPC succeeded is
+                // what used to drop a destination from the session history for
+                // good — nothing else ever re-sends an unchanged entry.
+                let mut map = pending.lock().unwrap();
+                for key in sent {
+                    if let Some(a) = map.get_mut(&key) {
+                        a.dirty = true;
+                    }
+                }
             }
         }
     });

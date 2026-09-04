@@ -176,7 +176,7 @@ async fn handle_packet(mut msg: Message, ctx: ListenerCtx, verdict_tx: Sender<Me
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert((container.clone(), dst_port), flow);
-        if transition.is_some() {
+        if transition.owner.is_some() {
             report_backend_liveness(&ctx.grpc, service, container, dst_port, true).await;
         }
     }

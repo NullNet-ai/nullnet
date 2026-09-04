@@ -448,6 +448,11 @@ pub struct EgressDestinationEntry {
     /// Whether the latest attempt was denied by the egress country policy.
     #[prost(bool, tag = "5")]
     pub blocked: bool,
+    /// Whether the initiator still has an open connection to this destination,
+    /// per the client's conntrack view. False ends the destination's session
+    /// without waiting for the whole edge — one edge multiplexes many of them.
+    #[prost(bool, tag = "6")]
+    pub active: bool,
 }
 /// Egress country-policy check for one held first-packet: which registered
 /// replica wants to reach which external destination.

@@ -14,10 +14,11 @@ All Nullnet releases with the relative changes are documented in this file.
 - Install BPF linker as a prebuilt binary rather than compiling it from source ([#158](https://github.com/NullNet-ai/nullnet/pull/158))
 ### Removed
 ### Fixed
-- Stop a trigger whose RPC timed out from permanently killing a container's egress ([#181](https://github.com/NullNet-ai/nullnet/pull/181) — fixes [#178](https://github.com/NullNet-ai/nullnet/issues/178))
 - Stop a teardown from corrupting a chain that is still being set up ([#167](https://github.com/NullNet-ai/nullnet/pull/167) — fixes [#166](https://github.com/NullNet-ai/nullnet/issues/166))
 - Reject a service name claimed by more than one stack, instead of resolving it to an arbitrary stack ([#165](https://github.com/NullNet-ai/nullnet/pull/165) — fixes [#129](https://github.com/NullNet-ai/nullnet/issues/129))
 - Show the date alongside the time for timestamps from before today, instead of `hh:mm:ss` only, in the topology panels, Sessions, and Events pages ([#159](https://github.com/NullNet-ai/nullnet/pull/159) — fixes [#135](https://github.com/NullNet-ai/nullnet/issues/135))
+- Stop a trigger whose RPC timed out from permanently killing a container's egress (fixes [#178](https://github.com/NullNet-ai/nullnet/issues/178))
+- End each egress session when its own connections close, instead of holding every destination on an edge open until the last one finishes ([#181](https://github.com/NullNet-ai/nullnet/pull/181) — fixes [#179](https://github.com/NullNet-ai/nullnet/issues/179))
 
 ## [v0.1.0] - 2026-08-17
 Nullnet control plane first release — routing in the dark
