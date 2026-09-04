@@ -37,6 +37,10 @@ use tokio::task::JoinSet;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
+/// Cloning shares every field: all of them are `Arc`/`watch` handles or the
+/// `Orchestrator` (itself `Clone`). Needed so a trigger handler can run on its
+/// own task — see [`detached`].
+#[derive(Clone)]
 pub(crate) struct NullnetGrpcImpl {
     /// The available services, partitioned by stack name.
     services: Arc<RwLock<StackMap>>,
@@ -87,7 +91,7 @@ type ProxyKey = (String, String, IpAddr);
 /// How long an edge task waits for another task's reservation of the same edge
 /// to resolve. Covers the worst case that task can take — a container resume
 /// plus both setup acks, each capped at 30s — with a little headroom.
-const EDGE_CLAIM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+pub(crate) const EDGE_CLAIM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// One wait round before re-reading the map. A reservation resolving wakes the
 /// waiter immediately; this only bounds the cost of a wake-up that arrives
@@ -1182,18 +1186,28 @@ impl NullnetGrpcImpl {
         // (dep unregistered, empty chain) took no increment, and marking it held
         // would both block the later claim and let its close consume an
         // increment contributed by something else.
-        if self
-            .setup_backend_chain(
-                &stack,
-                initiator_name,
-                initiator_ip,
-                initiator_docker.as_deref(),
-                port,
-            )
-            .await?
-        {
-            self.orchestrator.hold_backend_session(key, &stack).await;
-        }
+        //
+        // Detached, and the hold is inside: `net_chain_setup` already survives a
+        // cancelled RPC on its own, so a caller dying between it and the hold
+        // would leave every hop incremented with no session able to release it.
+        let this = self.clone();
+        let initiator_name = initiator_name.to_string();
+        detached(async move {
+            if this
+                .setup_backend_chain(
+                    &stack,
+                    &initiator_name,
+                    initiator_ip,
+                    initiator_docker.as_deref(),
+                    port,
+                )
+                .await?
+            {
+                this.orchestrator.hold_backend_session(key, &stack).await;
+            }
+            Ok::<(), Error>(())
+        })
+        .await??;
         Ok(())
     }
 
@@ -1303,21 +1317,34 @@ impl NullnetGrpcImpl {
             Err("No registered replica matches the egress sender").handle_err(location!())?
         };
 
-        let built = self
-            .orchestrator
-            .ensure_egress_edge(
-                &initiator_stack,
-                &initiator_name,
-                initiator_ip,
-                initiator_docker,
-                proxy_ip,
-            )
-            .await?;
-        if built {
-            println!(
-                "[egress] edge up for '{initiator_name}' ({initiator_ip}) -> proxy {proxy_ip}"
-            );
-        }
+        // Detached: the client abandons this RPC on its trigger timeout, and a
+        // build that dies between the reservation and its promotion strands a
+        // `net_id == 0` entry that no snapshot shows and no reaper collects.
+        //
+        // The `edge up` log lives inside the task for the same reason: a
+        // cancelled caller never runs anything after the await, so logging there
+        // would drop the line precisely when the trigger timed out — leaving a
+        // trigger with no edge up, which is the signature of the stranded
+        // reservation this detaching exists to prevent.
+        let orchestrator = self.orchestrator.clone();
+        detached(async move {
+            let built = orchestrator
+                .ensure_egress_edge(
+                    &initiator_stack,
+                    &initiator_name,
+                    initiator_ip,
+                    initiator_docker,
+                    proxy_ip,
+                )
+                .await?;
+            if built {
+                println!(
+                    "[egress] edge up for '{initiator_name}' ({initiator_ip}) -> proxy {proxy_ip}"
+                );
+            }
+            Ok::<(), Error>(())
+        })
+        .await??;
         Ok(())
     }
 
@@ -1651,6 +1678,26 @@ impl NullnetGrpcImpl {
         });
         rx.await.handle_err(location!())?
     }
+}
+
+/// Run `fut` on its own task so a cancelled RPC cannot kill it half-done.
+///
+/// Tonic drops a handler's future when the client resets the stream, which both
+/// NFQUEUE listeners do when their trigger times out. Any handler that mutates
+/// shared state between an insert and the cleanup that unwinds it must
+/// therefore not live on the caller's future: `ensure_egress_edge` would leave
+/// its reservation behind, and `handle_backend_trigger` would leave a chain
+/// refcount with no session holding it.
+async fn detached<F>(fut: F) -> Result<F::Output, Error>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let (tx, rx) = oneshot::channel();
+    tokio::spawn(async move {
+        let _ = tx.send(fut.await);
+    });
+    rx.await.handle_err(location!())
 }
 
 /// Why a proxy lookup failed, at the granularity the proxy acts on.

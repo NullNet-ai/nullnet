@@ -8,7 +8,11 @@ use tokio::sync::Notify;
 /// Bounds the time we wait for a server `VxlanSetup` that may never arrive
 /// (e.g., server returned ok without dispatching a setup, or the message
 /// was lost).
-const PENDING_TIMEOUT: Duration = Duration::from_secs(10);
+///
+/// Kept at the listeners' `TRIGGER_TIMEOUT + STEER_TIMEOUT/ACTIVE_TIMEOUT`
+/// (30s + 5s): an entry must outlive one handler's full wait, or a second
+/// packet expires it and re-triggers while the first build is still in flight.
+const PENDING_TIMEOUT: Duration = Duration::from_secs(35);
 
 /// Port component of the key for egress triggers. Egress fires once per initiator
 /// container (steering matches every destination), so all its flows share one
@@ -136,12 +140,21 @@ impl TriggersState {
         notify.notify_waiters();
     }
 
-    /// Drop the entry so the next observed packet on this `(container, port)` retriggers.
-    pub fn forget(&self, container: &str, port: u16) {
-        self.by_key
-            .lock()
-            .unwrap()
-            .remove(&(container.to_string(), port));
+    /// Drop the entry so the next observed packet on this `(container, port)`
+    /// retriggers — but only while it is still `Pending`.
+    ///
+    /// A trigger RPC that failed or timed out is not evidence that setup
+    /// failed: the `VxlanSetup` can land, install steering/DNAT and
+    /// `mark_active` while that RPC is still in flight. Dropping an `Active`
+    /// entry there discards the only record that the datapath is live, and the
+    /// server sends no second setup for an edge it already considers up — so
+    /// every later packet is held and dropped forever.
+    pub fn forget_pending(&self, container: &str, port: u16) {
+        let mut by_key = self.by_key.lock().unwrap();
+        let key = (container.to_string(), port);
+        if matches!(by_key.get(&key), Some(Lifecycle::Pending { .. })) {
+            by_key.remove(&key);
+        }
     }
 
     /// Find the `Active` entry for `vxlan_id`, remove it, and return
@@ -303,10 +316,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forget_drops_entry() {
+    async fn forget_pending_drops_pending_entry() {
         let state = TriggersState::default();
         let _ = state.mark_pending("c1", 80, IP);
-        state.forget("c1", 80);
+        state.forget_pending("c1", 80);
         assert!(matches!(state.state("c1", 80), TriggerState::Fresh));
+    }
+
+    #[tokio::test]
+    async fn forget_pending_keeps_an_active_entry() {
+        // The production race: the trigger RPC times out, but the VxlanSetup
+        // already landed and promoted the entry. Forgetting here would lose the
+        // only record that steering is live and wedge the container's egress.
+        let state = TriggersState::default();
+        let _ = state.mark_pending("c1", 80, IP);
+        state.mark_active("c1", 80, 42, OVERLAY, IP);
+        state.forget_pending("c1", 80);
+        assert!(
+            matches!(state.state("c1", 80), TriggerState::Active),
+            "forget_pending must not drop an entry that mark_active promoted"
+        );
     }
 }

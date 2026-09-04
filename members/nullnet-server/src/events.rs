@@ -91,6 +91,18 @@ pub(crate) enum Event {
         stack: String,
         timestamp: u64,
     },
+    /// An egress build left a reservation behind and a later trigger reclaimed
+    /// it. The reservation is invisible to the topology and to the reaper, so
+    /// until it is reclaimed that initiator's egress stays dead — this is the
+    /// recovery. Means the earlier build's task died without unwinding; a run of
+    /// these points at builds routinely outliving the client's trigger timeout.
+    EgressReservationReclaimed {
+        service: String,
+        initiator_ip: String,
+        /// How long the reservation had been stranded, in seconds.
+        stranded_secs: u64,
+        timestamp: u64,
+    },
     /// An edge came up on both hosts but the replica it was built for was gone
     /// by the time it was recorded, so the tunnel was taken back down. Means a
     /// replica moved mid-setup; a run of these points at a flapping service.
@@ -493,6 +505,7 @@ impl Event {
             Self::SetupStarted { .. } => "setup_started",
             Self::SetupAck { .. } => "setup_ack",
             Self::SetupTimeout { .. } => "setup_timeout",
+            Self::EgressReservationReclaimed { .. } => "egress_reservation_reclaimed",
             Self::EdgePromotionLost { .. } => "edge_promotion_lost",
             Self::ChainOwnerLost { .. } => "chain_owner_lost",
             Self::SessionCreated { .. } => "session_created",
@@ -592,6 +605,7 @@ impl Event {
             | Self::ServiceDeclarationSkipped { .. }
             | Self::AllReplicasRemoved { .. }
             | Self::StaleSessionEvicted { .. }
+            | Self::EgressReservationReclaimed { .. }
             | Self::BackendTriggerSetupBailed { .. }
             | Self::ControlChannelClosed { .. }
             | Self::ContainerSuspendFailed { .. }
@@ -1272,6 +1286,19 @@ impl Event {
             port,
             docker_container,
             error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn egress_reservation_reclaimed(
+        service: String,
+        initiator_ip: String,
+        stranded_secs: u64,
+    ) -> Self {
+        Self::EgressReservationReclaimed {
+            service,
+            initiator_ip,
+            stranded_secs,
             timestamp: now_secs(),
         }
     }

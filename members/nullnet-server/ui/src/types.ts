@@ -135,6 +135,12 @@ export type EventJson =
   | WithSeverity & { type: 'setup_timeout'; net_id: number; service: string }
   | WithSeverity & { type: 'chain_owner_lost'; stack: string }
   | WithSeverity & {
+      type: 'egress_reservation_reclaimed'
+      service: string
+      initiator_ip: string
+      stranded_secs: number
+    }
+  | WithSeverity & {
       type: 'edge_promotion_lost'
       net_id: number
       service: string

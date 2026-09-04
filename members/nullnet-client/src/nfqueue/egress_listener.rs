@@ -39,7 +39,12 @@ const QUEUE_ID: u16 = 1;
 const COPY_RANGE: u16 = 128;
 const QUEUE_MAX_LEN: u32 = 4096;
 /// How long the handler waits for `egress_trigger` to return.
-const TRIGGER_TIMEOUT: Duration = Duration::from_secs(5);
+///
+/// Matches the server's per-hop `send_net_setup` ack budget (30s), which is the
+/// work this RPC is waiting on. At the old 5s this routinely expired on a build
+/// that was merely slow — a healthy egress edge measured 3-5s — and abandoning
+/// the RPC cancels the server's handler mid-build.
+const TRIGGER_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long the handler holds the packet waiting for steering to be installed
 /// (`mark_active`) before giving up.
 const STEER_TIMEOUT: Duration = Duration::from_secs(5);
@@ -271,8 +276,7 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Decision {
                 Ok(Err(e)) => {
                     eprintln!("[egress-nfq] egress_trigger {container}: {e}");
                     report_trigger_send_failed(&ctx.grpc, &container, dst_ip, dst_port, e);
-                    ctx.triggers_state.forget(&container, EGRESS_TRIGGER_PORT);
-                    tracked(Verdict::Drop)
+                    tracked(after_failed_trigger(ctx, &container))
                 }
                 Err(_) => {
                     eprintln!("[egress-nfq] egress_trigger timeout for container {container}");
@@ -283,8 +287,7 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Decision {
                         dst_port,
                         format!("egress_trigger timed out after {TRIGGER_TIMEOUT:?}"),
                     );
-                    ctx.triggers_state.forget(&container, EGRESS_TRIGGER_PORT);
-                    tracked(Verdict::Drop)
+                    tracked(after_failed_trigger(ctx, &container))
                 }
             }
         }
@@ -330,6 +333,22 @@ async fn policy_allows(ctx: &EgressCtx, container: &str, dst_ip: Ipv4Addr) -> bo
             );
             false
         }
+    }
+}
+
+/// Verdict for a held packet whose `egress_trigger` errored or timed out.
+///
+/// The RPC failing says nothing about the `VxlanSetup`: it can land, install
+/// steering and `mark_active` while the RPC is still in flight (observed in
+/// production — steer live at +2s, RPC abandoned at +5s). So clear the entry
+/// only while it is still `Pending`, and release the packet if steering did go
+/// live after all.
+fn after_failed_trigger(ctx: &EgressCtx, container: &str) -> Verdict {
+    ctx.triggers_state
+        .forget_pending(container, EGRESS_TRIGGER_PORT);
+    match ctx.triggers_state.state(container, EGRESS_TRIGGER_PORT) {
+        TriggerState::Active => Verdict::Accept,
+        _ => Verdict::Drop,
     }
 }
 

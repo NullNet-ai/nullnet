@@ -3,6 +3,7 @@ use crate::events::{Event, EventStore};
 use crate::geo::{GeoCache, GeoInfo};
 use crate::net::{EgressRole, NetExt};
 use crate::net_id_pool::{NetIdPool, UdpPortPool, generate_key};
+use crate::nullnet_grpc_impl::EDGE_CLAIM_TIMEOUT;
 use crate::services::changes::{apply_changes, detect_node_disconnect_changes};
 use crate::services::input::StackMap;
 use crate::sessions::SessionStore;
@@ -87,6 +88,10 @@ struct EgressEdge {
     /// which is treated the same — a brand-new edge is never reaped before its
     /// first flow is seen).
     idle_since: Option<Instant>,
+    /// When the slot was reserved. Only meaningful while `net_id == 0`: it is
+    /// what lets a later trigger tell a build still in flight from one whose
+    /// task died without unwinding.
+    reserved_at: Instant,
 }
 
 /// One contacted external destination, for topology rendering.
@@ -256,12 +261,33 @@ impl Orchestrator {
         proxy_ip: IpAddr,
     ) -> Result<bool, Error> {
         let key = (initiator_ip, initiator_docker.clone());
+        // Set when this call reclaimed a stranded reservation; emitted after the
+        // write lock is dropped.
+        let mut stale = None;
 
         // Reserve the slot (net_id filled in after allocation).
         {
             let mut edges = self.egress_edges.write().await;
-            if edges.contains_key(&key) {
-                return Ok(false);
+            match edges.get(&key) {
+                // A live edge, or a reservation another task is still resolving.
+                Some(e) if e.net_id != 0 || e.reserved_at.elapsed() < EDGE_CLAIM_TIMEOUT => {
+                    return Ok(false);
+                }
+                // A reservation older than any build can legitimately take, so
+                // its task is gone. Nothing else clears one: it is filtered out
+                // of the snapshot and out of the reaper, so without this every
+                // later trigger answers Ok(false) and the initiator's egress
+                // stays dead until its client restarts. Take it over.
+                Some(e) => {
+                    let stranded = e.reserved_at.elapsed();
+                    println!(
+                        "[egress] reclaiming a stale reservation for '{service}' ({initiator_ip}), \
+                         stranded {}s",
+                        stranded.as_secs()
+                    );
+                    stale = Some(stranded.as_secs());
+                }
+                None => {}
             }
             edges.insert(
                 key.clone(),
@@ -274,8 +300,19 @@ impl Orchestrator {
                     proxy_ip,
                     destinations: HashMap::new(),
                     idle_since: None,
+                    reserved_at: Instant::now(),
                 },
             );
+        }
+
+        if let Some(stranded_secs) = stale {
+            self.events
+                .emit(Event::egress_reservation_reclaimed(
+                    service.to_string(),
+                    initiator_ip.to_string(),
+                    stranded_secs,
+                ))
+                .await;
         }
 
         let Some(net_id) = self.allocate_net_id().await else {
@@ -1359,7 +1396,70 @@ mod egress_liveness_tests {
                 proxy_ip: ip(10, 0, 0, 9),
                 destinations: HashMap::new(),
                 idle_since: Some(Instant::now() - idle_for),
+                reserved_at: Instant::now(),
             },
+        );
+    }
+
+    /// Insert a reservation (placeholder net id) that was taken `age` ago.
+    async fn insert_reservation(orch: &Orchestrator, key: EgressKey, age: Duration) {
+        orch.egress_edges.write().await.insert(
+            key.clone(),
+            EgressEdge {
+                net_id: 0,
+                stack: "s".to_string(),
+                service: "svc".to_string(),
+                initiator_ip: key.0,
+                initiator_docker: key.1,
+                proxy_ip: ip(10, 0, 0, 9),
+                destinations: HashMap::new(),
+                idle_since: None,
+                reserved_at: Instant::now() - age,
+            },
+        );
+    }
+
+    /// A reservation whose task died is invisible to the snapshot and to the
+    /// reaper, so before this it made every later trigger answer `Ok(false)` and
+    /// that initiator's egress stayed dead until its client restarted. Past
+    /// `EDGE_CLAIM_TIMEOUT` a trigger must reclaim it and build again.
+    ///
+    /// A/B on the same call: a *fresh* reservation still collapses to
+    /// `Ok(false)` (a real build is in flight), while a stale one proceeds —
+    /// here as far as the NET setup, which fails because the test registers no
+    /// client. Reaching that error is what proves the early return was skipped.
+    #[tokio::test]
+    async fn a_stale_egress_reservation_is_reclaimed_but_a_fresh_one_is_not() {
+        let orch = Orchestrator::new();
+        let key = (ip(10, 0, 0, 1), Some("c1".to_string()));
+
+        insert_reservation(&orch, key.clone(), Duration::from_secs(1)).await;
+        let fresh = orch
+            .ensure_egress_edge("s", "svc", key.0, key.1.clone(), ip(10, 0, 0, 9))
+            .await;
+        assert!(
+            matches!(fresh, Ok(false)),
+            "a reservation younger than EDGE_CLAIM_TIMEOUT means a build is in \
+             flight and must collapse to Ok(false), got {fresh:?}"
+        );
+
+        insert_reservation(
+            &orch,
+            key.clone(),
+            EDGE_CLAIM_TIMEOUT + Duration::from_secs(1),
+        )
+        .await;
+        let stale = orch
+            .ensure_egress_edge("s", "svc", key.0, key.1.clone(), ip(10, 0, 0, 9))
+            .await;
+        assert!(
+            stale.is_err(),
+            "a stale reservation must be reclaimed and the build retried, not \
+             answered Ok(false) forever, got {stale:?}"
+        );
+        assert!(
+            !orch.egress_edges.read().await.contains_key(&key),
+            "the failed rebuild must unwind its own reservation"
         );
     }
 
@@ -1451,6 +1551,7 @@ mod egress_session_history_tests {
                 proxy_ip: ip(10, 0, 0, 9),
                 destinations: HashMap::new(),
                 idle_since: Some(Instant::now() - idle_for),
+                reserved_at: Instant::now(),
             },
         );
     }

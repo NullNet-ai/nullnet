@@ -21,6 +21,7 @@ const KIND_LABELS: Record<string, string> = {
   setup_started: 'setup_started',
   setup_ack: 'setup_ack',
   setup_timeout: 'setup_timeout',
+  egress_reservation_reclaimed: 'egress_reservation_reclaimed',
   edge_promotion_lost: 'edge_promotion_lost',
   chain_owner_lost: 'chain_owner_lost',
   session_created: 'session_created',
@@ -113,6 +114,8 @@ function eventDetail(e: EventJson): string {
       return `net ${e.net_id} · ${e.service}`;
     case 'chain_owner_lost':
       return `${e.stack} · chain unwound, its client was gone`;
+    case 'egress_reservation_reclaimed':
+      return `${e.service} · ${e.initiator_ip} · stranded ${e.stranded_secs}s, egress rebuilt`;
     case 'edge_promotion_lost':
       return `net ${e.net_id} · ${e.service} · replica ${e.replica_ip} gone mid-setup`;
     case 'session_created':
