@@ -17,7 +17,7 @@ use super::netlink::{delete_link, get_link_by_name, set_link_mtu_up};
 use futures::StreamExt;
 use ipnetwork::Ipv4Network;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
-use rtnetlink::packet_route::link::LinkMessage;
+use rtnetlink::packet_route::link::{InfoData, InfoVeth, LinkMessage};
 use rtnetlink::{Handle, LinkBridge, LinkUnspec, LinkVeth, LinkVxlan};
 use std::collections::HashMap;
 use std::fs::File;
@@ -231,6 +231,13 @@ async fn setup_same_host(
         .add(
             LinkVeth::new(&veth_s, &veth_c)
                 .address(mac_s.clone())
+                // Set both MACs at creation so udev never sees a random peer
+                // address and races us with MACAddressPolicy=persistent.
+                .set_info_data(InfoData::Veth(InfoVeth::Peer(
+                    LinkUnspec::new_with_name(&veth_c)
+                        .address(mac_c.clone())
+                        .build(),
+                )))
                 .build(),
         )
         .execute()
@@ -242,17 +249,6 @@ async fn setup_same_host(
     }
     let link_s = get_link_by_name(handle, &veth_s).await?;
     let link_c = get_link_by_name(handle, &veth_c).await?;
-    handle
-        .link()
-        .set(
-            LinkUnspec::new_with_index(link_c.header.index)
-                .address(mac_c.clone())
-                .build(),
-        )
-        .execute()
-        .await
-        .handle_err(location!())?;
-
     let (local_link, local_veth, peer_mac, macsec_suffix) = if params.br_name.ends_with("_s") {
         (link_s, veth_s.as_str(), mac_c, "s")
     } else {
