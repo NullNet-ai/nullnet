@@ -5,8 +5,8 @@
 //! interface. Structural allow is nullnet control-plane (gRPC) + data-plane
 //! (VXLAN/forward to known peers) + ARP; a CT map then permits established
 //! returns. ICMP is always allowed (both directions). Everything else is an
-//! explicit, env-driven allow: the four `{INGRESS,EGRESS}_ALLOW_{TCP,UDP}_PORTS`
-//! lists (→ `ALLOW_PORTS` map). On the egress-gateway host all outbound is
+//! server-decided allow: explicit port lists plus TCP/UDP proxy listen ports
+//! (→ `ALLOW_PORTS` map). On the egress-gateway host all outbound is
 //! additionally allowed and tracked. Peers are added/removed from the `PEERS` map,
 //! and each VXLAN tunnel's per-tunnel dstport (paired with its specific peer) from
 //! the `VXLAN_PORTS` map, by the control channel as edges come and go.
@@ -18,7 +18,7 @@
 use aya::Ebpf;
 use aya::maps::{HashMap as AyaHashMap, MapData};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
@@ -28,10 +28,9 @@ const EGRESS_PROG: &str = "nullnet_fw_egress";
 const PROTO_TCP: u8 = 6;
 const PROTO_UDP: u8 = 17;
 
-/// Explicit firewall allow policy, decided globally by the server and delivered
-/// in the `NetworkType` response at startup. Nothing is hardcoded: every
-/// host-service port a node accepts or initiates to is listed here. nullnet's
-/// own control/data plane and CT returns are always allowed.
+/// Server-decided firewall policy delivered at startup. Ingress allowances
+/// are refreshed with service reports; control/data plane and CT returns
+/// are always allowed.
 pub struct FirewallConfig {
     pub server_ip: Ipv4Addr,
     pub control_port: u16,
@@ -65,6 +64,7 @@ pub struct Firewall {
     #[allow(dead_code)]
     bpf: Ebpf,
     pub peers: Arc<FirewallPeers>,
+    pub allow_ports: Arc<Mutex<FirewallAllowPorts>>,
     pub vxlan_ports: Arc<FirewallVxlanPorts>,
 }
 
@@ -225,7 +225,7 @@ pub fn enable(iface: &str, cfg: &FirewallConfig) -> Result<Firewall, Error> {
         cfg.egress_gateway
     );
 
-    populate_allow_ports(&mut bpf, cfg)?;
+    let allow_ports = populate_allow_ports(&mut bpf, cfg)?;
 
     let peers_map: AyaHashMap<MapData, u32, u8> = bpf
         .take_map("PEERS")
@@ -243,6 +243,7 @@ pub fn enable(iface: &str, cfg: &FirewallConfig) -> Result<Firewall, Error> {
 
     Ok(Firewall {
         bpf,
+        allow_ports: Arc::new(Mutex::new(allow_ports)),
         peers: Arc::new(FirewallPeers::new(peers_map)),
         vxlan_ports: Arc::new(FirewallVxlanPorts::new(vxlan_ports_map)),
     })
@@ -267,10 +268,37 @@ fn attach_classifier(
     Ok(())
 }
 
-/// Fill the ALLOW_PORTS map from the four explicit env lists. Each port is keyed
-/// by direction + protocol (see `allow_key`); nothing is added implicitly. The map
-/// is taken only to populate it; the attached programs keep it alive kernel-side.
-fn populate_allow_ports(bpf: &mut Ebpf, cfg: &FirewallConfig) -> Result<(), Error> {
+/// Retained map handle for refreshing server-decided ingress allowances.
+pub struct FirewallAllowPorts {
+    map: AyaHashMap<MapData, u32, u8>,
+    ingress: HashSet<u32>,
+}
+
+impl FirewallAllowPorts {
+    pub fn update_ingress(&mut self, tcp: &[u32], udp: &[u32]) -> Result<(), Error> {
+        let mut desired = HashSet::new();
+        for (proto, ports) in [(PROTO_TCP, tcp), (PROTO_UDP, udp)] {
+            for &port in ports {
+                let port = u16::try_from(port).handle_err(location!())?;
+                desired.insert(allow_key(false, proto, port));
+            }
+        }
+        let removed: Vec<_> = self.ingress.difference(&desired).copied().collect();
+        for key in removed {
+            self.map.remove(&key).handle_err(location!())?;
+            self.ingress.remove(&key);
+        }
+        for key in desired {
+            if !self.ingress.contains(&key) {
+                self.map.insert(key, 0u8, 0).handle_err(location!())?;
+                self.ingress.insert(key);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn populate_allow_ports(bpf: &mut Ebpf, cfg: &FirewallConfig) -> Result<FirewallAllowPorts, Error> {
     let mut map: AyaHashMap<MapData, u32, u8> = bpf
         .take_map("ALLOW_PORTS")
         .ok_or("ALLOW_PORTS map not found in bytecode")
@@ -283,12 +311,17 @@ fn populate_allow_ports(bpf: &mut Ebpf, cfg: &FirewallConfig) -> Result<(), Erro
         (true, PROTO_TCP, &cfg.egress_tcp),
         (true, PROTO_UDP, &cfg.egress_udp),
     ];
+    let mut ingress = HashSet::new();
     for (is_egress, proto, ports) in sets {
         for &p in ports {
-            let _ = map.insert(allow_key(is_egress, proto, p), 0u8, 0);
+            let key = allow_key(is_egress, proto, p);
+            map.insert(key, 0u8, 0).handle_err(location!())?;
+            if !is_egress {
+                ingress.insert(key);
+            }
         }
     }
-    Ok(())
+    Ok(FirewallAllowPorts { map, ingress })
 }
 
 fn raise_memlock_rlimit() {

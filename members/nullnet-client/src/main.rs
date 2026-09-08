@@ -224,10 +224,12 @@ async fn main() -> Result<(), Error> {
         liveness,
     );
 
+    let firewall_allow_ports = ebpf_firewall.allow_ports.clone();
+
     // declare services + push the port→trigger-owners map to the NFQUEUE
     // listener on each refresh.
     tokio::spawn(async move {
-        declare_services(grpc_server, config_tx, docker_changed)
+        declare_services(grpc_server, config_tx, docker_changed, firewall_allow_ports)
             .await
             .expect("Failed to declare services");
     });
@@ -336,6 +338,7 @@ async fn declare_services(
     grpc_server: NullnetGrpcInterface,
     config_tx: UnboundedSender<TriggerMap>,
     docker_changed: Arc<Notify>,
+    firewall_allow_ports: Arc<std::sync::Mutex<ebpf::FirewallAllowPorts>>,
 ) -> Result<(), Error> {
     let mut last_snapshot: Vec<String> = Vec::new();
     loop {
@@ -399,6 +402,23 @@ async fn declare_services(
                 });
             }
             Ok(response) => {
+                let firewall_result = firewall_allow_ports.lock().unwrap().update_ingress(
+                    &response.ingress_allow_tcp_ports,
+                    &response.ingress_allow_udp_ports,
+                );
+                if let Err(e) = firewall_result {
+                    eprintln!("Failed to refresh eBPF ingress ports: {e:?}");
+                    let _ = grpc_server
+                        .report_event(AgentEvent {
+                            event: Some(AgentEventKind::FirewallRulesLoadFailed(
+                                AgentFirewallRulesLoadFailed {
+                                    path: "ebpf ingress ports".to_string(),
+                                    error_message: format!("{e:?}"),
+                                },
+                            )),
+                        })
+                        .await;
+                }
                 if snapshot != last_snapshot {
                     last_snapshot = snapshot;
                     let grpc = grpc_server.clone();

@@ -302,6 +302,7 @@ export interface ServiceConfigJson {
   name: string;
   docker_container?: string | null;
   process_path?: string | null;
+  host_ip?: string | null;
   port?: number | null;
   timeout?: number | null;
   proxy_dependencies: string[][];

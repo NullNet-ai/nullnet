@@ -218,6 +218,8 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
     the container name; matched against a running container
   - `process_path` — a listening process's exe path (`/proc/<pid>/exe`); matched against a host
     (non-Docker) service
+- `host_ip` optionally limits either match to one node's control-channel IPv4 address
+  (for example, `host_ip = "192.168.1.103"` for that host's SSH service). Omit it to match all hosts.
 - `timeout` controls proxy-reachability: when present the service is a proxy-reachable entry point
   with that per-client idle timeout in seconds (`0` disables the timeout); omit it to keep the
   service off the proxy (backend-only)
@@ -233,6 +235,9 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   the external port nullnet-proxy binds directly and forwards raw traffic from. `listen_port` must
   be globally unique per protocol across every stack (the server refuses to start, or rejects a
   hot-reload, if two services claim the same `protocol`/`listen_port` pair)
+- TCP/UDP `listen_port` values are automatically allowed through the proxy host's eBPF ingress
+  firewall at startup and refreshed within the client's 10-second service-report interval.
+  Backend `port` values are not opened; explicit firewall allowlists still apply.
 - `egress_filter`/`ingress_filter` restrict traffic with an AND/OR combination of conditions,
   evaluated via `rpn-predicate-interpreter` (the same postfix-expression engine
   `appguard-server/src/firewall/` uses). `groups` is OR-of-ANDs: every condition within a group must

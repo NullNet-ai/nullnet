@@ -228,6 +228,10 @@ pub struct Listener {
 pub struct ServicesListResponse {
     #[prost(message, repeated, tag = "1")]
     pub service_triggers: ::prost::alloc::vec::Vec<ServiceTrigger>,
+    #[prost(uint32, repeated, tag = "2")]
+    pub ingress_allow_tcp_ports: ::prost::alloc::vec::Vec<u32>,
+    #[prost(uint32, repeated, tag = "3")]
+    pub ingress_allow_udp_ports: ::prost::alloc::vec::Vec<u32>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ServiceTrigger {
