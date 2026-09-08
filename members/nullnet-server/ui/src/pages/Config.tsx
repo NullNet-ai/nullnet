@@ -240,6 +240,7 @@ interface ServiceFormState {
   name: string;
   matchKind: MatchKind;
   matchValue: string;
+  hostIp: string;
   port: string;
   reachable: boolean;
   timeout: string;
@@ -256,6 +257,7 @@ const EMPTY_FORM: ServiceFormState = {
   name: '',
   matchKind: 'docker',
   matchValue: '',
+  hostIp: '',
   port: '',
   reachable: false,
   timeout: '0',
@@ -358,6 +360,7 @@ function serviceToForm(s: ServiceConfigJson): ServiceFormState {
     // won't validate until a real host match is filled in.
     matchKind: s.process_path ? 'process' : 'docker',
     matchValue: s.docker_container ?? s.process_path ?? '',
+    hostIp: s.host_ip ?? '',
     port: s.port != null ? String(s.port) : '',
     reachable: s.timeout != null,
     timeout: s.timeout != null ? String(s.timeout) : '0',
@@ -380,6 +383,7 @@ function formToService(f: ServiceFormState): ServiceConfigJson {
     name: f.name.trim(),
     docker_container: f.matchKind === 'docker' ? f.matchValue.trim() : null,
     process_path: f.matchKind === 'process' ? f.matchValue.trim() : null,
+    host_ip: f.hostIp.trim() || null,
     port: f.port.trim() !== '' ? Number(f.port) : null,
     timeout: f.reachable ? Number(f.timeout || '0') : null,
     proxy_dependencies: f.dependencies.map(chain).filter(branch => branch.length > 0),
@@ -395,8 +399,8 @@ function formToService(f: ServiceFormState): ServiceConfigJson {
 }
 
 function matchLabel(s: ServiceConfigJson): string {
-  if (s.docker_container) return `docker: ${s.docker_container}`;
-  if (s.process_path) return `process: ${s.process_path}`;
+  if (s.docker_container) return `docker: ${s.docker_container}${s.host_ip ? ` @ ${s.host_ip}` : ''}`;
+  if (s.process_path) return `process: ${s.process_path}${s.host_ip ? ` @ ${s.host_ip}` : ''}`;
   return '—';
 }
 
@@ -808,6 +812,16 @@ export default function Config() {
               placeholder={form.matchKind === 'docker' ? 'my-app_color' : '/usr/local/bin/metrics-exporter'}
               spellCheck={false}
             />
+          </label>
+          <label className="modal-field">
+            <span>Host IP (optional)</span>
+            <input
+              value={form.hostIp}
+              onChange={e => setForm(f => ({ ...f, hostIp: e.target.value }))}
+              placeholder="Any host"
+              spellCheck={false}
+            />
+            <small>Register only on this node's IPv4 address.</small>
           </label>
           <label className="modal-field">
             <span>Backend port</span>

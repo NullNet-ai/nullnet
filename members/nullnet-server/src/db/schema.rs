@@ -32,6 +32,7 @@ diesel::table! {
         name -> Text,
         docker_container -> Nullable<Text>,
         process_path -> Nullable<Text>,
+        host_ip -> Nullable<Text>,
         port -> Nullable<Integer>,
         timeout -> Nullable<BigInt>,
         max_networks -> Nullable<Integer>,

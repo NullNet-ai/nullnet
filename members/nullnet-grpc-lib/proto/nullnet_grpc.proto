@@ -263,6 +263,8 @@ message Listener {
 // these ports, the client fires BackendTrigger(service_name, port).
 message ServicesListResponse {
   repeated ServiceTrigger service_triggers = 1;
+  repeated uint32 ingress_allow_tcp_ports = 2;
+  repeated uint32 ingress_allow_udp_ports = 3;
 }
 
 message ServiceTrigger {

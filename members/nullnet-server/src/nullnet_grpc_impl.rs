@@ -124,6 +124,27 @@ fn build_port_mapping_bundle(stacks: &StackMap) -> PortMappingBundle {
     PortMappingBundle { mappings }
 }
 
+fn ingress_allow_ports(stacks: &StackMap, proxy: bool) -> (Vec<u32>, Vec<u32>) {
+    let mut tcp = INGRESS_ALLOW_TCP_PORTS.clone();
+    let mut udp = INGRESS_ALLOW_UDP_PORTS.clone();
+    if proxy {
+        for info in stacks.values().flat_map(HashMap::values) {
+            if let Some(port) = info.listen_port() {
+                match info.protocol() {
+                    ServiceProtocol::Tcp => tcp.push(u32::from(port)),
+                    ServiceProtocol::Udp => udp.push(u32::from(port)),
+                    ServiceProtocol::Http => {}
+                }
+            }
+        }
+    }
+    tcp.sort_unstable();
+    tcp.dedup();
+    udp.sort_unstable();
+    udp.dedup();
+    (tcp, udp)
+}
+
 /// Build the live HTTP `(host, path)` → target route table from the current
 /// `StackMap`/`RouteMap`: every explicit `[[route]]` entry, plus an implicit
 /// `{host = name, path = "/"} -> Service(name)` fallback for every
@@ -749,45 +770,47 @@ impl NullnetGrpcImpl {
         // match registers a replica.
         let mut service_list_by_stack: HashMap<String, Vec<(String, u16, Option<String>)>> =
             HashMap::new();
-        {
-            let index = self.match_index.read().await;
-            for (stack, entries) in index.iter() {
-                for entry in entries {
-                    if let Some(key) = &entry.docker_container {
-                        for c in report.containers.iter().filter(|c| &c.match_key == key) {
-                            // Docker services need VXLAN: VLAN setup only puts a
-                            // veth IP on the host, not into the container's netns.
-                            if *NET_TYPE == Net::Vlan {
-                                self.orchestrator
-                                    .events
-                                    .emit(Event::service_declaration_skipped(
-                                        sender_ip.to_string(),
-                                        entry.name.clone(),
-                                        "Docker services require VXLAN network type".to_string(),
-                                    ))
-                                    .await;
-                                continue;
-                            }
-                            service_list_by_stack
-                                .entry(stack.clone())
-                                .or_default()
-                                .push((entry.name.clone(), entry.port, Some(c.real_name.clone())));
+        let index = self.match_index.read().await;
+        for (stack, entries) in index.iter() {
+            for entry in entries {
+                if entry.host_ip.is_some_and(|ip| sender_ip != IpAddr::V4(ip)) {
+                    continue;
+                }
+                if let Some(key) = &entry.docker_container {
+                    for c in report.containers.iter().filter(|c| &c.match_key == key) {
+                        // Docker services need VXLAN: VLAN setup only puts a
+                        // veth IP on the host, not into the container's netns.
+                        if *NET_TYPE == Net::Vlan {
+                            self.orchestrator
+                                .events
+                                .emit(Event::service_declaration_skipped(
+                                    sender_ip.to_string(),
+                                    entry.name.clone(),
+                                    "Docker services require VXLAN network type".to_string(),
+                                ))
+                                .await;
+                            continue;
                         }
-                    }
-                    if let Some(path) = &entry.process_path
-                        && report.listeners.iter().any(|l| &l.path == path)
-                    {
                         service_list_by_stack
                             .entry(stack.clone())
                             .or_default()
-                            .push((entry.name.clone(), entry.port, None));
+                            .push((entry.name.clone(), entry.port, Some(c.real_name.clone())));
                     }
+                }
+                if let Some(path) = &entry.process_path
+                    && report.listeners.iter().any(|l| &l.path == path)
+                {
+                    service_list_by_stack
+                        .entry(stack.clone())
+                        .or_default()
+                        .push((entry.name.clone(), entry.port, None));
                 }
             }
         }
 
         self.apply_services_list_by_stack(sender_ip, &service_list_by_stack)
             .await?;
+        drop(index);
 
         // Reap egress edges whose initiator container is no longer running on
         // this node (container died / dereg'd while the node stayed up).
@@ -803,7 +826,13 @@ impl NullnetGrpcImpl {
         let guard = self.services.read().await;
         let service_triggers = build_service_triggers(&guard, &service_list_by_stack);
 
-        Ok(Response::new(ServicesListResponse { service_triggers }))
+        let (ingress_allow_tcp_ports, ingress_allow_udp_ports) =
+            ingress_allow_ports(&guard, Some(sender_ip) == *PROXY_IP);
+        Ok(Response::new(ServicesListResponse {
+            service_triggers,
+            ingress_allow_tcp_ports,
+            ingress_allow_udp_ports,
+        }))
     }
 
     pub(crate) async fn new_proxy_chain(
@@ -2396,10 +2425,13 @@ impl NullnetGrpc for NullnetGrpcImpl {
             (Some(caller), Some(proxy)) => caller == proxy,
             _ => false,
         };
+        let stacks = self.services.read().await;
+        let (ingress_allow_tcp_ports, ingress_allow_udp_ports) =
+            ingress_allow_ports(&stacks, egress_gateway);
         Ok(Response::new(NetType {
             net: (*NET_TYPE).into(),
-            ingress_allow_tcp_ports: INGRESS_ALLOW_TCP_PORTS.clone(),
-            ingress_allow_udp_ports: INGRESS_ALLOW_UDP_PORTS.clone(),
+            ingress_allow_tcp_ports,
+            ingress_allow_udp_ports,
             egress_allow_tcp_ports: EGRESS_ALLOW_TCP_PORTS.clone(),
             egress_allow_udp_ports: EGRESS_ALLOW_UDP_PORTS.clone(),
             egress_gateway,
@@ -2902,6 +2934,103 @@ proxy_dependencies = [["color.com"]]
                 preserve_path: true,
                 preserve_query: true,
             }))
+        );
+    }
+}
+
+#[cfg(test)]
+mod host_pin_tests {
+    use super::*;
+    use crate::services::input::validate_stack_toml;
+    use nullnet_grpc_lib::nullnet_grpc::Listener;
+    use tonic::transport::server::TcpConnectInfo;
+
+    #[tokio::test]
+    async fn ssh_host_pins_separate_identical_listeners() {
+        let (services, entries, _) = validate_stack_toml(
+            r#"
+[[services]]
+name = "ssh-a"
+process_path = "/usr/sbin/sshd"
+port = 22
+host_ip = "192.0.2.1"
+[[services]]
+name = "ssh-b"
+process_path = "/usr/sbin/sshd"
+port = 22
+host_ip = "192.0.2.2"
+[[services]]
+name = "shared"
+process_path = "/usr/sbin/sshd"
+port = 22
+"#,
+        )
+        .unwrap();
+        let server = NullnetGrpcImpl::new_for_test(HashMap::from([("pin".into(), services)]));
+        *server.match_index.write().await = HashMap::from([("pin".into(), entries)]);
+        for ip in ["192.0.2.1", "192.0.2.2"] {
+            let mut request = Request::new(ServiceReport {
+                containers: vec![],
+                listeners: vec![Listener {
+                    path: "/usr/sbin/sshd".into(),
+                }],
+            });
+            request.extensions_mut().insert(TcpConnectInfo {
+                local_addr: None,
+                remote_addr: Some(format!("{ip}:50000").parse().unwrap()),
+            });
+            server.services_list_impl(request).await.unwrap();
+        }
+        let stacks = server.services.read().await;
+        for (name, expected) in [
+            ("ssh-a", vec!["192.0.2.1"]),
+            ("ssh-b", vec!["192.0.2.2"]),
+            ("shared", vec!["192.0.2.1", "192.0.2.2"]),
+        ] {
+            let ServiceInfo::Registered(reg) = &stacks["pin"][name] else {
+                panic!("unregistered {name}")
+            };
+            let mut actual: Vec<_> = reg.replicas().iter().map(|r| r.ip().to_string()).collect();
+            actual.sort();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn listen_ports_are_allowed_only_on_proxy_and_keep_explicit_ports() {
+        let (services, _, _) = validate_stack_toml(
+            r#"
+[[services]]
+name = "ssh"
+protocol = "tcp"
+listen_port = 22177
+[[services]]
+name = "dns"
+protocol = "udp"
+listen_port = 53177
+[[services]]
+name = "web"
+process_path = "/usr/bin/web"
+port = 49177
+"#,
+        )
+        .unwrap();
+        let stacks = HashMap::from([("ports".into(), services)]);
+        let (base_tcp, base_udp) = ingress_allow_ports(&stacks, false);
+        let (tcp, udp) = ingress_allow_ports(&stacks, true);
+        let mut expected_tcp = base_tcp;
+        expected_tcp.push(22177);
+        expected_tcp.sort_unstable();
+        expected_tcp.dedup();
+        let mut expected_udp = base_udp;
+        expected_udp.push(53177);
+        expected_udp.sort_unstable();
+        expected_udp.dedup();
+        assert_eq!(tcp, expected_tcp);
+        assert_eq!(udp, expected_udp);
+        assert_eq!(
+            ingress_allow_ports(&StackMap::new(), true),
+            ingress_allow_ports(&stacks, false)
         );
     }
 }

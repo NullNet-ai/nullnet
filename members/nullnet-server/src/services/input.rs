@@ -24,6 +24,7 @@ pub(crate) struct MatchEntry {
     pub(crate) port: u16,
     pub(crate) docker_container: Option<String>,
     pub(crate) process_path: Option<String>,
+    pub(crate) host_ip: Option<Ipv4Addr>,
 }
 
 /// Stack name → its services' match entries. Rebuilt on every load/reload.
@@ -217,6 +218,15 @@ pub(crate) fn detect_route_conflicts(routes: &RouteMap) -> Vec<RouteConflict> {
 fn build_match_entries(services: &[ServiceToml]) -> Result<Vec<MatchEntry>, Error> {
     let mut entries = Vec::new();
     for s in services {
+        let host_ip = s
+            .host_ip
+            .as_deref()
+            .map(|ip| {
+                ip.parse::<Ipv4Addr>()
+                    .map_err(|_| format!("service '{}': invalid host_ip '{ip}'", s.name))
+            })
+            .transpose()
+            .handle_err(location!())?;
         if s.docker_container.is_none() && s.process_path.is_none() {
             continue;
         }
@@ -232,6 +242,7 @@ fn build_match_entries(services: &[ServiceToml]) -> Result<Vec<MatchEntry>, Erro
             port,
             docker_container: s.docker_container.clone(),
             process_path: s.process_path.clone(),
+            host_ip,
         });
     }
     Ok(entries)
@@ -704,6 +715,7 @@ fn services_from_rows(
             name: row.name,
             docker_container: row.docker_container,
             process_path: row.process_path,
+            host_ip: row.host_ip,
             port: row.port.and_then(|p| u16::try_from(p).ok()),
             timeout: row.timeout.and_then(|t| u64::try_from(t).ok()),
             max_networks: row.max_networks.and_then(|m| u32::try_from(m).ok()),
@@ -730,6 +742,7 @@ pub(crate) fn services_to_inserts(services: &[ServiceToml]) -> Vec<crate::db::Se
             name: &s.name,
             docker_container: s.docker_container.as_deref(),
             process_path: s.process_path.as_deref(),
+            host_ip: s.host_ip.as_deref(),
             port: s.port.map(i32::from),
             timeout: s.timeout.and_then(|t| i64::try_from(t).ok()),
             max_networks: s.max_networks.and_then(|m| i32::try_from(m).ok()),
@@ -992,6 +1005,8 @@ pub(crate) struct ServiceToml {
     /// Host-match key for a non-Docker service: the listening process's exe path
     /// (`/proc/<pid>/exe`). A listener with this path registers a replica.
     process_path: Option<String>,
+    /// Optional node IPv4 address, as seen by the control channel.
+    host_ip: Option<String>,
     /// Backend port the overlay/proxy connects to on this service's replicas.
     /// Required when any host-match key is set. Distinct from `listen_port`
     /// (the proxy's external tcp/udp front port).
@@ -1780,6 +1795,7 @@ proxy_dependencies = [["api"]]
             name: name.to_string(),
             docker_container: None,
             process_path: None,
+            host_ip: None,
             port: None,
             timeout: None,
             proxy_dependencies: Vec::new(),
@@ -1803,6 +1819,7 @@ proxy_dependencies = [["api"]]
     fn service_row_conversion_round_trips_every_field() {
         let services = vec![ServiceToml {
             docker_container: Some("my-app_color".to_string()),
+            host_ip: Some("192.0.2.1".to_string()),
             port: Some(3001),
             timeout: Some(0),
             proxy_dependencies: vec![vec!["a.dep".to_string(), "b.dep".to_string()]],
@@ -1842,6 +1859,7 @@ proxy_dependencies = [["api"]]
             name: insert.name.to_string(),
             docker_container: insert.docker_container.map(str::to_string),
             process_path: insert.process_path.map(str::to_string),
+            host_ip: insert.host_ip.map(str::to_string),
             port: insert.port,
             timeout: insert.timeout,
             max_networks: insert.max_networks,
