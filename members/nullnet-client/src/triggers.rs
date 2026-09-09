@@ -43,9 +43,15 @@ pub enum Lifecycle {
 pub enum TriggerState {
     /// No entry — listener should mark pending and fire `backend_trigger`.
     Fresh,
-    /// Setup is in flight — listener should `await notify.notified()`.
-    Pending(Arc<Notify>),
+    /// Setup is in flight.
+    Pending,
     /// Chain is up — listener can verdict ACCEPT immediately.
+    Active,
+}
+
+pub enum TriggerClaim {
+    Start(Arc<Notify>),
+    Pending(Arc<Notify>),
     Active,
 }
 
@@ -62,23 +68,23 @@ impl TriggersState {
         let by_key = self.by_key.lock().unwrap();
         match by_key.get(&(container.to_string(), port)) {
             Some(Lifecycle::Active { .. }) => TriggerState::Active,
-            Some(Lifecycle::Pending { since, notify, .. }) if since.elapsed() < PENDING_TIMEOUT => {
-                TriggerState::Pending(notify.clone())
+            Some(Lifecycle::Pending { since, .. }) if since.elapsed() < PENDING_TIMEOUT => {
+                TriggerState::Pending
             }
             _ => TriggerState::Fresh,
         }
     }
 
-    /// Insert (or refresh) a `Pending` entry and return the `Notify` the
-    /// caller awaits. If an in-flight `Pending` already exists, its `Notify`
-    /// is returned so concurrent fires share one wake-up.
-    pub fn mark_pending(&self, container: &str, port: u16, container_ip: Ipv4Addr) -> Arc<Notify> {
+    /// Elect one sender while preserving a setup that has already activated.
+    pub fn claim(&self, container: &str, port: u16, container_ip: Ipv4Addr) -> TriggerClaim {
         let mut by_key = self.by_key.lock().unwrap();
         let key = (container.to_string(), port);
-        if let Some(Lifecycle::Pending { since, notify, .. }) = by_key.get(&key)
-            && since.elapsed() < PENDING_TIMEOUT
-        {
-            return notify.clone();
+        match by_key.get(&key) {
+            Some(Lifecycle::Active { .. }) => return TriggerClaim::Active,
+            Some(Lifecycle::Pending { since, notify, .. }) if since.elapsed() < PENDING_TIMEOUT => {
+                return TriggerClaim::Pending(notify.clone());
+            }
+            _ => {}
         }
         let notify = Arc::new(Notify::new());
         by_key.insert(
@@ -89,10 +95,18 @@ impl TriggersState {
                 container_ip,
             },
         );
-        notify
+        TriggerClaim::Start(notify)
     }
 
-    /// Read the `container_ip` stashed at `mark_pending` time without
+    #[cfg(test)]
+    fn mark_pending(&self, container: &str, port: u16, container_ip: Ipv4Addr) -> Arc<Notify> {
+        match self.claim(container, port, container_ip) {
+            TriggerClaim::Start(notify) | TriggerClaim::Pending(notify) => notify,
+            TriggerClaim::Active => panic!("test expected a pending trigger"),
+        }
+    }
+
+    /// Read the `container_ip` stashed at claim time without
     /// mutating state. Used by `control_channel` to install DNAT *before*
     /// promoting to `Active` — installing first ensures the held packet
     /// (which wakes on `mark_active`'s `notify_waiters`) finds the DNAT rule
@@ -140,8 +154,7 @@ impl TriggersState {
         notify.notify_waiters();
     }
 
-    /// Drop the entry so the next observed packet on this `(container, port)`
-    /// retriggers — but only while it is still `Pending`.
+    /// Drop only the pending generation owned by the failed caller.
     ///
     /// A trigger RPC that failed or timed out is not evidence that setup
     /// failed: the `VxlanSetup` can land, install steering/DNAT and
@@ -149,10 +162,11 @@ impl TriggersState {
     /// entry there discards the only record that the datapath is live, and the
     /// server sends no second setup for an edge it already considers up — so
     /// every later packet is held and dropped forever.
-    pub fn forget_pending(&self, container: &str, port: u16) {
+    pub fn forget_pending(&self, container: &str, port: u16, owner: &Arc<Notify>) {
         let mut by_key = self.by_key.lock().unwrap();
         let key = (container.to_string(), port);
-        if matches!(by_key.get(&key), Some(Lifecycle::Pending { .. })) {
+        if matches!(by_key.get(&key), Some(Lifecycle::Pending { notify, .. }) if Arc::ptr_eq(notify, owner))
+        {
             by_key.remove(&key);
         }
     }
@@ -189,6 +203,33 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::time::timeout;
+
+    #[test]
+    fn atomic_claim_elects_one_sender_and_preserves_active() {
+        let state = TriggersState::default();
+        let TriggerClaim::Start(owner) = state.claim("c1", 80, IP) else {
+            panic!("first claim");
+        };
+        let TriggerClaim::Pending(waiter) = state.claim("c1", 80, IP) else {
+            panic!("second claim");
+        };
+        assert!(Arc::ptr_eq(&owner, &waiter));
+        state.mark_active("c1", 80, 42, OVERLAY, IP);
+        assert!(matches!(state.claim("c1", 80, IP), TriggerClaim::Active));
+    }
+
+    #[test]
+    fn old_failure_cannot_forget_replacement() {
+        let state = TriggersState::default();
+        let old = state.mark_pending("c1", 80, IP);
+        state.forget_pending("c1", 80, &old);
+        let replacement = state.mark_pending("c1", 80, IP);
+        state.forget_pending("c1", 80, &old);
+        let TriggerClaim::Pending(current) = state.claim("c1", 80, IP) else {
+            panic!("replacement lost");
+        };
+        assert!(Arc::ptr_eq(&current, &replacement));
+    }
 
     const IP: Ipv4Addr = Ipv4Addr::new(172, 17, 0, 5);
     const OVERLAY: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 1);
@@ -267,7 +308,7 @@ mod tests {
         let notified = notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
-        assert!(matches!(state.state("c1", 80), TriggerState::Pending(_)));
+        assert!(matches!(state.state("c1", 80), TriggerState::Pending));
 
         // mark_active fires AFTER enable but before await.
         state.mark_active("c1", 80, 42, OVERLAY, IP);
@@ -292,11 +333,11 @@ mod tests {
         let state = TriggersState::default();
         let _ = state.mark_pending("c1", 80, IP);
         let _ = state.mark_pending("c2", 80, Ipv4Addr::new(172, 17, 0, 6));
-        assert!(matches!(state.state("c1", 80), TriggerState::Pending(_)));
-        assert!(matches!(state.state("c2", 80), TriggerState::Pending(_)));
+        assert!(matches!(state.state("c1", 80), TriggerState::Pending));
+        assert!(matches!(state.state("c2", 80), TriggerState::Pending));
         state.mark_active("c1", 80, 7, OVERLAY, IP);
         assert!(matches!(state.state("c1", 80), TriggerState::Active));
-        assert!(matches!(state.state("c2", 80), TriggerState::Pending(_)));
+        assert!(matches!(state.state("c2", 80), TriggerState::Pending));
     }
 
     #[tokio::test]
@@ -318,8 +359,8 @@ mod tests {
     #[tokio::test]
     async fn forget_pending_drops_pending_entry() {
         let state = TriggersState::default();
-        let _ = state.mark_pending("c1", 80, IP);
-        state.forget_pending("c1", 80);
+        let owner = state.mark_pending("c1", 80, IP);
+        state.forget_pending("c1", 80, &owner);
         assert!(matches!(state.state("c1", 80), TriggerState::Fresh));
     }
 
@@ -329,9 +370,9 @@ mod tests {
         // already landed and promoted the entry. Forgetting here would lose the
         // only record that steering is live and wedge the container's egress.
         let state = TriggersState::default();
-        let _ = state.mark_pending("c1", 80, IP);
+        let owner = state.mark_pending("c1", 80, IP);
         state.mark_active("c1", 80, 42, OVERLAY, IP);
-        state.forget_pending("c1", 80);
+        state.forget_pending("c1", 80, &owner);
         assert!(
             matches!(state.state("c1", 80), TriggerState::Active),
             "forget_pending must not drop an entry that mark_active promoted"

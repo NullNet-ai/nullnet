@@ -6,7 +6,7 @@ use crate::events::Event;
 use crate::graphviz::generate_graphviz;
 use crate::net::EgressRole;
 use crate::net_id_pool::generate_key;
-use crate::orchestrator::Orchestrator;
+use crate::orchestrator::{BackendKey, Orchestrator};
 use crate::services::changes::{
     ServiceChange, apply_changes, collect_dep_chain_edges, dep_chain_intact,
     detect_services_list_changes,
@@ -1129,7 +1129,7 @@ impl NullnetGrpcImpl {
         // One write guard resolves the initiator replica, refreshes heartbeat
         // on the first-dep edge if already set up, and decides whether the
         // chain for this trigger port needs rebuilding.
-        let (stack, initiator_ip, initiator_docker, needs_rebuild) = {
+        let (stack, initiator_ip, initiator_docker, claim) = {
             let guard = self.services.write().await;
             let stack = find_service_stack(&guard, initiator_name)
                 .ok_or("Initiator service not found in any stack")
@@ -1179,7 +1179,7 @@ impl NullnetGrpcImpl {
 
             // `client_replica`, not `is_client_setup`: a reservation counts as
             // already building. Rebuilding on top of one would take a second
-            // refcount on every hop while `hold_backend_session` records only
+            // refcount on every hop while the backend session records only
             // one, pinning the chain forever.
             let needs_rebuild = match first_dep {
                 None => false,
@@ -1190,51 +1190,55 @@ impl NullnetGrpcImpl {
                 ),
             };
 
-            (stack, initiator_ip, initiator_docker, needs_rebuild)
+            let key = (
+                initiator_name.to_string(),
+                initiator_ip,
+                initiator_docker.clone(),
+                port,
+            );
+            let claim = if needs_rebuild {
+                self.orchestrator.claim_backend_session(key, &stack).await
+            } else {
+                None
+            };
+            (stack, initiator_ip, initiator_docker, claim)
         };
 
-        println!("[trigger] needs_rebuild={needs_rebuild} for '{initiator_name}' port {port}");
+        let Some(generation) = claim else {
+            return Ok(());
+        };
         let key = (
             initiator_name.to_string(),
             initiator_ip,
             initiator_docker.clone(),
             port,
         );
-        if !needs_rebuild {
-            // Deliberately takes no refcount. A trigger that does not rebuild
-            // gets no `VxlanSetup`, so no DNAT is installed for its port and it
-            // never carries traffic — the client can therefore never report it
-            // idle, and a hold taken here could never be released. Claiming one
-            // pins the chain forever (verified on the lab). The chain stays
-            // owned by whichever path built it.
-            println!("[trigger] returning early without rebuild");
-            return Ok(());
-        }
-
-        // Record the hold only when a chain was really built. A bailed setup
-        // (dep unregistered, empty chain) took no increment, and marking it held
-        // would both block the later claim and let its close consume an
-        // increment contributed by something else.
-        //
-        // Detached, and the hold is inside: `net_chain_setup` already survives a
-        // cancelled RPC on its own, so a caller dying between it and the hold
-        // would leave every hop incremented with no session able to release it.
+        // The claim and its cleanup survive a cancelled trigger RPC together.
         let this = self.clone();
         let initiator_name = initiator_name.to_string();
         detached(async move {
-            if this
-                .setup_backend_chain(
+            let result = this
+                .setup_backend_chain_owned(
                     &stack,
                     &initiator_name,
                     initiator_ip,
                     initiator_docker.as_deref(),
                     port,
+                    Some((key.clone(), generation)),
                 )
-                .await?
-            {
-                this.orchestrator.hold_backend_session(key, &stack).await;
+                .await;
+            if !matches!(result, Ok(true)) {
+                this.orchestrator
+                    .cancel_backend_session(&key, generation)
+                    .await;
+                if matches!(result, Ok(false)) {
+                    this.orchestrator
+                        .events
+                        .emit(Event::backend_trigger_setup_bailed(initiator_name, port))
+                        .await;
+                }
             }
-            Ok::<(), Error>(())
+            result.map(|_| ())
         })
         .await??;
         Ok(())
@@ -1246,6 +1250,7 @@ impl NullnetGrpcImpl {
     /// holds one increment on every hop. The bail paths below return `Ok(false)`
     /// precisely so a session is never recorded as holding a refcount that was
     /// never taken — that would let a later close consume somebody else's.
+    #[cfg(test)]
     pub(crate) async fn setup_backend_chain(
         &self,
         stack: &str,
@@ -1253,6 +1258,27 @@ impl NullnetGrpcImpl {
         initiator_ip: IpAddr,
         initiator_docker: Option<&str>,
         port: u16,
+    ) -> Result<bool, Error> {
+        self.setup_backend_chain_owned(
+            stack,
+            initiator_name,
+            initiator_ip,
+            initiator_docker,
+            port,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn setup_backend_chain_owned(
+        &self,
+        stack: &str,
+        initiator_name: &str,
+        initiator_ip: IpAddr,
+        initiator_docker: Option<&str>,
+        port: u16,
+        owner: Option<(BackendKey, uuid::Uuid)>,
     ) -> Result<bool, Error> {
         let Some(branch) = self
             .backend_branch(stack, initiator_name, initiator_ip, initiator_docker, port)
@@ -1275,10 +1301,10 @@ impl NullnetGrpcImpl {
              ({} hop(s))",
             branch.deps.len()
         );
-        // A trigger chain has no entry edge, so `OwnerLost` cannot arise here;
-        // treat it as "built nothing" if it ever does, so no hold is recorded.
+        // An invalidated owner unwinds its increments instead of retaining a hold.
         let built = matches!(
-            self.net_chain_setup(stack, None, vec![branch]).await?,
+            self.net_chain_setup_owned(stack, None, vec![branch], owner)
+                .await?,
             ChainOutcome::Built(_)
         );
         println!("[trigger] net_chain_setup completed for '{initiator_name}' port {port}");
@@ -1698,13 +1724,25 @@ impl NullnetGrpcImpl {
         entry: Option<RegisteredEdge>,
         branches: Vec<ChainBranch>,
     ) -> Result<ChainOutcome, Error> {
+        self.net_chain_setup_owned(stack, entry, branches, None)
+            .await
+    }
+
+    async fn net_chain_setup_owned(
+        &self,
+        stack: &str,
+        entry: Option<RegisteredEdge>,
+        branches: Vec<ChainBranch>,
+        owner: Option<(BackendKey, uuid::Uuid)>,
+    ) -> Result<ChainOutcome, Error> {
         let services = self.services.clone();
         let orchestrator = self.orchestrator.clone();
         let stack = stack.to_string();
         let (tx, rx) = oneshot::channel();
         tokio::spawn(async move {
-            let _ =
-                tx.send(run_net_chain_setup(services, orchestrator, stack, entry, branches).await);
+            let _ = tx.send(
+                run_net_chain_setup(services, orchestrator, stack, entry, branches, owner).await,
+            );
         });
         rx.await.handle_err(location!())?
     }
@@ -1815,6 +1853,7 @@ async fn run_net_chain_setup(
     stack: String,
     entry: Option<RegisteredEdge>,
     branches: Vec<ChainBranch>,
+    owner: Option<(BackendKey, uuid::Uuid)>,
 ) -> Result<ChainOutcome, Error> {
     let mut join_set_outer = JoinSet::new();
 
@@ -1840,12 +1879,14 @@ async fn run_net_chain_setup(
             .await;
             match outcome {
                 EdgeOutcome::Success {
+                    net_id,
                     client,
                     server_name,
                     ingress,
                     ..
                 } => BranchOutcome {
                     edges: vec![SuccessfulEdge {
+                        net_id,
                         client,
                         server_name,
                         ingress,
@@ -1888,12 +1929,14 @@ async fn run_net_chain_setup(
                 .await;
                 match outcome {
                     EdgeOutcome::Success {
+                        net_id,
                         client,
                         server_name,
                         server,
                         ingress,
                     } => {
                         edges.push(SuccessfulEdge {
+                            net_id,
                             client,
                             server_name,
                             ingress,
@@ -1930,8 +1973,14 @@ async fn run_net_chain_setup(
     // teardown walked through, config changed under it — every edge this chain
     // built is holding a refcount nobody will ever spend. Hand them back
     // instead of stranding them and their net ids.
-    let orphaned = {
-        let guard = services.read().await;
+    let mut services_mut = services.write().await;
+    let backend_lost = if let Some((key, generation)) = &owner {
+        !any_failure && !orchestrator.finish_backend_session(key, *generation).await
+    } else {
+        false
+    };
+    let orphaned = backend_lost || {
+        let guard = &services_mut;
         successful
             .iter()
             .filter(|e| e.client.is_proxy().is_some())
@@ -1947,11 +1996,12 @@ async fn run_net_chain_setup(
     };
 
     if any_failure || orphaned {
-        let mut services_mut = services.write().await;
         if let Some(stack_map) = services_mut.get_mut(&stack) {
             let pinned = backend_involved_services(stack_map);
             for edge in &successful {
-                if let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&edge.server_name) {
+                if let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&edge.server_name)
+                    && reg.client_net_id(&edge.client) == Some(edge.net_id)
+                {
                     reg.decrement_chain(
                         &edge.client,
                         &orchestrator,
@@ -1968,6 +2018,8 @@ async fn run_net_chain_setup(
         }
         Err("NET chain setup failed").handle_err(location!())?;
     }
+
+    drop(services_mut);
 
     // Past the unwind check, so every branch is up and these sessions are real.
     for edge in &successful {
@@ -2044,7 +2096,7 @@ async fn setup_edge(
     // by (client, proxy) and dep clients by source replica, and a source
     // replica can only route to one replica of a given dep.
     let deadline = std::time::Instant::now() + EDGE_CLAIM_TIMEOUT;
-    let (server_ethernet, server_docker, server_suspended) = loop {
+    let (server_ethernet, server_docker, server_suspended, reservation) = loop {
         let waiting_on = {
             let mut services_guard = services.write().await;
             let Some(stack_map) = services_guard.get_mut(stack) else {
@@ -2056,6 +2108,7 @@ async fn setup_edge(
             if let Some(bound) = reg.client_replica_live(&client) {
                 reg.add_chain(&client);
                 return EdgeOutcome::Success {
+                    net_id: reg.client_net_id(&client).expect("live edge has a net id"),
                     client,
                     server_name,
                     server: bound,
@@ -2080,7 +2133,8 @@ async fn setup_edge(
                     }
                     // Does the target replica need unpausing first?
                     let suspended = reg.replica_suspended(ip, docker.as_deref());
-                    break (ip, docker, suspended);
+                    let reservation = reg.pending_notify(&client).expect("just reserved edge");
+                    break (ip, docker, suspended, reservation);
                 }
             }
         };
@@ -2125,7 +2179,7 @@ async fn setup_edge(
             if let Some(stack_map) = services.write().await.get_mut(stack)
                 && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
             {
-                reg.remove_pending_client(&client);
+                reg.remove_pending_client_if(&client, &reservation);
             }
             return EdgeOutcome::Failed;
         }
@@ -2144,7 +2198,7 @@ async fn setup_edge(
         if let Some(stack_map) = services.write().await.get_mut(stack)
             && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
         {
-            reg.remove_pending_client(&client);
+            reg.remove_pending_client_if(&client, &reservation);
         }
         return EdgeOutcome::Failed;
     };
@@ -2194,7 +2248,7 @@ async fn setup_edge(
                 if let Some(stack_map) = services.write().await.get_mut(stack)
                     && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
                 {
-                    reg.remove_pending_client(&client);
+                    reg.remove_pending_client_if(&client, &reservation);
                 }
                 return EdgeOutcome::Failed;
             }
@@ -2257,7 +2311,7 @@ async fn setup_edge(
         if let Some(stack_map) = services.write().await.get_mut(stack)
             && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
         {
-            reg.remove_pending_client(&client);
+            reg.remove_pending_client_if(&client, &reservation);
         }
         return EdgeOutcome::Failed;
     }
@@ -2287,7 +2341,11 @@ async fn setup_edge(
         .get_mut(stack)
         .and_then(|stack_map| stack_map.get_mut(&server_name))
     {
-        Some(ServiceInfo::Registered(reg)) => {
+        Some(ServiceInfo::Registered(reg))
+            if reg
+                .pending_notify(&client)
+                .is_some_and(|current| Arc::ptr_eq(&current, &reservation)) =>
+        {
             let ci = ClientInfo::new(
                 client_ethernet,
                 net_ip_client,
@@ -2314,7 +2372,7 @@ async fn setup_edge(
             .get_mut(stack)
             .and_then(|stack_map| stack_map.get_mut(&server_name))
         {
-            reg.remove_pending_client(&client);
+            reg.remove_pending_client_if(&client, &reservation);
         }
         drop(guard);
         orchestrator
@@ -2346,6 +2404,7 @@ async fn setup_edge(
     });
 
     EdgeOutcome::Success {
+        net_id,
         client,
         server_name,
         server: (server_ethernet, server_docker),
@@ -2365,6 +2424,7 @@ struct PendingIngress {
 
 enum EdgeOutcome {
     Success {
+        net_id: u32,
         client: Client,
         server_name: String,
         /// The replica this edge is bound to. The next hop of the branch is
@@ -2378,6 +2438,7 @@ enum EdgeOutcome {
 }
 
 struct SuccessfulEdge {
+    net_id: u32,
     client: Client,
     server_name: String,
     ingress: Option<PendingIngress>,

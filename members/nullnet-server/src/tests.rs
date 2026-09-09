@@ -3323,6 +3323,101 @@ async fn node_hosting_no_trigger_service_gets_nothing() {
 
 const BACKEND_LIVENESS: &str = "backend_liveness";
 
+#[tokio::test]
+async fn trigger_atomic_concurrent_backend_claims_release_once() {
+    let server = NullnetGrpcImpl::new_for_test(load_fixture(BACKEND_LIVENESS).await);
+    register_services(
+        &server,
+        &HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]),
+        8080,
+    )
+    .await;
+    let (a, b) = tokio::join!(
+        server.handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None),
+        server.handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None),
+    );
+    a.unwrap();
+    b.unwrap();
+    let client = Client::new_service("A".into(), ip(1, 1, 1, 1), None);
+    let chains = client_entry_chains(&*server.services().read().await, "B", &client);
+    report_backend_idle_and_reap(&server, "A", ip(1, 1, 1, 1), 5555).await;
+    assert_eq!(chains, Some(1), "duplicate trigger acquired two holds");
+    assert_net_ids_in_use(&server, 0).await;
+}
+
+#[tokio::test]
+async fn trigger_atomic_backend_idle_during_setup_is_preserved() {
+    let server = std::sync::Arc::new(NullnetGrpcImpl::new_for_test(
+        load_fixture(BACKEND_LIVENESS).await,
+    ));
+    register_services(
+        &server,
+        &HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]),
+        8080,
+    )
+    .await;
+    let (log, gate) = server
+        .orchestrator()
+        .register_gated_client(ip(2, 2, 2, 2))
+        .await;
+    let task_server = server.clone();
+    let build = tokio::spawn(async move {
+        task_server
+            .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None)
+            .await
+    });
+    wait_for_log(&log, |l| !setup_net_ids(l).is_empty()).await;
+    server
+        .orchestrator()
+        .set_backend_liveness(&("A".into(), ip(1, 1, 1, 1), None, 5555), false)
+        .await;
+    gate.add_permits(64);
+    build.await.unwrap().unwrap();
+    {
+        let mut guard = server.services().write().await;
+        reap_idle_backend_chains(&mut guard, server.orchestrator(), std::time::Duration::ZERO)
+            .await;
+    }
+    assert_net_ids_in_use(&server, 0).await;
+}
+
+#[tokio::test]
+async fn trigger_atomic_backend_owner_removed_during_setup_unwinds() {
+    let server = std::sync::Arc::new(NullnetGrpcImpl::new_for_test(
+        load_fixture(BACKEND_LIVENESS).await,
+    ));
+    register_services(
+        &server,
+        &HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]),
+        8080,
+    )
+    .await;
+    let (log, gate) = server
+        .orchestrator()
+        .register_gated_client(ip(2, 2, 2, 2))
+        .await;
+    let task_server = server.clone();
+    let build = tokio::spawn(async move {
+        task_server
+            .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None)
+            .await
+    });
+    wait_for_log(&log, |l| !setup_net_ids(l).is_empty()).await;
+    server
+        .apply_services_list(ip(1, 1, 1, 1), &[])
+        .await
+        .unwrap();
+    gate.add_permits(64);
+    let _ = build.await.unwrap();
+    assert_net_ids_in_use(&server, 0).await;
+    assert!(
+        !server
+            .orchestrator()
+            .holds_backend_session(&("A".into(), ip(1, 1, 1, 1), None, 5555))
+            .await
+    );
+}
+
 async fn backend_liveness_setup() -> NullnetGrpcImpl {
     let services = load_fixture(BACKEND_LIVENESS).await;
     let server = NullnetGrpcImpl::new_for_test(services);

@@ -39,6 +39,8 @@ pub(crate) type BackendKey = (String, IpAddr, Option<String>, u16);
 /// makes the liveness decrement 1:1 — see `claim_backend_session`.
 #[derive(Debug, Clone)]
 struct BackendSession {
+    generation: Uuid,
+    building: bool,
     /// Which stack the chain lives in; the reap walks services per stack.
     stack: String,
     /// When the initiator's last connection on this trigger port closed, per
@@ -76,6 +78,7 @@ struct DestStat {
 /// A live egress forward-proxy edge (initiator replica -> proxy host).
 #[derive(Debug, Clone)]
 struct EgressEdge {
+    generation: Uuid,
     net_id: u32,
     /// Stack + service the initiator replica is registered under. Resolved once
     /// at trigger time and carried here: the destination reports that feed the
@@ -268,6 +271,7 @@ impl Orchestrator {
         proxy_ip: IpAddr,
     ) -> Result<bool, Error> {
         let key = (initiator_ip, initiator_docker.clone());
+        let generation = Uuid::new_v4();
         // Set when this call reclaimed a stranded reservation; emitted after the
         // write lock is dropped.
         let mut stale = None;
@@ -299,6 +303,7 @@ impl Orchestrator {
             edges.insert(
                 key.clone(),
                 EgressEdge {
+                    generation,
                     net_id: 0,
                     stack: stack.to_string(),
                     service: service.to_string(),
@@ -323,7 +328,8 @@ impl Orchestrator {
         }
 
         let Some(net_id) = self.allocate_net_id().await else {
-            self.remove_egress_edges(|k, _| k == &key).await;
+            self.remove_egress_edges(|k, e| k == &key && e.generation == generation)
+                .await;
             return Err("NET ID pool exhausted").handle_err(location!());
         };
 
@@ -345,7 +351,8 @@ impl Orchestrator {
                 Some(port) => Some(u32::from(port)),
                 None => {
                     self.free_net_id(net_id).await;
-                    self.remove_egress_edges(|k, _| k == &key).await;
+                    self.remove_egress_edges(|k, e| k == &key && e.generation == generation)
+                        .await;
                     return Err("UDP port pool exhausted").handle_err(location!());
                 }
             }
@@ -383,9 +390,13 @@ impl Orchestrator {
         let (proxy_ok, init_ok) = tokio::join!(proxy_res, init_res);
 
         if proxy_ok.is_none() || init_ok.is_none() {
+            self.events
+                .emit(Event::setup_timeout(net_id, service.to_string()))
+                .await;
             self.send_net_teardown(initiator_ip, initiator_docker, proxy_ip, None, net_id)
                 .await;
-            self.remove_egress_edges(|k, _| k == &key).await;
+            self.remove_egress_edges(|k, e| k == &key && e.generation == generation)
+                .await;
             return Err("egress edge NET setup failed").handle_err(location!());
         }
 
@@ -397,11 +408,11 @@ impl Orchestrator {
         let promoted = {
             let mut edges = self.egress_edges.write().await;
             match edges.get_mut(&key) {
-                Some(edge) => {
+                Some(edge) if edge.generation == generation => {
                     edge.net_id = net_id;
                     true
                 }
-                None => false,
+                _ => false,
             }
         };
         if !promoted {
@@ -725,22 +736,57 @@ impl Orchestrator {
             .min()
     }
 
-    /// Record that a freshly built chain is held by this session.
-    ///
-    /// Only a build takes a refcount — `net_chain_setup` added the +1 on every
-    /// hop. A trigger that found the chain already up holds nothing (see
-    /// `handle_backend_trigger`). An existing entry is overwritten rather than
-    /// doubled: a rebuild only happens once the previous increment has been
-    /// consumed (the first dep having no client entry is what made it a
-    /// rebuild).
-    pub(crate) async fn hold_backend_session(&self, key: BackendKey, stack: &str) {
-        self.backend_sessions.write().await.insert(
+    /// Called under the services lock, before any edge can be reserved.
+    pub(crate) async fn claim_backend_session(&self, key: BackendKey, stack: &str) -> Option<Uuid> {
+        let mut sessions = self.backend_sessions.write().await;
+        if sessions.contains_key(&key) {
+            return None;
+        }
+        let generation = Uuid::new_v4();
+        sessions.insert(
             key,
             BackendSession {
+                generation,
+                building: true,
                 stack: stack.to_string(),
                 idle_since: None,
             },
         );
+        Some(generation)
+    }
+
+    /// Preserve liveness received during setup; never promote a replacement.
+    pub(crate) async fn finish_backend_session(&self, key: &BackendKey, generation: Uuid) -> bool {
+        let mut sessions = self.backend_sessions.write().await;
+        if let Some(session) = sessions.get_mut(key)
+            && session.generation == generation
+        {
+            session.building = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) async fn cancel_backend_session(&self, key: &BackendKey, generation: Uuid) {
+        let mut sessions = self.backend_sessions.write().await;
+        if sessions
+            .get(key)
+            .is_some_and(|s| s.generation == generation)
+        {
+            sessions.remove(key);
+        }
+    }
+
+    /// Invalidate a build and leave its increments for its own unwind.
+    pub(crate) async fn cancel_backend_build(&self, key: &BackendKey) -> bool {
+        let mut sessions = self.backend_sessions.write().await;
+        if sessions.get(key).is_some_and(|s| s.building) {
+            sessions.remove(key);
+            true
+        } else {
+            false
+        }
     }
 
     /// Record a trigger chain's open-connection transition reported by the client.
@@ -768,8 +814,9 @@ impl Orchestrator {
         let due: Vec<BackendKey> = sessions
             .iter()
             .filter(|(_, s)| {
-                s.idle_since
-                    .is_some_and(|since| now.duration_since(since) >= debounce)
+                !s.building
+                    && s.idle_since
+                        .is_some_and(|since| now.duration_since(since) >= debounce)
             })
             .map(|(k, _)| k.clone())
             .collect();
@@ -785,6 +832,7 @@ impl Orchestrator {
             .read()
             .await
             .values()
+            .filter(|s| !s.building)
             .filter_map(|s| s.idle_since)
             .map(|since| debounce.saturating_sub(now.duration_since(since)))
             .min()
@@ -1442,6 +1490,82 @@ mod udp_port_pool_tests {
 mod egress_liveness_tests {
     use super::*;
 
+    #[tokio::test]
+    async fn trigger_atomic_old_egress_build_cannot_promote_replacement() {
+        let orch = Orchestrator::new();
+        let initiator = ip(10, 0, 0, 1);
+        let proxy = ip(10, 0, 0, 9);
+        let key = (initiator, Some("c1".to_string()));
+        orch.register_fake_client(initiator).await;
+        let (log, gate) = orch.register_gated_client(proxy).await;
+        let builder = orch.clone();
+        let build = tokio::spawn(async move {
+            builder
+                .ensure_egress_edge("s", "svc", initiator, Some("c1".into()), proxy)
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while log.lock().await.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        orch.teardown_egress_edges_for_missing_containers(initiator, &Default::default())
+            .await;
+        insert_reservation(&orch, key.clone(), Duration::ZERO).await;
+        gate.add_permits(64);
+        let result = build.await.unwrap().unwrap();
+        let replacement_net = orch.egress_edges.read().await[&key].net_id;
+        assert!(!result, "removed build incorrectly reported success");
+        assert_eq!(
+            replacement_net, 0,
+            "old build promoted the replacement reservation"
+        );
+        orch.settle_teardowns().await;
+        assert_eq!(orch.net_ids_in_use().await, 0, "old tunnel leaked");
+    }
+
+    #[tokio::test]
+    async fn trigger_atomic_failed_egress_build_cannot_remove_replacement() {
+        let orch = Orchestrator::new();
+        let mut events = orch.events.subscribe();
+        let initiator = ip(10, 0, 0, 1);
+        let proxy = ip(10, 0, 0, 9);
+        let key = (initiator, Some("c1".to_string()));
+        orch.register_fake_client(initiator).await;
+        let (log, gate) = orch.register_gated_client(proxy).await;
+        let builder = orch.clone();
+        let build = tokio::spawn(async move {
+            builder
+                .ensure_egress_edge("s", "svc", initiator, Some("c1".into()), proxy)
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while log.lock().await.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        orch.teardown_egress_edges_for_missing_containers(initiator, &Default::default())
+            .await;
+        insert_reservation(&orch, key.clone(), Duration::ZERO).await;
+        orch.pending.lock().await.clear();
+        gate.add_permits(64);
+        assert!(build.await.unwrap().is_err());
+        assert!(
+            std::iter::from_fn(|| events.try_recv().ok())
+                .any(|event| matches!(event, Event::SetupTimeout { .. }))
+        );
+        assert!(
+            orch.egress_edges.read().await.contains_key(&key),
+            "old failure deleted the new reservation"
+        );
+        orch.settle_teardowns().await;
+        assert_eq!(orch.net_ids_in_use().await, 0);
+    }
+
     fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(a, b, c, d))
     }
@@ -1452,6 +1576,7 @@ mod egress_liveness_tests {
         orch.egress_edges.write().await.insert(
             key.clone(),
             EgressEdge {
+                generation: Uuid::new_v4(),
                 net_id,
                 stack: "s".to_string(),
                 service: "svc".to_string(),
@@ -1470,6 +1595,7 @@ mod egress_liveness_tests {
         orch.egress_edges.write().await.insert(
             key.clone(),
             EgressEdge {
+                generation: Uuid::new_v4(),
                 net_id: 0,
                 stack: "s".to_string(),
                 service: "svc".to_string(),
@@ -1607,6 +1733,7 @@ mod egress_session_history_tests {
         orch.egress_edges.write().await.insert(
             key.clone(),
             EgressEdge {
+                generation: Uuid::new_v4(),
                 net_id,
                 stack: "prod".to_string(),
                 service: "api".to_string(),

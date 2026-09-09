@@ -523,14 +523,25 @@ async fn teardown_backend_chain(
     orchestrator: &Orchestrator,
 ) {
     let ports = matching_trigger_ports(initiator_name, only_through, only_port, services);
-    let edges = collect_backend_chain_edges(
-        initiator_name,
-        initiator_ip,
-        initiator_docker,
-        only_through,
-        only_port,
-        services,
-    );
+    let mut edges = Vec::new();
+    for port in &ports {
+        let key = (
+            initiator_name.to_string(),
+            initiator_ip,
+            initiator_docker.map(String::from),
+            *port,
+        );
+        if !orchestrator.cancel_backend_build(&key).await {
+            edges.extend(collect_backend_chain_edges(
+                initiator_name,
+                initiator_ip,
+                initiator_docker,
+                only_through,
+                Some(*port),
+                services,
+            ));
+        }
+    }
     let pinned = backend_involved_services(services);
     for (client, dep_name) in edges {
         if let Some(ServiceInfo::Registered(dep_reg)) = services.get_mut(&dep_name) {

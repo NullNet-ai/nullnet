@@ -20,12 +20,12 @@ use crate::egress_policy::PolicyVerdicts;
 use crate::nfqueue::cache::BridgeIpCache;
 use crate::nfqueue::parse::{Flow, ipv4_flow};
 use crate::nfqueue::recv_loop::spawn_queue_loop;
-use crate::triggers::{EGRESS_TRIGGER_PORT, TriggerState, TriggersState};
+use crate::triggers::{EGRESS_TRIGGER_PORT, TriggerClaim, TriggerState, TriggersState};
 use nfq::{Message, Verdict};
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentEgressPolicyCheckFailed, AgentEgressSteerSetupTimedOut, AgentEgressTriggerSendFailed,
-    AgentEvent, EgressDestinationEntry, agent_event::Event as AgentEventKind,
+    AgentEgressPolicyCheckFailed, AgentEgressTriggerSendFailed, AgentEvent, EgressDestinationEntry,
+    agent_event::Event as AgentEventKind,
 };
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -256,15 +256,13 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Decision {
         track: matches!(verdict, Verdict::Accept).then(|| container.clone()),
     };
 
-    match ctx.triggers_state.state(&container, EGRESS_TRIGGER_PORT) {
-        TriggerState::Active => tracked(Verdict::Accept),
-        TriggerState::Pending(notify) => {
-            tracked(wait_for_steer(ctx, &container, dst_ip, dst_port, notify).await)
-        }
-        TriggerState::Fresh => {
-            let notify = ctx
-                .triggers_state
-                .mark_pending(&container, EGRESS_TRIGGER_PORT, src_ip);
+    match ctx
+        .triggers_state
+        .claim(&container, EGRESS_TRIGGER_PORT, src_ip)
+    {
+        TriggerClaim::Active => tracked(Verdict::Accept),
+        TriggerClaim::Pending(notify) => tracked(wait_for_steer(ctx, &container, notify).await),
+        TriggerClaim::Start(notify) => {
             // Register the waiter BEFORE the gRPC round-trip: the server can
             // dispatch the egress `VxlanSetup` (→ `mark_active`) faster than its
             // reply to `egress_trigger` returns, and `notify_waiters` only wakes
@@ -297,31 +295,26 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Decision {
                         // Pending (ages out at PENDING_TIMEOUT) so a retransmit
                         // re-waits on the same notify; drop this held SYN.
                         eprintln!("[egress-nfq] no egress steer for container {container}");
-                        report_steer_timed_out(
-                            &ctx.grpc,
-                            &container,
-                            dst_ip,
-                            dst_port,
-                            format!("no egress steer within {STEER_TIMEOUT:?}"),
-                        );
                         tracked(Verdict::Drop)
                     }
                 },
                 Ok(Err(e)) => {
                     eprintln!("[egress-nfq] egress_trigger {container}: {e}");
                     report_trigger_send_failed(&ctx.grpc, &container, dst_ip, dst_port, e);
-                    tracked(after_failed_trigger(ctx, &container))
+                    tracked(after_failed_trigger(ctx, &container, &notify))
                 }
                 Err(_) => {
                     eprintln!("[egress-nfq] egress_trigger timeout for container {container}");
-                    report_trigger_send_failed(
-                        &ctx.grpc,
-                        &container,
-                        dst_ip,
-                        dst_port,
-                        format!("egress_trigger timed out after {TRIGGER_TIMEOUT:?}"),
-                    );
-                    tracked(after_failed_trigger(ctx, &container))
+                    tracked(
+                        if matches!(
+                            ctx.triggers_state.state(&container, EGRESS_TRIGGER_PORT),
+                            TriggerState::Active
+                        ) {
+                            Verdict::Accept
+                        } else {
+                            Verdict::Drop
+                        },
+                    )
                 }
             }
         }
@@ -377,9 +370,9 @@ async fn policy_allows(ctx: &EgressCtx, container: &str, dst_ip: Ipv4Addr) -> bo
 /// production — steer live at +2s, RPC abandoned at +5s). So clear the entry
 /// only while it is still `Pending`, and release the packet if steering did go
 /// live after all.
-fn after_failed_trigger(ctx: &EgressCtx, container: &str) -> Verdict {
+fn after_failed_trigger(ctx: &EgressCtx, container: &str, owner: &Arc<Notify>) -> Verdict {
     ctx.triggers_state
-        .forget_pending(container, EGRESS_TRIGGER_PORT);
+        .forget_pending(container, EGRESS_TRIGGER_PORT, owner);
     match ctx.triggers_state.state(container, EGRESS_TRIGGER_PORT) {
         TriggerState::Active => Verdict::Accept,
         _ => Verdict::Drop,
@@ -387,13 +380,7 @@ fn after_failed_trigger(ctx: &EgressCtx, container: &str) -> Verdict {
 }
 
 /// Hold the packet until steering is marked active (or time out and drop it).
-async fn wait_for_steer(
-    ctx: &EgressCtx,
-    container: &str,
-    dst_ip: Ipv4Addr,
-    dst_port: u16,
-    notify: Arc<Notify>,
-) -> Verdict {
+async fn wait_for_steer(ctx: &EgressCtx, container: &str, notify: Arc<Notify>) -> Verdict {
     let notified = notify.notified();
     tokio::pin!(notified);
     if notified.as_mut().enable()
@@ -408,13 +395,6 @@ async fn wait_for_steer(
         Ok(_) => Verdict::Accept,
         Err(_) => {
             eprintln!("[egress-nfq] timeout waiting for egress steer, container {container}");
-            report_steer_timed_out(
-                &ctx.grpc,
-                container,
-                dst_ip,
-                dst_port,
-                format!("steering not active after {STEER_TIMEOUT:?}"),
-            );
             Verdict::Drop
         }
     }
@@ -508,32 +488,6 @@ fn spawn_flush_task(grpc: NullnetGrpcInterface, pending: PendingDsts) {
                 }
             }
         }
-    });
-}
-
-/// Fire-and-forget: report a held packet dropped because steering never went
-/// live. The trigger was accepted — see [`report_trigger_send_failed`] for the
-/// case where the RPC itself failed.
-fn report_steer_timed_out(
-    grpc: &NullnetGrpcInterface,
-    container: &str,
-    dst_ip: Ipv4Addr,
-    dst_port: u16,
-    error_message: String,
-) {
-    let grpc = grpc.clone();
-    let event = AgentEvent {
-        event: Some(AgentEventKind::EgressSteerSetupTimedOut(
-            AgentEgressSteerSetupTimedOut {
-                docker_container: container.to_string(),
-                dst_ip: dst_ip.to_string(),
-                dst_port: u32::from(dst_port),
-                error_message,
-            },
-        )),
-    };
-    tokio::spawn(async move {
-        let _ = grpc.report_event(event).await;
     });
 }
 
