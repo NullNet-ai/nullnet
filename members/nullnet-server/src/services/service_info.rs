@@ -574,6 +574,16 @@ impl RegisteredServiceInfo {
             .map(|r| (r.ip, r.docker_container.clone()))
     }
 
+    pub(crate) fn client_net_id(&self, client: &Client) -> Option<u32> {
+        self.replicas.iter().find_map(|r| {
+            r.clients
+                .clients()
+                .get(client)
+                .filter(|ci| !ci.is_pending())
+                .map(ClientInfo::net_id)
+        })
+    }
+
     /// The wake-up for an edge another task is already building, if any.
     pub(crate) fn pending_notify(
         &self,
@@ -678,6 +688,19 @@ impl RegisteredServiceInfo {
 
     /// Release a reservation whose edge never came up. No-op on a promoted
     /// entry, so a rollback can never take a refcount it does not own.
+    pub(crate) fn remove_pending_client_if(
+        &mut self,
+        client: &Client,
+        owner: &std::sync::Arc<tokio::sync::Notify>,
+    ) {
+        if self
+            .pending_notify(client)
+            .is_some_and(|current| std::sync::Arc::ptr_eq(&current, owner))
+        {
+            self.remove_pending_client(client);
+        }
+    }
+
     pub(crate) fn remove_pending_client(&mut self, client: &Client) {
         for replica in &mut self.replicas {
             if replica.clients.remove_pending_client(client) {

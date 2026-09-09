@@ -2,12 +2,11 @@ use crate::conntrack::{TriggerOpenFlows, report_backend_liveness};
 use crate::nfqueue::cache::BridgeIpCache;
 use crate::nfqueue::parse::ipv4_flow;
 use crate::nfqueue::recv_loop::spawn_queue_loop;
-use crate::triggers::{TriggerState, TriggersState};
+use crate::triggers::{TriggerClaim, TriggerState, TriggersState};
 use nfq::{Message, Verdict};
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentBackendTriggerSendFailed, AgentBackendTriggerSetupTimedOut, AgentEvent,
-    agent_event::Event as AgentEventKind,
+    AgentBackendTriggerSendFailed, AgentEvent, agent_event::Event as AgentEventKind,
 };
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
@@ -189,9 +188,9 @@ async fn decide_verdict(
     src_ip: std::net::Ipv4Addr,
     service: &str,
 ) -> Verdict {
-    match ctx.triggers_state.state(container, dst_port) {
-        TriggerState::Active => Verdict::Accept,
-        TriggerState::Pending(notify) => {
+    match ctx.triggers_state.claim(container, dst_port, src_ip) {
+        TriggerClaim::Active => Verdict::Accept,
+        TriggerClaim::Pending(notify) => {
             // `mark_active` wakes us with `Notify::notify_waiters()`, which
             // only delivers to currently-registered futures — there is no
             // stored-permit fallback. So we must `.enable()` the Notified
@@ -218,19 +217,11 @@ async fn decide_verdict(
                     eprintln!(
                         "[nfqueue] timeout waiting for active state on '{service}' port {dst_port} container {container}"
                     );
-                    report_setup_timed_out(
-                        &ctx.grpc,
-                        service,
-                        dst_port,
-                        container,
-                        format!("chain not active after {ACTIVE_TIMEOUT:?}"),
-                    );
                     Verdict::Drop
                 }
             }
         }
-        TriggerState::Fresh => {
-            let notify = ctx.triggers_state.mark_pending(container, dst_port, src_ip);
+        TriggerClaim::Start(notify) => {
             // Register BEFORE the gRPC round-trip: the server can dispatch
             // `VxlanSetup` (→ `mark_active` here) faster than its reply to
             // `backend_trigger` arrives back, especially on multi-edge
@@ -268,13 +259,6 @@ async fn decide_verdict(
                         eprintln!(
                             "[nfqueue] no VxlanSetup for '{service}' port {dst_port} container {container}"
                         );
-                        report_setup_timed_out(
-                            &ctx.grpc,
-                            service,
-                            dst_port,
-                            container,
-                            format!("no VxlanSetup within {ACTIVE_TIMEOUT:?}"),
-                        );
                         Verdict::Drop
                     }
                 },
@@ -283,19 +267,20 @@ async fn decide_verdict(
                         "[nfqueue] backend_trigger '{service}' port {dst_port} container {container}: {e}"
                     );
                     report_trigger_send_failed(&ctx.grpc, service, dst_port, e);
-                    after_failed_trigger(ctx, container, dst_port)
+                    after_failed_trigger(ctx, container, dst_port, &notify)
                 }
                 Err(_) => {
                     eprintln!(
                         "[nfqueue] backend_trigger timeout '{service}' port {dst_port} container {container}"
                     );
-                    report_trigger_send_failed(
-                        &ctx.grpc,
-                        service,
-                        dst_port,
-                        format!("backend_trigger timed out after {TRIGGER_TIMEOUT:?}"),
-                    );
-                    after_failed_trigger(ctx, container, dst_port)
+                    if matches!(
+                        ctx.triggers_state.state(container, dst_port),
+                        TriggerState::Active
+                    ) {
+                        Verdict::Accept
+                    } else {
+                        Verdict::Drop
+                    }
                 }
             }
         }
@@ -309,8 +294,14 @@ async fn decide_verdict(
 /// is still in flight. Clear the entry only while it is still `Pending` —
 /// dropping an `Active` one loses the record that the chain is live, and the
 /// server sends no second setup for a chain it already considers up.
-fn after_failed_trigger(ctx: &ListenerCtx, container: &str, dst_port: u16) -> Verdict {
-    ctx.triggers_state.forget_pending(container, dst_port);
+fn after_failed_trigger(
+    ctx: &ListenerCtx,
+    container: &str,
+    dst_port: u16,
+    owner: &Arc<tokio::sync::Notify>,
+) -> Verdict {
+    ctx.triggers_state
+        .forget_pending(container, dst_port, owner);
     match ctx.triggers_state.state(container, dst_port) {
         TriggerState::Active => Verdict::Accept,
         _ => Verdict::Drop,
@@ -331,32 +322,6 @@ fn report_trigger_send_failed(
             AgentBackendTriggerSendFailed {
                 service_name: service.to_string(),
                 port: u32::from(port),
-                error_message,
-            },
-        )),
-    };
-    tokio::spawn(async move {
-        let _ = grpc.report_event(event).await;
-    });
-}
-
-/// Fire-and-forget: report a held packet dropped because the chain never went
-/// active. Distinct from [`report_trigger_send_failed`] — the trigger itself was
-/// accepted here, so the failure is the setup not landing, not the RPC.
-fn report_setup_timed_out(
-    grpc: &NullnetGrpcInterface,
-    service: &str,
-    port: u16,
-    container: &str,
-    error_message: String,
-) {
-    let grpc = grpc.clone();
-    let event = AgentEvent {
-        event: Some(AgentEventKind::BackendTriggerSetupTimedOut(
-            AgentBackendTriggerSetupTimedOut {
-                service_name: service.to_string(),
-                port: u32::from(port),
-                docker_container: container.to_string(),
                 error_message,
             },
         )),

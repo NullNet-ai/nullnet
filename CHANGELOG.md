@@ -15,6 +15,7 @@ All Nullnet releases with the relative changes are documented in this file.
 - Install BPF linker as a prebuilt binary rather than compiling it from source ([#158](https://github.com/NullNet-ai/nullnet/pull/158))
 ### Removed
 ### Fixed
+- Make backend and egress trigger claims atomic, preserve liveness during setup, and report setup failures instead of transient packet-wait timeouts ([#186](https://github.com/NullNet-ai/nullnet/pull/186))
 - Set both same-host veth MAC addresses at creation to prevent udev races from breaking encrypted connections ([#185](https://github.com/NullNet-ai/nullnet/pull/185))
 - Stop a teardown from corrupting a chain that is still being set up ([#167](https://github.com/NullNet-ai/nullnet/pull/167) — fixes [#166](https://github.com/NullNet-ai/nullnet/issues/166))
 - Reject a service name claimed by more than one stack, instead of resolving it to an arbitrary stack ([#165](https://github.com/NullNet-ai/nullnet/pull/165) — fixes [#129](https://github.com/NullNet-ai/nullnet/issues/129))
