@@ -345,16 +345,7 @@ async fn declare_services(
         // Report raw local observations; the server joins them against its
         // per-stack config to decide what this node hosts. Running containers:
         // logical (Swarm label / name) -> real container name(s).
-        let containers: Vec<Container> = get_running_docker_containers()
-            .await
-            .into_iter()
-            .flat_map(|(match_key, real_names)| {
-                real_names.into_iter().map(move |real_name| Container {
-                    match_key: match_key.clone(),
-                    real_name,
-                })
-            })
-            .collect();
+        let containers = get_running_docker_containers().await;
 
         // One Listener per distinct listening process, keyed by exe path.
         let mut paths: Vec<String> = listeners::get_all()
@@ -465,43 +456,40 @@ async fn declare_services(
     }
 }
 
-/// Returns a map of logical name -> real container names for all running Docker containers.
-///
-/// Supports both standalone Docker (name -> [name]) and Swarm mode (swarm service label -> [replicas]).
-async fn get_running_docker_containers() -> HashMap<String, Vec<String>> {
-    let mut map: HashMap<String, Vec<String>> = HashMap::new();
-
-    // Query container name and Swarm service label together
+/// Report running and paused containers, using Swarm labels when present.
+async fn get_running_docker_containers() -> Vec<Container> {
     let output = tokio::process::Command::new("docker")
         .args([
             "ps",
             "--format",
-            "{{.Names}}\t{{.Label \"com.docker.swarm.service.name\"}}",
+            "{{.Names}}\t{{.Label \"com.docker.swarm.service.name\"}}\t{{.State}}",
         ])
         .output()
         .await;
+    let Ok(out) = output else {
+        return Vec::new();
+    };
+    parse_container_report(&String::from_utf8_lossy(&out.stdout))
+}
 
-    if let Ok(out) = output {
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
-            if line.is_empty() {
-                continue;
+fn parse_container_report(output: &str) -> Vec<Container> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            let real_name = parts.next()?.trim();
+            if real_name.is_empty() {
+                return None;
             }
-            let parts: Vec<&str> = line.split('\t').collect();
-            let real_name = parts[0].to_string();
-            let swarm_label = parts.get(1).unwrap_or(&"").trim();
-            if swarm_label.is_empty() {
-                // standalone: logical name = container name
-                map.entry(real_name.clone()).or_default().push(real_name);
-            } else {
-                // Swarm: logical name = swarm service label, may have multiple replicas
-                map.entry(swarm_label.to_string())
-                    .or_default()
-                    .push(real_name);
-            }
-        }
-    }
-
-    map
+            let label = parts.next()?.trim();
+            let state = parts.next()?.trim();
+            Some(Container {
+                match_key: if label.is_empty() { real_name } else { label }.to_string(),
+                real_name: real_name.to_string(),
+                paused: state == "paused",
+            })
+        })
+        .collect()
 }
 
 async fn setup_tap(
@@ -567,3 +555,17 @@ async fn setup_tap(
 //     }
 //     None
 // }
+
+#[cfg(test)]
+mod container_report_tests {
+    #[test]
+    fn reports_pause_state_for_standalone_and_swarm() {
+        let report =
+            super::parse_container_report("web\t\trunning\nworker.1.x\tstack_worker\tpaused\n");
+        assert_eq!(report.len(), 2);
+        assert_eq!(report[0].match_key, "web");
+        assert!(!report[0].paused);
+        assert_eq!(report[1].match_key, "stack_worker");
+        assert!(report[1].paused);
+    }
+}

@@ -736,6 +736,25 @@ impl Orchestrator {
             .min()
     }
 
+    /// Outbound reservations and live sessions also keep their source running.
+    pub(crate) async fn has_outgoing_work(&self, ip: IpAddr, container: &str) -> bool {
+        if self
+            .backend_sessions
+            .read()
+            .await
+            .keys()
+            .any(|(_, source_ip, docker, _)| {
+                *source_ip == ip && docker.as_deref() == Some(container)
+            })
+        {
+            return true;
+        }
+        self.egress_edges
+            .read()
+            .await
+            .contains_key(&(ip, Some(container.to_string())))
+    }
+
     /// Called under the services lock, before any edge can be reserved.
     pub(crate) async fn claim_backend_session(&self, key: BackendKey, stack: &str) -> Option<Uuid> {
         let mut sessions = self.backend_sessions.write().await;

@@ -220,6 +220,11 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
     (non-Docker) service
 - `host_ip` optionally limits either match to one node's control-channel IPv4 address
   (for example, `host_ip = "192.168.1.103"` for that host's SSH service). Omit it to match all hosts.
+- `pausable = true` opts a Docker service into pausing when idle (the Config checkbox).
+  It defaults to `false`, including existing DB rows. Backend services follow the same setting.
+  Live chains and egress sessions keep containers running; disabling pause starts an asynchronous resume of a paused replica.
+  If several declarations share a container, all must opt in. Paused initiators cannot start work
+  themselves; use this only when incoming traffic can wake them.
 - `timeout` controls proxy-reachability: when present the service is a proxy-reachable entry point
   with that per-client idle timeout in seconds (`0` disables the timeout); omit it to keep the
   service off the proxy (backend-only)

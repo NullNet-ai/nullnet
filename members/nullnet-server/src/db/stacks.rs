@@ -19,6 +19,7 @@ pub(crate) struct ServiceInsert<'a> {
     pub(crate) docker_container: Option<&'a str>,
     pub(crate) process_path: Option<&'a str>,
     pub(crate) host_ip: Option<&'a str>,
+    pub(crate) pausable: bool,
     pub(crate) port: Option<i32>,
     pub(crate) timeout: Option<i64>,
     pub(crate) max_networks: Option<i32>,
@@ -170,6 +171,7 @@ impl StackRepository {
                 docker_container: s.docker_container,
                 process_path: s.process_path,
                 host_ip: s.host_ip,
+                pausable: s.pausable,
                 port: s.port,
                 timeout: s.timeout,
                 max_networks: s.max_networks,
@@ -286,6 +288,7 @@ mod tests {
             docker_container: Some("my-app_web"),
             process_path: None,
             host_ip: Some("192.0.2.1"),
+            pausable: true,
             port: Some(8080),
             timeout: Some(0),
             max_networks: None,
@@ -310,6 +313,7 @@ mod tests {
         assert_eq!(services.len(), 1);
         assert_eq!(services[0].name, "web");
         assert_eq!(services[0].host_ip.as_deref(), Some("192.0.2.1"));
+        assert!(services[0].pausable);
         assert_eq!(services[0].docker_container.as_deref(), Some("my-app_web"));
 
         let ids: Vec<i32> = services.iter().map(|s| s.id).collect();

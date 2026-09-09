@@ -15,9 +15,7 @@ use crate::services::clients::{Client, ClientInfo};
 use crate::services::edge::RegisteredEdge;
 use crate::services::firewall::{FilterContext, FilterPolicy};
 use crate::services::input::{MatchIndex, RouteMap, RouteTarget, ServicesToml, StackMap};
-use crate::services::service_info::{
-    RegisteredServiceInfo, ServiceInfo, backend_involved_services,
-};
+use crate::services::service_info::{RegisteredServiceInfo, ServiceInfo};
 use crate::timeout::check_timeouts;
 use nullnet_grpc_lib::nullnet_grpc::nullnet_grpc_server::NullnetGrpc;
 use nullnet_grpc_lib::nullnet_grpc::{
@@ -808,7 +806,13 @@ impl NullnetGrpcImpl {
             }
         }
 
-        self.apply_services_list_by_stack(sender_ip, &service_list_by_stack)
+        let paused: HashSet<String> = report
+            .containers
+            .iter()
+            .filter(|c| c.paused)
+            .map(|c| c.real_name.clone())
+            .collect();
+        self.apply_services_report(sender_ip, &service_list_by_stack, &paused)
             .await?;
         drop(index);
 
@@ -1217,8 +1221,15 @@ impl NullnetGrpcImpl {
         let this = self.clone();
         let initiator_name = initiator_name.to_string();
         detached(async move {
-            let result = this
-                .setup_backend_chain_owned(
+            let result = async {
+                this.resume_trigger_source(
+                    &stack,
+                    &initiator_name,
+                    initiator_ip,
+                    initiator_docker.as_deref(),
+                )
+                .await?;
+                this.setup_backend_chain_owned(
                     &stack,
                     &initiator_name,
                     initiator_ip,
@@ -1226,7 +1237,9 @@ impl NullnetGrpcImpl {
                     port,
                     Some((key.clone(), generation)),
                 )
-                .await;
+                .await
+            }
+            .await;
             if !matches!(result, Ok(true)) {
                 this.orchestrator
                     .cancel_backend_session(&key, generation)
@@ -1381,17 +1394,25 @@ impl NullnetGrpcImpl {
         // would drop the line precisely when the trigger timed out — leaving a
         // trigger with no edge up, which is the signature of the stranded
         // reservation this detaching exists to prevent.
-        let orchestrator = self.orchestrator.clone();
+        let this = self.clone();
         detached(async move {
-            let built = orchestrator
+            let built = this
+                .orchestrator
                 .ensure_egress_edge(
                     &initiator_stack,
                     &initiator_name,
                     initiator_ip,
-                    initiator_docker,
+                    initiator_docker.clone(),
                     proxy_ip,
                 )
                 .await?;
+            this.resume_trigger_source(
+                &initiator_stack,
+                &initiator_name,
+                initiator_ip,
+                initiator_docker.as_deref(),
+            )
+            .await?;
             if built {
                 println!(
                     "[egress] edge up for '{initiator_name}' ({initiator_ip}) -> proxy {proxy_ip}"
@@ -1400,6 +1421,37 @@ impl NullnetGrpcImpl {
             Ok::<(), Error>(())
         })
         .await??;
+        Ok(())
+    }
+
+    async fn resume_trigger_source(
+        &self,
+        stack: &str,
+        service: &str,
+        ip: IpAddr,
+        docker: Option<&str>,
+    ) -> Result<(), Error> {
+        let pending = {
+            let services = self.services.read().await;
+            let replica = services
+                .get(stack)
+                .and_then(|s| s.get(service))
+                .and_then(|info| match info {
+                    ServiceInfo::Registered(reg) => reg
+                        .replicas()
+                        .iter()
+                        .find(|r| r.matches_identity(ip, docker)),
+                    ServiceInfo::Unregistered(_) => None,
+                })
+                .ok_or("trigger source disappeared")
+                .handle_err(location!())?;
+            replica.resume(&self.orchestrator)
+        };
+        if let Some(pending) = pending
+            && !pending.wait().await
+        {
+            return Err("trigger source could not be resumed").handle_err(location!());
+        }
         Ok(())
     }
 
@@ -1652,11 +1704,23 @@ impl NullnetGrpcImpl {
         &self.http_routes_changed
     }
 
+    #[cfg(test)]
     #[allow(clippy::type_complexity)]
     pub(crate) async fn apply_services_list_by_stack(
         &self,
         sender_ip: IpAddr,
         service_list_by_stack: &HashMap<String, Vec<(String, u16, Option<String>)>>,
+    ) -> Result<(), Error> {
+        self.apply_services_report(sender_ip, service_list_by_stack, &HashSet::new())
+            .await
+    }
+
+    #[allow(clippy::type_complexity)]
+    async fn apply_services_report(
+        &self,
+        sender_ip: IpAddr,
+        service_list_by_stack: &HashMap<String, Vec<(String, u16, Option<String>)>>,
+        paused: &HashSet<String>,
     ) -> Result<(), Error> {
         let mut services_mut = self.services.write().await;
 
@@ -1686,6 +1750,14 @@ impl NullnetGrpcImpl {
                     .unwrap_or(false);
                 stack_map.entry(name.clone()).and_modify(|si| {
                     si.add_replica(sender_ip, *port, docker_container.clone());
+                    if is_new
+                        && docker_container
+                            .as_ref()
+                            .is_some_and(|c| paused.contains(c))
+                        && let ServiceInfo::Registered(reg) = si
+                    {
+                        reg.mark_replica_suspended(sender_ip, docker_container.as_deref());
+                    }
                 });
                 if is_new {
                     self.orchestrator
@@ -1696,21 +1768,11 @@ impl NullnetGrpcImpl {
             }
         }
 
-        // Enforce the invariant: any Docker-backed replica that is idle (e.g. a
-        // freshly declared, never-requested container at startup) must be paused.
-        // Backend-involved services are pinned and never paused.
-        for stack in service_list_by_stack.keys() {
-            let Some(stack_map) = services_mut.get_mut(stack) else {
-                continue;
-            };
-            let pinned = backend_involved_services(stack_map);
-            for (name, si) in stack_map.iter_mut() {
-                if let ServiceInfo::Registered(reg) = si {
-                    reg.reconcile_suspends(&self.orchestrator, pinned.contains(name))
-                        .await;
-                }
-            }
-        }
+        crate::services::service_info::reconcile_container_pauses(
+            &mut services_mut,
+            &self.orchestrator,
+        )
+        .await;
 
         Ok(())
     }
@@ -1997,17 +2059,11 @@ async fn run_net_chain_setup(
 
     if any_failure || orphaned {
         if let Some(stack_map) = services_mut.get_mut(&stack) {
-            let pinned = backend_involved_services(stack_map);
             for edge in &successful {
                 if let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&edge.server_name)
                     && reg.client_net_id(&edge.client) == Some(edge.net_id)
                 {
-                    reg.decrement_chain(
-                        &edge.client,
-                        &orchestrator,
-                        pinned.contains(&edge.server_name),
-                    )
-                    .await;
+                    reg.decrement_chain(&edge.client, &orchestrator).await;
                 }
             }
         }
@@ -2096,7 +2152,7 @@ async fn setup_edge(
     // by (client, proxy) and dep clients by source replica, and a source
     // replica can only route to one replica of a given dep.
     let deadline = std::time::Instant::now() + EDGE_CLAIM_TIMEOUT;
-    let (server_ethernet, server_docker, server_suspended, reservation) = loop {
+    let (server_ethernet, server_docker, server_resume, reservation) = loop {
         let waiting_on = {
             let mut services_guard = services.write().await;
             let Some(stack_map) = services_guard.get_mut(stack) else {
@@ -2132,9 +2188,13 @@ async fn setup_edge(
                         return EdgeOutcome::Failed;
                     }
                     // Does the target replica need unpausing first?
-                    let suspended = reg.replica_suspended(ip, docker.as_deref());
+                    let resume = reg
+                        .replicas()
+                        .iter()
+                        .find(|r| r.matches_identity(ip, docker.as_deref()))
+                        .and_then(|r| r.resume(orchestrator));
                     let reservation = reg.pending_notify(&client).expect("just reserved edge");
-                    break (ip, docker, suspended, reservation);
+                    break (ip, docker, resume, reservation);
                 }
             }
         };
@@ -2152,37 +2212,18 @@ async fn setup_edge(
         let _ = tokio::time::timeout(EDGE_CLAIM_POLL, waiting_on.notified()).await;
     };
 
-    // Resume the target container before bringing up the link, so it is
-    // serving by the time traffic arrives. This covers the proxy entry,
-    // proxy dependencies, and every hop of a backend-triggered chain
-    // uniformly (it mirrors the per-edge suspend in `decrement_chain`).
-    if server_suspended && let Some(container) = server_docker.clone() {
-        if orchestrator
-            .send_container_resume(server_ethernet, container.clone())
-            .await
+    // The reservation protects the target while its shared resume completes.
+    if let Some(resume) = server_resume
+        && !resume.wait().await
+    {
+        // roll back the reserved placeholder; the idle replica stays
+        // suspended (consistent) and the request fails fast.
+        if let Some(stack_map) = services.write().await.get_mut(stack)
+            && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
         {
-            if let Some(stack_map) = services.write().await.get_mut(stack)
-                && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
-            {
-                reg.mark_replica_resumed(server_ethernet, server_docker.as_deref());
-            }
-        } else {
-            orchestrator
-                .events
-                .emit(Event::container_resume_failed(
-                    container,
-                    format!("no ack from {server_ethernet} within timeout"),
-                ))
-                .await;
-            // roll back the reserved placeholder; the idle replica stays
-            // suspended (consistent) and the request fails fast.
-            if let Some(stack_map) = services.write().await.get_mut(stack)
-                && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
-            {
-                reg.remove_pending_client_if(&client, &reservation);
-            }
-            return EdgeOutcome::Failed;
+            reg.remove_pending_client_if(&client, &reservation);
         }
+        return EdgeOutcome::Failed;
     }
 
     let Some(net_id) = orchestrator.allocate_net_id().await else {
@@ -3005,6 +3046,54 @@ mod host_pin_tests {
     use crate::services::input::validate_stack_toml;
     use nullnet_grpc_lib::nullnet_grpc::Listener;
     use tonic::transport::server::TcpConnectInfo;
+
+    #[tokio::test]
+    async fn pausable_report_recovers_paused_container_after_restart() {
+        let (services, entries, _) = validate_stack_toml(
+            r#"
+[[services]]
+name = "restarted"
+docker_container = "restarted_c"
+port = 80
+"#,
+        )
+        .unwrap();
+        let server = NullnetGrpcImpl::new_for_test(HashMap::from([("restart".into(), services)]));
+        *server.match_index.write().await = HashMap::from([("restart".into(), entries)]);
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        let log = server.orchestrator.register_recording_client(ip).await;
+        let mut request = Request::new(ServiceReport {
+            containers: vec![nullnet_grpc_lib::nullnet_grpc::Container {
+                match_key: "restarted_c".into(),
+                real_name: "restarted_c".into(),
+                paused: true,
+            }],
+            listeners: vec![],
+        });
+        request.extensions_mut().insert(TcpConnectInfo {
+            local_addr: None,
+            remote_addr: Some("192.0.2.1:50000".parse().unwrap()),
+        });
+        server.services_list_impl(request).await.unwrap();
+        let guard = server.services.read().await;
+        let ServiceInfo::Registered(reg) = &guard["restart"]["restarted"] else {
+            panic!("not registered");
+        };
+        let pending = reg.replicas()[0].resume(&server.orchestrator);
+        drop(guard);
+        if let Some(pending) = pending {
+            assert!(pending.wait().await);
+        }
+        let guard = server.services.read().await;
+        let ServiceInfo::Registered(reg) = &guard["restart"]["restarted"] else {
+            unreachable!()
+        };
+        assert!(!reg.replica_suspended(ip, Some("restarted_c")));
+        assert!(log.lock().await.iter().any(|msg| matches!(
+            &msg.message,
+            Some(nullnet_grpc_lib::nullnet_grpc::net_message::Message::ContainerResume(_))
+        )));
+    }
 
     #[tokio::test]
     async fn ssh_host_pins_separate_identical_listeners() {

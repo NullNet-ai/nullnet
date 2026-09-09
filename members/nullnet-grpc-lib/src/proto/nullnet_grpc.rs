@@ -214,6 +214,8 @@ pub struct Container {
     /// actual container name; stored as the replica identity
     #[prost(string, tag = "2")]
     pub real_name: ::prost::alloc::string::String,
+    #[prost(bool, tag = "3")]
+    pub paused: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Listener {

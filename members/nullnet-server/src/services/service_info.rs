@@ -3,30 +3,39 @@ use crate::orchestrator::Orchestrator;
 use crate::services::clients::{Client, ClientInfo, Clients};
 use crate::services::firewall::FilterPolicy;
 use nullnet_grpc_lib::nullnet_grpc::{ServiceProtocol, Upstream};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::watch;
 
-/// Service names that participate in backend trigger chains: those that declare
-/// triggers ("have backend deps") and every service named in a trigger chain
-/// ("is a backend dep"). These are never paused — backend-dep networks aren't
-/// torn down on idle (see `decrement_chain`), so pausing them would strand their
-/// networks and leave the replica unreachable.
-pub(crate) fn backend_involved_services(
-    services: &HashMap<String, ServiceInfo>,
-) -> HashSet<String> {
-    let mut pinned = HashSet::new();
-    for (name, info) in services {
-        let triggers = info.triggers();
-        if triggers.is_empty() {
-            continue;
-        }
-        pinned.insert(name.clone());
-        for dep in triggers.values().flatten() {
-            pinned.insert(dep.clone());
+/// A container is idle only when every declaration permits pausing and is idle.
+pub(crate) async fn reconcile_container_pauses(
+    services: &mut crate::services::input::StackMap,
+    orchestrator: &Orchestrator,
+) {
+    let mut blocked = std::collections::HashSet::new();
+    for info in services.values().flat_map(|stack| stack.values()) {
+        if let ServiceInfo::Registered(reg) = info {
+            for replica in &reg.replicas {
+                if !reg.pausable
+                    || !replica.clients.clients().is_empty()
+                    || replica.pause.lock().unwrap().resume.is_some()
+                {
+                    blocked.insert((replica.ip, replica.docker_container.clone()));
+                }
+            }
         }
     }
-    pinned
+    for info in services.values_mut().flat_map(|stack| stack.values_mut()) {
+        if let ServiceInfo::Registered(reg) = info {
+            for replica in &mut reg.replicas {
+                let allowed = reg.pausable
+                    && !blocked.contains(&(replica.ip, replica.docker_container.clone()));
+                replica.reconcile_suspend(orchestrator, allowed).await;
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -56,7 +65,23 @@ impl ServiceInfo {
             listen_port,
             egress_policy,
             ingress_policy,
+            false,
         ))
+    }
+
+    pub(crate) fn with_pausable(mut self, pausable: bool) -> Self {
+        match &mut self {
+            Self::Unregistered(info) => info.pausable = pausable,
+            Self::Registered(info) => info.pausable = pausable,
+        }
+        self
+    }
+
+    pub(crate) fn pausable(&self) -> bool {
+        match self {
+            Self::Unregistered(info) => info.pausable,
+            Self::Registered(info) => info.pausable,
+        }
     }
 
     pub(crate) fn add_replica(&mut self, ip: IpAddr, port: u16, docker_container: Option<String>) {
@@ -71,6 +96,7 @@ impl ServiceInfo {
                     listen_port: unreg.listen_port,
                     egress_policy: unreg.egress_policy.clone(),
                     ingress_policy: unreg.ingress_policy.clone(),
+                    pausable: unreg.pausable,
                     replicas: vec![Replica::new(ip, port, docker_container)],
                 });
             }
@@ -113,6 +139,7 @@ impl ServiceInfo {
                     reg.listen_port,
                     reg.egress_policy.clone(),
                     reg.ingress_policy.clone(),
+                    reg.pausable,
                 ));
             }
         }
@@ -134,6 +161,7 @@ impl ServiceInfo {
                     reg.listen_port,
                     reg.egress_policy.clone(),
                     reg.ingress_policy.clone(),
+                    reg.pausable,
                 ));
             }
         }
@@ -158,6 +186,7 @@ impl ServiceInfo {
                 unreg.proxy_deps = loaded.proxy_deps().to_vec();
                 unreg.triggers.clone_from(loaded.triggers());
                 unreg.timeout = loaded_timeout;
+                unreg.pausable = loaded.pausable();
                 unreg.max_networks = loaded_max_networks;
                 unreg.protocol = loaded_protocol;
                 unreg.listen_port = loaded_listen_port;
@@ -168,6 +197,7 @@ impl ServiceInfo {
                 reg.proxy_deps = loaded.proxy_deps().to_vec();
                 reg.triggers.clone_from(loaded.triggers());
                 reg.timeout = loaded_timeout;
+                reg.pausable = loaded.pausable();
                 reg.max_networks = loaded_max_networks;
                 reg.protocol = loaded_protocol;
                 reg.listen_port = loaded_listen_port;
@@ -261,6 +291,7 @@ pub(crate) struct UnregisteredServiceInfo {
     egress_policy: FilterPolicy,
     /// Ingress traffic filter for external clients reaching this service via the proxy.
     ingress_policy: FilterPolicy,
+    pausable: bool,
 }
 
 impl UnregisteredServiceInfo {
@@ -274,6 +305,7 @@ impl UnregisteredServiceInfo {
         listen_port: Option<u16>,
         egress_policy: FilterPolicy,
         ingress_policy: FilterPolicy,
+        pausable: bool,
     ) -> Self {
         Self {
             proxy_deps,
@@ -284,7 +316,28 @@ impl UnregisteredServiceInfo {
             listen_port,
             egress_policy,
             ingress_policy,
+            pausable,
         }
+    }
+}
+
+#[derive(Debug, Default)]
+struct PauseState {
+    suspended: bool,
+    resume: Option<watch::Receiver<Option<bool>>>,
+}
+
+/// Callers share one detached resume and wait without holding service state.
+pub(crate) struct Resume(watch::Receiver<Option<bool>>);
+
+impl Resume {
+    pub(crate) async fn wait(mut self) -> bool {
+        self.0
+            .wait_for(|result| result.is_some())
+            .await
+            .ok()
+            .and_then(|result| *result)
+            .unwrap_or(false)
     }
 }
 
@@ -294,11 +347,8 @@ pub(crate) struct Replica {
     port: u16,
     docker_container: Option<String>,
     clients: Clients,
-    /// Whether the backing Docker container is currently paused. Invariant for
-    /// non-pinned Docker-backed replicas: `suspended ⟺ clients is empty`
-    /// (backend-involved services are pinned and never paused — see
-    /// [`backend_involved_services`]).
-    suspended: bool,
+    /// Actual pause state, independent of permission to pause.
+    pause: Arc<Mutex<PauseState>>,
 }
 
 impl Replica {
@@ -308,7 +358,7 @@ impl Replica {
             port,
             docker_container,
             clients: Clients::default(),
-            suspended: false,
+            pause: Arc::default(),
         }
     }
 
@@ -334,24 +384,64 @@ impl Replica {
     }
 
     pub(crate) fn suspended(&self) -> bool {
-        self.suspended
+        self.pause.lock().unwrap().suspended
     }
 
-    /// Pause this replica's Docker container when it is Docker-backed, has no
-    /// clients, isn't already suspended, and the service isn't `pinned`
-    /// (backend-involved — see [`backend_involved_services`]). Fire-and-forget;
-    /// flips the flag so the invariant `suspended ⟺ no clients` holds.
-    async fn reconcile_suspend(&mut self, orchestrator: &Orchestrator, pinned: bool) {
-        if pinned || self.suspended || !self.clients.clients().is_empty() {
-            return;
+    pub(crate) fn resume(&self, orchestrator: &Orchestrator) -> Option<Resume> {
+        let container = self.docker_container.clone()?;
+        let mut state = self.pause.lock().unwrap();
+        if !state.suspended {
+            return None;
         }
+        if let Some(pending) = &state.resume {
+            return Some(Resume(pending.clone()));
+        }
+        let (tx, rx) = watch::channel(None);
+        state.resume = Some(rx.clone());
+        let pause = self.pause.clone();
+        let ip = self.ip;
+        let orchestrator = orchestrator.clone();
+        tokio::spawn(async move {
+            let ok = orchestrator
+                .send_container_resume(ip, container.clone())
+                .await;
+            if !ok {
+                orchestrator
+                    .events
+                    .emit(crate::events::Event::container_resume_failed(
+                        container,
+                        format!("no ack from {ip} within timeout"),
+                    ))
+                    .await;
+            }
+            // The captured state belongs to this incarnation, even if it was removed.
+            let mut state = pause.lock().unwrap();
+            state.suspended = !ok;
+            state.resume = None;
+            tx.send_replace(Some(ok));
+        });
+        Some(Resume(rx))
+    }
+
+    /// Apply the opt-in policy without suspending live incoming or outgoing work.
+    async fn reconcile_suspend(&mut self, orchestrator: &Orchestrator, pausable: bool) {
         let Some(container) = self.docker_container.clone() else {
             return;
         };
+        if !pausable {
+            self.resume(orchestrator);
+            return;
+        }
+        if self.suspended()
+            || !self.clients.clients().is_empty()
+            || orchestrator.has_outgoing_work(self.ip, &container).await
+        {
+            return;
+        }
         orchestrator
             .send_container_suspend(self.ip, container)
             .await;
-        self.suspended = true;
+        self.pause.lock().unwrap().suspended = true;
     }
 }
 
@@ -375,6 +465,7 @@ pub(crate) struct RegisteredServiceInfo {
     egress_policy: FilterPolicy,
     /// Ingress traffic filter for external clients reaching this service via the proxy.
     ingress_policy: FilterPolicy,
+    pausable: bool,
     /// Replicas of this service.
     replicas: Vec<Replica>,
 }
@@ -480,12 +571,7 @@ impl RegisteredServiceInfo {
 
     /// Decrement `active_chains` for a specific client entry.
     /// If it reaches 0, the VXLAN is torn down and the entry is removed.
-    pub(crate) async fn decrement_chain(
-        &mut self,
-        client: &Client,
-        orchestrator: &Orchestrator,
-        pinned: bool,
-    ) {
+    pub(crate) async fn decrement_chain(&mut self, client: &Client, orchestrator: &Orchestrator) {
         for replica in &mut self.replicas {
             if let Some(ci) = replica.clients.clients_mut().get_mut(client) {
                 // A reservation's single refcount belongs to the task building
@@ -506,30 +592,14 @@ impl RegisteredServiceInfo {
                             ci.net_id(),
                         )
                         .await;
-                    // Invariant: a non-pinned Docker-backed replica with no clients is paused.
-                    // Sent immediately, not deferred behind the teardown ack: the flag flips
-                    // here, and `replica_suspended` gates the resume, so any gap between flag
-                    // and pause is a window where an arriving request "resumes" a container
-                    // that was never paused and the late pause then freezes a live client out.
-                    // Ordering the pause is unnecessary anyway — every teardown step works on
-                    // a paused container (hosts edits go through the host-side file).
-                    replica.reconcile_suspend(orchestrator, pinned).await;
                 }
                 return;
             }
         }
     }
 
-    /// Pause every Docker-backed replica that is idle and not yet suspended.
-    /// Used as the registration-time and periodic safety net that enforces the
-    /// invariant for replicas missed by the per-event hooks.
-    pub(crate) async fn reconcile_suspends(&mut self, orchestrator: &Orchestrator, pinned: bool) {
-        for replica in &mut self.replicas {
-            replica.reconcile_suspend(orchestrator, pinned).await;
-        }
-    }
-
     /// Whether the replica identified by `(ip, docker)` is currently suspended.
+    #[cfg(test)]
     pub(crate) fn replica_suspended(&self, ip: IpAddr, docker: Option<&str>) -> bool {
         self.replicas
             .iter()
@@ -537,14 +607,14 @@ impl RegisteredServiceInfo {
             .is_some_and(Replica::suspended)
     }
 
-    /// Clear the suspended flag for `(ip, docker)` after a successful unpause.
-    pub(crate) fn mark_replica_resumed(&mut self, ip: IpAddr, docker: Option<&str>) {
+    /// Initialize a newly discovered replica from the host's pause observation.
+    pub(crate) fn mark_replica_suspended(&mut self, ip: IpAddr, docker: Option<&str>) {
         if let Some(replica) = self
             .replicas
             .iter_mut()
             .find(|r| r.matches_identity(ip, docker))
         {
-            replica.suspended = false;
+            replica.pause.lock().unwrap().suspended = true;
         }
     }
 
@@ -845,5 +915,41 @@ impl RegisteredServiceInfo {
                     })
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod resume_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn resume_survives_a_dropped_waiter_and_preserves_replacement_state() {
+        let orchestrator = Orchestrator::new();
+        let ip = "192.0.2.1".parse().unwrap();
+        let (log, gate) = orchestrator.register_gated_client(ip).await;
+        let old = Replica::new(ip, 80, Some("container".into()));
+        old.pause.lock().unwrap().suspended = true;
+        drop(old.resume(&orchestrator).unwrap());
+        let pending = old.resume(&orchestrator).unwrap();
+        let replacement = Replica::new(ip, 80, Some("container".into()));
+        replacement.pause.lock().unwrap().suspended = true;
+        drop(old);
+        gate.add_permits(1);
+        assert!(pending.wait().await);
+        assert!(replacement.suspended());
+        assert_eq!(log.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_resume_stays_paused_and_can_retry() {
+        let orchestrator = Orchestrator::new();
+        let ip = "192.0.2.1".parse().unwrap();
+        let replica = Replica::new(ip, 80, Some("container".into()));
+        replica.pause.lock().unwrap().suspended = true;
+        assert!(!replica.resume(&orchestrator).unwrap().wait().await);
+        assert!(replica.suspended());
+        orchestrator.register_fake_client(ip).await;
+        assert!(replica.resume(&orchestrator).unwrap().wait().await);
+        assert!(!replica.suspended());
     }
 }

@@ -252,6 +252,7 @@ message ServiceReport {
 message Container {
   string match_key = 1;  // matched against a service's docker_container (Swarm label / container name)
   string real_name = 2;  // actual container name; stored as the replica identity
+  bool paused = 3;
 }
 
 message Listener {

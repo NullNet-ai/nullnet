@@ -3,7 +3,7 @@ digraph G {
 	node [color=white, fontcolor=white];
 	edge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];
 
-	"A" [label=<A<BR/><FONT POINT-SIZE="9">1 active / 1 paused / 2 total</FONT>>] [style=solid, color=green];
+	"A" [label=<A<BR/><FONT POINT-SIZE="9">1 active / 0 paused / 2 total</FONT>>] [style=solid, color=green];
 	"10.0.0.4 (via 7.7.7.7)" -> "A" [label="VXLAN 106 [0ms]"];
 
 	"B" [label=<B<BR/><FONT POINT-SIZE="9">2 active / 0 paused / 2 total</FONT>>] [style=dashed, color=green];
