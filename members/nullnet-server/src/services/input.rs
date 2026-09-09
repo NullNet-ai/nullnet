@@ -481,6 +481,13 @@ impl ServicesToml {
         // proxy-reachable entry point, `None` (omitted) leaves it backend-only.
         // A declared service can thus host triggers without being reachable.
         for s in self.services {
+            if s.pausable && s.docker_container.is_none() {
+                return Err(format!(
+                    "service '{}': pausable requires docker_container",
+                    s.name
+                ))
+                .handle_err(location!());
+            }
             let protocol = s
                 .protocol
                 .map_or(ServiceProtocol::Http, ServiceProtocol::from);
@@ -527,7 +534,8 @@ impl ServicesToml {
                     s.listen_port,
                     egress_policy,
                     ingress_policy,
-                ),
+                )
+                .with_pausable(s.pausable),
             );
         }
 
@@ -716,6 +724,7 @@ fn services_from_rows(
             docker_container: row.docker_container,
             process_path: row.process_path,
             host_ip: row.host_ip,
+            pausable: row.pausable,
             port: row.port.and_then(|p| u16::try_from(p).ok()),
             timeout: row.timeout.and_then(|t| u64::try_from(t).ok()),
             max_networks: row.max_networks.and_then(|m| u32::try_from(m).ok()),
@@ -743,6 +752,7 @@ pub(crate) fn services_to_inserts(services: &[ServiceToml]) -> Vec<crate::db::Se
             docker_container: s.docker_container.as_deref(),
             process_path: s.process_path.as_deref(),
             host_ip: s.host_ip.as_deref(),
+            pausable: s.pausable,
             port: s.port.map(i32::from),
             timeout: s.timeout.and_then(|t| i64::try_from(t).ok()),
             max_networks: s.max_networks.and_then(|m| i32::try_from(m).ok()),
@@ -972,6 +982,8 @@ pub(crate) async fn apply_config_update(
             .await;
     }
 
+    crate::services::service_info::reconcile_container_pauses(services, orchestrator).await;
+
     // Any egress country-policy difference → tell clients to re-verdict live
     // flows (they flush verdict caches + conntrack; denied flows die).
     if policies_before != policies_after {
@@ -1007,6 +1019,9 @@ pub(crate) struct ServiceToml {
     process_path: Option<String>,
     /// Optional node IPv4 address, as seen by the control channel.
     host_ip: Option<String>,
+    /// Allow idle Docker replicas to be paused. Opt-in only.
+    #[serde(default)]
+    pausable: bool,
     /// Backend port the overlay/proxy connects to on this service's replicas.
     /// Required when any host-match key is set. Distinct from `listen_port`
     /// (the proxy's external tcp/udp front port).
@@ -1790,12 +1805,39 @@ proxy_dependencies = [["api"]]
         assert!(detect_route_conflicts(&routes).is_empty());
     }
 
+    #[test]
+    fn pausable_defaults_off_and_requires_docker() {
+        let (services, _, _) = validate_stack_toml(
+            r#"
+[[services]]
+name = "plain"
+docker_container = "plain"
+port = 80
+"#,
+        )
+        .unwrap();
+        assert!(!services["plain"].pausable());
+        assert!(
+            validate_stack_toml(
+                r#"
+[[services]]
+name = "process"
+process_path = "/usr/sbin/sshd"
+port = 22
+pausable = true
+"#
+            )
+            .is_err()
+        );
+    }
+
     fn empty_service(name: &str) -> ServiceToml {
         ServiceToml {
             name: name.to_string(),
             docker_container: None,
             process_path: None,
             host_ip: None,
+            pausable: false,
             port: None,
             timeout: None,
             proxy_dependencies: Vec::new(),
@@ -1820,6 +1862,7 @@ proxy_dependencies = [["api"]]
         let services = vec![ServiceToml {
             docker_container: Some("my-app_color".to_string()),
             host_ip: Some("192.0.2.1".to_string()),
+            pausable: true,
             port: Some(3001),
             timeout: Some(0),
             proxy_dependencies: vec![vec!["a.dep".to_string(), "b.dep".to_string()]],
@@ -1860,6 +1903,7 @@ proxy_dependencies = [["api"]]
             docker_container: insert.docker_container.map(str::to_string),
             process_path: insert.process_path.map(str::to_string),
             host_ip: insert.host_ip.map(str::to_string),
+            pausable: insert.pausable,
             port: insert.port,
             timeout: insert.timeout,
             max_networks: insert.max_networks,

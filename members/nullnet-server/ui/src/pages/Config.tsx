@@ -241,6 +241,7 @@ interface ServiceFormState {
   matchKind: MatchKind;
   matchValue: string;
   hostIp: string;
+  pausable: boolean;
   port: string;
   reachable: boolean;
   timeout: string;
@@ -258,6 +259,7 @@ const EMPTY_FORM: ServiceFormState = {
   matchKind: 'docker',
   matchValue: '',
   hostIp: '',
+  pausable: false,
   port: '',
   reachable: false,
   timeout: '0',
@@ -361,6 +363,7 @@ function serviceToForm(s: ServiceConfigJson): ServiceFormState {
     matchKind: s.process_path ? 'process' : 'docker',
     matchValue: s.docker_container ?? s.process_path ?? '',
     hostIp: s.host_ip ?? '',
+    pausable: s.pausable ?? false,
     port: s.port != null ? String(s.port) : '',
     reachable: s.timeout != null,
     timeout: s.timeout != null ? String(s.timeout) : '0',
@@ -384,6 +387,7 @@ function formToService(f: ServiceFormState): ServiceConfigJson {
     docker_container: f.matchKind === 'docker' ? f.matchValue.trim() : null,
     process_path: f.matchKind === 'process' ? f.matchValue.trim() : null,
     host_ip: f.hostIp.trim() || null,
+    pausable: f.matchKind === 'docker' && f.pausable,
     port: f.port.trim() !== '' ? Number(f.port) : null,
     timeout: f.reachable ? Number(f.timeout || '0') : null,
     proxy_dependencies: f.dependencies.map(chain).filter(branch => branch.length > 0),
@@ -832,6 +836,17 @@ export default function Config() {
               placeholder="8080"
             />
           </label>
+
+          {form.matchKind === 'docker' && (
+            <label className="scope-check">
+              <input
+                type="checkbox"
+                checked={form.pausable}
+                onChange={e => setForm(f => ({ ...f, pausable: e.target.checked }))}
+              />
+              Pausable when idle
+            </label>
+          )}
 
           <label className="scope-check">
             <input

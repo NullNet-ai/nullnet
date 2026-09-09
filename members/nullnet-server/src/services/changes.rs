@@ -1,7 +1,7 @@
 use crate::events::Event;
 use crate::orchestrator::Orchestrator;
 use crate::services::clients::Client;
-use crate::services::service_info::{ServiceInfo, backend_involved_services};
+use crate::services::service_info::ServiceInfo;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::time::Duration;
@@ -233,6 +233,7 @@ async fn teardown_invalidated_service(
         let listen_port = si.listen_port();
         let egress_policy = si.egress_policy().clone();
         let ingress_policy = si.ingress_policy().clone();
+        let pausable = si.pausable();
         services.insert(
             invalidated_service.to_string(),
             ServiceInfo::new(
@@ -244,7 +245,8 @@ async fn teardown_invalidated_service(
                 listen_port,
                 egress_policy,
                 ingress_policy,
-            ),
+            )
+            .with_pausable(pausable),
         );
     }
 }
@@ -542,12 +544,9 @@ async fn teardown_backend_chain(
             ));
         }
     }
-    let pinned = backend_involved_services(services);
     for (client, dep_name) in edges {
         if let Some(ServiceInfo::Registered(dep_reg)) = services.get_mut(&dep_name) {
-            dep_reg
-                .decrement_chain(&client, orchestrator, pinned.contains(&dep_name))
-                .await;
+            dep_reg.decrement_chain(&client, orchestrator).await;
         }
     }
     // This teardown consumed whatever refcount the trigger sessions on these
@@ -647,12 +646,9 @@ async fn teardown_dep_chain(
     orchestrator: &Orchestrator,
 ) {
     let edges = collect_dep_chain_edges(service_name, replica_ip, replica_docker, services);
-    let pinned = backend_involved_services(services);
     for (client, dep_name) in edges {
         if let Some(ServiceInfo::Registered(dep_reg)) = services.get_mut(&dep_name) {
-            dep_reg
-                .decrement_chain(&client, orchestrator, pinned.contains(&dep_name))
-                .await;
+            dep_reg.decrement_chain(&client, orchestrator).await;
         }
     }
 }

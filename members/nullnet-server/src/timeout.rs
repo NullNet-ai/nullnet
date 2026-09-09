@@ -3,7 +3,7 @@ use crate::services::changes::{
     ServiceChange, apply_changes, dep_chain_has_pending, release_backend_chain,
 };
 use crate::services::input::StackMap;
-use crate::services::service_info::{ServiceInfo, backend_involved_services};
+use crate::services::service_info::ServiceInfo;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -73,6 +73,8 @@ pub(crate) async fn check_timeouts(
                 apply_timeouts(stack_map, &orchestrator, &stack).await;
             }
         }
+        crate::services::service_info::reconcile_container_pauses(&mut services_mut, &orchestrator)
+            .await;
     }
 }
 
@@ -115,19 +117,6 @@ pub(crate) async fn apply_timeouts(
     let changes = collect_timed_out_clients(services);
     if !changes.is_empty() {
         apply_changes(changes, services, None, orchestrator, stack).await;
-    }
-
-    // Safety net: enforce the invariant that every idle Docker-backed replica is
-    // paused, catching any missed by the per-event hooks (startup, races,
-    // restarts). Cheap when nothing is pending — `reconcile_suspends` skips
-    // replicas that are already suspended or still have clients. Backend-involved
-    // services are pinned and never paused.
-    let pinned = backend_involved_services(services);
-    for (name, si) in services.iter_mut() {
-        if let ServiceInfo::Registered(reg) = si {
-            reg.reconcile_suspends(orchestrator, pinned.contains(name))
-                .await;
-        }
     }
 }
 
