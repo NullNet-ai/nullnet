@@ -5,7 +5,9 @@ use crate::services::firewall::FilterPolicy;
 use nullnet_grpc_lib::nullnet_grpc::{ServiceProtocol, Upstream};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::watch;
 
 /// A container is idle only when every declaration permits pausing and is idle.
 pub(crate) async fn reconcile_container_pauses(
@@ -16,7 +18,10 @@ pub(crate) async fn reconcile_container_pauses(
     for info in services.values().flat_map(|stack| stack.values()) {
         if let ServiceInfo::Registered(reg) = info {
             for replica in &reg.replicas {
-                if !reg.pausable || !replica.clients.clients().is_empty() {
+                if !reg.pausable
+                    || !replica.clients.clients().is_empty()
+                    || replica.pause.lock().unwrap().resume.is_some()
+                {
                     blocked.insert((replica.ip, replica.docker_container.clone()));
                 }
             }
@@ -316,6 +321,26 @@ impl UnregisteredServiceInfo {
     }
 }
 
+#[derive(Debug, Default)]
+struct PauseState {
+    suspended: bool,
+    resume: Option<watch::Receiver<Option<bool>>>,
+}
+
+/// Callers share one detached resume and wait without holding service state.
+pub(crate) struct Resume(watch::Receiver<Option<bool>>);
+
+impl Resume {
+    pub(crate) async fn wait(mut self) -> bool {
+        self.0
+            .wait_for(|result| result.is_some())
+            .await
+            .ok()
+            .and_then(|result| *result)
+            .unwrap_or(false)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Replica {
     ip: IpAddr,
@@ -323,7 +348,7 @@ pub(crate) struct Replica {
     docker_container: Option<String>,
     clients: Clients,
     /// Actual pause state, independent of permission to pause.
-    suspended: bool,
+    pause: Arc<Mutex<PauseState>>,
 }
 
 impl Replica {
@@ -333,7 +358,7 @@ impl Replica {
             port,
             docker_container,
             clients: Clients::default(),
-            suspended: false,
+            pause: Arc::default(),
         }
     }
 
@@ -359,32 +384,43 @@ impl Replica {
     }
 
     pub(crate) fn suspended(&self) -> bool {
-        self.suspended
+        self.pause.lock().unwrap().suspended
     }
 
-    async fn resume(&mut self, orchestrator: &Orchestrator) -> bool {
-        if !self.suspended {
-            return true;
+    pub(crate) fn resume(&self, orchestrator: &Orchestrator) -> Option<Resume> {
+        let container = self.docker_container.clone()?;
+        let mut state = self.pause.lock().unwrap();
+        if !state.suspended {
+            return None;
         }
-        let Some(container) = self.docker_container.clone() else {
-            return true;
-        };
-        if orchestrator
-            .send_container_resume(self.ip, container.clone())
-            .await
-        {
-            self.suspended = false;
-            true
-        } else {
-            orchestrator
-                .events
-                .emit(crate::events::Event::container_resume_failed(
-                    container,
-                    format!("no ack from {} within timeout", self.ip),
-                ))
+        if let Some(pending) = &state.resume {
+            return Some(Resume(pending.clone()));
+        }
+        let (tx, rx) = watch::channel(None);
+        state.resume = Some(rx.clone());
+        let pause = self.pause.clone();
+        let ip = self.ip;
+        let orchestrator = orchestrator.clone();
+        tokio::spawn(async move {
+            let ok = orchestrator
+                .send_container_resume(ip, container.clone())
                 .await;
-            false
-        }
+            if !ok {
+                orchestrator
+                    .events
+                    .emit(crate::events::Event::container_resume_failed(
+                        container,
+                        format!("no ack from {ip} within timeout"),
+                    ))
+                    .await;
+            }
+            // The captured state belongs to this incarnation, even if it was removed.
+            let mut state = pause.lock().unwrap();
+            state.suspended = !ok;
+            state.resume = None;
+            tx.send_replace(Some(ok));
+        });
+        Some(Resume(rx))
     }
 
     /// Apply the opt-in policy without suspending live incoming or outgoing work.
@@ -393,10 +429,10 @@ impl Replica {
             return;
         };
         if !pausable {
-            self.resume(orchestrator).await;
+            self.resume(orchestrator);
             return;
         }
-        if self.suspended
+        if self.suspended()
             || !self.clients.clients().is_empty()
             || orchestrator.has_outgoing_work(self.ip, &container).await
         {
@@ -405,7 +441,7 @@ impl Replica {
         orchestrator
             .send_container_suspend(self.ip, container)
             .await;
-        self.suspended = true;
+        self.pause.lock().unwrap().suspended = true;
     }
 }
 
@@ -562,23 +598,8 @@ impl RegisteredServiceInfo {
         }
     }
 
-    pub(crate) async fn resume_replica(
-        &mut self,
-        ip: IpAddr,
-        docker: Option<&str>,
-        orchestrator: &Orchestrator,
-    ) -> bool {
-        let Some(replica) = self
-            .replicas
-            .iter_mut()
-            .find(|r| r.matches_identity(ip, docker))
-        else {
-            return false;
-        };
-        replica.resume(orchestrator).await
-    }
-
     /// Whether the replica identified by `(ip, docker)` is currently suspended.
+    #[cfg(test)]
     pub(crate) fn replica_suspended(&self, ip: IpAddr, docker: Option<&str>) -> bool {
         self.replicas
             .iter()
@@ -593,18 +614,7 @@ impl RegisteredServiceInfo {
             .iter_mut()
             .find(|r| r.matches_identity(ip, docker))
         {
-            replica.suspended = true;
-        }
-    }
-
-    /// Clear the suspended flag for `(ip, docker)` after a successful unpause.
-    pub(crate) fn mark_replica_resumed(&mut self, ip: IpAddr, docker: Option<&str>) {
-        if let Some(replica) = self
-            .replicas
-            .iter_mut()
-            .find(|r| r.matches_identity(ip, docker))
-        {
-            replica.suspended = false;
+            replica.pause.lock().unwrap().suspended = true;
         }
     }
 
@@ -905,5 +915,41 @@ impl RegisteredServiceInfo {
                     })
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod resume_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn resume_survives_a_dropped_waiter_and_preserves_replacement_state() {
+        let orchestrator = Orchestrator::new();
+        let ip = "192.0.2.1".parse().unwrap();
+        let (log, gate) = orchestrator.register_gated_client(ip).await;
+        let old = Replica::new(ip, 80, Some("container".into()));
+        old.pause.lock().unwrap().suspended = true;
+        drop(old.resume(&orchestrator).unwrap());
+        let pending = old.resume(&orchestrator).unwrap();
+        let replacement = Replica::new(ip, 80, Some("container".into()));
+        replacement.pause.lock().unwrap().suspended = true;
+        drop(old);
+        gate.add_permits(1);
+        assert!(pending.wait().await);
+        assert!(replacement.suspended());
+        assert_eq!(log.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_resume_stays_paused_and_can_retry() {
+        let orchestrator = Orchestrator::new();
+        let ip = "192.0.2.1".parse().unwrap();
+        let replica = Replica::new(ip, 80, Some("container".into()));
+        replica.pause.lock().unwrap().suspended = true;
+        assert!(!replica.resume(&orchestrator).unwrap().wait().await);
+        assert!(replica.suspended());
+        orchestrator.register_fake_client(ip).await;
+        assert!(replica.resume(&orchestrator).unwrap().wait().await);
+        assert!(!replica.suspended());
     }
 }

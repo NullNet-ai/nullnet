@@ -1431,13 +1431,25 @@ impl NullnetGrpcImpl {
         ip: IpAddr,
         docker: Option<&str>,
     ) -> Result<(), Error> {
-        let mut services = self.services.write().await;
-        let Some(ServiceInfo::Registered(reg)) =
-            services.get_mut(stack).and_then(|s| s.get_mut(service))
-        else {
-            return Err("trigger source disappeared").handle_err(location!());
+        let pending = {
+            let services = self.services.read().await;
+            let replica = services
+                .get(stack)
+                .and_then(|s| s.get(service))
+                .and_then(|info| match info {
+                    ServiceInfo::Registered(reg) => reg
+                        .replicas()
+                        .iter()
+                        .find(|r| r.matches_identity(ip, docker)),
+                    ServiceInfo::Unregistered(_) => None,
+                })
+                .ok_or("trigger source disappeared")
+                .handle_err(location!())?;
+            replica.resume(&self.orchestrator)
         };
-        if !reg.resume_replica(ip, docker, &self.orchestrator).await {
+        if let Some(pending) = pending
+            && !pending.wait().await
+        {
             return Err("trigger source could not be resumed").handle_err(location!());
         }
         Ok(())
@@ -2140,7 +2152,7 @@ async fn setup_edge(
     // by (client, proxy) and dep clients by source replica, and a source
     // replica can only route to one replica of a given dep.
     let deadline = std::time::Instant::now() + EDGE_CLAIM_TIMEOUT;
-    let (server_ethernet, server_docker, server_suspended, reservation) = loop {
+    let (server_ethernet, server_docker, server_resume, reservation) = loop {
         let waiting_on = {
             let mut services_guard = services.write().await;
             let Some(stack_map) = services_guard.get_mut(stack) else {
@@ -2176,9 +2188,13 @@ async fn setup_edge(
                         return EdgeOutcome::Failed;
                     }
                     // Does the target replica need unpausing first?
-                    let suspended = reg.replica_suspended(ip, docker.as_deref());
+                    let resume = reg
+                        .replicas()
+                        .iter()
+                        .find(|r| r.matches_identity(ip, docker.as_deref()))
+                        .and_then(|r| r.resume(orchestrator));
                     let reservation = reg.pending_notify(&client).expect("just reserved edge");
-                    break (ip, docker, suspended, reservation);
+                    break (ip, docker, resume, reservation);
                 }
             }
         };
@@ -2196,37 +2212,18 @@ async fn setup_edge(
         let _ = tokio::time::timeout(EDGE_CLAIM_POLL, waiting_on.notified()).await;
     };
 
-    // Resume the target container before bringing up the link, so it is
-    // serving by the time traffic arrives. This covers the proxy entry,
-    // proxy dependencies, and every hop of a backend-triggered chain
-    // uniformly (it mirrors the per-edge suspend in `decrement_chain`).
-    if server_suspended && let Some(container) = server_docker.clone() {
-        if orchestrator
-            .send_container_resume(server_ethernet, container.clone())
-            .await
+    // The reservation protects the target while its shared resume completes.
+    if let Some(resume) = server_resume
+        && !resume.wait().await
+    {
+        // roll back the reserved placeholder; the idle replica stays
+        // suspended (consistent) and the request fails fast.
+        if let Some(stack_map) = services.write().await.get_mut(stack)
+            && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
         {
-            if let Some(stack_map) = services.write().await.get_mut(stack)
-                && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
-            {
-                reg.mark_replica_resumed(server_ethernet, server_docker.as_deref());
-            }
-        } else {
-            orchestrator
-                .events
-                .emit(Event::container_resume_failed(
-                    container,
-                    format!("no ack from {server_ethernet} within timeout"),
-                ))
-                .await;
-            // roll back the reserved placeholder; the idle replica stays
-            // suspended (consistent) and the request fails fast.
-            if let Some(stack_map) = services.write().await.get_mut(stack)
-                && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
-            {
-                reg.remove_pending_client_if(&client, &reservation);
-            }
-            return EdgeOutcome::Failed;
+            reg.remove_pending_client_if(&client, &reservation);
         }
+        return EdgeOutcome::Failed;
     }
 
     let Some(net_id) = orchestrator.allocate_net_id().await else {
@@ -3081,6 +3078,15 @@ port = 80
         let guard = server.services.read().await;
         let ServiceInfo::Registered(reg) = &guard["restart"]["restarted"] else {
             panic!("not registered");
+        };
+        let pending = reg.replicas()[0].resume(&server.orchestrator);
+        drop(guard);
+        if let Some(pending) = pending {
+            assert!(pending.wait().await);
+        }
+        let guard = server.services.read().await;
+        let ServiceInfo::Registered(reg) = &guard["restart"]["restarted"] else {
+            unreachable!()
         };
         assert!(!reg.replica_suspended(ip, Some("restarted_c")));
         assert!(log.lock().await.iter().any(|msg| matches!(

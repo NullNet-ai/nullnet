@@ -4277,7 +4277,20 @@ async fn pausable_defaults_off_and_live_toggle_resumes() {
             server.orchestrator(),
         )
         .await;
-        assert!(!replica_is_suspended(&guard, "svc", svc_ip, "svc_c1"));
+        let ServiceInfo::Registered(reg) = &guard[TEST_STACK]["svc"] else {
+            unreachable!()
+        };
+        let pending = reg.replicas()[0].resume(server.orchestrator());
+        drop(guard);
+        if let Some(pending) = pending {
+            assert!(pending.wait().await);
+        }
+        assert!(!replica_is_suspended(
+            &*server.services().read().await,
+            "svc",
+            svc_ip,
+            "svc_c1"
+        ));
     }
     assert_eq!(count_suspends(&log.lock().await, "svc_c1"), 1);
     server
@@ -4289,35 +4302,7 @@ async fn pausable_defaults_off_and_live_toggle_resumes() {
 
 #[tokio::test]
 async fn pausable_backend_source_resumes_and_stays_running_while_held() {
-    let (inner, _, _) = crate::services::input::validate_stack_toml(
-        r#"
-[[services]]
-name = "source"
-docker_container = "source_c"
-port = 80
-pausable = true
-triggers = [{port = 8080, chain = ["dep"]}]
-[[services]]
-name = "dep"
-docker_container = "dep_c"
-port = 80
-pausable = true
-"#,
-    )
-    .unwrap();
-    let server = NullnetGrpcImpl::new_for_test(into_stack_map(inner));
-    let node = ip(1, 1, 1, 1);
-    let log = server.orchestrator().register_recording_client(node).await;
-    server
-        .apply_services_list_by_stack(
-            node,
-            &declared_list(vec![
-                ("source", 80, Some("source_c")),
-                ("dep", 80, Some("dep_c")),
-            ]),
-        )
-        .await
-        .unwrap();
+    let (server, node, log) = paused_backend_test_server().await;
     server
         .handle_backend_trigger("source", 8080, node, Some("source_c"))
         .await
@@ -4388,4 +4373,191 @@ async fn pausable_survives_last_replica_disappearing() {
         "svc_c1"
     ));
     wait_for_log(&log, |l| count_suspends(l, "svc_c1") == 2).await;
+}
+
+#[tokio::test]
+async fn pausable_unacknowledged_policy_resume_does_not_lock_services() {
+    let server = suspend_test_server();
+    let node = ip(1, 1, 1, 1);
+    server.orchestrator().register_fake_client(node).await;
+    server
+        .apply_services_list_by_stack(node, &declared_list(vec![("svc", 8080, Some("svc_c1"))]))
+        .await
+        .unwrap();
+    let (log, gate) = server.orchestrator().register_gated_client(node).await;
+    let worker = server.clone();
+    let task = tokio::spawn(async move {
+        let mut guard = worker.services().write().await;
+        let info = guard.get_mut(TEST_STACK).unwrap().remove("svc").unwrap();
+        guard
+            .get_mut(TEST_STACK)
+            .unwrap()
+            .insert("svc".into(), info.with_pausable(false));
+        crate::services::service_info::reconcile_container_pauses(
+            &mut guard,
+            worker.orchestrator(),
+        )
+        .await;
+    });
+    wait_for_log(&log, |l| count_resumes(l, "svc_c1") == 1).await;
+    let unlocked = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        server.services().write(),
+    )
+    .await
+    .is_ok();
+    task.await.unwrap();
+    assert!(
+        unlocked,
+        "a withheld resume ack blocked unrelated service operations"
+    );
+    let pending = {
+        let mut guard = server.services().write().await;
+        crate::services::service_info::reconcile_container_pauses(
+            &mut guard,
+            server.orchestrator(),
+        )
+        .await;
+        let ServiceInfo::Registered(reg) = &guard[TEST_STACK]["svc"] else {
+            unreachable!()
+        };
+        assert!(reg.replicas()[0].suspended());
+        reg.replicas()[0].resume(server.orchestrator()).unwrap()
+    };
+    gate.add_permits(10);
+    assert!(pending.wait().await);
+    assert!(!replica_is_suspended(
+        &*server.services().read().await,
+        "svc",
+        node,
+        "svc_c1"
+    ));
+    assert_eq!(count_resumes(&log.lock().await, "svc_c1"), 1);
+}
+
+async fn paused_backend_test_server() -> (
+    NullnetGrpcImpl,
+    IpAddr,
+    std::sync::Arc<tokio::sync::Mutex<Vec<NetMessage>>>,
+) {
+    let (inner, _, _) = crate::services::input::validate_stack_toml(
+        r#"
+[[services]]
+name = "source"
+docker_container = "source_c"
+port = 80
+pausable = true
+triggers = [{port = 8080, chain = ["dep"]}]
+[[services]]
+name = "dep"
+docker_container = "dep_c"
+port = 80
+pausable = true
+"#,
+    )
+    .unwrap();
+    let server = NullnetGrpcImpl::new_for_test(into_stack_map(inner));
+    let node = ip(1, 1, 1, 1);
+    let log = server.orchestrator().register_recording_client(node).await;
+    server
+        .apply_services_list_by_stack(
+            node,
+            &declared_list(vec![
+                ("source", 80, Some("source_c")),
+                ("dep", 80, Some("dep_c")),
+            ]),
+        )
+        .await
+        .unwrap();
+    (server, node, log)
+}
+
+#[tokio::test]
+async fn pausable_unacknowledged_trigger_resume_does_not_lock_services() {
+    let (server, node, _) = paused_backend_test_server().await;
+    let (log, gate) = server.orchestrator().register_gated_client(node).await;
+    let worker = server.clone();
+    let task = tokio::spawn(async move {
+        worker
+            .handle_backend_trigger("source", 8080, node, Some("source_c"))
+            .await
+    });
+    wait_for_log(&log, |l| count_resumes(l, "source_c") == 1).await;
+    let unlocked = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        server.services().write(),
+    )
+    .await
+    .is_ok();
+    gate.add_permits(20);
+    task.await.unwrap().unwrap();
+    assert!(
+        unlocked,
+        "a withheld trigger resume ack blocked unrelated service operations"
+    );
+    assert_eq!(count_resumes(&log.lock().await, "source_c"), 1);
+}
+
+#[tokio::test]
+async fn pausable_shared_container_does_not_pause_during_alias_resume() {
+    let (inner, _, _) = crate::services::input::validate_stack_toml(
+        r#"
+[[services]]
+name = "first"
+docker_container = "shared"
+port = 80
+pausable = true
+[[services]]
+name = "second"
+docker_container = "shared"
+port = 81
+pausable = true
+"#,
+    )
+    .unwrap();
+    let server = NullnetGrpcImpl::new_for_test(into_stack_map(inner));
+    let node = ip(1, 1, 1, 1);
+    server.orchestrator().register_fake_client(node).await;
+    server
+        .apply_services_list_by_stack(
+            node,
+            &declared_list(vec![
+                ("first", 80, Some("shared")),
+                ("second", 81, Some("shared")),
+            ]),
+        )
+        .await
+        .unwrap();
+    let pending = {
+        let guard = server.services().read().await;
+        let ServiceInfo::Registered(reg) = &guard[TEST_STACK]["first"] else {
+            unreachable!()
+        };
+        reg.replicas()[0].resume(server.orchestrator()).unwrap()
+    };
+    assert!(pending.wait().await);
+    let (log, gate) = server.orchestrator().register_gated_client(node).await;
+    let pending = {
+        let guard = server.services().read().await;
+        let ServiceInfo::Registered(reg) = &guard[TEST_STACK]["second"] else {
+            unreachable!()
+        };
+        reg.replicas()[0].resume(server.orchestrator()).unwrap()
+    };
+    wait_for_log(&log, |l| count_resumes(l, "shared") == 1).await;
+    let remained_running = {
+        let mut guard = server.services().write().await;
+        crate::services::service_info::reconcile_container_pauses(
+            &mut guard,
+            server.orchestrator(),
+        )
+        .await;
+        !replica_is_suspended(&guard, "first", node, "shared")
+    };
+    gate.add_permits(20);
+    assert!(pending.wait().await);
+    assert!(
+        remained_running,
+        "an idle alias paused a container while its resume was pending"
+    );
 }
