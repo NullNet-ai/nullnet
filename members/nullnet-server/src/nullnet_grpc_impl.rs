@@ -1673,6 +1673,10 @@ impl NullnetGrpcImpl {
         Ok(Response::new(IngressPolicyVerdict { allowed }))
     }
 
+    pub(crate) fn certificates(&self) -> watch::Receiver<CertBundle> {
+        self.certs.clone()
+    }
+
     pub(crate) fn services(&self) -> &Arc<RwLock<StackMap>> {
         &self.services
     }

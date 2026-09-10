@@ -102,6 +102,7 @@ async fn main() -> Result<(), Error> {
         .handle_err(location!())?;
 
     let nullnet = init_nullnet(db.clone()).await?;
+    let certificates = nullnet.certificates();
     let app_state = http_server::AppState {
         services: nullnet.services().clone(),
         routes: nullnet.routes().clone(),
@@ -132,7 +133,7 @@ async fn main() -> Result<(), Error> {
             .serve(addr) => {
             result.handle_err(location!())?;
         }
-        () = http_server::serve(app_state) => {}
+        () = http_server::serve(app_state, certificates) => {}
     }
 
     Ok(())

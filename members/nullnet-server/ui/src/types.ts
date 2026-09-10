@@ -209,6 +209,8 @@ export type EventJson =
   | WithSeverity & { type: 'proxy_connected'; ip: string }
   | WithSeverity & { type: 'proxy_disconnected'; ip: string }
   // Certificate events
+  | WithSeverity & { type: 'ui_tls_certificate_active'; domain: string }
+  | WithSeverity & { type: 'ui_tls_certificate_unavailable'; domain: string; reason: string; using_self_signed: boolean }
   | WithSeverity & { type: 'certificate_installed'; domain: string }
   | WithSeverity & { type: 'certificate_renewed'; domain: string }
   | WithSeverity & { type: 'certificate_removed'; domain: string }
