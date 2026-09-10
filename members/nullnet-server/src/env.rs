@@ -1,6 +1,14 @@
 use nullnet_grpc_lib::nullnet_grpc::Net;
 use std::net::IpAddr;
 
+/// Optional hostname whose managed certificate is served by the admin UI.
+pub static UI_TLS_DOMAIN: std::sync::LazyLock<Option<String>> = std::sync::LazyLock::new(|| {
+    std::env::var("UI_TLS_DOMAIN")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('.').to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+});
+
 /// Host running nullnet-proxy, used as the egress forward-proxy for registered
 /// services reaching the external internet. `None` disables egress brokering.
 pub static PROXY_IP: std::sync::LazyLock<Option<IpAddr>> =

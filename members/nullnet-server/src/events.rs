@@ -465,6 +465,16 @@ pub(crate) enum Event {
     },
 
     // --- Certificate events ---
+    UiTlsCertificateActive {
+        domain: String,
+        timestamp: u64,
+    },
+    UiTlsCertificateUnavailable {
+        domain: String,
+        reason: String,
+        using_self_signed: bool,
+        timestamp: u64,
+    },
     CertificateInstalled {
         domain: String,
         timestamp: u64,
@@ -570,6 +580,8 @@ impl Event {
             Self::TcpUpstreamConnectFailed { .. } => "tcp_upstream_connect_failed",
             Self::UdpUpstreamConnectFailed { .. } => "udp_upstream_connect_failed",
             Self::ProxyRequestRouted { .. } => "proxy_request_routed",
+            Self::UiTlsCertificateActive { .. } => "ui_tls_certificate_active",
+            Self::UiTlsCertificateUnavailable { .. } => "ui_tls_certificate_unavailable",
             Self::CertificateInstalled { .. } => "certificate_installed",
             Self::CertificateRenewed { .. } => "certificate_renewed",
             Self::CertificateRemoved { .. } => "certificate_removed",
@@ -578,6 +590,15 @@ impl Event {
 
     pub(crate) fn severity(&self) -> Severity {
         match self {
+            Self::UiTlsCertificateUnavailable {
+                using_self_signed, ..
+            } => {
+                if *using_self_signed {
+                    Severity::Warning
+                } else {
+                    Severity::Error
+                }
+            }
             Self::NodeConnected { .. }
             | Self::ServiceRegistered { .. }
             | Self::SetupStarted { .. }
@@ -597,6 +618,7 @@ impl Event {
             | Self::ServicesListUpdated { .. }
             | Self::ProxyRequestRouted { .. }
             | Self::ProxyConnected { .. }
+            | Self::UiTlsCertificateActive { .. }
             | Self::CertificateInstalled { .. }
             | Self::CertificateRenewed { .. }
             | Self::CertificateRemoved { .. } => Severity::Info,
@@ -1201,6 +1223,26 @@ impl Event {
             client_ip,
             upstream_ip,
             latency_ms,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn ui_tls_certificate_active(domain: String) -> Self {
+        Self::UiTlsCertificateActive {
+            domain,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn ui_tls_certificate_unavailable(
+        domain: String,
+        reason: String,
+        using_self_signed: bool,
+    ) -> Self {
+        Self::UiTlsCertificateUnavailable {
+            domain,
+            reason,
+            using_self_signed,
             timestamp: now_secs(),
         }
     }

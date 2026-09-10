@@ -96,6 +96,18 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   prompting setup (QR code + confirm step), until it's done. See `ADMIN_BOOTSTRAP_USERNAME` above
   for how the first admin account is created.
 
+- Set optional server env `UI_TLS_DOMAIN=control.example.com` to serve the UI on
+  `https://control.example.com:8080` with its matching managed certificate (exact name
+  preferred, then a single-label wildcard). Point that hostname at the server.
+  Until a usable certificate is installed, the UI uses a self-signed setup certificate
+  and reports this in Events. For first setup, use `https://<server-ip>:8080` and accept
+  the certificate warning; an existing HSTS policy can block this on the hostname.
+  Install the certificate from the Certificates page, then use the hostname: the UI
+  switches automatically and reloads renewals without a restart. Failed replacements
+  or removal retain the last loaded certificate in memory and report an event; it
+  still expires normally. After a restart without a usable stored certificate, setup
+  mode returns. Leaving `UI_TLS_DOMAIN` unset preserves self-signed UI TLS.
+
 - TLS certificates are issued from Let's Encrypt via a DNS-01 challenge (UI: *Certificates* page).
   Each cert stores its DNS-provider credentials encrypted at rest and is **renewed automatically**
   before expiry. The renewal scan is tunable via optional env vars (defaults shown):
@@ -305,6 +317,7 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   CONTROL_SERVICE_ADDR=192.168.1.100
   CONTROL_SERVICE_PORT=50051
   CONTROL_SERVICE_CA_CERT=../../ca-cert.pem   # optional, defaults to the repo root's ca-cert.pem
+  HSTS_ENABLED=true                         # optional, defaults to true; false for development
   ```
   `CONTROL_SERVICE_CA_CERT` points at a copy of the server's own `grpc-tls/ca-cert.pem` (see the
   server section above), used to pin and authenticate the control channel. If unset it defaults to
@@ -319,6 +332,11 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
 
 - the proxy listens on port 80 (requests in the form `service_name:80`) and, for hosts that have a
   TLS certificate, on port 443 — HTTP requests to those hosts get a 301 redirect to HTTPS
+- HTTPS responses use `Strict-Transport-Security: max-age=31536000`, without `includeSubDomains`
+  or `preload`. `HSTS_ENABLED=false` suppresses the header, including backend-supplied policies;
+  restart the proxy after changing it. Disabling does not clear policies already cached by browsers.
+  Use separate development hostnames: HSTS covers every port on a hostname, including a self-signed
+  admin UI on `:8080`, and prevents bypassing certificate errors.
 - for services declared with `protocol = "tcp"` or `"udp"` in the server's stack config, the proxy
   also opens a raw listener on each `listen_port` and forwards traffic to the matching service —
   no `Host` header involved. This table is pushed live by the server, so listeners open and close

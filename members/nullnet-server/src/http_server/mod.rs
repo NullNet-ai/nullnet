@@ -24,6 +24,7 @@ mod services;
 mod sessions;
 mod stacks;
 mod static_files;
+mod tls;
 
 const HTTP_PORT: u16 = 8080;
 
@@ -52,7 +53,11 @@ pub(crate) struct AppState {
     pub(crate) http_routes_changed: Arc<Notify>,
 }
 
-pub async fn serve(state: AppState) {
+pub async fn serve(
+    state: AppState,
+    certificates: tokio::sync::watch::Receiver<nullnet_grpc_lib::nullnet_grpc::CertBundle>,
+) {
+    let config = tls::configure(certificates, state.events.clone()).await;
     // Guarded by `auth::require_auth`: every route here needs a valid
     // access-token cookie. Individual handlers additionally check their own
     // required scope (see `http_server::auth::require_scope`).
@@ -130,17 +135,6 @@ pub async fn serve(state: AppState) {
         .fallback(get(static_files::static_handler));
 
     let app = protected.merge(public).with_state(state);
-
-    // Self-signed cert, regenerated each start. The admin UI is single-origin, so
-    // relative /api calls inherit HTTPS; browsers prompt to trust the cert once.
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-        .expect("failed to generate self-signed certificate");
-    let config = axum_server::tls_rustls::RustlsConfig::from_pem(
-        cert.cert.pem().into_bytes(),
-        cert.signing_key.serialize_pem().into_bytes(),
-    )
-    .await
-    .expect("failed to build TLS config");
 
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), HTTP_PORT);
     axum_server::bind_rustls(addr, config)

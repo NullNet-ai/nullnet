@@ -87,6 +87,8 @@ const KIND_LABELS: Record<string, string> = {
   proxy_connected: 'proxy_connected',
   proxy_disconnected: 'proxy_disconnected',
   // Certificate
+  ui_tls_certificate_active: 'ui_tls_certificate_active',
+  ui_tls_certificate_unavailable: 'ui_tls_certificate_unavailable',
   certificate_installed: 'certificate_installed',
   certificate_renewed: 'certificate_renewed',
   certificate_removed: 'certificate_removed',
@@ -223,6 +225,9 @@ function eventDetail(e: EventJson): string {
     case 'udp_upstream_connect_failed':
       return `${e.service_name} · ${e.client_ip} · ${e.error_message}`;
     // Certificate events
+    case 'ui_tls_certificate_unavailable':
+      return `${e.domain} · ${e.reason} · ${e.using_self_signed ? 'Using self-signed setup certificate' : 'Retaining last loaded certificate'}`;
+    case 'ui_tls_certificate_active':
     case 'certificate_installed':
     case 'certificate_renewed':
     case 'certificate_removed':

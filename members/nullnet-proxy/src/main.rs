@@ -1,4 +1,5 @@
 mod env;
+mod hsts;
 mod nullnet_proxy;
 mod port_mappings;
 mod routes;
@@ -20,9 +21,9 @@ use nullnet_liberror::{ErrorHandler, Location, location};
 use pingora_core::listeners::tls::TlsSettings;
 use pingora_core::server::Server;
 use pingora_core::upstreams::peer::HttpPeer;
-use pingora_core::{Error, ErrorType, Result};
+use pingora_core::{Error, ErrorSource, ErrorType, Result};
 use pingora_http::{RequestHeader, ResponseHeader};
-use pingora_proxy::{ProxyHttp, Session};
+use pingora_proxy::{FailToProxy, ProxyHttp, Session};
 use std::process;
 use std::sync::Arc;
 use std::thread;
@@ -69,6 +70,52 @@ impl ProxyHttp for NullnetProxy {
         ProxyCtx::default()
     }
 
+    async fn response_filter(
+        &self,
+        _session: &mut Session,
+        response: &mut ResponseHeader,
+        _ctx: &mut ProxyCtx,
+    ) -> Result<()> {
+        hsts::apply(response, self.tls, *env::HSTS_ENABLED)
+    }
+
+    async fn fail_to_proxy(
+        &self,
+        session: &mut Session,
+        error: &Error,
+        _ctx: &mut ProxyCtx,
+    ) -> FailToProxy {
+        // Preserve Pingora's default status mapping and error-response lifecycle.
+        let code = match error.etype() {
+            ErrorType::HTTPStatus(code) => *code,
+            _ => match error.esource() {
+                ErrorSource::Upstream => 502,
+                ErrorSource::Downstream => match error.etype() {
+                    ErrorType::WriteError | ErrorType::ReadError | ErrorType::ConnectionClosed => 0,
+                    _ => 400,
+                },
+                ErrorSource::Internal | ErrorSource::Unset => 500,
+            },
+        };
+        if code > 0 {
+            let mut response = pingora_core::protocols::http::ServerSession::generate_error(code);
+            if let Err(error) = hsts::apply(&mut response, self.tls, *env::HSTS_ENABLED) {
+                eprintln!("Failed to set HSTS on error response: {error}");
+            }
+            if let Err(error) = session
+                .as_downstream_mut()
+                .write_error_response(response, Default::default())
+                .await
+            {
+                eprintln!("Failed to send proxy error response: {error}");
+            }
+        }
+        FailToProxy {
+            error_code: code,
+            can_reuse_downstream: false,
+        }
+    }
+
     async fn request_filter(&self, session: &mut Session, ctx: &mut ProxyCtx) -> Result<bool> {
         // Resolve HTTP path-based routing/redirects first — a redirect or an
         // explicitly-uncovered path short-circuits right here, on both the
@@ -105,12 +152,14 @@ impl ProxyHttp for NullnetProxy {
                     let mut resp = ResponseHeader::build(status, None)?;
                     resp.insert_header("location", location.as_str())?;
                     resp.insert_header("content-length", "0")?;
+                    hsts::apply(&mut resp, self.tls, *env::HSTS_ENABLED)?;
                     session.write_response_header(Box::new(resp), true).await?;
                     return Ok(true);
                 }
                 Resolution::NotFound => {
                     let mut resp = ResponseHeader::build(404, None)?;
                     resp.insert_header("content-length", "0")?;
+                    hsts::apply(&mut resp, self.tls, *env::HSTS_ENABLED)?;
                     session.write_response_header(Box::new(resp), true).await?;
                     return Ok(true);
                 }
@@ -133,6 +182,7 @@ impl ProxyHttp for NullnetProxy {
                 Ok(false) => {
                     let mut resp = ResponseHeader::build(403, None)?;
                     resp.insert_header("content-length", "0")?;
+                    hsts::apply(&mut resp, self.tls, *env::HSTS_ENABLED)?;
                     session.write_response_header(Box::new(resp), true).await?;
                     return Ok(true);
                 }
@@ -535,6 +585,7 @@ async fn main() -> Result<(), nullnet_liberror::Error> {
     my_server.add_service(https_proxy);
 
     println!("Running Nullnet proxy at {http_address} (HTTP) and {https_address} (HTTPS)\n");
+    println!("HTTPS HSTS enabled: {}", *env::HSTS_ENABLED);
 
     // run on separate thread to avoid "cannot start a runtime from within a runtime"
     let handle = thread::spawn(|| my_server.run_forever());

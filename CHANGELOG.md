@@ -4,6 +4,8 @@ All Nullnet releases with the relative changes are documented in this file.
 
 ## [UNRELEASED]
 ### Added
+- Serve the UI with a managed certificate selected by `UI_TLS_DOMAIN`, with first-run self-signed setup and automatic certificate reload ([#188](https://github.com/NullNet-ai/nullnet/pull/188))
+- Enable one-year HSTS on proxy HTTPS responses by default, with `HSTS_ENABLED=false` for development ([#188](https://github.com/NullNet-ai/nullnet/pull/188))
 - Add an opt-in “Pausable when idle” checkbox for Docker services, persisted in configuration with a false default ([#187](https://github.com/NullNet-ai/nullnet/pull/187) — fixes [#180](https://github.com/NullNet-ai/nullnet/issues/180))
 - Optional service host pinning and automatic proxy TCP/UDP listen-port firewall allowances ([#184](https://github.com/NullNet-ai/nullnet/pull/184) — fixes [#177](https://github.com/NullNet-ai/nullnet/issues/177))
 - Per-service egress/ingress traffic filters: arbitrary AND/OR/group combinations of Country, Organization, Src IP (ingress), and Dst IP (egress) conditions, evaluated via `rpn-predicate-interpreter` — replaces the country-only egress/ingress policy ([#171](https://github.com/NullNet-ai/nullnet/pull/171) — fixes [#143](https://github.com/NullNet-ai/nullnet/issues/143))

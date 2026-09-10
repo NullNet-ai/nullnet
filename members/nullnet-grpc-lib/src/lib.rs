@@ -1,3 +1,4 @@
+pub mod certificate_names;
 mod control_tls_verifier;
 mod proto;
 

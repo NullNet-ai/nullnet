@@ -1,5 +1,6 @@
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use nullnet_grpc_lib::certificate_names::name_matches;
 use nullnet_grpc_lib::nullnet_grpc::CertBundle;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use openssl::asn1::Asn1Time;
@@ -91,18 +92,6 @@ fn cert_covers_domain(leaf: &X509Ref, domain: &str) -> bool {
         .next()
         .and_then(|e| e.data().to_string().ok())
         .is_some_and(|cn| name_matches(&cn, domain))
-}
-
-/// Match a cert name (`san`) against a target `domain`: exact (case-insensitive)
-/// or a `*.`-prefixed wildcard covering exactly one label.
-fn name_matches(san: &str, domain: &str) -> bool {
-    if san.eq_ignore_ascii_case(domain) {
-        return true;
-    }
-    if let (Some(suffix), Some((_, parent))) = (san.strip_prefix("*."), domain.split_once('.')) {
-        return parent.eq_ignore_ascii_case(suffix);
-    }
-    false
 }
 
 /// In-memory certificate store keyed by domain (SNI). Rebuilt wholesale from a
