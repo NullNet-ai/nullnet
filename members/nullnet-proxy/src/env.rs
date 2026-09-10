@@ -14,6 +14,12 @@ pub static CONTROL_SERVICE_PORT: std::sync::LazyLock<u16> = std::sync::LazyLock:
     str.parse().unwrap_or(50051)
 });
 
+pub static HSTS_ENABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| match std::env::var("HSTS_ENABLED") {
+        Ok(s) => !matches!(s.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"),
+        Err(_) => true,
+    });
+
 /// Path to the control server's private CA root (its `grpc-tls/ca-cert.pem`
 /// — generated automatically on the server, copy it here) — pins the control
 /// channel to that CA for full standard chain validation. Defaults to the
