@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { GraphJson } from '../../types';
 import type { TopoNode, TopoEdge } from './types';
-import { buildTopoGraph } from './layout';
+import { buildTopoGraph, edgeSessionCount } from './layout';
 
 interface Props {
   graph: GraphJson;
@@ -103,7 +103,7 @@ export default function TopologyMatrix({
         const isSel = selectedEdgeKey === key;
         const dimmed = hasHighlight && i !== hi && j !== hj;
         const x = LABEL_COL_W + j * CELL, y = HEADER_ROW_H + i * CELL;
-        const count = e?.originalIndices.length ?? 0;
+        const count = e ? edgeSessionCount(e, graph) : 0;
         return (
           <g key={key}
             onMouseEnter={() => setHoveredCell({ rowId: rowNode.id, colId: colNode.id })}
@@ -113,11 +113,11 @@ export default function TopologyMatrix({
             <rect x={x} y={y} width={CELL} height={CELL} fill="transparent" />
             {e && (
               <>
-                <title>{`${e.from} → ${e.to}${count > 1 ? ` (${count} sessions)` : ''}`}</title>
+                <title>{`${e.from} → ${e.to}${e.isEgress ? ` (${count} active)` : count > 1 ? ` (${count} sessions)` : ''}`}</title>
                 <rect x={x + 2} y={y + 2} width={CELL - 4} height={CELL - 4} rx="3"
                   fill={edgeColor(e)} opacity={isSel ? 1 : 0.7}
                   stroke={isSel ? 'rgba(91,156,246,.9)' : 'none'} strokeWidth={isSel ? 1.5 : 0} />
-                {count > 1 && (
+                {(e.isEgress || count > 1) && (
                   <text x={x + CELL / 2} y={y + CELL / 2 + 3} textAnchor="middle"
                     fill="rgba(3,5,8,.85)" fontSize="8" fontWeight="700" pointerEvents="none">
                     {count}

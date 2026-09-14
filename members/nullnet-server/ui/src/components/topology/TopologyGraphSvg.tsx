@@ -3,7 +3,7 @@ import type { GraphJson, SessionJson } from '../../types';
 import { NODE_W, NODE_H, INET_W, INET_H, INTERNET_ID } from './types';
 import type { TopoNode } from './types';
 import {
-  buildTopoGraph, layoutNodes, svgDims,
+  buildTopoGraph, edgeSessionCount, layoutNodes, svgDims,
   edgePath, edgeMidpoint, egressEdgePath, egressLabelPoint, inetEdgePath, longEdgePath, edgeLabelPoints,
 } from './layout';
 
@@ -261,7 +261,7 @@ export default function TopologyGraphSvg({
             const isNew = isNewEdge(edgeKey);
             const dimmed = (focusedNetIds != null && !focusedEdgeKeys.has(edgeKey)) ||
               (highlightSource != null && !highlightEdgeKeys.has(edgeKey));
-            const count = e.originalIndices.length;
+            const count = edgeSessionCount(e, graph);
             const stroke = isSel
               ? 'rgba(91,156,246,.9)'
               : e.isEgress ? 'rgba(167,139,250,.55)'
@@ -335,7 +335,7 @@ export default function TopologyGraphSvg({
                     peak, or its waypoint-lane midpoint when it has one */}
                 {interactive && e.isEgress && !isSel && (() => {
                   const lp = wp?.length ? edgeMidpoint(fp, tp) : egressLabelPoint(fp, tp);
-                  return <EdgeLabel x={lp.x} y={lp.y} text="egress" color="rgba(167,139,250,.8)" />;
+                  return <EdgeLabel x={lp.x} y={lp.y} text={`egress · ${count} active`} color="rgba(167,139,250,.8)" />;
                 })()}
 
                 {/* Default labels — hidden when client is focused or on egress edges */}

@@ -2,6 +2,12 @@ import type { GraphJson } from '../../types';
 import { NODE_W, NODE_H, H_GAP, V_GAP, INET_W, INET_H, INET_Y, INET_PROXY_GAP, INTERNET_ID } from './types';
 import type { Pos, TopoNode, TopoEdge } from './types';
 
+export function edgeSessionCount(edge: TopoEdge, graph: GraphJson): number {
+  if (!edge.isEgress) return edge.originalIndices.length;
+  return edge.originalIndices.reduce((count, idx) =>
+    count + (graph.edges[idx].destinations?.filter(d => d.active).length ?? 0), 0);
+}
+
 export function buildTopoGraph(graph: GraphJson): { nodes: TopoNode[]; edges: TopoEdge[] } {
   const nodes: TopoNode[] = graph.nodes.map(n => ({ ...n, kind: 'service' as const }));
   // Include idle connected proxies and endpoints of edges still being torn down.
