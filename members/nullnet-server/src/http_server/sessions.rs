@@ -4,7 +4,7 @@
 //! in-memory map: the active ingress sessions the topology views are built on.
 //!
 //! `history_handler` (`GET /api/sessions/{stack}/history`) serves the persisted
-//! `sessions` table — ingress *and* egress, live and ended, filtered and
+//! `sessions` table — ingress, egress, and backend, live and ended, filtered and
 //! paginated. That is what the Sessions page renders.
 
 use super::AppState;
@@ -12,7 +12,7 @@ use super::auth::{AuthContext, require_scope};
 use crate::auth::Scope;
 use crate::services::changes::{ServiceChange, apply_changes};
 use crate::services::service_info::ServiceInfo;
-use crate::sessions::{EGRESS, INGRESS, SessionRecordJson};
+use crate::sessions::{BACKEND, EGRESS, INGRESS, SessionRecordJson};
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -93,7 +93,7 @@ pub(super) async fn list_handler(
 
 #[derive(Deserialize)]
 pub(crate) struct HistoryQuery {
-    /// `ingress` or `egress`; absent means both.
+    /// `ingress`, `egress`, or `backend`; absent means all.
     direction: Option<String>,
     service: Option<String>,
     /// `true` = live only, `false` = ended only, absent = both.
@@ -132,11 +132,12 @@ pub(super) async fn history_handler(
     let direction = match params.direction.as_deref() {
         Some(INGRESS) => Some(INGRESS),
         Some(EGRESS) => Some(EGRESS),
+        Some(BACKEND) => Some(BACKEND),
         Some(_) => {
             return (
                 StatusCode::BAD_REQUEST,
                 axum::Json(ErrorJson {
-                    error: "direction must be 'ingress' or 'egress'",
+                    error: "direction must be 'ingress', 'egress', or 'backend'",
                 }),
             )
                 .into_response();
@@ -177,7 +178,8 @@ pub(super) async fn history_handler(
         }
         // Geo resolves asynchronously and is usually still unknown when the row
         // is written; fill the response from the cache when it has landed since.
-        if s.country_code.is_none()
+        if s.direction != BACKEND
+            && s.country_code.is_none()
             && let Ok(ip) = s.peer_ip.parse::<Ipv4Addr>()
         {
             state.orchestrator.ensure_geo(ip);
@@ -202,7 +204,7 @@ pub(super) async fn history_handler(
     // cursor to walk and no stored timestamps to filter on.
     if params.before_id.is_none()
         && params.active != Some(false)
-        && direction != Some(EGRESS)
+        && direction.is_none_or(|kind| kind == INGRESS)
         && params.blocked != Some(true)
         && params.since.is_none()
         && params.until.is_none()
@@ -313,7 +315,7 @@ struct CountJson {
 }
 
 /// `GET /api/sessions/{stack}/count` — the live session count the sidebar
-/// badge shows. Ingress *and* egress, matching the Sessions page headline,
+/// badge shows. Ingress, egress, and backend, matching the Sessions page headline,
 /// without paging a whole history response to read one number.
 pub(super) async fn count_handler(
     Extension(ctx): Extension<AuthContext>,

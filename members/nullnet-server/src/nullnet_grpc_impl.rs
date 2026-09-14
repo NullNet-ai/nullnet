@@ -2041,7 +2041,18 @@ async fn run_net_chain_setup(
     // instead of stranding them and their net ids.
     let mut services_mut = services.write().await;
     let backend_lost = if let Some((key, generation)) = &owner {
-        !any_failure && !orchestrator.finish_backend_session(key, *generation).await
+        if any_failure {
+            false
+        } else {
+            let source = Client::new_service(key.0.clone(), key.1, key.2.clone());
+            let first = successful
+                .iter()
+                .find(|edge| edge.client == source)
+                .expect("a completed backend chain has an initiator edge");
+            !orchestrator
+                .finish_backend_session(key, *generation, first.net_id, &first.server_name)
+                .await
+        }
     } else {
         false
     };

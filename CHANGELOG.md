@@ -4,6 +4,7 @@ All Nullnet releases with the relative changes are documented in this file.
 
 ## [UNRELEASED]
 ### Added
+- Show backend trigger sessions in session history with a destination service peer, gray N/A policy, and a Kind column
 - Serve the UI with a managed certificate selected by `UI_TLS_DOMAIN`, with first-run self-signed setup and automatic certificate reload ([#188](https://github.com/NullNet-ai/nullnet/pull/188))
 - Enable one-year HSTS on proxy HTTPS responses by default, with `HSTS_ENABLED=false` for development ([#188](https://github.com/NullNet-ai/nullnet/pull/188))
 - Add an opt-in “Pausable when idle” checkbox for Docker services, persisted in configuration with a false default ([#187](https://github.com/NullNet-ai/nullnet/pull/187) — fixes [#180](https://github.com/NullNet-ai/nullnet/issues/180))

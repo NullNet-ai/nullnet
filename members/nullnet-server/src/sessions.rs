@@ -1,11 +1,11 @@
-//! Durable ingress/egress session history behind the UI's Sessions page.
+//! Durable ingress/egress/backend session history behind the UI's Sessions page.
 //!
 //! Structurally the twin of [`crate::events::EventStore`]: a handle held by the
 //! orchestrator, backed by the `sessions` DB table once [`SessionStore::attach_db`]
 //! runs, and a no-op before that — the many in-process unit tests build an
 //! `Orchestrator` directly and never attach one.
 //!
-//! Two things are recorded, as rows that are live while `ended_at` is NULL:
+//! Three kinds are recorded, as rows that are live while `ended_at` is NULL:
 //!
 //! * **ingress** — one row per proxy session (external client -> service), opened
 //!   and closed alongside the `session_created`/`session_torn_down` events.
@@ -18,6 +18,9 @@
 //!   naming it and closes when the client reports its last connection to that
 //!   host gone. Edge teardown is only the backstop for whatever is still open.
 
+//! * **backend** — one row per trigger chain, from its initiator to its first
+//!   destination, closed when the chain expires or is torn down.
+
 use crate::db::{Db, SessionGeo};
 use crate::geo::GeoInfo;
 use serde::Serialize;
@@ -29,6 +32,7 @@ use tokio::sync::Mutex;
 
 pub(crate) const INGRESS: &str = "ingress";
 pub(crate) const EGRESS: &str = "egress";
+pub(crate) const BACKEND: &str = "backend";
 
 /// A run of denials from the same peer to the same service folds into one row
 /// while they keep arriving less than this far apart.
@@ -182,6 +186,53 @@ impl SessionStore {
             .await
         {
             eprintln!("Sessions: failed to open ingress session net {net_id}: {e:?}");
+        }
+    }
+
+    /// Persist the trigger's first hop; the row belongs to this chain generation.
+    pub(crate) async fn open_backend(
+        &self,
+        stack: &str,
+        key: &crate::orchestrator::BackendKey,
+        net_id: u32,
+        destination: &str,
+    ) -> Option<i64> {
+        let db = self.db.get()?;
+        let detail = json!({
+            "node_ip": key.1.to_string(),
+            "container": key.2,
+            "port": key.3,
+        })
+        .to_string();
+        match db
+            .sessions()
+            .open(
+                BACKEND,
+                stack,
+                &key.0,
+                net_id,
+                destination,
+                &SessionGeo::default(),
+                false,
+                &detail,
+                now_secs(),
+            )
+            .await
+        {
+            Ok(id) => Some(id),
+            Err(e) => {
+                eprintln!("Sessions: failed to open backend session net {net_id}: {e:?}");
+                None
+            }
+        }
+    }
+
+    pub(crate) async fn close_backend(&self, id: Option<i64>) {
+        let (Some(db), Some(id)) = (self.db.get(), id) else {
+            return;
+        };
+        if let Err(e) = db.sessions().close_backend(id, now_secs()).await {
+            eprintln!("Sessions: failed to close backend session {id}: {e:?}");
         }
     }
 

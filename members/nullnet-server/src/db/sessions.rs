@@ -52,7 +52,7 @@ impl SessionRepository {
         blocked: bool,
         detail: &str,
         timestamp: i64,
-    ) -> Result<(), Error> {
+    ) -> Result<i64, Error> {
         let new_row = NewSessionRow {
             direction,
             stack,
@@ -71,10 +71,27 @@ impl SessionRepository {
         let mut conn = self.conn.lock().await;
         diesel::insert_into(sessions::table)
             .values(&new_row)
-            .execute(&mut *conn)
+            .returning(sessions::id)
+            .get_result(&mut *conn)
             .await
-            .handle_err(location!())?;
-        Ok(())
+            .handle_err(location!())
+    }
+
+    /// Close one backend generation without affecting chains sharing its edge.
+    pub(crate) async fn close_backend(&self, id: i64, timestamp: i64) -> Result<usize, Error> {
+        let mut conn = self.conn.lock().await;
+        diesel::update(
+            sessions::table
+                .filter(sessions::id.eq(id))
+                .filter(sessions::ended_at.is_null()),
+        )
+        .set((
+            sessions::ended_at.eq(Some(timestamp)),
+            sessions::last_seen.eq(timestamp),
+        ))
+        .execute(&mut *conn)
+        .await
+        .handle_err(location!())
     }
 
     /// Refresh the mutable fields of the open row for `(direction, net_id,
@@ -372,7 +389,9 @@ impl SessionRepository {
             None => {}
         }
         if let Some(blocked) = blocked {
-            query = query.filter(sessions::blocked.eq(blocked));
+            query = query
+                .filter(sessions::direction.ne("backend"))
+                .filter(sessions::blocked.eq(blocked));
         }
         if let Some(since) = since {
             query = query.filter(sessions::started_at.ge(since));

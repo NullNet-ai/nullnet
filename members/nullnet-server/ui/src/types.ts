@@ -46,7 +46,8 @@ export interface SessionJson {
 
 /// One row of the persisted session history (`GET /api/sessions/{stack}/history`).
 /// `ended_at` absent means the session is still live. `peer_ip` is the external
-/// client for an ingress session and the external destination for an egress one.
+/// client for ingress, the external destination for egress, or the destination
+/// service name for backend.
 export interface SessionRecordJson {
   id: number;
   direction: SessionDirection;
@@ -66,7 +67,7 @@ export interface SessionRecordJson {
   detail: SessionDetail;
 }
 
-export type SessionDirection = 'ingress' | 'egress';
+export type SessionDirection = 'ingress' | 'egress' | 'backend';
 
 /// Direction-specific fields, stored as JSON on the row.
 export interface SessionDetail {
@@ -76,7 +77,9 @@ export interface SessionDetail {
   chain_depth?: number;
   // blocked ingress: denials folded into this row
   attempts?: number;
-  // egress
+  // backend
+  port?: number;
+  // egress/backend
   node_ip?: string;
   container?: string | null;
   proxy_ip?: string;

@@ -10,13 +10,11 @@ import { formatTimestamp, formatTimestampFull } from '../lib/time';
 const PAGE_SIZE = 100;
 const REFRESH_MS = 5000;
 
-// Matches the topology: session/ingress edges are blue, egress edges purple
-// (see TopologyGraphSvg's arr-egress marker, TopologyMatrix, EdgePanel's
-// b-blue/b-purple badges). Amber is reserved for proxy hops there, so it must
-// not be reused for a direction here.
-const DIRECTION_BADGE: Record<SessionDirection, string> = {
+// Kind colors match the topology edges.
+const KIND_BADGE: Record<SessionDirection, string> = {
   ingress: 'b-blue',
   egress: 'b-purple',
+  backend: 'b-dim',
 };
 
 type StatusFilter = '' | 'active' | 'ended';
@@ -249,13 +247,14 @@ export default function Sessions() {
                   </select>
                 </th>
                 <th style={th(110)}>
-                  Direction
+                  Kind
                   {/* The popup list is a native surface, not composited over the
                       page — it needs an explicit opaque background (see Events.tsx). */}
                   <select value={directionFilter} onChange={e => setFilter('direction', e.target.value)} style={selectStyle}>
                     <option value="" style={optionStyle}>All</option>
                     <option value="ingress" style={optionStyle}>Ingress</option>
                     <option value="egress" style={optionStyle}>Egress</option>
+                    <option value="backend" style={optionStyle}>Backend</option>
                   </select>
                 </th>
                 <th style={th(110)}>
@@ -298,12 +297,14 @@ export default function Sessions() {
                       {s.service}
                     </td>
                     <td>
-                      <span className={`badge ${DIRECTION_BADGE[s.direction]}`}>{s.direction}</span>
+                      <span className={`badge ${KIND_BADGE[s.direction]}`}>{s.direction}</span>
                     </td>
                     <td>
-                      <span className={`badge ${s.blocked ? 'b-red' : 'b-green'}`}>
-                        {s.blocked ? 'blocked' : 'allowed'}
-                      </span>
+                      {s.direction === 'backend' ? <span style={{ color: 'var(--t3)' }}>n/a</span> : (
+                        <span className={`badge ${s.blocked ? 'b-red' : 'b-green'}`}>
+                          {s.blocked ? 'blocked' : 'allowed'}
+                        </span>
+                      )}
                     </td>
                     <td style={{ ...mono, fontWeight: 500, color: 'var(--blue)' }}>
                       {/* A denied ingress connection is refused before an edge
