@@ -13,6 +13,7 @@ import TopologyMatrix from '../components/topology/TopologyMatrix';
 // real Topology page uses, so nothing here can drift from production.
 
 const EXAMPLE_MINIMAL: GraphJson = {
+  proxies: ['10.0.0.1', '10.0.0.2'],
   nodes: [
     { id: 'gateway', registered: true, entry_point: true, replica_count: 1, active_replica_count: 1, paused_replica_count: 0 },
     { id: 'auth', registered: true, entry_point: false, replica_count: 1, active_replica_count: 1, paused_replica_count: 0 },
@@ -30,6 +31,7 @@ const EXAMPLE_MINIMAL: GraphJson = {
 // (upload), plus a short cycle (core <-> audit) — the two patterns worth
 // stress-testing long-edge routing against.
 const EXAMPLE_DENSE: GraphJson = {
+  proxies: ['10.0.0.1', '10.0.0.2'],
   nodes: [
     { id: 'gateway', registered: true, entry_point: true, replica_count: 1, active_replica_count: 1, paused_replica_count: 0 },
     { id: 'core', registered: true, entry_point: false, replica_count: 1, active_replica_count: 1, paused_replica_count: 0 },
@@ -53,7 +55,7 @@ const EXAMPLE_DENSE: GraphJson = {
 };
 
 function isGraphJson(v: unknown): v is GraphJson {
-  return !!v && typeof v === 'object' && Array.isArray((v as GraphJson).nodes) && Array.isArray((v as GraphJson).edges);
+  return !!v && typeof v === 'object' && Array.isArray((v as GraphJson).proxies) && (v as GraphJson).proxies.every(ip => typeof ip === 'string') && Array.isArray((v as GraphJson).nodes) && Array.isArray((v as GraphJson).edges);
 }
 
 const inputStyle: React.CSSProperties = {
@@ -75,7 +77,7 @@ export default function DebugTopology() {
     setRaw(text);
     try {
       const parsed = JSON.parse(text);
-      if (!isGraphJson(parsed)) throw new Error('JSON must have "nodes" and "edges" arrays');
+      if (!isGraphJson(parsed)) throw new Error('JSON must have "proxies" (IP strings), "nodes", and "edges" arrays');
       setGraph(parsed);
       setError(null);
     } catch (e) {
@@ -116,7 +118,7 @@ export default function DebugTopology() {
         <div>
           <div style={{ fontSize: 13, fontWeight: 700 }}>Topology debug</div>
           <div style={{ fontSize: 10.5, color: 'var(--t2)', marginTop: 4, lineHeight: 1.5 }}>
-            Paste a GraphJson ({'{ nodes, edges }'}), or load a file — renders through the
+            Paste a GraphJson ({'{ proxies, nodes, edges }'}), or load a file — renders through the
             real topology components, no backend involved.
           </div>
         </div>

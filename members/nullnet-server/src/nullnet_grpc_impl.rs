@@ -2668,21 +2668,38 @@ impl NullnetGrpc for NullnetGrpcImpl {
         // so its lifetime is the proxy's — the node events' counterpart.
         let proxy_ip = req
             .remote_addr()
-            .map_or_else(|| "unknown".to_string(), |a| a.ip().to_string());
-        let events = self.orchestrator.events.clone();
-        events.emit(Event::proxy_connected(proxy_ip.clone())).await;
+            .ok_or_else(|| Status::invalid_argument("Missing proxy remote address"))?
+            .ip();
+        let orchestrator = self.orchestrator.clone();
+        orchestrator.proxy_connected(proxy_ip).await;
         tokio::spawn(async move {
+            orchestrator
+                .events
+                .emit(Event::proxy_connected(proxy_ip.to_string()))
+                .await;
             // send the current set immediately, then one snapshot per change
             let initial = certs.borrow_and_update().clone();
             if tx.send(Ok(initial)).await.is_ok() {
-                while certs.changed().await.is_ok() {
+                loop {
+                    tokio::select! {
+                        _ = tx.closed() => break,
+                        changed = certs.changed() => {
+                            if changed.is_err() {
+                                break;
+                            }
+                        }
+                    }
                     let snapshot = certs.borrow_and_update().clone();
                     if tx.send(Ok(snapshot)).await.is_err() {
                         break;
                     }
                 }
             }
-            events.emit(Event::proxy_disconnected(proxy_ip)).await;
+            orchestrator.proxy_disconnected(proxy_ip).await;
+            orchestrator
+                .events
+                .emit(Event::proxy_disconnected(proxy_ip.to_string()))
+                .await;
         });
         Ok(Response::new(ReceiverStream::new(rx)))
     }
@@ -2862,6 +2879,59 @@ impl NullnetGrpc for NullnetGrpcImpl {
         };
         self.orchestrator.events.emit(event).await;
         Ok(Response::new(Empty {}))
+    }
+}
+
+#[cfg(test)]
+mod proxy_presence_tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio_stream::StreamExt;
+    use tonic::transport::server::TcpConnectInfo;
+
+    #[tokio::test]
+    async fn idle_proxy_presence_survives_overlapping_streams() {
+        let mut server = NullnetGrpcImpl::new_for_test(StackMap::new());
+        let (_certs_tx, certs) = watch::channel(CertBundle::default());
+        server.certs = certs;
+        let mut events = server.orchestrator.events.subscribe();
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        let mut streams = Vec::new();
+        for port in [50000, 50001] {
+            let mut request = Request::new(Empty {});
+            request.extensions_mut().insert(TcpConnectInfo {
+                local_addr: None,
+                remote_addr: Some(std::net::SocketAddr::new(ip, port)),
+            });
+            let mut stream = server
+                .watch_certificates(request)
+                .await
+                .unwrap()
+                .into_inner();
+            stream.next().await.unwrap().unwrap();
+            streams.push(stream);
+        }
+        let graph = crate::graphviz::render_graph_json(
+            &HashMap::new(),
+            &[],
+            server.orchestrator.connected_proxy_ips().await,
+        );
+        let json = serde_json::to_value(graph).unwrap();
+        assert_eq!(json["proxies"], serde_json::json!([ip.to_string()]));
+        assert_eq!(json["edges"], serde_json::json!([]));
+
+        for expected in [vec![ip], vec![]] {
+            drop(streams.pop().unwrap());
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !matches!(
+                    events.recv().await.unwrap(),
+                    Event::ProxyDisconnected { .. }
+                ) {}
+            })
+            .await
+            .expect("idle stream disconnect must not wait for a certificate update");
+            assert_eq!(server.orchestrator.connected_proxy_ips().await, expected);
+        }
     }
 }
 

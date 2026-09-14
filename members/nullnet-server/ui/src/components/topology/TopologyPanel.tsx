@@ -3,6 +3,7 @@ import ServiceNodePanel from './ServiceNodePanel';
 import ProxyNodePanel from './ProxyNodePanel';
 import EdgePanel from './EdgePanel';
 import InternetPanel from './InternetPanel';
+import { buildTopoGraph } from './layout';
 import { useDragResize } from '../../hooks/useDragResize';
 
 export default function TopologyPanel() {
@@ -42,7 +43,7 @@ export default function TopologyPanel() {
         />
       );
     }
-    if (graph.edges.some(e => e.via_proxy === nodeId)) {
+    if (buildTopoGraph(graph).nodes.some(n => n.kind === 'proxy' && n.id === nodeId)) {
       return <ProxyNodePanel ip={nodeId} edges={graph.edges} />;
     }
     return null;

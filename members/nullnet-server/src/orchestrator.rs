@@ -140,6 +140,8 @@ type AllocatedPort = (HostPair, u16);
 #[derive(Debug, Clone)]
 pub struct Orchestrator {
     clients: Arc<RwLock<HashMap<IpAddr, OutboundStream>>>,
+    /// Certificate stream counts keep overlapping reconnects on one IP visible.
+    proxies: Arc<RwLock<HashMap<IpAddr, usize>>>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
     net_id_pool: Arc<Mutex<NetIdPool>>,
     /// Per-tunnel VXLAN UDP dstport pools, one per host pair rather than one
@@ -177,6 +179,7 @@ impl Orchestrator {
     pub fn new() -> Self {
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
+            proxies: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
             net_id_pool: Arc::new(Mutex::new(NetIdPool::new())),
             udp_port_pools: Arc::new(Mutex::new(HashMap::new())),
@@ -1101,6 +1104,25 @@ impl Orchestrator {
 
     pub(crate) async fn connected_node_ips(&self) -> Vec<IpAddr> {
         self.clients.read().await.keys().copied().collect()
+    }
+
+    pub(crate) async fn proxy_connected(&self, ip: IpAddr) {
+        *self.proxies.write().await.entry(ip).or_default() += 1;
+    }
+
+    pub(crate) async fn proxy_disconnected(&self, ip: IpAddr) {
+        let mut proxies = self.proxies.write().await;
+        let count = proxies.get_mut(&ip).expect("registered proxy stream");
+        *count -= 1;
+        if *count == 0 {
+            proxies.remove(&ip);
+        }
+    }
+
+    pub(crate) async fn connected_proxy_ips(&self) -> Vec<IpAddr> {
+        let mut ips: Vec<_> = self.proxies.read().await.keys().copied().collect();
+        ips.sort_unstable();
+        ips
     }
 
     /// Tear an edge down on both endpoints and return the net id (and its

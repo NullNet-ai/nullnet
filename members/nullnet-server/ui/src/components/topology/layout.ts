@@ -1,22 +1,17 @@
 import type { GraphJson } from '../../types';
-import { NODE_W, NODE_H, H_GAP, V_GAP, INET_W, INET_H, INET_Y, INET_PROXY_GAP, INTERNET_ID, PLACEHOLDER_PROXY_ID } from './types';
+import { NODE_W, NODE_H, H_GAP, V_GAP, INET_W, INET_H, INET_Y, INET_PROXY_GAP, INTERNET_ID } from './types';
 import type { Pos, TopoNode, TopoEdge } from './types';
 
 export function buildTopoGraph(graph: GraphJson): { nodes: TopoNode[]; edges: TopoEdge[] } {
   const nodes: TopoNode[] = graph.nodes.map(n => ({ ...n, kind: 'service' as const }));
-  // Proxy nodes come from both inbound (via_proxy) and outbound egress (to).
-  const proxyIps = new Set<string>();
+  // Include idle connected proxies and endpoints of edges still being torn down.
+  const proxyIps = new Set(graph.proxies);
   for (const e of graph.edges) {
     if (e.via_proxy) proxyIps.add(e.via_proxy);
     if (e.egress) proxyIps.add(e.to);
   }
   for (const ip of proxyIps) nodes.push({ kind: 'proxy', id: ip });
 
-  // Internet + proxy are always shown, even with no active connections — fall
-  // back to a non-interactive placeholder proxy node when none are live.
-  if (proxyIps.size === 0) {
-    nodes.push({ kind: 'proxy', id: PLACEHOLDER_PROXY_ID, placeholder: true });
-  }
   nodes.push({ kind: 'internet', id: INTERNET_ID });
 
   const inetEdges: TopoEdge[] = [];

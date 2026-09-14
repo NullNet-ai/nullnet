@@ -141,25 +141,6 @@ export default function TopologyGraphSvg({
     }
 
     if (n.kind === 'proxy') {
-      if (n.placeholder) {
-        return (
-          <g key={n.id} style={{ opacity: nodeDimmed ? 0.12 : 1 }}>
-            <rect x={p.x} y={p.y} width={NODE_W} height={NODE_H} rx="8"
-              fill="rgba(255,255,255,.02)" stroke="rgba(255,255,255,.12)"
-              strokeWidth="1" strokeDasharray="5 3" />
-            <circle cx={p.x + 15} cy={p.y + 22} r="3.5" fill="none" stroke="rgba(255,255,255,.25)" strokeWidth="1.5" />
-            <g clipPath={`url(#${clipId})`} pointerEvents="none">
-              <defs>
-                <clipPath id={clipId}>
-                  <rect x={p.x + 4} y={p.y + 2} width={NODE_W - 8} height={NODE_H - 4} />
-                </clipPath>
-              </defs>
-              <text x={p.x + 27} y={p.y + 20} fill="rgba(255,255,255,.35)" fontSize="9.5" fontWeight="500">proxy</text>
-              <text x={p.x + 27} y={p.y + 32} fill="rgba(255,255,255,.25)" fontSize="7.5">no active connections</text>
-            </g>
-          </g>
-        );
-      }
       return (
         <g key={n.id} onClick={clickHandler} style={{ cursor: onNodeClick ? 'pointer' : 'default', opacity: nodeDimmed ? 0.12 : 1 }}>
           <defs>

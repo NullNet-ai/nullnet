@@ -176,6 +176,7 @@ impl ClientInfo {
 
 #[derive(Serialize)]
 pub(crate) struct GraphJson {
+    proxies: Vec<IpAddr>,
     nodes: Vec<GraphNodeJson>,
     edges: Vec<GraphEdgeJson>,
 }
@@ -247,6 +248,7 @@ fn service_of_replica(
 pub(crate) fn render_graph_json(
     services: &HashMap<String, ServiceInfo>,
     egress_edges: &[EgressEdgeInfo],
+    proxies: Vec<IpAddr>,
 ) -> GraphJson {
     let initiators = initiators(services);
 
@@ -346,5 +348,9 @@ pub(crate) fn render_graph_json(
     egress.sort_by(|a, b| a.from.cmp(&b.from).then(a.to.cmp(&b.to)));
     edges.append(&mut egress);
 
-    GraphJson { nodes, edges }
+    GraphJson {
+        proxies,
+        nodes,
+        edges,
+    }
 }

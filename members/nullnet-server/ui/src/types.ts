@@ -265,6 +265,7 @@ export interface GraphEdgeJson {
 }
 
 export interface GraphJson {
+  proxies: string[];
   nodes: GraphNodeJson[];
   edges: GraphEdgeJson[];
 }
