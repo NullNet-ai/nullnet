@@ -15,6 +15,7 @@ interface Props {
 const CELL = 26;
 const LABEL_COL_W = 150;
 const HEADER_ROW_H = 150;
+const compactCount = new Intl.NumberFormat('en', { notation: 'compact', maximumSignificantDigits: 2 });
 
 function shortLabel(id: string): string {
   return id.length > 18 ? `${id.slice(0, 17)}…` : id;
@@ -116,7 +117,7 @@ export default function TopologyMatrix({
                   stroke={isSel ? 'rgba(91,156,246,.9)' : 'none'} strokeWidth={isSel ? 1.5 : 0} />
                 <text x={x + CELL / 2} y={y + CELL / 2 + 3} textAnchor="middle"
                     fill="rgba(3,5,8,.85)" fontSize="8" fontWeight="700" pointerEvents="none">
-                    {count}
+                    {count < 1000 ? count : compactCount.format(count).toLowerCase()}
                 </text>
               </>
             )}

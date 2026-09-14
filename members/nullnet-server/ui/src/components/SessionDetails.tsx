@@ -1,17 +1,30 @@
-import type { ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import type { SessionRecordJson } from '../types';
 import { SessionNet, SessionPeer, SessionStatus } from './SessionFields';
 import { byEnd, duration } from '../lib/sessions';
 import { formatTimestamp, formatTimestampFull } from '../lib/time';
 
+const PAGE_SIZE = 50;
+
 export default function SessionDetails({ sessions, onFocus }: { sessions: SessionRecordJson[]; onFocus?: (ip: string) => void }) {
+  const [page, setPage] = useState(0);
+  const sorted = useMemo(() => sessions.slice().sort(byEnd), [sessions]);
+  const lastPage = Math.max(0, Math.ceil(sorted.length / PAGE_SIZE) - 1);
+  const currentPage = Math.min(page, lastPage);
+  const start = currentPage * PAGE_SIZE;
+  const visible = sorted.slice(start, start + PAGE_SIZE);
   const now = Math.floor(Date.now() / 1000);
   function timestamp(value: number) {
     return <span title={formatTimestampFull(value)}>{formatTimestamp(value)}</span>;
   }
   return <>
     <div style={{ color: 'var(--t2)', fontSize: 11, margin: '14px 0 8px' }}>{sessions.length} session{sessions.length === 1 ? '' : 's'}</div>
-    {sessions.slice().sort(byEnd).map(s => {
+    {lastPage > 0 && <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10, fontSize: 11 }}>
+      <span style={{ color: 'var(--t2)' }}>{start + 1}–{start + visible.length} of {sessions.length}</span>
+      <button className="dep-tag" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>Previous</button>
+      <button className="dep-tag" disabled={currentPage === lastPage} onClick={() => setPage(currentPage + 1)}>Next</button>
+    </div>}
+    {visible.map(s => {
       const fields: [string, ReactNode][] = [
         ['Status', <SessionStatus session={s} />],
         ['Net', <SessionNet session={s} />],

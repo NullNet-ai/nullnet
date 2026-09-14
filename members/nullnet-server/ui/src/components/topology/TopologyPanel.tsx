@@ -25,7 +25,7 @@ export default function TopologyPanel() {
     if (panel.type === 'edge') {
       const edge = buildTopoGraph(graph).edges.find(e => e.from === panel.fromId && e.to === panel.toId);
       const edges = edge?.originalIndices.map(i => graph.edges[i]) ?? [];
-      return <EdgePanel edges={edges} />;
+      return <EdgePanel key={`${panel.fromId}\0${panel.toId}`} edges={edges} />;
     }
 
     const { nodeId } = panel;
