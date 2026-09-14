@@ -79,6 +79,7 @@ struct DestStat {
 /// A live egress forward-proxy edge (initiator replica -> proxy host).
 #[derive(Debug, Clone)]
 struct EgressEdge {
+    setup_ms: u128,
     generation: Uuid,
     net_id: u32,
     /// Stack + service the initiator replica is registered under. Resolved once
@@ -120,6 +121,7 @@ pub(crate) struct EgressDestination {
 /// Read-only snapshot of a live egress edge, for topology rendering.
 #[derive(Debug, Clone)]
 pub(crate) struct EgressEdgeInfo {
+    pub(crate) setup_ms: u128,
     pub(crate) net_id: u32,
     pub(crate) initiator_ip: IpAddr,
     pub(crate) initiator_docker: Option<String>,
@@ -307,6 +309,7 @@ impl Orchestrator {
             edges.insert(
                 key.clone(),
                 EgressEdge {
+                    setup_ms: 0,
                     generation,
                     net_id: 0,
                     stack: stack.to_string(),
@@ -414,6 +417,7 @@ impl Orchestrator {
             match edges.get_mut(&key) {
                 Some(edge) if edge.generation == generation => {
                     edge.net_id = net_id;
+                    edge.setup_ms = edge.reserved_at.elapsed().as_millis();
                     true
                 }
                 _ => false,
@@ -470,6 +474,7 @@ impl Orchestrator {
                         .then(a.ip.cmp(&b.ip))
                 });
                 EgressEdgeInfo {
+                    setup_ms: e.setup_ms,
                     net_id: e.net_id,
                     initiator_ip: e.initiator_ip,
                     initiator_docker: e.initiator_docker.clone(),
@@ -543,11 +548,12 @@ impl Orchestrator {
                     edge.service.clone(),
                     edge.net_id,
                     edge.proxy_ip,
+                    edge.setup_ms,
                 )
             })
         };
 
-        let Some((stack, service, net_id, proxy_ip)) = persist else {
+        let Some((stack, service, net_id, proxy_ip, setup_ms)) = persist else {
             return;
         };
         self.sessions
@@ -559,6 +565,7 @@ impl Orchestrator {
                 &key.0.to_string(),
                 key.1.as_deref(),
                 &proxy_ip.to_string(),
+                setup_ms,
                 last_seen as i64,
                 blocked,
                 active,
@@ -586,10 +593,11 @@ impl Orchestrator {
                 edge.service.clone(),
                 edge.net_id,
                 edge.proxy_ip,
+                edge.setup_ms,
                 dests,
             )
         };
-        let (stack, service, net_id, proxy_ip, dests) = pending;
+        let (stack, service, net_id, proxy_ip, setup_ms, dests) = pending;
         for (dst_ip, stat) in dests {
             self.sessions
                 .record_egress_destination(
@@ -600,6 +608,7 @@ impl Orchestrator {
                     &key.0.to_string(),
                     key.1.as_deref(),
                     &proxy_ip.to_string(),
+                    setup_ms,
                     stat.last_seen as i64,
                     stat.blocked,
                     stat.active,
@@ -786,6 +795,7 @@ impl Orchestrator {
         generation: Uuid,
         net_id: u32,
         destination: &str,
+        setup_ms: Option<u128>,
     ) -> bool {
         let mut sessions = self.backend_sessions.write().await;
         if let Some(session) = sessions.get_mut(key)
@@ -793,7 +803,7 @@ impl Orchestrator {
         {
             session.history_id = self
                 .sessions
-                .open_backend(&session.stack, key, net_id, destination)
+                .open_backend(&session.stack, key, net_id, destination, setup_ms)
                 .await;
             session.building = false;
             true
@@ -1639,6 +1649,7 @@ mod egress_liveness_tests {
         orch.egress_edges.write().await.insert(
             key.clone(),
             EgressEdge {
+                setup_ms: 0,
                 generation: Uuid::new_v4(),
                 net_id,
                 stack: "s".to_string(),
@@ -1658,6 +1669,7 @@ mod egress_liveness_tests {
         orch.egress_edges.write().await.insert(
             key.clone(),
             EgressEdge {
+                setup_ms: 0,
                 generation: Uuid::new_v4(),
                 net_id: 0,
                 stack: "s".to_string(),
@@ -1812,11 +1824,11 @@ mod session_history_tests {
             .unwrap();
         assert_eq!(db.sessions().count_active("prod").await.unwrap(), 0);
         assert!(
-            orch.finish_backend_session(&key, generation, 42, "db")
+            orch.finish_backend_session(&key, generation, 42, "db", Some(7))
                 .await
         );
         assert!(
-            orch.finish_backend_session(&other, other_generation, 42, "db")
+            orch.finish_backend_session(&other, other_generation, 42, "db", Some(7))
                 .await
         );
         assert_eq!(db.sessions().count_active("prod").await.unwrap(), 2);
@@ -1839,6 +1851,9 @@ mod session_history_tests {
             rows.iter()
                 .all(|row| row.service == "api" && row.peer_ip == "db" && row.net_id == 42)
         );
+        assert!(rows.iter().all(|row| {
+            serde_json::from_str::<serde_json::Value>(&row.detail).unwrap()["setup_ms"] == 7
+        }));
         for blocked in [true, false] {
             assert!(
                 db.sessions()
@@ -1869,7 +1884,7 @@ mod session_history_tests {
             .await
             .unwrap();
         assert!(
-            orch.finish_backend_session(&key, replacement, 42, "db")
+            orch.finish_backend_session(&key, replacement, 42, "db", Some(7))
                 .await
         );
         orch.cancel_backend_session(&key, generation).await;
@@ -1908,7 +1923,7 @@ mod session_history_tests {
         assert!(orch.cancel_backend_build(&key).await);
         assert!(
             !orch
-                .finish_backend_session(&key, generation, 42, "db")
+                .finish_backend_session(&key, generation, 42, "db", Some(7))
                 .await
         );
         assert!(
@@ -1924,6 +1939,7 @@ mod session_history_tests {
         orch.egress_edges.write().await.insert(
             key.clone(),
             EgressEdge {
+                setup_ms: 0,
                 generation: Uuid::new_v4(),
                 net_id,
                 stack: "prod".to_string(),
@@ -1986,6 +2002,10 @@ mod session_history_tests {
         assert_eq!(rows[0].net_id, 5);
         assert_eq!(rows[0].peer_ip, "8.8.8.8");
         assert_eq!(rows[0].last_seen, 100);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&rows[0].detail).unwrap()["setup_ms"],
+            0
+        );
         assert!(rows[0].ended_at.is_none());
 
         // Idempotent: promotion is not the only writer, so a later report of the

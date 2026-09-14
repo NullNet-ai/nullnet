@@ -1,10 +1,10 @@
 import { useEffect, useRef } from 'react';
 import type { GraphJson, SessionJson } from '../../types';
-import { NODE_W, NODE_H, INET_W, INET_H, INTERNET_ID } from './types';
+import { NODE_W, NODE_H } from './types';
 import type { TopoNode } from './types';
 import {
   buildTopoGraph, edgeSessionCount, layoutNodes, svgDims,
-  edgePath, edgeMidpoint, egressEdgePath, egressLabelPoint, inetEdgePath, longEdgePath, edgeLabelPoints,
+  edgePath, edgeMidpoint, egressEdgePath, egressLabelPoint, longEdgePath, edgeLabelPoints,
 } from './layout';
 
 // A modest bow is enough to visually separate two curves, but their labels
@@ -74,14 +74,12 @@ export default function TopologyGraphSvg({
   const focusedNodeIds = new Set<string>();
   if (focusedNetIds) {
     for (const e of edges) {
-      if (e.isInternetEdge) continue;
       if (e.originalIndices.some(i => focusedNetIds.has(graph.edges[i]?.net_id))) {
         focusedEdgeKeys.add(`${e.from}\0${e.to}`);
         focusedNodeIds.add(e.from);
         focusedNodeIds.add(e.to);
       }
     }
-    focusedNodeIds.add(INTERNET_ID);
   }
 
   // Selecting a node highlights just its direct connections — independent
@@ -112,7 +110,7 @@ export default function TopologyGraphSvg({
 
   const interactive = !!(onNodeClick || onEdgeClick);
 
-  // Shared node visuals: internet pill / proxy dashed box / service card.
+  // Shared node visuals: proxy dashed box / service card.
   function renderNode(n: TopoNode, key: string) {
     const p = pos.get(n.id);
     if (!p) return null;
@@ -121,24 +119,6 @@ export default function TopologyGraphSvg({
       (highlightSource != null && !highlightNodeIds.has(n.id));
     const clickHandler = onNodeClick ? (ev: { stopPropagation(): void }) => { ev.stopPropagation(); onNodeClick(n.id); } : undefined;
     const clipId = `nc-${key}`;
-
-    if (n.kind === 'internet') {
-      return (
-        <g key={INTERNET_ID} onClick={clickHandler} style={{ cursor: onNodeClick ? 'pointer' : 'default', opacity: nodeDimmed ? 0.12 : 1 }}>
-          {isSel && (
-            <rect x={p.x - 3} y={p.y - 3} width={INET_W + 6} height={INET_H + 6} rx="14"
-              fill="none" stroke="rgba(91,156,246,.6)" strokeWidth="1.5" />
-          )}
-          <rect x={p.x} y={p.y} width={INET_W} height={INET_H} rx="11"
-            fill="rgba(91,156,246,.05)" stroke="rgba(91,156,246,.2)"
-            strokeWidth="1" strokeDasharray="4 3" filter="url(#gT)" />
-          <text x={p.x + INET_W / 2} y={p.y + INET_H / 2 + 4}
-            textAnchor="middle" fill="rgba(91,156,246,.7)" fontSize="9.5" fontWeight="600" pointerEvents="none">
-            ⬡ internet
-          </text>
-        </g>
-      );
-    }
 
     if (n.kind === 'proxy') {
       return (
@@ -164,8 +144,8 @@ export default function TopologyGraphSvg({
       );
     }
 
-    const color = n.registered ? '#34d399' : '#f87171';
-    const strokeColor = n.registered ? 'rgba(52,211,153,.3)' : 'rgba(248,113,113,.2)';
+    const color = graph.historical ? 'rgba(255,255,255,.5)' : n.registered ? '#34d399' : '#f87171';
+    const strokeColor = graph.historical ? 'rgba(255,255,255,.2)' : n.registered ? 'rgba(52,211,153,.3)' : 'rgba(248,113,113,.2)';
     const ip = nodeIps.get(n.id);
     return (
       <g key={n.id} onClick={clickHandler} style={{ cursor: onNodeClick ? 'pointer' : 'default', opacity: nodeDimmed ? 0.12 : 1 }}>
@@ -188,8 +168,8 @@ export default function TopologyGraphSvg({
             <text x={p.x + 27} y={p.y + 31} fill="rgba(255,255,255,.35)" fontSize="8" fontFamily="'JetBrains Mono',monospace">{ip}</text>
           )}
           <text x={p.x + 27} y={p.y + (ip ? 42 : 31)} fill="rgba(255,255,255,.3)" fontSize="7.5">
-            {n.registered ? `${n.active_replica_count}/${n.replica_count} active` : 'unregistered'}
-            {n.registered && n.paused_replica_count > 0 ? ` · ${n.paused_replica_count} paused` : ''}
+            {graph.historical ? 'session history' : n.registered ? `${n.active_replica_count}/${n.replica_count} active` : 'unregistered'}
+            {!graph.historical && n.registered && n.paused_replica_count > 0 ? ` · ${n.paused_replica_count} paused` : ''}
             {n.entry_point ? ' · entry' : ''}
           </text>
         </g>
@@ -214,9 +194,6 @@ export default function TopologyGraphSvg({
         <marker id="arr-sel" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
           <path d="M0,0 L0,6 L8,3 z" fill="rgba(91,156,246,.8)" />
         </marker>
-        <marker id="arr-inet" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
-          <path d="M0,0 L0,6 L8,3 z" fill="rgba(91,156,246,.35)" />
-        </marker>
         <marker id="arr-egress" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
           <path d="M0,0 L0,6 L8,3 z" fill="rgba(167,139,250,.7)" />
         </marker>
@@ -224,35 +201,9 @@ export default function TopologyGraphSvg({
 
       {onBgClick && <rect x={0} y={0} width={w} height={h} fill="transparent" onClick={onBgClick} />}
 
-      {/* Internet → Proxy edges */}
-          {/* eslint-disable-next-line react-hooks/refs -- see isNewEdge comment above */}
-          {edges.filter(e => e.isInternetEdge).map(e => {
-            const fp = pos.get(e.from);
-            const tp = pos.get(e.to);
-            if (!fp || !tp) return null;
-            const dimmed = (focusedNetIds != null && !focusedNodeIds.has(e.to)) ||
-              (highlightSource != null && !highlightNodeIds.has(e.to));
-            const edgeKey = `${e.from}\0${e.to}`;
-            const isNew = isNewEdge(edgeKey);
-            return (
-              <path
-                key={edgeKey}
-                d={inetEdgePath(fp, tp)}
-                fill="none"
-                stroke="rgba(91,156,246,.3)"
-                strokeWidth="1.5"
-                strokeDasharray="4 3"
-                markerEnd="url(#arr-inet)"
-                pointerEvents="none"
-                opacity={dimmed ? 0.1 : 1}
-                style={isNew ? { animation: 'edge-fade-in .9s ease-out' } : undefined}
-              />
-            );
-          })}
-
           {/* Service / proxy edges */}
           {/* eslint-disable-next-line react-hooks/refs -- see isNewEdge comment above */}
-          {edges.filter(e => !e.isInternetEdge).map(e => {
+          {edges.map(e => {
             const fp = pos.get(e.from);
             const tp = pos.get(e.to);
             if (!fp || !tp) return null;
@@ -333,17 +284,14 @@ export default function TopologyGraphSvg({
 
                 {/* Egress edge marker label — anchored to the curve's own bow
                     peak, or its waypoint-lane midpoint when it has one */}
-                {interactive && e.isEgress && !isSel && (() => {
+                {interactive && e.isEgress && (() => {
                   const lp = wp?.length ? edgeMidpoint(fp, tp) : egressLabelPoint(fp, tp);
-                  return <EdgeLabel x={lp.x} y={lp.y} text={`egress · ${count} active`} color="rgba(167,139,250,.8)" />;
+                  return <EdgeLabel x={lp.x} y={lp.y} text={`${count} session${count === 1 ? '' : 's'}`} color="rgba(167,139,250,.8)" />;
                 })()}
 
                 {/* Default labels — hidden when client is focused or on egress edges */}
-                {interactive && !isSel && !isFocusedEdge && !e.isEgress && count > 1 && (
-                  <EdgeLabel x={midX} y={midY} text={`${count} sessions`} color="rgba(255,255,255,.55)" />
-                )}
-                {interactive && !isSel && !isFocusedEdge && !e.isEgress && count === 1 && e.setup_ms > 0 && (
-                  <EdgeLabel x={midX} y={midY} text={`net ${e.net_id} · ${e.setup_ms}ms`} color="rgba(255,255,255,.4)" />
+                {interactive && !isFocusedEdge && !e.isEgress && (
+                  <EdgeLabel x={midX} y={midY} text={`${count} session${count === 1 ? '' : 's'}`} color="rgba(255,255,255,.55)" />
                 )}
 
                 {/* Focused-client edge labels (session edges only, not egress) */}
@@ -371,24 +319,13 @@ export default function TopologyGraphSvg({
                     )}
                     {focusedNetId !== null && (
                       <g>
-                        <rect x={lp.mid.x - 60} y={lp.mid.y - 15} width={120} height={session ? 32 : 16} rx="4"
+                        <rect x={lp.mid.x - 60} y={lp.mid.y - 15} width={120} height={16} rx="4"
                           fill="rgba(3,5,8,.88)" stroke="rgba(255,255,255,.07)" />
                         <text x={lp.mid.x} y={lp.mid.y - 6} textAnchor="middle"
                           fill="rgba(91,156,246,.9)" fontSize="8" fontWeight="600">
                           VNI {focusedNetId}
                         </text>
-                        {session && (
-                          <>
-                            <text x={lp.mid.x} y={lp.mid.y + 4} textAnchor="middle"
-                              fill="rgba(255,255,255,.5)" fontSize="7" fontFamily="'JetBrains Mono',monospace">
-                              <tspan fill="rgba(255,255,255,.3)">src  </tspan>{session.client_net}
-                            </text>
-                            <text x={lp.mid.x} y={lp.mid.y + 13} textAnchor="middle"
-                              fill="rgba(255,255,255,.5)" fontSize="7" fontFamily="'JetBrains Mono',monospace">
-                              <tspan fill="rgba(255,255,255,.3)">dst  </tspan>{session.server_net}
-                            </text>
-                          </>
-                        )}
+
                       </g>
                     )}
                   </g>

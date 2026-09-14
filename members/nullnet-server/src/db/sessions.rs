@@ -394,7 +394,11 @@ impl SessionRepository {
                 .filter(sessions::blocked.eq(blocked));
         }
         if let Some(since) = since {
-            query = query.filter(sessions::started_at.ge(since));
+            query = query.filter(
+                sessions::ended_at
+                    .is_null()
+                    .or(sessions::ended_at.ge(since)),
+            );
         }
         if let Some(until) = until {
             query = query.filter(sessions::started_at.le(until));
@@ -490,6 +494,70 @@ mod tests {
         Db::open(dir.join("test.db").to_str().unwrap())
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn time_range_includes_every_intersection_and_pages_without_duplicates() {
+        let db = test_db().await;
+        let repo = db.sessions();
+        let geo = SessionGeo::default();
+        for (net, start, end) in [
+            (1, 50, Some(99)),
+            (2, 50, Some(100)),
+            (3, 50, Some(250)),
+            (4, 50, None),
+            (5, 150, Some(170)),
+            (6, 200, Some(250)),
+            (7, 201, None),
+            (8, 100, Some(100)),
+        ] {
+            let id = repo
+                .open("backend", "range", "a", net, "b", &geo, false, "{}", start)
+                .await
+                .unwrap();
+            if let Some(end) = end {
+                repo.close_backend(id, end).await.unwrap();
+            }
+        }
+        let mut cursor = None;
+        let mut nets = Vec::new();
+        loop {
+            let page = repo
+                .query(
+                    "range",
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(100),
+                    Some(200),
+                    cursor,
+                    2,
+                )
+                .await
+                .unwrap();
+            if page.is_empty() {
+                break;
+            }
+            cursor = page.last().map(|r| r.id);
+            nets.extend(page.into_iter().map(|r| r.net_id));
+        }
+        assert_eq!(nets, vec![8, 6, 5, 4, 3, 2]);
+        let active = repo
+            .query(
+                "range",
+                None,
+                None,
+                Some(true),
+                None,
+                Some(100),
+                Some(200),
+                None,
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(active.iter().map(|r| r.net_id).collect::<Vec<_>>(), vec![4]);
     }
 
     #[tokio::test]

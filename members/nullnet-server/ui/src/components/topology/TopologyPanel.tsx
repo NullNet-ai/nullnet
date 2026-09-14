@@ -2,12 +2,12 @@ import { useTopologyData, useTopologyUI } from './TopologyContext';
 import ServiceNodePanel from './ServiceNodePanel';
 import ProxyNodePanel from './ProxyNodePanel';
 import EdgePanel from './EdgePanel';
-import InternetPanel from './InternetPanel';
 import { buildTopoGraph } from './layout';
+import SessionDetails from '../SessionDetails';
 import { useDragResize } from '../../hooks/useDragResize';
 
 export default function TopologyPanel() {
-  const { graph, services } = useTopologyData();
+  const { graph, services, records, range } = useTopologyData();
   const { panel, dispatch } = useTopologyUI();
   const { width, onResizeStart } = useDragResize(268, 200, 560);
 
@@ -15,7 +15,6 @@ export default function TopologyPanel() {
 
   function getTitle(): string {
     if (!panel) return '–';
-    if (panel.type === 'internet') return 'Internet Clients';
     if (panel.type === 'edge') return `${panel.fromId} → ${panel.toId}`;
     return panel.nodeId;
   }
@@ -23,16 +22,19 @@ export default function TopologyPanel() {
   function renderContent() {
     if (!panel || !graph) return null;
 
-    if (panel.type === 'internet') {
-      return <InternetPanel />;
-    }
-
     if (panel.type === 'edge') {
-      const edges = panel.edgeIndices.map(i => graph.edges[i]).filter(Boolean);
+      const edge = buildTopoGraph(graph).edges.find(e => e.from === panel.fromId && e.to === panel.toId);
+      const edges = edge?.originalIndices.map(i => graph.edges[i]) ?? [];
       return <EdgePanel edges={edges} />;
     }
 
     const { nodeId } = panel;
+    if (buildTopoGraph(graph).nodes.some(n => n.kind === 'proxy' && n.id === nodeId)) {
+      return <ProxyNodePanel ip={nodeId} edges={graph.edges} historical={range != null} />;
+    }
+    if (range) return <SessionDetails sessions={records.filter(s =>
+      s.service === nodeId || (s.direction === 'backend' && s.peer_ip === nodeId) || s.detail.proxy_ip === nodeId
+    )} />;
     const graphNode = graph.nodes.find(n => n.id === nodeId);
     if (graphNode) {
       return (
@@ -42,9 +44,6 @@ export default function TopologyPanel() {
           onDepClick={id => dispatch({ type: 'NODE_CLICKED', nodeId: id })}
         />
       );
-    }
-    if (buildTopoGraph(graph).nodes.some(n => n.kind === 'proxy' && n.id === nodeId)) {
-      return <ProxyNodePanel ip={nodeId} edges={graph.edges} />;
     }
     return null;
   }

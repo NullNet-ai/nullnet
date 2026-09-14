@@ -637,8 +637,15 @@ impl NullnetGrpcImpl {
         // network on the same proxy instead of creating a new one.
         if let Some(max) = registered.max_networks()
             && registered.proxy_clients_count() >= max as usize
-            && let Some((upstream, client_net, server_net, net_id, replica_ip, replica_docker)) =
-                registered.find_reusable_network_on_proxy(proxy_ip)
+            && let Some((
+                upstream,
+                client_net,
+                server_net,
+                net_id,
+                replica_ip,
+                replica_docker,
+                setup_ms,
+            )) = registered.find_reusable_network_on_proxy(proxy_ip)
         {
             println!(
                 "Max networks ({max}) reached for '{service_name}', \
@@ -657,7 +664,8 @@ impl NullnetGrpcImpl {
             if let Some(stack_map) = services_mut.get_mut(&stack) {
                 if let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(service_name) {
                     // Create a new Client entry sharing the existing network
-                    let new_ci = ClientInfo::new(proxy_ip, client_net, server_net, net_id, 0, None);
+                    let new_ci =
+                        ClientInfo::new(proxy_ip, client_net, server_net, net_id, setup_ms, None);
                     reg.add_client_to_replica(
                         replica_ip,
                         replica_docker.as_deref(),
@@ -698,6 +706,8 @@ impl NullnetGrpcImpl {
                     client_ip,
                     &client_net.to_string(),
                     &server_net.to_string(),
+                    proxy_ip,
+                    setup_ms,
                     geo,
                 )
                 .await;
@@ -2044,8 +2054,22 @@ async fn run_net_chain_setup(
                 .iter()
                 .find(|edge| edge.client == source)
                 .expect("a completed backend chain has an initiator edge");
+            let setup_ms = services_mut
+                .get(&stack)
+                .and_then(|m| m.get(&first.server_name))
+                .and_then(|s| match s {
+                    ServiceInfo::Registered(reg) => reg.client_info(&first.client),
+                    _ => None,
+                })
+                .map(ClientInfo::time_ms);
             !orchestrator
-                .finish_backend_session(key, *generation, first.net_id, &first.server_name)
+                .finish_backend_session(
+                    key,
+                    *generation,
+                    first.net_id,
+                    &first.server_name,
+                    setup_ms,
+                )
                 .await
         }
     } else {
@@ -2095,7 +2119,7 @@ async fn run_net_chain_setup(
         orchestrator
             .events
             .emit(Event::session_created(
-                ingress.net_id,
+                edge.net_id,
                 edge.server_name.clone(),
                 proxy_ip.to_string(),
             ))
@@ -2114,10 +2138,12 @@ async fn run_net_chain_setup(
             .open_ingress(
                 &stack,
                 &edge.server_name,
-                ingress.net_id,
+                edge.net_id,
                 &peer_ip,
                 &ingress.net_ip_client.to_string(),
                 &ingress.net_ip_server.to_string(),
+                proxy_ip,
+                u128::from(ingress.setup_ms),
                 geo,
             )
             .await;
@@ -2371,6 +2397,7 @@ async fn setup_edge(
         return EdgeOutcome::Failed;
     };
 
+    let setup_ms = init_time.elapsed().as_millis();
     println!("{server_ethernet} acknowledged");
     println!("{client_ethernet} acknowledged");
 
@@ -2380,7 +2407,7 @@ async fn setup_edge(
             .emit(Event::setup_ack(
                 net_id,
                 server_name.clone(),
-                init_time.elapsed().as_millis() as u64,
+                setup_ms as u64,
             ))
             .await;
     }
@@ -2402,7 +2429,7 @@ async fn setup_edge(
                 net_ip_client,
                 net_ip_server,
                 net_id,
-                init_time.elapsed().as_millis(),
+                setup_ms,
                 client_docker.clone(),
             );
             reg.add_client_to_replica(
@@ -2449,7 +2476,7 @@ async fn setup_edge(
     // Carried rather than written here: the row is opened only once every
     // branch of the chain is up (see `PendingIngress`).
     let ingress = client.is_proxy().is_some().then_some(PendingIngress {
-        net_id,
+        setup_ms: setup_ms as u64,
         net_ip_client,
         net_ip_server,
     });
@@ -2468,7 +2495,7 @@ async fn setup_edge(
 /// edge is built unwinds it, and a row opened here would outlive the edge with
 /// no `ended_at` and no path that ever closes it.
 struct PendingIngress {
-    net_id: u32,
+    setup_ms: u64,
     net_ip_client: Ipv4Addr,
     net_ip_server: Ipv4Addr,
 }

@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import SessionRows from '../components/SessionRows';
 import Layout from '../components/Layout';
 import { useApi } from '../hooks/useApi';
 import { useStack } from '../StackContext';
@@ -9,28 +10,12 @@ import TopologyPanel from '../components/topology/TopologyPanel';
 
 function DashboardView() {
   const { stack } = useStack();
-  const { graph, sessions, chains, services } = useTopologyData();
+  const { graph, services, sessionHistory, refreshSessions, loading, error } = useTopologyData();
   const { panel, dispatch } = useTopologyUI();
 
   const { data: nodes } = useApi<NodeJson[]>(`/api/nodes/${stack}`, 5000);
-  // The same count the Sessions page and the sidebar badge show: ingress *and*
-  // egress. `sessions` below is the live ingress map, which the topology views
-  // key on and which reads 0 for a stack whose only traffic is outbound.
-  const { data: sessionCounts } = useApi<{ active: number }>(`/api/sessions/${stack}/count`, 5000);
-
-  const chainByProxyNetId = useMemo(() => {
-    const m = new Map<number, number[]>();
-    for (const c of chains ?? []) m.set(c.proxy_net_id, c.all_net_ids);
-    return m;
-  }, [chains]);
-
-  const sessionByNetId = useMemo(() => {
-    const m = new Map<number, NonNullable<typeof sessions>[number]>();
-    for (const s of sessions ?? []) m.set(s.network_id, s);
-    return m;
-  }, [sessions]);
-
-  const sessionCount = sessionCounts?.active ?? 0;
+  const liveSessions = sessionHistory?.sessions ?? [];
+  const sessionCount = sessionHistory?.active_count ?? 0;
   const nodeCount = nodes?.length ?? 0;
   const edgeCount = graph?.edges.length ?? 0;
   const nodeCountG = graph?.nodes.length ?? 0;
@@ -85,86 +70,27 @@ function DashboardView() {
           {/* ── Row 2: connections + services ── */}
           <div style={{ display: 'flex', gap: 12, minHeight: 0 }}>
 
-            {/* Active connections */}
-            <div className="card glass" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', marginBottom: 0 }}>
+            <div className="card glass" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', marginBottom: 0 }}>
               <div className="card-head">
-                <span className="card-label">Active Connections</span>
-                <span style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 10, color: 'var(--t2)' }}>
-                  <span>
-                    <span style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--blue)', marginRight: 4 }}>{edgeCount}</span>
-                    edges
-                  </span>
-                  {proxyCount > 0 && (
-                    <>
-                      <span style={{ color: 'var(--t3)' }}>·</span>
-                      <span style={{ color: '#fbbf24' }}>{proxyCount} via proxy</span>
-                    </>
-                  )}
-                </span>
+                <span className="card-label">Live Sessions</span>
+                <span style={{ fontSize: 10, color: 'var(--t2)' }}>{liveSessions.length} active</span>
               </div>
-              <div style={{ flex: 1, overflowY: 'auto' }}>
-                {edgeCount === 0 ? (
-                  <div style={{ padding: '20px 18px', color: 'var(--t2)', fontSize: 11, textAlign: 'center' }}>
-                    No active connections
-                  </div>
-                ) : (
-                  <table className="tbl">
-                    <thead>
-                      <tr>
-                        <th>From</th>
-                        <th>Via Proxy</th>
-                        <th>To</th>
-                        <th>Net ID</th>
-                        <th>Client Net</th>
-                        <th>Server Net</th>
-                        <th>Setup</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {graph!.edges.map((e, i) => {
-                        const session = sessionByNetId.get(e.net_id);
-                        const netIdsLabel = e.via_proxy && chainByProxyNetId.has(e.net_id)
-                          ? chainByProxyNetId.get(e.net_id)!.join(', ')
-                          : String(e.net_id);
-                        return (
-                          <tr
-                            key={i}
-                            onClick={() => dispatch({ type: 'EDGE_CLICKED', fromId: e.from, toId: e.to, edgeIndices: [i] })}
-                            style={{
-                              cursor: 'pointer',
-                              background: panel?.type === 'edge' && panel.edgeIndices.includes(i)
-                                ? 'rgba(91,156,246,.07)'
-                                : undefined,
-                            }}
-                          >
-                            <td style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 500 }}>{e.from}</td>
-                            <td style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: '#fbbf24' }}>
-                              {e.via_proxy ?? <span style={{ color: 'var(--t3)' }}>—</span>}
-                            </td>
-                            <td style={{ fontFamily: "'JetBrains Mono',monospace", fontWeight: 500 }}>{e.to}</td>
-                            <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--cyan)' }}>
-                              <div
-                                title={netIdsLabel}
-                                style={{ maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                              >
-                                {netIdsLabel}
-                              </div>
-                            </td>
-                            <td style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: 'var(--t1)' }}>
-                              {session?.client_net ?? <span style={{ color: 'var(--t3)' }}>—</span>}
-                            </td>
-                            <td style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: 'var(--t1)' }}>
-                              {session?.server_net ?? <span style={{ color: 'var(--t3)' }}>—</span>}
-                            </td>
-                            <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--t2)', fontSize: 11 }}>
-                              {e.setup_ms > 0 ? `${e.setup_ms}ms` : '—'}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                )}
+              <div style={{ flex: 1, overflow: 'auto' }}>
+                {error && <div role="alert" style={{ padding: '10px 16px', color: 'var(--red)' }}>{error}</div>}
+                <table className="tbl">
+                  <thead>
+                    <tr>
+                      <th>Status</th><th>Service</th><th>Kind</th><th>Policy</th><th>Net ID</th>
+                      <th>Peer</th><th>Started</th><th>Ended</th><th>Duration</th><th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <SessionRows sessions={liveSessions} refresh={refreshSessions} />
+                    {liveSessions.length === 0 && <tr><td colSpan={10} style={{ padding: '20px 16px', color: 'var(--t2)' }}>
+                      {loading ? 'Loading…' : 'No active sessions'}
+                    </td></tr>}
+                  </tbody>
+                </table>
               </div>
             </div>
 
@@ -301,11 +227,11 @@ export default function Dashboard() {
       page="dashboard"
       topbarRight={
         <span style={{ fontSize: 11, color: 'var(--t1)', display: 'flex', alignItems: 'center', gap: 5 }}>
-          <span className="live-dot" />live · SSE
+          <span className="live-dot" />live · 5s
         </span>
       }
     >
-      <TopologyProvider stack={stack}>
+      <TopologyProvider key={stack} stack={stack}>
         <DashboardView />
       </TopologyProvider>
     </Layout>

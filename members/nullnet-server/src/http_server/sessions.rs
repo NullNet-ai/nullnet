@@ -102,6 +102,7 @@ pub(crate) struct HistoryQuery {
     /// both. Denied rows are egress destinations the edge refused and ingress
     /// connections the proxy closed before an edge existed.
     blocked: Option<bool>,
+    /// Inclusive interval overlap; open sessions have no upper bound.
     since: Option<i64>,
     until: Option<i64>,
     before_id: Option<i64>,
@@ -145,6 +146,15 @@ pub(super) async fn history_handler(
         None => None,
     };
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    if params.since.zip(params.until).is_some_and(|(a, b)| a > b) {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(ErrorJson {
+                error: "since must not be after until",
+            }),
+        )
+            .into_response();
+    }
 
     let mut page = state
         .sessions

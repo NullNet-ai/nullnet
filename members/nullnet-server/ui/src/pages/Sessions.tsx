@@ -1,71 +1,18 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import SessionRows from '../components/SessionRows';
 import Layout from '../components/Layout';
-import { apiFetch } from '../lib/apiFetch';
 import { useStack } from '../StackContext';
-import type { SessionDirection, SessionRecordJson, SessionsHistoryPage } from '../types';
-import { flagEmoji, countryName } from '../geo';
-import { formatTimestamp, formatTimestampFull } from '../lib/time';
-
-const PAGE_SIZE = 100;
-const REFRESH_MS = 5000;
-
-// Kind colors match the topology edges.
-const KIND_BADGE: Record<SessionDirection, string> = {
-  ingress: 'b-amber',
-  egress: 'b-purple',
-  backend: 'b-dim',
-};
-
-type StatusFilter = '' | 'active' | 'ended';
-type PolicyFilter = '' | 'blocked' | 'allowed';
-
-function buildQuery(
-  direction: string,
-  service: string,
-  status: StatusFilter,
-  policy: PolicyFilter,
-  beforeId: number | null,
-): string {
-  const params = new URLSearchParams();
-  if (direction) params.set('direction', direction);
-  if (service) params.set('service', service);
-  if (status) params.set('active', String(status === 'active'));
-  if (policy) params.set('blocked', String(policy === 'blocked'));
-  if (beforeId != null) params.set('before_id', String(beforeId));
-  params.set('limit', String(PAGE_SIZE));
-  return params.toString();
-}
-
-/// Most recently ended first. A session that has not ended sorts above every
-/// one that has — it is still running, so its end is later than any of them.
-/// Ties fall back to start time (`started_at` rather than `id`, so the active
-/// rows the server synthesizes for sessions with no stored row still sort by age).
-function byEnd(a: SessionRecordJson, b: SessionRecordJson): number {
-  const ae = a.ended_at;
-  const be = b.ended_at;
-  if (ae != null && be != null && ae !== be) return be - ae;
-  if (ae == null && be != null) return -1;
-  if (ae != null && be == null) return 1;
-  return b.started_at - a.started_at || b.id - a.id;
-}
-
-function duration(from: number, to: number): string {
-  const secs = Math.max(0, to - from);
-  if (secs < 60) return `${secs}s`;
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
-  const hours = Math.floor(secs / 3600);
-  if (hours < 24) return `${hours}h ${Math.floor((secs % 3600) / 60)}m`;
-  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
-}
+import TimeSpanFilter from '../components/TimeSpanFilter';
+import { useSessionHistory } from '../hooks/useSessionHistory';
 
 export default function Sessions() {
   const { stack } = useStack();
   const [searchParams, setSearchParams] = useSearchParams();
   const directionFilter = searchParams.get('direction') ?? '';
   const serviceFilter = searchParams.get('service') ?? '';
-  const statusFilter = (searchParams.get('status') ?? '') as StatusFilter;
-  const policyFilter = (searchParams.get('policy') ?? '') as PolicyFilter;
+  const statusFilter = (searchParams.get('status') ?? '');
+  const policyFilter = (searchParams.get('policy') ?? '');
 
   function setFilter(key: string, value: string) {
     setSearchParams(prev => {
@@ -75,104 +22,24 @@ export default function Sessions() {
     }, { replace: true });
   }
 
-  const [rows, setRows] = useState<SessionRecordJson[]>([]);
-  const [nextBeforeId, setNextBeforeId] = useState<number | null>(null);
-  const [services, setServices] = useState<string[]>([]);
-  const [activeCount, setActiveCount] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [loadingOlder, setLoadingOlder] = useState(false);
-  const [tearing, setTearing] = useState<Set<number>>(new Set());
-  // Ticks with the poll so an active session's duration keeps counting up.
-  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
-
-  const fetchPage = useCallback(async (beforeId: number | null): Promise<SessionsHistoryPage> => {
-    const qs = buildQuery(directionFilter, serviceFilter, statusFilter, policyFilter, beforeId);
-    const res = await apiFetch(`/api/sessions/${stack}/history?${qs}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
-  }, [stack, directionFilter, serviceFilter, statusFilter, policyFilter]);
-
-  // Refresh the newest page. Older pages already pulled in stay put: their rows
-  // are merged by id, so a session that ended since the last poll updates in
-  // place instead of the list jumping back to page one.
-  const refresh = useCallback(async (replace: boolean) => {
-    try {
-      const page = await fetchPage(null);
-      setServices(page.services);
-      setActiveCount(page.active_count);
-      setNextBeforeId(prev => (replace ? page.next_before_id : prev));
-      setRows(prev => {
-        if (replace) return page.sessions;
-        const byId = new Map(prev.map(r => [r.id, r]));
-        // Synthesized active rows (negative ids) only exist while the server still
-        // reports them; drop the stale ones rather than pinning them forever.
-        for (const r of prev) if (r.id < 0) byId.delete(r.id);
-        for (const r of page.sessions) byId.set(r.id, r);
-        return [...byId.values()];
-      });
-    } catch {
-      if (replace) {
-        setRows([]);
-        setNextBeforeId(null);
-      }
-    }
-  }, [fetchPage]);
-
-  // Reload from scratch whenever the stack or a filter changes.
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    fetchPage(null)
-      .then(page => {
-        if (cancelled) return;
-        setRows(page.sessions);
-        setNextBeforeId(page.next_before_id);
-        setServices(page.services);
-        setActiveCount(page.active_count);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setRows([]);
-        setNextBeforeId(null);
-      })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [fetchPage]);
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      setNow(Math.floor(Date.now() / 1000));
-      refresh(false);
-    }, REFRESH_MS);
-    return () => clearInterval(id);
-  }, [refresh]);
-
-  const loadOlder = useCallback(async () => {
-    if (nextBeforeId == null || loadingOlder) return;
-    setLoadingOlder(true);
-    try {
-      const page = await fetchPage(nextBeforeId);
-      setRows(prev => [...prev, ...page.sessions]);
-      setNextBeforeId(page.next_before_id);
-    } catch {
-      // leave the cursor as-is; the button stays clickable to retry
-    } finally {
-      setLoadingOlder(false);
-    }
-  }, [fetchPage, nextBeforeId, loadingOlder]);
-
-  async function teardown(netId: number) {
-    if (!confirm(`Force teardown session ${netId}?`)) return;
-    setTearing(prev => new Set(prev).add(netId));
-    try {
-      await apiFetch(`/api/sessions/${stack}/${netId}`, { method: 'DELETE' });
-      await refresh(false);
-    } finally {
-      setTearing(prev => { const next = new Set(prev); next.delete(netId); return next; });
-    }
-  }
-
-  const sorted = useMemo(() => rows.slice().sort(byEnd), [rows]);
+  const since = searchParams.get('since');
+  const until = searchParams.get('until');
+  const span = since != null && until != null ? { since: Number(since), until: Number(until) } : null;
+  const query = new URLSearchParams();
+  if (directionFilter) query.set('direction', directionFilter);
+  if (serviceFilter) query.set('service', serviceFilter);
+  if (statusFilter) query.set('active', String(statusFilter === 'active'));
+  if (policyFilter) query.set('blocked', String(policyFilter === 'blocked'));
+  if (since != null) query.set('since', since);
+  if (until != null) query.set('until', until);
+  const queryKey = `${stack}\0${query}`;
+  const [pagination, setPagination] = useState({ key: queryKey, pages: 1 });
+  const pages = pagination.key === queryKey ? pagination.pages : 1;
+  const { data, loading, error, refresh } = useSessionHistory(stack, query.toString(), pages);
+  const services = data?.services ?? [];
+  const activeCount = data?.active_count ?? 0;
+  const nextBeforeId = data?.next_before_id;
+  const sessions = data?.sessions ?? [];
 
   // Sits inside its column's <th>, so it has to opt out of the uppercase +
   // letter-spacing `.tbl th` applies to its own label.
@@ -203,7 +70,6 @@ export default function Sessions() {
   // The filter columns are taller than the rest; without this the plain labels
   // would centre against them instead of lining up.
   const th = (width?: number) => ({ verticalAlign: 'top' as const, ...(width ? { width } : {}) });
-  const mono = { fontFamily: "'JetBrains Mono',monospace" };
   return (
     <Layout
       page="sessions"
@@ -212,9 +78,18 @@ export default function Sessions() {
       <div className="content">
         <div className="hero-row">
           <span className="hero-num">{activeCount}</span>
-          <span className="hero-label">active sessions · {sorted.length} loaded</span>
+          <span className="hero-label">active sessions · {sessions.length} loaded</span>
         </div>
 
+        <div style={{ marginBottom: 16 }}>
+          <TimeSpanFilter key={`${since}:${until}`} value={span} defaultLabel="All time" onChange={next => setSearchParams(prev => {
+            const params = new URLSearchParams(prev);
+            if (next) { params.set('since', String(next.since)); params.set('until', String(next.until)); }
+            else { params.delete('since'); params.delete('until'); }
+            return params;
+          }, { replace: true })} />
+          {error && <div role="alert" style={{ color: 'var(--red)', marginTop: 8 }}>{error}</div>}
+        </div>
         <div className="card">
           <div className="card-head">
             <span className="card-label">Session History</span>
@@ -265,7 +140,7 @@ export default function Sessions() {
                     <option value="blocked" style={optionStyle}>Blocked</option>
                   </select>
                 </th>
-                <th style={th(60)}>Net ID</th>
+                <th style={th(140)}>Net ID</th>
                 <th style={th()}>Peer</th>
                 <th style={th(110)}>Started</th>
                 <th style={th(110)}>Ended</th>
@@ -277,90 +152,8 @@ export default function Sessions() {
               {loading && (
                 <tr><td colSpan={10} style={{ color: 'var(--t2)', padding: '20px 16px' }}>Loading…</td></tr>
               )}
-              {sorted.map(s => {
-                const active = s.ended_at == null;
-                const attempts = s.detail.attempts;
-                return (
-                  <tr key={s.id} style={active ? undefined : { opacity: 0.72 }}>
-                    <td style={{ whiteSpace: 'nowrap' }}>
-                      <span
-                        style={{
-                          width: 6, height: 6, borderRadius: '50%', display: 'inline-block',
-                          background: active ? 'var(--green)' : 'var(--t3)', marginRight: 5,
-                        }}
-                      />
-                      <span style={{ fontSize: 10, color: active ? 'var(--green)' : 'var(--t2)' }}>
-                        {active ? 'active' : 'ended'}
-                      </span>
-                    </td>
-                    <td style={{ fontWeight: 500, overflowWrap: 'anywhere' }} title={s.service}>
-                      {s.service}
-                    </td>
-                    <td>
-                      <span className={`badge ${KIND_BADGE[s.direction]}`}>{s.direction}</span>
-                    </td>
-                    <td>
-                      {s.direction === 'backend' ? <span style={{ color: 'var(--t3)' }}>n/a</span> : (
-                        <span className={`badge ${s.blocked ? 'b-red' : 'b-green'}`}>
-                          {s.blocked ? 'blocked' : 'allowed'}
-                        </span>
-                      )}
-                    </td>
-                    <td style={{ ...mono, fontWeight: 500, color: 'var(--blue)' }}>
-                      {/* A denied ingress connection is refused before an edge
-                          exists, so it has no net id to show. */}
-                      {s.net_id === 0 ? <span style={{ color: 'var(--t3)' }}>n/a</span> : s.net_id}
-                    </td>
-                    <td style={{ ...mono, color: 'var(--t1)' }}>
-                      {flagEmoji(s.country_code) && (
-                        <span title={countryName(s.country_code)} style={{ marginRight: 5, cursor: 'default' }}>
-                          {flagEmoji(s.country_code)}
-                        </span>
-                      )}
-                      {s.peer_ip}
-                      {s.org && <div style={{ fontSize: 9, color: 'var(--t2)' }}>{s.org}</div>}
-                    </td>
-                    <td
-                      style={{ ...mono, fontSize: 10, color: 'var(--t2)' }}
-                      title={formatTimestampFull(s.started_at)}
-                    >
-                      {formatTimestamp(s.started_at)}
-                    </td>
-                    <td
-                      style={{ ...mono, fontSize: 10, color: 'var(--t2)' }}
-                      title={s.ended_at != null ? formatTimestampFull(s.ended_at) : undefined}
-                    >
-                      {s.ended_at != null ? formatTimestamp(s.ended_at) : '—'}
-                    </td>
-                    {/* A denied connection never ran, so its elapsed time says
-                        nothing — how many times the peer tried does. */}
-                    <td
-                      style={{ ...mono, fontSize: 10, color: active ? 'var(--green)' : 'var(--t2)' }}
-                      title={
-                        attempts != null
-                          ? `Denied over ${duration(s.started_at, s.last_seen)}`
-                          : active ? 'Still running' : undefined
-                      }
-                    >
-                      {attempts != null
-                        ? `${attempts} attempt${attempts === 1 ? '' : 's'}`
-                        : duration(s.started_at, s.ended_at ?? now)}
-                    </td>
-                    <td>
-                      {active && s.direction === 'ingress' && (
-                        <button
-                          className="teardown-btn"
-                          onClick={() => teardown(s.net_id)}
-                          disabled={tearing.has(s.net_id)}
-                        >
-                          {tearing.has(s.net_id) ? '…' : 'Teardown'}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-              {!loading && sorted.length === 0 && (
+              <SessionRows sessions={sessions} refresh={refresh} stackedNet />
+              {!loading && sessions.length === 0 && (
                 <tr>
                   <td colSpan={10} style={{ color: 'var(--t2)', padding: '20px 16px' }}>
                     {directionFilter || serviceFilter || statusFilter || policyFilter
@@ -373,8 +166,8 @@ export default function Sessions() {
                 <tr>
                   <td colSpan={10} style={{ padding: '10px 16px', textAlign: 'center' }}>
                     <button
-                      onClick={loadOlder}
-                      disabled={loadingOlder}
+                      onClick={() => setPagination({ key: queryKey, pages: pages + 1 })}
+                      disabled={loading}
                       style={{
                         background: 'var(--g1)',
                         border: '1px solid var(--gb)',
@@ -382,10 +175,10 @@ export default function Sessions() {
                         borderRadius: 4,
                         padding: '4px 14px',
                         fontSize: 11,
-                        cursor: loadingOlder ? 'default' : 'pointer',
+                        cursor: loading ? 'default' : 'pointer',
                       }}
                     >
-                      {loadingOlder ? 'Loading…' : 'Load older'}
+                      {loading ? 'Loading…' : 'Load older'}
                     </button>
                   </td>
                 </tr>

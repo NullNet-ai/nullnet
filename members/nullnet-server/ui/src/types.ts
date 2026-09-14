@@ -71,6 +71,7 @@ export type SessionDirection = 'ingress' | 'egress' | 'backend';
 
 /// Direction-specific fields, stored as JSON on the row.
 export interface SessionDetail {
+  setup_ms?: number | null;
   // ingress
   client_net?: string;
   server_net?: string;
@@ -253,6 +254,9 @@ export interface EgressDestination {
 }
 
 export interface GraphEdgeJson {
+  /** Session row represented by this edge; absent on tunnels with no sessions. */
+  session?: SessionRecordJson;
+  session_count?: number;
   from: string;
   via_proxy?: string;
   to: string;
@@ -265,6 +269,7 @@ export interface GraphEdgeJson {
 }
 
 export interface GraphJson {
+  historical?: boolean;
   proxies: string[];
   nodes: GraphNodeJson[];
   edges: GraphEdgeJson[];

@@ -326,7 +326,7 @@ pub(crate) fn render_graph_json(
                 via_proxy: None,
                 to: e.proxy_ip.to_string(),
                 net_id: e.net_id,
-                setup_ms: 0,
+                setup_ms: e.setup_ms,
                 egress: true,
                 destinations: e
                     .destinations
