@@ -20,13 +20,8 @@ const NAV = [
     items: [
       { id: 'dashboard', icon: '⊞', label: 'Dashboard', to: '/' },
       { id: 'topology', icon: '◎', label: 'Topology', to: '/topology' },
-    ],
-  },
-  {
-    group: 'State',
-    items: [
-      { id: 'services', icon: '◈', label: 'Services', to: '/services' },
       { id: 'sessions', icon: '⌾', label: 'Sessions', to: '/sessions', live: true },
+      { id: 'services', icon: '◈', label: 'Services', to: '/services' },
       { id: 'nodes', icon: '◉', label: 'Nodes', to: '/nodes' },
     ],
   },
