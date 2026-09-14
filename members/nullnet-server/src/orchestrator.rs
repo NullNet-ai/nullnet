@@ -40,6 +40,7 @@ pub(crate) type BackendKey = (String, IpAddr, Option<String>, u16);
 #[derive(Debug, Clone)]
 struct BackendSession {
     generation: Uuid,
+    history_id: Option<i64>,
     building: bool,
     /// Which stack the chain lives in; the reap walks services per stack.
     stack: String,
@@ -766,6 +767,7 @@ impl Orchestrator {
             key,
             BackendSession {
                 generation,
+                history_id: None,
                 building: true,
                 stack: stack.to_string(),
                 idle_since: None,
@@ -775,11 +777,21 @@ impl Orchestrator {
     }
 
     /// Preserve liveness received during setup; never promote a replacement.
-    pub(crate) async fn finish_backend_session(&self, key: &BackendKey, generation: Uuid) -> bool {
+    pub(crate) async fn finish_backend_session(
+        &self,
+        key: &BackendKey,
+        generation: Uuid,
+        net_id: u32,
+        destination: &str,
+    ) -> bool {
         let mut sessions = self.backend_sessions.write().await;
         if let Some(session) = sessions.get_mut(key)
             && session.generation == generation
         {
+            session.history_id = self
+                .sessions
+                .open_backend(&session.stack, key, net_id, destination)
+                .await;
             session.building = false;
             true
         } else {
@@ -792,8 +804,9 @@ impl Orchestrator {
         if sessions
             .get(key)
             .is_some_and(|s| s.generation == generation)
+            && let Some(session) = sessions.remove(key)
         {
-            sessions.remove(key);
+            self.sessions.close_backend(session.history_id).await;
         }
     }
 
@@ -839,9 +852,14 @@ impl Orchestrator {
             })
             .map(|(k, _)| k.clone())
             .collect();
-        due.into_iter()
-            .filter_map(|k| sessions.remove(&k).map(|s| (k, s.stack)))
-            .collect()
+        let mut expired = Vec::new();
+        for key in due {
+            if let Some(session) = sessions.remove(&key) {
+                self.sessions.close_backend(session.history_id).await;
+                expired.push((key, session.stack));
+            }
+        }
+        expired
     }
 
     /// How long until the nearest trigger chain becomes reapable, if any.
@@ -877,7 +895,11 @@ impl Orchestrator {
     ) {
         let mut sessions = self.backend_sessions.write().await;
         for port in ports {
-            sessions.remove(&(service.to_string(), ip, docker.map(String::from), *port));
+            if let Some(session) =
+                sessions.remove(&(service.to_string(), ip, docker.map(String::from), *port))
+            {
+                self.sessions.close_backend(session.history_id).await;
+            }
         }
     }
 
@@ -1724,7 +1746,7 @@ mod egress_liveness_tests {
 }
 
 #[cfg(test)]
-mod egress_session_history_tests {
+mod session_history_tests {
     use super::*;
     use crate::db::Db;
 
@@ -1746,6 +1768,134 @@ mod egress_session_history_tests {
         let orch = Orchestrator::new();
         orch.sessions.attach_db(db.clone());
         (orch, db)
+    }
+
+    #[tokio::test]
+    async fn backend_history_tracks_independent_chains_and_generations() {
+        let (orch, db) = orch_with_db().await;
+        let key = (
+            "api".to_string(),
+            ip(10, 0, 0, 1),
+            Some("api_1".to_string()),
+            8080,
+        );
+        let other = (key.0.clone(), key.1, key.2.clone(), 9090);
+        let generation = orch
+            .claim_backend_session(key.clone(), "prod")
+            .await
+            .unwrap();
+        let other_generation = orch
+            .claim_backend_session(other.clone(), "prod")
+            .await
+            .unwrap();
+        assert_eq!(db.sessions().count_active("prod").await.unwrap(), 0);
+        assert!(
+            orch.finish_backend_session(&key, generation, 42, "db")
+                .await
+        );
+        assert!(
+            orch.finish_backend_session(&other, other_generation, 42, "db")
+                .await
+        );
+        assert_eq!(db.sessions().count_active("prod").await.unwrap(), 2);
+        let rows = db
+            .sessions()
+            .query(
+                "prod",
+                Some("backend"),
+                None,
+                Some(true),
+                None,
+                None,
+                None,
+                None,
+                10,
+            )
+            .await
+            .unwrap();
+        assert!(
+            rows.iter()
+                .all(|row| row.service == "api" && row.peer_ip == "db" && row.net_id == 42)
+        );
+        for blocked in [true, false] {
+            assert!(
+                db.sessions()
+                    .query(
+                        "prod",
+                        None,
+                        None,
+                        None,
+                        Some(blocked),
+                        None,
+                        None,
+                        None,
+                        10
+                    )
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        orch.set_backend_liveness(&key, false).await;
+        assert_eq!(
+            orch.take_due_backend_sessions(Duration::ZERO).await.len(),
+            1
+        );
+        assert_eq!(db.sessions().count_active("prod").await.unwrap(), 1);
+        let replacement = orch
+            .claim_backend_session(key.clone(), "prod")
+            .await
+            .unwrap();
+        assert!(
+            orch.finish_backend_session(&key, replacement, 42, "db")
+                .await
+        );
+        orch.cancel_backend_session(&key, generation).await;
+        assert_eq!(db.sessions().count_active("prod").await.unwrap(), 2);
+        orch.forget_backend_sessions("api", key.1, key.2.as_deref(), &[8080])
+            .await;
+        assert_eq!(db.sessions().count_active("prod").await.unwrap(), 1);
+        orch.sessions.close_stale_on_startup().await;
+        assert_eq!(db.sessions().count_active("prod").await.unwrap(), 0);
+        let rows = db
+            .sessions()
+            .query(
+                "prod",
+                Some("backend"),
+                None,
+                Some(false),
+                None,
+                None,
+                None,
+                None,
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn cancelled_backend_build_never_opens_history() {
+        let (orch, db) = orch_with_db().await;
+        let key = ("api".to_string(), ip(10, 0, 0, 1), None, 8080);
+        let generation = orch
+            .claim_backend_session(key.clone(), "prod")
+            .await
+            .unwrap();
+        assert!(orch.cancel_backend_build(&key).await);
+        assert!(
+            !orch
+                .finish_backend_session(&key, generation, 42, "db")
+                .await
+        );
+        assert!(
+            db.sessions()
+                .query("prod", None, None, None, None, None, None, None, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     async fn insert_edge(orch: &Orchestrator, key: EgressKey, net_id: u32, idle_for: Duration) {

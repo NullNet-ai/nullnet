@@ -16,7 +16,7 @@ import type {
 // (server-side) never registers a replica for a service without one. There is
 // no third "no match" option: a service that only needs to exist as a chain
 // placeholder doesn't need declaring at all (referencing its name in a
-// dependency branch or trigger chain already registers it implicitly).
+// dependency branch or trigger peer already registers it implicitly).
 type MatchKind = 'docker' | 'process';
 type ProtocolKind = 'http' | 'tcp' | 'udp';
 
@@ -233,7 +233,7 @@ const CUSTOM_STEP = '\u0000custom';
 
 interface TriggerFormState {
   port: string;
-  chain: string[];
+  peer: string;
 }
 
 interface ServiceFormState {
@@ -272,12 +272,30 @@ const EMPTY_FORM: ServiceFormState = {
   ingressFilter: EMPTY_FILTER,
 };
 
-// One step of a dependency branch or trigger chain: a `<select>` of every
-// service name already known in this stack — same pattern as the Routes
-// page's service picker. A chain step is often a placeholder with no
-// [[services]] entry of its own (see MatchKind), so "+ Type a custom
-// name…" drops to a plain text input instead of blocking on the list;
-// an already-saved custom name renders as that text input straight away.
+// Shared by proxy dependency steps and backend peers, including custom names.
+function ServiceNamePicker({ value, onChange, knownNames }: {
+  value: string;
+  onChange: (next: string) => void;
+  knownNames: string[];
+}) {
+  const isCustom = value === CUSTOM_STEP || (value !== '' && !knownNames.includes(value));
+  return isCustom ? (
+    <input
+      value={value === CUSTOM_STEP ? '' : value}
+      onChange={e => onChange(e.target.value)}
+      placeholder="service name"
+      spellCheck={false}
+      autoFocus={value === CUSTOM_STEP}
+    />
+  ) : (
+    <select value={value} onChange={e => onChange(e.target.value)}>
+      <option value="" disabled>select a service…</option>
+      {knownNames.map(name => <option key={name} value={name}>{name}</option>)}
+      <option value={CUSTOM_STEP}>+ Type a custom name…</option>
+    </select>
+  );
+}
+
 function ChainStepList({
   steps,
   onChange,
@@ -296,30 +314,9 @@ function ChainStepList({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
       {steps.map((step, i) => {
-        const isCustom = step === CUSTOM_STEP || (step !== '' && !knownNames.includes(step));
         return (
           <div key={i} style={{ display: 'flex', gap: 6 }}>
-            {isCustom ? (
-              <input
-                value={step === CUSTOM_STEP ? '' : step}
-                onChange={e => update(i, e.target.value)}
-                placeholder="service name"
-                spellCheck={false}
-                autoFocus={step === CUSTOM_STEP}
-              />
-            ) : (
-              <select value={step} onChange={e => update(i, e.target.value)}>
-                <option value="" disabled>
-                  select a service…
-                </option>
-                {knownNames.map(n => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
-                <option value={CUSTOM_STEP}>+ Type a custom name…</option>
-              </select>
-            )}
+            <ServiceNamePicker value={step} onChange={next => update(i, next)} knownNames={knownNames} />
             <button type="button" className="teardown-btn" onClick={() => remove(i)}>
               ×
             </button>
@@ -371,7 +368,7 @@ function serviceToForm(s: ServiceConfigJson): ServiceFormState {
     protocol: s.protocol ?? 'http',
     listenPort: s.listen_port != null ? String(s.listen_port) : '',
     dependencies: s.proxy_dependencies.map(branch => [...branch]),
-    triggers: s.triggers.map(t => ({ port: String(t.port), chain: [...t.chain] })),
+    triggers: s.triggers.map(t => ({ port: String(t.port), peer: t.peer })),
     egressFilter: filterToForm(s.egress_filter),
     ingressFilter: filterToForm(s.ingress_filter),
   };
@@ -393,7 +390,7 @@ function formToService(f: ServiceFormState): ServiceConfigJson {
     proxy_dependencies: f.dependencies.map(chain).filter(branch => branch.length > 0),
     triggers: f.triggers
       .filter(t => t.port.trim() !== '')
-      .map(t => ({ port: Number(t.port), chain: chain(t.chain) })),
+      .map(t => ({ port: Number(t.port), peer: t.peer === CUSTOM_STEP ? '' : t.peer.trim() })),
     max_networks: f.maxNetworks.trim() !== '' ? Number(f.maxNetworks) : null,
     protocol: f.protocol,
     listen_port: f.protocol !== 'http' && f.listenPort.trim() !== '' ? Number(f.listenPort) : null,
@@ -438,13 +435,13 @@ export default function Config() {
   const notFound = !noStack && !loading && !!error && error.includes('404');
 
   // Every name already declared or referenced anywhere in this stack —
-  // suggestions for the dependency-branch/trigger-chain step inputs.
+  // suggestions for the dependency and peer inputs.
   const knownServiceNames = useMemo(() => {
     const names = new Set<string>();
     for (const s of services) {
       names.add(s.name);
       for (const branch of s.proxy_dependencies) for (const step of branch) names.add(step);
-      for (const t of s.triggers) for (const step of t.chain) names.add(step);
+      for (const t of s.triggers) names.add(t.peer);
     }
     return Array.from(names).sort();
   }, [services]);
@@ -607,7 +604,7 @@ export default function Config() {
   }
 
   function addTrigger() {
-    setForm(f => ({ ...f, triggers: [...f.triggers, { port: '', chain: [''] }] }));
+    setForm(f => ({ ...f, triggers: [...f.triggers, { port: '', peer: '' }] }));
   }
   function updateTrigger(i: number, patch: Partial<TriggerFormState>) {
     setForm(f => ({ ...f, triggers: f.triggers.map((t, idx) => (idx === i ? { ...t, ...patch } : t)) }));
@@ -932,7 +929,7 @@ export default function Config() {
           </div>
 
           <div className="modal-field">
-            <span>Backend triggers — port observed on this host → chain to bring up</span>
+            <span>Backend triggers — port observed on this host → peer</span>
             {form.triggers.map((t, i) => (
               <div
                 key={i}
@@ -945,15 +942,15 @@ export default function Config() {
                   placeholder="port observed on this host"
                   style={{ width: '100%', marginBottom: 6 }}
                 />
-                <ChainStepList
-                  steps={t.chain}
-                  onChange={next => updateTrigger(i, { chain: next })}
+                <ServiceNamePicker
+                  value={t.peer}
+                  onChange={peer => updateTrigger(i, { peer })}
                   knownNames={knownServiceNames}
                 />
                 <button
                   type="button"
                   className="teardown-btn"
-                  style={{ marginTop: 6 }}
+                  style={{ display: 'block', marginTop: 6 }}
                   onClick={() => removeTrigger(i)}
                 >
                   Remove trigger

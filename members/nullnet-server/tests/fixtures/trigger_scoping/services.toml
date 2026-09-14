@@ -8,7 +8,7 @@ port = 3000
 
 [[services.triggers]]
 port = 8932
-chain = ["P"]
+peer = "P"
 
 [[services]]
 name = "P"
@@ -24,4 +24,4 @@ port = 4000
 
 [[services.triggers]]
 port = 8932
-chain = ["P"]
+peer = "P"

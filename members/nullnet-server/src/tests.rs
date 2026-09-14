@@ -2055,7 +2055,7 @@ async fn triggers_changed_swap_A_trigger() {
     assert_graphviz(&guard, TRIGGERS_CHANGED, "after_swap_A_trigger.dot");
     assert_eq!(
         stack_view(&guard)["A"].triggers().get(&5555),
-        Some(&vec!["D".to_string()])
+        Some(&"D".to_string())
     );
     drop(guard);
 
@@ -2932,7 +2932,7 @@ async fn backend_services_follow_pause_checkbox() {
         "initiator".to_string(),
         ServiceInfo::new(
             vec![],
-            HashMap::from([(8080u16, vec!["dep".to_string()])]),
+            HashMap::from([(8080u16, "dep".to_string())]),
             Some(30),
             None,
             ServiceProtocol::Http,
@@ -4447,7 +4447,7 @@ name = "source"
 docker_container = "source_c"
 port = 80
 pausable = true
-triggers = [{port = 8080, chain = ["dep"]}]
+triggers = [{port = 8080, peer = "dep"}]
 [[services]]
 name = "dep"
 docker_container = "dep_c"
@@ -4560,4 +4560,58 @@ pausable = true
         remained_running,
         "an idle alias paused a container while its resume was pending"
     );
+}
+
+#[tokio::test]
+async fn backend_peer_does_not_expand_its_dependencies() {
+    let config: ServicesToml = toml::from_str(
+        r#"
+[[services]]
+name = "source"
+triggers = [{ port = 5555, peer = "peer" }]
+[[services]]
+name = "peer"
+timeout = 0
+proxy_dependencies = [["proxy-dep"]]
+triggers = [{ port = 6666, peer = "backend-dep" }]
+"#,
+    )
+    .unwrap();
+    let server = NullnetGrpcImpl::new_for_test(into_stack_map(config.services_map().unwrap()));
+    let source_ip = ip(1, 1, 1, 1);
+    register_services(
+        &server,
+        &HashMap::from([("source", source_ip), ("peer", ip(2, 2, 2, 2))]),
+        8080,
+    )
+    .await;
+    trigger_backend_chain(&server, "source", source_ip, 5555).await;
+    assert_net_ids_in_use(&server, 1).await;
+    {
+        let guard = server.services().read().await;
+        let services = stack_view(&guard);
+        let ServiceInfo::Registered(peer) = &services["peer"] else {
+            panic!("peer must be registered");
+        };
+        assert!(
+            peer.client_net_id(&Client::new_service("source".into(), source_ip, None))
+                .is_some()
+        );
+        assert!(matches!(
+            &services["proxy-dep"],
+            ServiceInfo::Unregistered(_)
+        ));
+        assert!(matches!(
+            &services["backend-dep"],
+            ServiceInfo::Unregistered(_)
+        ));
+    }
+    server
+        .orchestrator()
+        .set_backend_liveness(&("source".into(), source_ip, None, 5555), false)
+        .await;
+    let mut guard = server.services().write().await;
+    reap_idle_backend_chains(&mut guard, server.orchestrator(), std::time::Duration::ZERO).await;
+    drop(guard);
+    assert_net_ids_in_use(&server, 0).await;
 }

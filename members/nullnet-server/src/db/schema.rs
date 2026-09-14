@@ -49,7 +49,7 @@ diesel::table! {
         id -> Integer,
         service_id -> Integer,
         port -> Integer,
-        chain -> Text,
+        peer -> Text,
     }
 }
 

@@ -182,7 +182,7 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
 
   [[services.triggers]]
   port = 5555
-  chain = ["ts.color.com"]
+  peer = "ts.color.com"
 
   [[services]]                 # backend-only dep of color.com
   name = "fs.color.com"
@@ -243,9 +243,9 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
 - `proxy_dependencies` is a list of independent dep chains walked when the service is reached via a
   `Proxy` RPC from nullnet-proxy; each inner array is one linear branch and all branches are brought
   up in parallel
-- each `[[services.triggers]]` block pairs a port observed on the initiator's host with a linear
-  chain walked when the service is reached via a `BackendTrigger` RPC from nullnet-client (one
-  chain per port)
+- each `[[services.triggers]]` block pairs a `port` observed on the initiator's host with one
+  `peer` service. The trigger opens only that connection; it does not follow the peer's dependencies.
+  Replace the old `chain = [...]` setting with `peer = "service-name"`.
 - service names must be globally unique across every stack, and dependency chains stay intra-stack.
 - `protocol` selects how a proxy-reachable service is exposed: `http` (the default — routed by
   `Host` header on the shared 80/443 listeners) or `tcp`/`udp`, which each require `listen_port` —

@@ -9,4 +9,4 @@ timeout = 0
 
 [[services.triggers]]
 port = 6666
-chain = ["C"]
+peer = "C"
