@@ -3,7 +3,7 @@ import ServiceNodePanel from './ServiceNodePanel';
 import ProxyNodePanel from './ProxyNodePanel';
 import EdgePanel from './EdgePanel';
 import { buildTopoGraph } from './layout';
-import SessionDetails from '../SessionDetails';
+import NodeSessionSummary from './NodeSessionSummary';
 import { useDragResize } from '../../hooks/useDragResize';
 
 export default function TopologyPanel() {
@@ -32,9 +32,9 @@ export default function TopologyPanel() {
     if (buildTopoGraph(graph).nodes.some(n => n.kind === 'proxy' && n.id === nodeId)) {
       return <ProxyNodePanel ip={nodeId} edges={graph.edges} historical={range != null} />;
     }
-    if (range) return <SessionDetails sessions={records.filter(s =>
-      s.service === nodeId || (s.direction === 'backend' && s.peer_ip === nodeId) || s.detail.proxy_ip === nodeId
-    )} />;
+    if (range) return <NodeSessionSummary kind="service" id={nodeId} historical count={records.filter(s =>
+      s.service === nodeId || (s.direction === 'backend' && s.peer_ip === nodeId)
+    ).length} />;
     const graphNode = graph.nodes.find(n => n.id === nodeId);
     if (graphNode) {
       return (
