@@ -231,11 +231,6 @@ function FilterPolicyEditor({
 // below — never a real value, replaced with '' on save if left untouched.
 const CUSTOM_STEP = '\u0000custom';
 
-interface TriggerFormState {
-  port: string;
-  peer: string;
-}
-
 interface ServiceFormState {
   name: string;
   matchKind: MatchKind;
@@ -249,7 +244,7 @@ interface ServiceFormState {
   protocol: ProtocolKind;
   listenPort: string;
   dependencies: string[][];
-  triggers: TriggerFormState[];
+  backends: string[];
   egressFilter: FilterPolicyForm;
   ingressFilter: FilterPolicyForm;
 }
@@ -267,7 +262,7 @@ const EMPTY_FORM: ServiceFormState = {
   protocol: 'http',
   listenPort: '',
   dependencies: [],
-  triggers: [],
+  backends: [],
   egressFilter: EMPTY_FILTER,
   ingressFilter: EMPTY_FILTER,
 };
@@ -368,7 +363,7 @@ function serviceToForm(s: ServiceConfigJson): ServiceFormState {
     protocol: s.protocol ?? 'http',
     listenPort: s.listen_port != null ? String(s.listen_port) : '',
     dependencies: s.proxy_dependencies.map(branch => [...branch]),
-    triggers: s.triggers.map(t => ({ port: String(t.port), peer: t.peer })),
+    backends: [...s.backends],
     egressFilter: filterToForm(s.egress_filter),
     ingressFilter: filterToForm(s.ingress_filter),
   };
@@ -388,9 +383,7 @@ function formToService(f: ServiceFormState): ServiceConfigJson {
     port: f.port.trim() !== '' ? Number(f.port) : null,
     timeout: f.reachable ? Number(f.timeout || '0') : null,
     proxy_dependencies: f.dependencies.map(chain).filter(branch => branch.length > 0),
-    triggers: f.triggers
-      .filter(t => t.port.trim() !== '')
-      .map(t => ({ port: Number(t.port), peer: t.peer === CUSTOM_STEP ? '' : t.peer.trim() })),
+    backends: f.backends.map(peer => peer === CUSTOM_STEP ? '' : peer.trim()),
     max_networks: f.maxNetworks.trim() !== '' ? Number(f.maxNetworks) : null,
     protocol: f.protocol,
     listen_port: f.protocol !== 'http' && f.listenPort.trim() !== '' ? Number(f.listenPort) : null,
@@ -441,7 +434,7 @@ export default function Config() {
     for (const s of services) {
       names.add(s.name);
       for (const branch of s.proxy_dependencies) for (const step of branch) names.add(step);
-      for (const t of s.triggers) names.add(t.peer);
+      for (const peer of s.backends) names.add(peer);
     }
     return Array.from(names).sort();
   }, [services]);
@@ -603,14 +596,14 @@ export default function Config() {
     setForm(f => ({ ...f, dependencies: f.dependencies.filter((_, idx) => idx !== i) }));
   }
 
-  function addTrigger() {
-    setForm(f => ({ ...f, triggers: [...f.triggers, { port: '', peer: '' }] }));
+  function addBackend() {
+    setForm(f => ({ ...f, backends: [...f.backends, ''] }));
   }
-  function updateTrigger(i: number, patch: Partial<TriggerFormState>) {
-    setForm(f => ({ ...f, triggers: f.triggers.map((t, idx) => (idx === i ? { ...t, ...patch } : t)) }));
+  function updateBackend(i: number, peer: string) {
+    setForm(f => ({ ...f, backends: f.backends.map((value, idx) => idx === i ? peer : value) }));
   }
-  function removeTrigger(i: number) {
-    setForm(f => ({ ...f, triggers: f.triggers.filter((_, idx) => idx !== i) }));
+  function removeBackend(i: number) {
+    setForm(f => ({ ...f, backends: f.backends.filter((_, idx) => idx !== i) }));
   }
 
   const formValid = form.name.trim() !== '' && form.port.trim() !== '' && form.matchValue.trim() !== '';
@@ -929,31 +922,24 @@ export default function Config() {
           </div>
 
           <div className="modal-field">
-            <span>Backend triggers — port observed on this host → peer</span>
-            {form.triggers.map((t, i) => (
+            <span>Backends</span>
+            {form.backends.map((peer, i) => (
               <div
                 key={i}
                 style={{ border: '1px solid var(--t3)', borderRadius: 6, padding: 8, marginBottom: 8 }}
               >
-                <input
-                  type="number"
-                  value={t.port}
-                  onChange={e => updateTrigger(i, { port: e.target.value })}
-                  placeholder="port observed on this host"
-                  style={{ width: '100%', marginBottom: 6 }}
-                />
                 <ServiceNamePicker
-                  value={t.peer}
-                  onChange={peer => updateTrigger(i, { peer })}
+                  value={peer}
+                  onChange={next => updateBackend(i, next)}
                   knownNames={knownServiceNames}
                 />
                 <button
                   type="button"
                   className="teardown-btn"
                   style={{ display: 'block', marginTop: 6 }}
-                  onClick={() => removeTrigger(i)}
+                  onClick={() => removeBackend(i)}
                 >
-                  Remove trigger
+                  Remove backend
                 </button>
               </div>
             ))}
@@ -961,9 +947,9 @@ export default function Config() {
               type="button"
               className="card-action"
               style={{ background: 'none', border: 'none', cursor: 'pointer', alignSelf: 'start' }}
-              onClick={addTrigger}
+              onClick={addBackend}
             >
-              + Add trigger
+              + Add backend
             </button>
           </div>
 

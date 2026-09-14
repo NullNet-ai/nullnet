@@ -1,12 +1,13 @@
 [[services]]
 name = "A"
 timeout = 0
-
-[[services.triggers]]
-port = 5555
-peer = "C"
+backends = ["C"]
 
 [[services]]
 name = "Z"
 timeout = 0
 proxy_dependencies = [["A", "C"]]
+
+[[services]]
+name = "C"
+port = 5555

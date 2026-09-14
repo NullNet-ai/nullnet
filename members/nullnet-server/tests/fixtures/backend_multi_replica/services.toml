@@ -1,23 +1,18 @@
 [[services]]
 name = "A"
 timeout = 0
-
-[[services.triggers]]
-port = 5555
-peer = "B"
+backends = ["B"]
 
 [[services]]
 name = "D"
 timeout = 0
-
-[[services.triggers]]
-port = 6666
-peer = "B"
+backends = ["B"]
 
 [[services]]
 name = "E"
 timeout = 0
+backends = ["B"]
 
-[[services.triggers]]
-port = 7777
-peer = "B"
+[[services]]
+name = "B"
+port = 5555

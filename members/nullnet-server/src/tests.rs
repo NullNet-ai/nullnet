@@ -2014,7 +2014,7 @@ async fn triggers_changed_setup() -> NullnetGrpcImpl {
 
     setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
     trigger_backend_chain(&server, "A", ip(1, 1, 1, 1), 5555).await;
-    trigger_backend_chain(&server, "D", ip(4, 4, 4, 4), 6666).await;
+    trigger_backend_chain(&server, "D", ip(4, 4, 4, 4), 5555).await;
 
     // proxy1→A, A→B, A→C, D→C = 4 IDs
     assert_net_ids_in_use(&server, 4).await;
@@ -2054,7 +2054,7 @@ async fn triggers_changed_swap_A_trigger() {
     apply_config_update(&mut guard, new_config, server.orchestrator()).await;
     assert_graphviz(&guard, TRIGGERS_CHANGED, "after_swap_A_trigger.dot");
     assert_eq!(
-        stack_view(&guard)["A"].triggers().get(&5555),
+        stack_view(&guard)["A"].triggers().get(&7777),
         Some(&"D".to_string())
     );
     drop(guard);
@@ -2614,8 +2614,8 @@ async fn backend_multi_replica_setup() -> NullnetGrpcImpl {
 
     // Fire backend chains. Least-clients spreads: A→b1, D→4.4.4.4, E→b2.
     trigger_backend_chain(&server, "A", ip(1, 1, 1, 1), 5555).await;
-    trigger_backend_chain(&server, "D", ip(5, 5, 5, 5), 6666).await;
-    trigger_backend_chain(&server, "E", ip(6, 6, 6, 6), 7777).await;
+    trigger_backend_chain(&server, "D", ip(5, 5, 5, 5), 5555).await;
+    trigger_backend_chain(&server, "E", ip(6, 6, 6, 6), 5555).await;
 
     // 3 backend chains = 3 NET IDs
     assert_net_ids_in_use(&server, 3).await;
@@ -3545,7 +3545,7 @@ async fn a_second_reap_pass_releases_nothing_more() {
     // as that entry vanishing too.
     let ip_map = HashMap::from([("D", ip(4, 4, 4, 4))]);
     register_services(&server, &ip_map, 8080).await;
-    trigger_backend_chain(&server, "D", ip(4, 4, 4, 4), 8888).await;
+    trigger_backend_chain(&server, "D", ip(4, 4, 4, 4), 5555).await;
     assert_eq!(
         client_count_of(&*server.services().read().await, "B"),
         2,
@@ -4304,7 +4304,7 @@ async fn pausable_defaults_off_and_live_toggle_resumes() {
 async fn pausable_backend_source_resumes_and_stays_running_while_held() {
     let (server, node, log) = paused_backend_test_server().await;
     server
-        .handle_backend_trigger("source", 8080, node, Some("source_c"))
+        .handle_backend_trigger("source", 80, node, Some("source_c"))
         .await
         .unwrap();
     let mut guard = server.services().write().await;
@@ -4447,7 +4447,7 @@ name = "source"
 docker_container = "source_c"
 port = 80
 pausable = true
-triggers = [{port = 8080, peer = "dep"}]
+backends = ["dep"]
 [[services]]
 name = "dep"
 docker_container = "dep_c"
@@ -4479,7 +4479,7 @@ async fn pausable_unacknowledged_trigger_resume_does_not_lock_services() {
     let worker = server.clone();
     let task = tokio::spawn(async move {
         worker
-            .handle_backend_trigger("source", 8080, node, Some("source_c"))
+            .handle_backend_trigger("source", 80, node, Some("source_c"))
             .await
     });
     wait_for_log(&log, |l| count_resumes(l, "source_c") == 1).await;
@@ -4568,12 +4568,16 @@ async fn backend_peer_does_not_expand_its_dependencies() {
         r#"
 [[services]]
 name = "source"
-triggers = [{ port = 5555, peer = "peer" }]
+backends = ["peer"]
 [[services]]
 name = "peer"
+port = 5555
 timeout = 0
 proxy_dependencies = [["proxy-dep"]]
-triggers = [{ port = 6666, peer = "backend-dep" }]
+backends = ["backend-dep"]
+[[services]]
+name = "backend-dep"
+port = 6666
 "#,
     )
     .unwrap();
@@ -4614,4 +4618,72 @@ triggers = [{ port = 6666, peer = "backend-dep" }]
     reap_idle_backend_chains(&mut guard, server.orchestrator(), std::time::Duration::ZERO).await;
     drop(guard);
     assert_net_ids_in_use(&server, 0).await;
+}
+
+#[tokio::test]
+async fn changing_backend_peer_port_releases_and_rebuilds_the_session() {
+    let text = r#"
+[[services]]
+name = "source"
+backends = ["peer"]
+[[services]]
+name = "peer"
+port = 5555
+"#;
+    let parsed: ServicesToml = toml::from_str(text).unwrap();
+    let server = NullnetGrpcImpl::new_for_test(into_stack_map(parsed.services_map().unwrap()));
+    let path =
+        std::env::temp_dir().join(format!("nullnet-backend-port-{}.db", uuid::Uuid::new_v4()));
+    let db = crate::db::Db::open(path.to_str().unwrap()).await.unwrap();
+    server.orchestrator().sessions.attach_db(db.clone());
+    let source_ip = ip(1, 1, 1, 1);
+    register_services(
+        &server,
+        &HashMap::from([("source", source_ip), ("peer", ip(2, 2, 2, 2))]),
+        5555,
+    )
+    .await;
+    trigger_backend_chain(&server, "source", source_ip, 5555).await;
+    assert_net_ids_in_use(&server, 1).await;
+    assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 1);
+    let updated: ServicesToml = toml::from_str(&text.replace("5555", "6666")).unwrap();
+    {
+        let mut guard = server.services().write().await;
+        apply_config_update(
+            &mut guard,
+            into_stack_map(updated.services_map().unwrap()),
+            server.orchestrator(),
+        )
+        .await;
+        assert_eq!(
+            stack_view(&guard)["source"].triggers().get(&6666),
+            Some(&"peer".to_string())
+        );
+        assert!(!stack_view(&guard)["source"].triggers().contains_key(&5555));
+    }
+    assert_net_ids_in_use(&server, 0).await;
+    assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 0);
+    register_services(&server, &HashMap::from([("peer", ip(2, 2, 2, 2))]), 6666).await;
+    trigger_backend_chain(&server, "source", source_ip, 6666).await;
+    assert_net_ids_in_use(&server, 1).await;
+    assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 1);
+    let rows = db
+        .sessions()
+        .query(
+            TEST_STACK,
+            Some("backend"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    report_backend_idle_and_reap(&server, "source", source_ip, 6666).await;
+    assert_net_ids_in_use(&server, 0).await;
+    assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 0);
 }

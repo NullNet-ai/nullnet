@@ -5,10 +5,7 @@
 name = "S"
 docker_container = "s_match"
 port = 3000
-
-[[services.triggers]]
-port = 8932
-peer = "P"
+backends = ["P"]
 
 [[services]]
 name = "P"
@@ -21,7 +18,4 @@ timeout = 0
 name = "HostSvc"
 process_path = "/usr/bin/hostsvc"
 port = 4000
-
-[[services.triggers]]
-port = 8932
-peer = "P"
+backends = ["P"]

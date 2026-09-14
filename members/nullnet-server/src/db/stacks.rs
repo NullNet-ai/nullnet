@@ -28,8 +28,8 @@ pub(crate) struct ServiceInsert<'a> {
     /// JSON-encoded `FilterPolicy` (issue #143), `None` for no filter.
     pub(crate) egress_filter: Option<String>,
     pub(crate) ingress_filter: Option<String>,
-    /// `(port, peer service name)`, one per `[[services.triggers]]` entry.
-    pub(crate) triggers: Vec<(i32, String)>,
+    /// Peer service names, from the service’s `backends` list.
+    pub(crate) backends: Vec<String>,
     /// JSON-encoded chain, one per `proxy_dependencies` branch, in order.
     pub(crate) dependencies: Vec<String>,
 }
@@ -192,11 +192,10 @@ impl StackRepository {
             // does, so each row is its own statement — fine at this scale
             // (a handful of triggers/branches per service, an admin-time
             // operation, not a hot path).
-            for (port, peer) in &s.triggers {
+            for peer in &s.backends {
                 diesel::insert_into(service_triggers::table)
                     .values(NewServiceTriggerRow {
                         service_id,
-                        port: *port,
                         peer: peer.clone(),
                     })
                     .execute(&mut *conn)
@@ -296,7 +295,7 @@ mod tests {
             listen_port: None,
             egress_filter: None,
             ingress_filter: None,
-            triggers: vec![(5555, "worker".to_string())],
+            backends: vec!["worker".to_string()],
             dependencies: vec!["[\"db\",\"cache\"]".to_string()],
         }
     }
@@ -319,7 +318,6 @@ mod tests {
         let ids: Vec<i32> = services.iter().map(|s| s.id).collect();
         let triggers = repo.triggers_for(&ids).await.unwrap();
         assert_eq!(triggers.len(), 1);
-        assert_eq!(triggers[0].port, 5555);
         assert_eq!(triggers[0].peer, "worker");
 
         let deps = repo.dependencies_for(&ids).await.unwrap();

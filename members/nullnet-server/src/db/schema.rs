@@ -48,7 +48,6 @@ diesel::table! {
     service_triggers (id) {
         id -> Integer,
         service_id -> Integer,
-        port -> Integer,
         peer -> Text,
     }
 }

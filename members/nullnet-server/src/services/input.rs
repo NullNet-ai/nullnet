@@ -447,16 +447,21 @@ impl ServicesToml {
         // Referenced peers and proxy dependencies are registrable placeholders.
         // Proxy branches live on their entry point; a backend trigger reaches
         // only its peer, without following that peer's dependencies.
+        let peer_ports: HashMap<String, u16> = self
+            .services
+            .iter()
+            .filter_map(|service| service.port.map(|port| (service.name.clone(), port)))
+            .collect();
         let mut dep_names: std::collections::HashSet<String> = std::collections::HashSet::new();
         for s in &self.services {
             for dep in s.proxy_dependencies.iter().flatten() {
                 dep_names.insert(dep.clone());
             }
-            for trigger in &s.triggers {
-                if trigger.peer.trim().is_empty() {
+            for peer in &s.backends {
+                if peer.trim().is_empty() {
                     Err("Backend trigger peer must not be empty").handle_err(location!())?;
                 }
-                dep_names.insert(trigger.peer.clone());
+                dep_names.insert(peer.clone());
             }
         }
 
@@ -523,7 +528,27 @@ impl ServicesToml {
                 ))
                 .handle_err(location!());
             }
-            let triggers = s.triggers.into_iter().map(|t| (t.port, t.peer)).collect();
+            let mut triggers = HashMap::new();
+            for peer in s.backends {
+                let port = peer_ports
+                    .get(&peer)
+                    .copied()
+                    .filter(|port| *port != 0)
+                    .ok_or_else(|| {
+                        format!(
+                            "service '{}': backend peer '{}' must declare a nonzero port",
+                            s.name, peer
+                        )
+                    })
+                    .handle_err(location!())?;
+                if let Some(previous) = triggers.insert(port, peer.clone()) {
+                    return Err(format!(
+                        "service '{}': backend peers '{}' and '{}' both use port {port}",
+                        s.name, previous, peer
+                    ))
+                    .handle_err(location!());
+                }
+            }
             ret_val.insert(
                 s.name,
                 ServiceInfo::new(
@@ -698,15 +723,12 @@ fn services_from_rows(
     trigger_rows: Vec<crate::db::ServiceTriggerRow>,
     dependency_rows: Vec<crate::db::ServiceDependencyRow>,
 ) -> Vec<ServiceToml> {
-    let mut triggers_by_service: HashMap<i32, Vec<TriggerToml>> = HashMap::new();
+    let mut triggers_by_service: HashMap<i32, Vec<String>> = HashMap::new();
     for t in trigger_rows {
         triggers_by_service
             .entry(t.service_id)
             .or_default()
-            .push(TriggerToml {
-                port: u16::try_from(t.port).unwrap_or_default(),
-                peer: t.peer,
-            });
+            .push(t.peer);
     }
     let mut dependencies_by_service: HashMap<i32, Vec<Vec<String>>> = HashMap::new();
     for d in dependency_rows {
@@ -719,7 +741,7 @@ fn services_from_rows(
     service_rows
         .into_iter()
         .map(|row| ServiceToml {
-            triggers: triggers_by_service.remove(&row.id).unwrap_or_default(),
+            backends: triggers_by_service.remove(&row.id).unwrap_or_default(),
             proxy_dependencies: dependencies_by_service.remove(&row.id).unwrap_or_default(),
             name: row.name,
             docker_container: row.docker_container,
@@ -765,11 +787,7 @@ pub(crate) fn services_to_inserts(services: &[ServiceToml]) -> Vec<crate::db::Se
             listen_port: s.listen_port.map(i32::from),
             egress_filter: encode_filter(&s.egress_filter),
             ingress_filter: encode_filter(&s.ingress_filter),
-            triggers: s
-                .triggers
-                .iter()
-                .map(|t| (i32::from(t.port), t.peer.clone()))
-                .collect(),
+            backends: s.backends.clone(),
             dependencies: s
                 .proxy_dependencies
                 .iter()
@@ -1031,9 +1049,9 @@ pub(crate) struct ServiceToml {
     /// is one linear branch; all branches are brought up in parallel.
     #[serde(default)]
     proxy_dependencies: Vec<Vec<String>>,
-    /// Each trigger pairs a port observed by the service host with one peer.
+    /// Backend peers; their declared listening ports identify the triggers.
     #[serde(default)]
-    triggers: Vec<TriggerToml>,
+    backends: Vec<String>,
     /// Maximum number of networks that can be created for this service.
     /// Applies to proxy chains only (backend connections are unbounded).
     /// When the limit is reached, new proxy clients reuse an existing network
@@ -1077,12 +1095,6 @@ impl From<ProtocolToml> for ServiceProtocol {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-pub(crate) struct TriggerToml {
-    port: u16,
-    peer: String,
-}
-
 /// One `[[route]]` entry: an HTTP(S) location-block-style dispatch rule.
 /// `service`/`redirect_to` are mutually exclusive — validated (along with
 /// `redirect_status`) in [`build_route_entries`], not here, so a raw parse
@@ -1116,13 +1128,14 @@ mod tests {
     fn parses_explicit_and_implicit_services() {
         let toml_str = r#"
 [[services]]
+backends = ["ts.color.com"]
 name = "color.com"
 timeout = 0
 proxy_dependencies = [["pre.fs.color.com", "fs.color.com"]]
 
-[[services.triggers]]
+[[services]]
+name = "ts.color.com"
 port = 5555
-peer = "ts.color.com"
 
 [[services]]
 name = "fs.color.com"
@@ -1144,16 +1157,32 @@ timeout = 30
     }
 
     #[test]
-    fn backend_trigger_requires_one_nonempty_peer() {
-        let prefix = "[[services]]\nname = 'source'\n[[services.triggers]]\nport = 5555\n";
-        assert!(toml::from_str::<ServicesToml>(&format!("{prefix}chain = ['a', 'b']")).is_err());
-        assert!(toml::from_str::<ServicesToml>(&format!("{prefix}peer = ['a', 'b']")).is_err());
-        let empty: ServicesToml = toml::from_str(&format!("{prefix}peer = ' '")).unwrap();
-        assert!(empty.services_map().is_err());
-        let single: ServicesToml = toml::from_str(&format!("{prefix}peer = 'a'")).unwrap();
-        let services = single.services_map().unwrap();
+    fn backends_resolve_declared_peer_ports_and_reject_ambiguity() {
+        let prefix = "[[services]]\nname = 'source'\n";
+        assert!(
+            toml::from_str::<ServicesToml>(&format!("{prefix}backends = [{{peer = 'a'}}]"))
+                .is_err()
+        );
+        for suffix in [
+            "backends = [' ']",
+            "backends = ['a']",
+            "backends = ['a']\n[[services]]\nname = 'a'",
+            "backends = ['a']\n[[services]]\nname = 'a'\nport = 0",
+            "backends = ['a', 'b']\n[[services]]\nname = 'a'\nport = 5555\n[[services]]\nname = 'b'\nport = 5555",
+        ] {
+            let parsed: ServicesToml = toml::from_str(&format!("{prefix}{suffix}")).unwrap();
+            assert!(
+                parsed.services_map().is_err(),
+                "accepted invalid config: {suffix}"
+            );
+        }
+        let config = format!(
+            "{prefix}backends = ['a', 'b']\n[[services]]\nname = 'a'\nport = 5555\n[[services]]\nname = 'b'\nport = 6666"
+        );
+        let parsed: ServicesToml = toml::from_str(&config).unwrap();
+        let services = parsed.services_map().unwrap();
         assert_eq!(services["source"].triggers()[&5555], "a");
-        assert_eq!(services.len(), 2);
+        assert_eq!(services["source"].triggers()[&6666], "b");
     }
 
     #[test]
@@ -1162,12 +1191,13 @@ timeout = 30
         // still declaring backend trigger peers.
         let toml_str = r#"
 [[services]]
+backends = ["dep.b"]
 name = "backend.only"
 proxy_dependencies = [["dep.a"]]
 
-[[services.triggers]]
+[[services]]
+name = "dep.b"
 port = 5555
-peer = "dep.b"
 "#;
         let parsed: ServicesToml = toml::from_str(toml_str).unwrap();
         let map = parsed.services_map().unwrap();
@@ -1848,7 +1878,7 @@ pausable = true
             port: None,
             timeout: None,
             proxy_dependencies: Vec::new(),
-            triggers: Vec::new(),
+            backends: Vec::new(),
             max_networks: None,
             protocol: None,
             listen_port: None,
@@ -1873,10 +1903,7 @@ pausable = true
             port: Some(3001),
             timeout: Some(0),
             proxy_dependencies: vec![vec!["a.dep".to_string(), "b.dep".to_string()]],
-            triggers: vec![TriggerToml {
-                port: 5555,
-                peer: "ts.color.com".to_string(),
-            }],
+            backends: vec!["ts.color.com".to_string()],
             max_networks: Some(2),
             protocol: Some(ProtocolToml::Tcp),
             listen_port: Some(6379),
@@ -1920,12 +1947,11 @@ pausable = true
             ingress_filter: insert.ingress_filter.clone(),
         };
         let trigger_rows: Vec<crate::db::ServiceTriggerRow> = insert
-            .triggers
+            .backends
             .iter()
-            .map(|(port, peer)| crate::db::ServiceTriggerRow {
+            .map(|peer| crate::db::ServiceTriggerRow {
                 id: 1,
                 service_id: 1,
-                port: *port,
                 peer: peer.clone(),
             })
             .collect();
@@ -1952,9 +1978,8 @@ pausable = true
             s.proxy_dependencies,
             vec![vec!["a.dep".to_string(), "b.dep".to_string()]]
         );
-        assert_eq!(s.triggers.len(), 1);
-        assert_eq!(s.triggers[0].port, 5555);
-        assert_eq!(s.triggers[0].peer, "ts.color.com");
+        assert_eq!(s.backends.len(), 1);
+        assert_eq!(s.backends[0], "ts.color.com");
         assert_eq!(s.max_networks, Some(2));
         assert_eq!(s.protocol, Some(ProtocolToml::Tcp));
         assert_eq!(s.listen_port, Some(6379));
@@ -2067,17 +2092,21 @@ pausable = true
     #[tokio::test]
     async fn export_toml_round_trips_through_validate_stack_toml() {
         let db = test_db().await;
-        let services = vec![ServiceToml {
-            docker_container: Some("my-app_web".to_string()),
-            port: Some(8080),
-            timeout: Some(0),
-            proxy_dependencies: vec![vec!["db".to_string()]],
-            triggers: vec![TriggerToml {
-                port: 5555,
-                peer: "worker".to_string(),
-            }],
-            ..empty_service("web")
-        }];
+        let services = vec![
+            ServiceToml {
+                docker_container: Some("my-app_web".to_string()),
+                port: Some(8080),
+                timeout: Some(0),
+                proxy_dependencies: vec![vec!["db".to_string()]],
+                backends: vec!["worker".to_string()],
+                ..empty_service("web")
+            },
+            ServiceToml {
+                docker_container: Some("my-app_worker".into()),
+                port: Some(5555),
+                ..empty_service("worker")
+            },
+        ];
         db.stacks()
             .put_services("alpha", &services_to_inserts(&services))
             .await
