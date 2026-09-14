@@ -53,7 +53,7 @@ export default function TopologyGraphSvg({
   const nodeById = new Map(nodes.map(n => [n.id, n]));
 
   const { pos, waypoints } = layoutNodes(nodes, edges);
-  const { w, h } = svgDims(pos, nodes);
+  const { w, h } = svgDims(pos);
 
   // Track edge keys already seen so a connect animation plays only once per
   // newly-appeared edge, never on initial mount and never on later re-renders

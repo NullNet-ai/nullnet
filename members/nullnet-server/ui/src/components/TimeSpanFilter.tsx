@@ -4,6 +4,7 @@ export interface TimeSpan { since: number; until: number }
 
 function localInput(seconds: number): string {
   const date = new Date(seconds * 1000);
+  if (!Number.isFinite(date.getTime())) return '';
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
 }
 

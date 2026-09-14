@@ -34,10 +34,14 @@ function TopologyView() {
 }
 
 function TopologyPage() {
-  const { range, setRange, error } = useTopologyData();
+  const { range, setRange, error, loading, sessionHistory, loadMoreSessions } = useTopologyData();
   return <Layout page="topology" topbarRight={<span className="live-row">{range ? 'Time span' : 'live · 5s'}</span>}>
     <div style={{ padding: '12px 20px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
       <TimeSpanFilter value={range} onChange={setRange} />
+      {range && sessionHistory && <span style={{ color: 'var(--t2)', fontSize: 11 }}>
+        {sessionHistory.sessions.length} sessions loaded
+        {sessionHistory.next_before_id != null && <> · Partial topology <button className="dep-tag" disabled={loading} onClick={loadMoreSessions}>Load more</button></>}
+      </span>}
       {error && <span role="alert" style={{ color: 'var(--red)' }}>{error}</span>}
     </div>
     <TopologyView />

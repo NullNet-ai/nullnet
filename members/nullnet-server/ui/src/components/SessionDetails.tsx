@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import type { SessionRecordJson } from '../types';
+import { useNow } from '../hooks/useNow';
 import { SessionNet, SessionPeer, SessionStatus } from './SessionFields';
 import { byEnd, duration } from '../lib/sessions';
 import { formatTimestamp, formatTimestampFull } from '../lib/time';
@@ -13,7 +14,7 @@ export default function SessionDetails({ sessions, onFocus }: { sessions: Sessio
   const currentPage = Math.min(page, lastPage);
   const start = currentPage * PAGE_SIZE;
   const visible = sorted.slice(start, start + PAGE_SIZE);
-  const now = Math.floor(Date.now() / 1000);
+  const now = useNow();
   function timestamp(value: number) {
     return <span title={formatTimestampFull(value)}>{formatTimestamp(value)}</span>;
   }

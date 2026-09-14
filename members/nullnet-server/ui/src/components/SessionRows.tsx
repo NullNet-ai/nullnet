@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { SessionRecordJson } from '../types';
 import { useStack } from '../StackContext';
+import { useNow } from '../hooks/useNow';
 import { apiFetch } from '../lib/apiFetch';
 import { SessionKind, SessionStatus, SessionPolicy, SessionPeer, SessionNet } from './SessionFields';
 import { byEnd, duration } from '../lib/sessions';
@@ -9,7 +10,7 @@ import { formatTimestamp, formatTimestampFull } from '../lib/time';
 export default function SessionRows({ sessions, refresh, stackedNet = false }: { sessions: SessionRecordJson[]; refresh: () => void; stackedNet?: boolean }) {
   const { stack } = useStack();
   const [tearing, setTearing] = useState<Set<number>>(new Set());
-  const now = Math.floor(Date.now() / 1000);
+  const now = useNow();
   const sorted = useMemo(() => sessions.slice().sort(byEnd), [sessions]);
 
   async function teardown(netId: number) {

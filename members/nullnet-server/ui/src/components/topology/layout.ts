@@ -240,7 +240,7 @@ export function layoutNodes(nodes: TopoNode[], edges: TopoEdge[]): { pos: Map<st
   return { pos, waypoints };
 }
 
-export function svgDims(pos: Map<string, Pos>, _nodes: TopoNode[]): { w: number; h: number } {
+export function svgDims(pos: Map<string, Pos>): { w: number; h: number } {
   let maxX = 0, maxY = 0;
   for (const { x, y } of pos.values()) {
     maxX = Math.max(maxX, x + NODE_W);

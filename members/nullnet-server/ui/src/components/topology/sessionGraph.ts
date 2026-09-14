@@ -14,7 +14,8 @@ export function sessionGraph(live: GraphJson, sessions: SessionRecordJson[], his
       s.direction === 'egress' ? e.egress && e.from === s.service : !e.egress && !e.via_proxy && e.from === s.service && e.to === s.peer_ip
     )) : undefined;
     if (source) represented.add(`${s.direction}\0${source.net_id}\0${source.from}\0${source.to}`);
-    const proxy = s.detail.proxy_ip ?? source?.via_proxy ?? (source?.egress ? source.to : undefined);
+    const proxy = s.detail.proxy_ip ?? source?.via_proxy ?? (source?.egress ? source.to : undefined)
+      ?? (s.direction === 'ingress' ? 'Proxy not recorded' : undefined);
     if (proxy) proxies.add(proxy);
     if (s.direction === 'backend') service(s.peer_ip);
     return {

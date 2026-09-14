@@ -15,6 +15,7 @@ import { sessionGraph } from './sessionGraph';
 interface TopologyData {
   sessionHistory: SessionsHistoryPage | null;
   refreshSessions: () => void;
+  loadMoreSessions: () => void;
   records: SessionRecordJson[];
   range: TimeSpan | null;
   setRange: (range: TimeSpan | null) => void;
@@ -27,7 +28,7 @@ interface TopologyData {
 }
 
 const TopologyDataContext = createContext<TopologyData>({
-  sessionHistory: null, refreshSessions: () => {},
+  sessionHistory: null, refreshSessions: () => {}, loadMoreSessions: () => {},
   records: [], range: null, setRange: () => {}, loading: true, error: null,
   graph: null,
   services: null,
@@ -137,8 +138,12 @@ export function TopologyProvider({
   if (!range) params.set('active', 'true');
   appendTimeSpan(params, range);
   const query = params.toString();
-  const { data, loading, error, refresh: refreshSessions } = useSessionHistory(stack, query, Infinity);
-  const { data: liveGraph, error: graphError } = useApi<GraphJson>(`/api/graph/${stack}`, 5000);
+  const historyKey = `${stack}\0${query}`;
+  const [pagination, setPagination] = useState({ key: historyKey, pages: 1 });
+  const pages = range ? (pagination.key === historyKey ? pagination.pages : 1) : Infinity;
+  const loadMoreSessions = () => setPagination({ key: historyKey, pages: pages + 1 });
+  const { data, loading, error, refresh: refreshSessions } = useSessionHistory(stack, query, pages, range == null);
+  const { data: liveGraph, error: graphError } = useApi<GraphJson>(`/api/graph/${stack}`, range ? undefined : 5000);
   const { data: services } = useApi<ServiceJson[]>(`/api/services/${stack}`, range ? undefined : 5000);
   const { data: chains } = useApi<ChainJson[]>(`/api/chains/${stack}`, range ? undefined : 5000);
   const records = useMemo(() => (data?.sessions ?? []).filter(s => !s.blocked), [data]);
@@ -220,7 +225,7 @@ export function TopologyProvider({
       : null;
 
   return (
-    <TopologyDataContext.Provider value={{ sessionHistory: data, refreshSessions, graph, services, sessions, chains, records, range, setRange, loading, error: error ?? graphError }}>
+    <TopologyDataContext.Provider value={{ sessionHistory: data, refreshSessions, loadMoreSessions, graph, services, sessions, chains, records, range, setRange, loading, error: error ?? graphError }}>
       <TopologyUIContext.Provider
         value={{
           ...uiState,
