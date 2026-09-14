@@ -123,7 +123,7 @@ export default function EdgePanel({ edges }: Props) {
     <>
       <div style={spRow}>
         <div style={spKey}>Type</div>
-        <span className={`badge ${isEgress ? 'b-purple' : first.via_proxy ? 'b-amber' : 'b-blue'}`}>
+        <span className={`badge ${isEgress ? 'b-purple' : first.via_proxy ? 'b-amber' : 'b-dim'}`}>
           {isEgress ? 'Egress' : first.via_proxy ? 'Proxied' : 'Direct'}
         </span>
       </div>

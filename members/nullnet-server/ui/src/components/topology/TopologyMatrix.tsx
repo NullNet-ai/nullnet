@@ -26,7 +26,7 @@ function kindColor(n: TopoNode): string {
 }
 
 function edgeColor(e: TopoEdge): string {
-  return e.isEgress ? 'rgba(167,139,250,.75)' : e.isProxyHop ? 'rgba(251,191,36,.7)' : 'rgba(91,156,246,.75)';
+  return e.isEgress ? 'rgba(167,139,250,.75)' : e.isProxyHop ? 'rgba(251,191,36,.7)' : 'rgba(255,255,255,.35)';
 }
 
 // Adjacency-matrix view of the same graph the other layouts draw as a
@@ -153,7 +153,7 @@ export default function TopologyMatrix({
             onMouseEnter={() => setHoveredCell({ rowId: n.id, colId: n.id })} onMouseLeave={() => setHoveredCell(null)}
             style={{ cursor: onNodeClick ? 'pointer' : 'default' }}>
             <rect x={x - CELL / 2} y={0} width={CELL} height={HEADER_ROW_H} fill="transparent" />
-            <g transform={`rotate(-45, ${x}, ${y})`}>
+            <g transform={`rotate(-90, ${x}, ${y})`}>
               <circle cx={x} cy={y} r="3" fill={kindColor(n)} />
               <text x={x + 6} y={y + 3}
                 fill={n.id === selectedNodeId ? 'rgba(91,156,246,.95)' : 'rgba(255,255,255,.7)'}

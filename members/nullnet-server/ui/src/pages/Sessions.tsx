@@ -12,7 +12,7 @@ const REFRESH_MS = 5000;
 
 // Kind colors match the topology edges.
 const KIND_BADGE: Record<SessionDirection, string> = {
-  ingress: 'b-blue',
+  ingress: 'b-amber',
   egress: 'b-purple',
   backend: 'b-dim',
 };
