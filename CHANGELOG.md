@@ -4,7 +4,7 @@ All Nullnet releases with the relative changes are documented in this file.
 
 ## [UNRELEASED]
 ### Added
-- Show backend trigger sessions in session history with a destination service peer, gray N/A policy, and a Kind column
+- Show backend trigger sessions in session history with a destination service peer, gray N/A policy, and a Kind column ([#189](https://github.com/NullNet-ai/nullnet/pull/189))
 - Serve the UI with a managed certificate selected by `UI_TLS_DOMAIN`, with first-run self-signed setup and automatic certificate reload ([#188](https://github.com/NullNet-ai/nullnet/pull/188))
 - Enable one-year HSTS on proxy HTTPS responses by default, with `HSTS_ENABLED=false` for development ([#188](https://github.com/NullNet-ai/nullnet/pull/188))
 - Add an opt-in “Pausable when idle” checkbox for Docker services, persisted in configuration with a false default ([#187](https://github.com/NullNet-ai/nullnet/pull/187) — fixes [#180](https://github.com/NullNet-ai/nullnet/issues/180))
@@ -12,7 +12,7 @@ All Nullnet releases with the relative changes are documented in this file.
 - Per-service egress/ingress traffic filters: arbitrary AND/OR/group combinations of Country, Organization, Src IP (ingress), and Dst IP (egress) conditions, evaluated via `rpn-predicate-interpreter` — replaces the country-only egress/ingress policy ([#171](https://github.com/NullNet-ai/nullnet/pull/171) — fixes [#143](https://github.com/NullNet-ai/nullnet/issues/143))
 - Persist ingress and egress sessions to SQLite and show the full history on the Sessions page, filterable by status, service, direction, and policy verdict, with its own retention window ([#170](https://github.com/NullNet-ai/nullnet/pull/170) — fixes [#156](https://github.com/NullNet-ai/nullnet/issues/156))
 ### Changed
-- Replace backend trigger chains with a single `peer` service in configuration and the UI
+- Replace backend trigger chains with a single `peer` service in configuration and the UI ([#189](https://github.com/NullNet-ai/nullnet/pull/189))
 - Create/tear down VXLAN tunnels via `rtnetlink` in-process instead of spawning `vxlan-setup.sh`/`vxlan-teardown.sh`, following the same strategy as VLAN access ports; MACsec SA/key installation and XFRM state/policy stay CLI-based, since neither is exposed by rtnetlink ([#168](https://github.com/NullNet-ai/nullnet/pull/168) — fixes [#141](https://github.com/NullNet-ai/nullnet/issues/141))
 - Tear edges down on proven connection liveness instead of routing-event timers ([#164](https://github.com/NullNet-ai/nullnet/pull/164) — fixes [#126](https://github.com/NullNet-ai/nullnet/issues/126))
 - Move stack service configuration from TOML files to normalized SQLite tables, and rework the Config page to edit services through per-field widgets instead of a raw TOML textarea; the whole configuration can still be imported from or exported to a TOML file via dedicated buttons ([#163](https://github.com/NullNet-ai/nullnet/pull/163) — fixes [#140](https://github.com/NullNet-ai/nullnet/issues/140))
