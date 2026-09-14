@@ -1165,11 +1165,7 @@ impl NullnetGrpcImpl {
                 .handle_err(location!())?;
             let initiator_ip = replica.ip();
             let initiator_docker = replica.docker_container().map(String::from);
-            let first_dep = reg
-                .triggers()
-                .get(&port)
-                .and_then(|chain| chain.first())
-                .cloned();
+            let first_dep = reg.triggers().get(&port).cloned();
             println!(
                 "[trigger] triggers map for '{initiator_name}': {:?}; first_dep for port {port}: {first_dep:?}",
                 reg.triggers()
@@ -1296,7 +1292,6 @@ impl NullnetGrpcImpl {
         let Some(branch) = self
             .backend_branch(stack, initiator_name, initiator_ip, initiator_docker, port)
             .await?
-            .filter(|b| !b.deps.is_empty())
         else {
             println!("[trigger] no chain to build for '{initiator_name}' port {port}");
             self.orchestrator

@@ -7,7 +7,7 @@ timeout = 1
 
 [[services.triggers]]
 port = 5555
-chain = ["B"]
+peer = "B"
 
 [[services]]
 name = "B"
@@ -22,11 +22,11 @@ timeout = 1
 
 [[services.triggers]]
 port = 5555
-chain = ["B"]
+peer = "B"
 
 [[services.triggers]]
 port = 6666
-chain = ["B"]
+peer = "B"
 
 # Triggers into a dep that is in no fixture, so the chain can never be built.
 [[services]]
@@ -35,7 +35,7 @@ timeout = 1
 
 [[services.triggers]]
 port = 7777
-chain = ["Ghost"]
+peer = "Ghost"
 
 # An independent initiator into the same dep, so B keeps a client entry after
 # A's hold is released.
@@ -45,4 +45,4 @@ timeout = 1
 
 [[services.triggers]]
 port = 8888
-chain = ["B"]
+peer = "B"

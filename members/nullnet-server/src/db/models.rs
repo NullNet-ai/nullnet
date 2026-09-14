@@ -110,7 +110,7 @@ pub(crate) struct ServiceTriggerRow {
     pub(crate) id: i32,
     pub(crate) service_id: i32,
     pub(crate) port: i32,
-    pub(crate) chain: String,
+    pub(crate) peer: String,
 }
 
 #[derive(Insertable, Debug, Clone)]
@@ -119,7 +119,7 @@ pub(crate) struct ServiceTriggerRow {
 pub(crate) struct NewServiceTriggerRow {
     pub(crate) service_id: i32,
     pub(crate) port: i32,
-    pub(crate) chain: String,
+    pub(crate) peer: String,
 }
 
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone)]

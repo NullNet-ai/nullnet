@@ -444,18 +444,19 @@ impl ServicesToml {
     }
 
     pub(crate) fn services_map(self) -> Result<HashMap<String, ServiceInfo>, Error> {
-        // Every name referenced in a proxy branch or trigger chain is registered
-        // as a discoverable, non-entry-point placeholder (no deps, no timeout) so
-        // hosts can register its replicas. The full chain lives on the declaring
-        // service — proxy branches are walked from the entry point and trigger
-        // chains from the initiator — so deps carry no continuation of their own.
+        // Referenced peers and proxy dependencies are registrable placeholders.
+        // Proxy branches live on their entry point; a backend trigger reaches
+        // only its peer, without following that peer's dependencies.
         let mut dep_names: std::collections::HashSet<String> = std::collections::HashSet::new();
         for s in &self.services {
             for dep in s.proxy_dependencies.iter().flatten() {
                 dep_names.insert(dep.clone());
             }
-            for dep in s.triggers.iter().flat_map(|t| &t.chain) {
-                dep_names.insert(dep.clone());
+            for trigger in &s.triggers {
+                if trigger.peer.trim().is_empty() {
+                    Err("Backend trigger peer must not be empty").handle_err(location!())?;
+                }
+                dep_names.insert(trigger.peer.clone());
             }
         }
 
@@ -522,7 +523,7 @@ impl ServicesToml {
                 ))
                 .handle_err(location!());
             }
-            let triggers = s.triggers.into_iter().map(|t| (t.port, t.chain)).collect();
+            let triggers = s.triggers.into_iter().map(|t| (t.port, t.peer)).collect();
             ret_val.insert(
                 s.name,
                 ServiceInfo::new(
@@ -598,7 +599,7 @@ pub(crate) struct NameConflict {
 
 /// Scan every stack for service names claimed by more than one stack.
 /// Placeholder entries count: `services_map` registers every dependency and
-/// trigger-chain name as one, and they are keys `find_service_stack` can
+/// trigger-peer name as one, and they are keys `find_service_stack` can
 /// resolve to just like a declared service. Stacks and names are visited in
 /// sorted order so the reported pair doesn't itself depend on `HashMap`
 /// iteration order.
@@ -704,7 +705,7 @@ fn services_from_rows(
             .or_default()
             .push(TriggerToml {
                 port: u16::try_from(t.port).unwrap_or_default(),
-                chain: serde_json::from_str(&t.chain).unwrap_or_default(),
+                peer: t.peer,
             });
     }
     let mut dependencies_by_service: HashMap<i32, Vec<Vec<String>>> = HashMap::new();
@@ -767,12 +768,7 @@ pub(crate) fn services_to_inserts(services: &[ServiceToml]) -> Vec<crate::db::Se
             triggers: s
                 .triggers
                 .iter()
-                .map(|t| {
-                    (
-                        i32::from(t.port),
-                        serde_json::to_string(&t.chain).unwrap_or_default(),
-                    )
-                })
+                .map(|t| (i32::from(t.port), t.peer.clone()))
                 .collect(),
             dependencies: s
                 .proxy_dependencies
@@ -1035,12 +1031,11 @@ pub(crate) struct ServiceToml {
     /// is one linear branch; all branches are brought up in parallel.
     #[serde(default)]
     proxy_dependencies: Vec<Vec<String>>,
-    /// Backend-triggered chains: each entry pairs a port observed by the
-    /// service host with the linear chain to bring up. One chain per port.
+    /// Each trigger pairs a port observed by the service host with one peer.
     #[serde(default)]
     triggers: Vec<TriggerToml>,
     /// Maximum number of networks that can be created for this service.
-    /// Applies to proxy chains only (backend chains are unbounded).
+    /// Applies to proxy chains only (backend connections are unbounded).
     /// When the limit is reached, new proxy clients reuse an existing network
     /// on the same proxy node instead of creating a new one.
     max_networks: Option<u32>,
@@ -1085,8 +1080,7 @@ impl From<ProtocolToml> for ServiceProtocol {
 #[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct TriggerToml {
     port: u16,
-    #[serde(default)]
-    chain: Vec<String>,
+    peer: String,
 }
 
 /// One `[[route]]` entry: an HTTP(S) location-block-style dispatch rule.
@@ -1128,7 +1122,7 @@ proxy_dependencies = [["pre.fs.color.com", "fs.color.com"]]
 
 [[services.triggers]]
 port = 5555
-chain = ["ts.color.com", "deeper.dep"]
+peer = "ts.color.com"
 
 [[services]]
 name = "fs.color.com"
@@ -1141,18 +1135,31 @@ timeout = 30
         assert_eq!(map["color.com"].timeout(), Some(0));
         assert_eq!(map["fs.color.com"].timeout(), Some(30));
 
-        // every name referenced in a proxy_dependencies list or trigger chain
+        // every name referenced in a proxy_dependencies list or trigger peer
         // is implicitly added with timeout=None (registrable as a dep, not an
         // entry point), regardless of its position in the chain
         assert_eq!(map["pre.fs.color.com"].timeout(), None);
         assert_eq!(map["ts.color.com"].timeout(), None);
-        assert_eq!(map["deeper.dep"].timeout(), None);
+        assert!(!map.contains_key("deeper.dep"));
+    }
+
+    #[test]
+    fn backend_trigger_requires_one_nonempty_peer() {
+        let prefix = "[[services]]\nname = 'source'\n[[services.triggers]]\nport = 5555\n";
+        assert!(toml::from_str::<ServicesToml>(&format!("{prefix}chain = ['a', 'b']")).is_err());
+        assert!(toml::from_str::<ServicesToml>(&format!("{prefix}peer = ['a', 'b']")).is_err());
+        let empty: ServicesToml = toml::from_str(&format!("{prefix}peer = ' '")).unwrap();
+        assert!(empty.services_map().is_err());
+        let single: ServicesToml = toml::from_str(&format!("{prefix}peer = 'a'")).unwrap();
+        let services = single.services_map().unwrap();
+        assert_eq!(services["source"].triggers()[&5555], "a");
+        assert_eq!(services.len(), 2);
     }
 
     #[test]
     fn declared_service_without_timeout_is_unreachable_but_keeps_triggers() {
         // A declared service may omit `timeout` to stay off the proxy while
-        // still hosting backend trigger chains.
+        // still declaring backend trigger peers.
         let toml_str = r#"
 [[services]]
 name = "backend.only"
@@ -1160,7 +1167,7 @@ proxy_dependencies = [["dep.a"]]
 
 [[services.triggers]]
 port = 5555
-chain = ["dep.b"]
+peer = "dep.b"
 "#;
         let parsed: ServicesToml = toml::from_str(toml_str).unwrap();
         let map = parsed.services_map().unwrap();
@@ -1168,7 +1175,7 @@ chain = ["dep.b"]
         // Not proxy-reachable...
         assert_eq!(map["backend.only"].timeout(), None);
         // ...yet it carries its triggers and proxy deps verbatim.
-        assert_eq!(map["backend.only"].triggers()[&5555], vec!["dep.b"]);
+        assert_eq!(map["backend.only"].triggers()[&5555], "dep.b");
         assert_eq!(map["backend.only"].proxy_deps(), vec![vec!["dep.a"]]);
     }
 
@@ -1868,7 +1875,7 @@ pausable = true
             proxy_dependencies: vec![vec!["a.dep".to_string(), "b.dep".to_string()]],
             triggers: vec![TriggerToml {
                 port: 5555,
-                chain: vec!["ts.color.com".to_string()],
+                peer: "ts.color.com".to_string(),
             }],
             max_networks: Some(2),
             protocol: Some(ProtocolToml::Tcp),
@@ -1915,11 +1922,11 @@ pausable = true
         let trigger_rows: Vec<crate::db::ServiceTriggerRow> = insert
             .triggers
             .iter()
-            .map(|(port, chain)| crate::db::ServiceTriggerRow {
+            .map(|(port, peer)| crate::db::ServiceTriggerRow {
                 id: 1,
                 service_id: 1,
                 port: *port,
-                chain: chain.clone(),
+                peer: peer.clone(),
             })
             .collect();
         let dependency_rows: Vec<crate::db::ServiceDependencyRow> = insert
@@ -1947,7 +1954,7 @@ pausable = true
         );
         assert_eq!(s.triggers.len(), 1);
         assert_eq!(s.triggers[0].port, 5555);
-        assert_eq!(s.triggers[0].chain, vec!["ts.color.com".to_string()]);
+        assert_eq!(s.triggers[0].peer, "ts.color.com");
         assert_eq!(s.max_networks, Some(2));
         assert_eq!(s.protocol, Some(ProtocolToml::Tcp));
         assert_eq!(s.listen_port, Some(6379));
@@ -2067,7 +2074,7 @@ pausable = true
             proxy_dependencies: vec![vec!["db".to_string()]],
             triggers: vec![TriggerToml {
                 port: 5555,
-                chain: vec!["worker".to_string()],
+                peer: "worker".to_string(),
             }],
             ..empty_service("web")
         }];
@@ -2095,7 +2102,7 @@ pausable = true
         let (map, _match_entries, routes) = validate_stack_toml(&text).unwrap();
 
         assert_eq!(map["web"].proxy_deps(), vec![vec!["db".to_string()]]);
-        assert_eq!(map["web"].triggers()[&5555], vec!["worker".to_string()]);
+        assert_eq!(map["web"].triggers()[&5555], "worker");
         assert!(map.contains_key("db")); // implicit dependency placeholder
         assert_eq!(routes, route_entries);
     }

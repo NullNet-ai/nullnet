@@ -48,7 +48,7 @@ impl ServiceInfo {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         proxy_deps: Vec<Vec<String>>,
-        triggers: HashMap<u16, Vec<String>>,
+        triggers: HashMap<u16, String>,
         timeout: Option<u64>,
         max_networks: Option<u32>,
         protocol: ServiceProtocol,
@@ -257,7 +257,7 @@ impl ServiceInfo {
         }
     }
 
-    pub(crate) fn triggers(&self) -> &HashMap<u16, Vec<String>> {
+    pub(crate) fn triggers(&self) -> &HashMap<u16, String> {
         match self {
             ServiceInfo::Unregistered(unreg) => &unreg.triggers,
             ServiceInfo::Registered(reg) => &reg.triggers,
@@ -267,7 +267,7 @@ impl ServiceInfo {
     /// True iff `other` appears in any of this service's dep lists (proxy or backend).
     pub(crate) fn deps_contain(&self, other: &str) -> bool {
         self.proxy_deps().iter().flatten().any(|d| d == other)
-            || self.triggers().values().flatten().any(|d| d == other)
+            || self.triggers().values().any(|peer| peer == other)
     }
 }
 
@@ -276,9 +276,9 @@ pub(crate) struct UnregisteredServiceInfo {
     /// Independent dep chains walked on proxy-triggered setup. Each inner `Vec`
     /// is one linear branch; all branches are brought up in parallel.
     proxy_deps: Vec<Vec<String>>,
-    /// Backend-triggered chains keyed by the trigger port observed on the
-    /// initiator's host. One linear chain per port; no implicit fan-out.
-    triggers: HashMap<u16, Vec<String>>,
+    /// Backend peers keyed by the trigger port observed on the
+    /// initiator's host. One peer per port; no implicit fan-out.
+    triggers: HashMap<u16, String>,
     /// Whether the proxy is reachable for this service, with the associated timeout.
     timeout: Option<u64>,
     /// Maximum number of networks for this service.
@@ -298,7 +298,7 @@ impl UnregisteredServiceInfo {
     #[allow(clippy::too_many_arguments)]
     fn new(
         proxy_deps: Vec<Vec<String>>,
-        triggers: HashMap<u16, Vec<String>>,
+        triggers: HashMap<u16, String>,
         timeout: Option<u64>,
         max_networks: Option<u32>,
         protocol: ServiceProtocol,
@@ -450,9 +450,9 @@ pub(crate) struct RegisteredServiceInfo {
     /// Independent dep chains walked on proxy-triggered setup. Each inner `Vec`
     /// is one linear branch; all branches are brought up in parallel.
     proxy_deps: Vec<Vec<String>>,
-    /// Backend-triggered chains keyed by the trigger port observed on the
-    /// initiator's host. One linear chain per port; no implicit fan-out.
-    triggers: HashMap<u16, Vec<String>>,
+    /// Backend peers keyed by the trigger port observed on the
+    /// initiator's host. One peer per port; no implicit fan-out.
+    triggers: HashMap<u16, String>,
     /// Whether the proxy is reachable for this service, with the associated timeout.
     timeout: Option<u64>,
     /// Maximum number of networks for this service.
@@ -495,13 +495,8 @@ impl RegisteredServiceInfo {
             .collect()
     }
 
-    /// The single branch of the trigger chain at `port`. The first hop carries
-    /// the DNAT port the initiator observed.
-    ///
-    /// Returns `None` if the trigger does not exist, or if any hop of its
-    /// chain names a service that is unregistered or has no replicas. A chain
-    /// that cannot be built must bail before anything is dispatched, so the
-    /// trigger records no hold on an increment it never took.
+    /// Adapt the peer to the shared edge builder, carrying the observed DNAT port.
+    /// No edge is dispatched until the peer has a registered replica.
     pub(crate) fn backend_branch(
         &self,
         service_name: &str,
@@ -510,17 +505,16 @@ impl RegisteredServiceInfo {
         port: u16,
         services: &HashMap<String, ServiceInfo>,
     ) -> Option<ChainBranch> {
-        let deps = self.triggers.get(&port)?;
-        if !deps.iter().all(|dep| {
-            matches!(services.get(dep), Some(ServiceInfo::Registered(reg)) if !reg.replicas.is_empty())
-        }) {
+        let peer = self.triggers.get(&port)?;
+        if !matches!(services.get(peer), Some(ServiceInfo::Registered(reg)) if !reg.replicas.is_empty())
+        {
             return None;
         }
         Some(ChainBranch {
             root_name: service_name.to_string(),
             root_ip: service_ip,
             root_docker: service_docker.map(String::from),
-            deps: deps.clone(),
+            deps: vec![peer.clone()],
             entry_port: Some(u32::from(port)),
         })
     }
@@ -803,7 +797,7 @@ impl RegisteredServiceInfo {
         &self.replicas
     }
 
-    pub(crate) fn triggers(&self) -> &HashMap<u16, Vec<String>> {
+    pub(crate) fn triggers(&self) -> &HashMap<u16, String> {
         &self.triggers
     }
 

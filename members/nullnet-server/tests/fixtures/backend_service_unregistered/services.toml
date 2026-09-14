@@ -5,4 +5,4 @@ proxy_dependencies = [["B"]]
 
 [[services.triggers]]
 port = 5555
-chain = ["C"]
+peer = "C"

@@ -4,7 +4,7 @@ timeout = 0
 
 [[services.triggers]]
 port = 5555
-chain = ["C"]
+peer = "C"
 
 [[services]]
 name = "Z"

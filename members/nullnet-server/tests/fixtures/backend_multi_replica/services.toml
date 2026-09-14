@@ -4,7 +4,7 @@ timeout = 0
 
 [[services.triggers]]
 port = 5555
-chain = ["B"]
+peer = "B"
 
 [[services]]
 name = "D"
@@ -12,7 +12,7 @@ timeout = 0
 
 [[services.triggers]]
 port = 6666
-chain = ["B"]
+peer = "B"
 
 [[services]]
 name = "E"
@@ -20,4 +20,4 @@ timeout = 0
 
 [[services.triggers]]
 port = 7777
-chain = ["B"]
+peer = "B"

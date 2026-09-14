@@ -438,13 +438,7 @@ pub(crate) fn dep_chain_has_pending(
         })
 }
 
-/// Trigger ports of `initiator_name` whose chains match both filters.
-///
-/// `only_through` keeps chains that reference a given dep — used for dep-side
-/// teardown, where only chains running through the affected dep come down.
-/// `only_port` keeps a single trigger's chain, which is the granularity
-/// liveness works at: one port's connections going quiet says nothing about
-/// another port's.
+/// Trigger ports matching the peer and port filters. Each port has its own liveness.
 fn matching_trigger_ports(
     initiator_name: &str,
     only_through: Option<&str>,
@@ -456,18 +450,15 @@ fn matching_trigger_ports(
     };
     triggers
         .iter()
-        .filter(|(port, chain)| {
+        .filter(|(port, peer)| {
             only_port.is_none_or(|p| **port == p)
-                && only_through.is_none_or(|dep| chain.iter().any(|d| d == dep))
+                && only_through.is_none_or(|dep| peer.as_str() == dep)
         })
         .map(|(port, _)| *port)
         .collect()
 }
 
-/// Walk the backend trigger chains starting from a specific initiator replica
-/// and collect the `(client, dep_service_name)` edges. One chain per trigger
-/// port matching the filters (see [`matching_trigger_ports`]); each is walked
-/// as a linear chain.
+/// One direct edge per matching trigger, rooted at the initiator replica.
 fn collect_backend_chain_edges(
     initiator_name: &str,
     initiator_ip: IpAddr,
@@ -476,45 +467,21 @@ fn collect_backend_chain_edges(
     only_port: Option<u16>,
     services: &HashMap<String, ServiceInfo>,
 ) -> Vec<(Client, String)> {
-    let mut edges = Vec::new();
-    let ports = matching_trigger_ports(initiator_name, only_through, only_port, services);
-    for port in ports {
-        let Some(chain) = services
-            .get(initiator_name)
-            .map(ServiceInfo::triggers)
-            .and_then(|t| t.get(&port))
-        else {
-            continue;
-        };
-        let mut current_name = initiator_name.to_string();
-        let mut current_ip = initiator_ip;
-        let mut current_docker: Option<String> = initiator_docker.map(String::from);
-        for dep_name in chain {
-            let hop = emit_edge_and_probe_hop(
-                &mut edges,
-                &current_name,
-                current_ip,
-                current_docker.as_deref(),
-                dep_name,
-                services,
+    matching_trigger_ports(initiator_name, only_through, only_port, services)
+        .into_iter()
+        .map(|port| {
+            let peer = services[initiator_name].triggers()[&port].clone();
+            let client = Client::new_service(
+                initiator_name.to_string(),
+                initiator_ip,
+                initiator_docker.map(String::from),
             );
-            match hop {
-                Some((ip, docker)) => {
-                    current_name.clone_from(dep_name);
-                    current_ip = ip;
-                    current_docker = docker;
-                }
-                None => break,
-            }
-        }
-    }
-    edges
+            (client, peer)
+        })
+        .collect()
 }
 
-/// Backend twin of `teardown_dep_chain`: walks the initiator's trigger chains
-/// and decrements each edge. `only_through` filters to chains containing the
-/// given dep name; `only_port` to a single trigger's chain. `None`/`None` walks
-/// every chain.
+/// Release matching backend edges and their session claims.
 async fn teardown_backend_chain(
     initiator_name: &str,
     initiator_ip: IpAddr,

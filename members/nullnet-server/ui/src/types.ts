@@ -15,7 +15,7 @@ export interface ServiceJson {
   registered: boolean;
   replicas: ReplicaJson[];
   proxy_dependencies: string[][];
-  triggers: Record<string, string[]>;
+  triggers: Record<string, string>;
   timeout_secs?: number;
   max_networks?: number;
 }
@@ -280,7 +280,7 @@ export interface ChainJson {
 // as this endpoint's wire format.
 export interface TriggerConfigJson {
   port: number;
-  chain: string[];
+  peer: string;
 }
 
 // Per-service traffic filter (issue #143) — mirrors the server's
