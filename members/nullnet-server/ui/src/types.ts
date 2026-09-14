@@ -275,14 +275,9 @@ export interface ChainJson {
 }
 
 // Structured stack service config — the widget-based Config page.
-// Field-for-field mirror of the server's `ServiceToml`/`TriggerToml`
+// Field-for-field mirror of the server's `ServiceToml`
 // (members/nullnet-server/src/services/input.rs), which is reused directly
 // as this endpoint's wire format.
-export interface TriggerConfigJson {
-  port: number;
-  peer: string;
-}
-
 // Per-service traffic filter (issue #143) — mirrors the server's
 // `FilterField`/`FilterCondition`/`FilterRule`/`FilterPolicy`
 // (services/firewall.rs). `values` holds ISO country codes, ASN organization
@@ -312,7 +307,7 @@ export interface ServiceConfigJson {
   port?: number | null;
   timeout?: number | null;
   proxy_dependencies: string[][];
-  triggers: TriggerConfigJson[];
+  backends: string[];
   max_networks?: number | null;
   protocol?: 'http' | 'tcp' | 'udp' | null;
   listen_port?: number | null;

@@ -179,17 +179,14 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   docker_container = "my-app_color"
   port = 3001
   proxy_dependencies = [["fs.color.com"]]
-
-  [[services.triggers]]
-  port = 5555
-  peer = "ts.color.com"
+  backends = ["ts.color.com"]
 
   [[services]]                 # backend-only dep of color.com
   name = "fs.color.com"
   docker_container = "my-app_fs"
   port = 8080
 
-  [[services]]                 # backend trigger target — port matches the trigger (5555)
+  [[services]]                 # backend target — its port is used by the trigger
   name = "ts.color.com"
   docker_container = "my-app_ts"
   port = 5555
@@ -243,9 +240,9 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
 - `proxy_dependencies` is a list of independent dep chains walked when the service is reached via a
   `Proxy` RPC from nullnet-proxy; each inner array is one linear branch and all branches are brought
   up in parallel
-- each `[[services.triggers]]` block pairs a `port` observed on the initiator's host with one
-  `peer` service. The trigger opens only that connection; it does not follow the peer's dependencies.
-  Replace the old `chain = [...]` setting with `peer = "service-name"`.
+- `backends = ["peer-a", "peer-b"]` lists services this service may trigger. Each peer must declare
+  a nonzero `port`; that port identifies its trigger. One source cannot target different peers on
+  the same port. A trigger opens only the direct connection, without following the peer's dependencies.
 - service names must be globally unique across every stack, and dependency chains stay intra-stack.
 - `protocol` selects how a proxy-reachable service is exposed: `http` (the default — routed by
   `Host` header on the shared 80/443 listeners) or `tcp`/`udp`, which each require `listen_port` —

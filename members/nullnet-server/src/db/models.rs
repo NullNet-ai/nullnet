@@ -109,7 +109,6 @@ pub(crate) struct NewServiceRow<'a> {
 pub(crate) struct ServiceTriggerRow {
     pub(crate) id: i32,
     pub(crate) service_id: i32,
-    pub(crate) port: i32,
     pub(crate) peer: String,
 }
 
@@ -118,7 +117,6 @@ pub(crate) struct ServiceTriggerRow {
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub(crate) struct NewServiceTriggerRow {
     pub(crate) service_id: i32,
-    pub(crate) port: i32,
     pub(crate) peer: String,
 }
 

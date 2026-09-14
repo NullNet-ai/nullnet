@@ -4,13 +4,11 @@
 [[services]]
 name = "A"
 timeout = 1
-
-[[services.triggers]]
-port = 5555
-peer = "B"
+backends = ["B"]
 
 [[services]]
 name = "B"
+port = 5555
 timeout = 1
 
 # Two trigger ports whose chains share their first hop. Before the refcount
@@ -19,30 +17,19 @@ timeout = 1
 [[services]]
 name = "F"
 timeout = 1
+backends = ["B"]
 
-[[services.triggers]]
-port = 5555
-peer = "B"
-
-[[services.triggers]]
-port = 6666
-peer = "B"
-
-# Triggers into a dep that is in no fixture, so the chain can never be built.
 [[services]]
 name = "G"
 timeout = 1
-
-[[services.triggers]]
-port = 7777
-peer = "Ghost"
-
+backends = ["Ghost"]
 # An independent initiator into the same dep, so B keeps a client entry after
 # A's hold is released.
 [[services]]
 name = "D"
 timeout = 1
+backends = ["B"]
 
-[[services.triggers]]
-port = 8888
-peer = "B"
+[[services]]
+name = "Ghost"
+port = 7777
