@@ -13,6 +13,7 @@ All Nullnet releases with the relative changes are documented in this file.
 - Per-service egress/ingress traffic filters: arbitrary AND/OR/group combinations of Country, Organization, Src IP (ingress), and Dst IP (egress) conditions, evaluated via `rpn-predicate-interpreter` — replaces the country-only egress/ingress policy ([#171](https://github.com/NullNet-ai/nullnet/pull/171) — fixes [#143](https://github.com/NullNet-ai/nullnet/issues/143))
 - Persist ingress and egress sessions to SQLite and show the full history on the Sessions page, filterable by status, service, direction, and policy verdict, with its own retention window ([#170](https://github.com/NullNet-ai/nullnet/pull/170) — fixes [#156](https://github.com/NullNet-ai/nullnet/issues/156))
 ### Changed
+- Simplify the dashboard to linked session, service, and node count cards
 - Unify live and historical session views ([#191](https://github.com/NullNet-ai/nullnet/pull/191))
 - Simplify backend configuration to a `backends` array of service names and derive trigger ports from peer declarations ([#190](https://github.com/NullNet-ai/nullnet/pull/190))
 - Replace backend trigger chains with a single `peer` service in configuration and the UI ([#189](https://github.com/NullNet-ai/nullnet/pull/189))

@@ -54,10 +54,10 @@ Playwright against the lab server verified:
   individual session history.
 - No browser page errors occurred.
 
-The initial browser run checked a 20-unit proxy gap. The subsequent visual
-revision uses a 36-unit empty gap, individual fixed-size grid cells and brighter
-2.5-unit saved-link borders. Its TypeScript/production build passed, and the
-updated assets are served by the fake-data preview at localhost:5173.
+The initial browser run checked a 20-unit proxy gap. The gap was later removed
+at user request. The matrix retains individual fixed-size grid cells and
+brighter 2.5-unit saved-link borders. Subsequent UI revisions are available
+in the fake-data preview at localhost:5173.
 
 ## Lab artifacts
 

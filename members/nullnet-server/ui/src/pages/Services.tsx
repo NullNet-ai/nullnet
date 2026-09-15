@@ -1,3 +1,4 @@
+import RefreshStatus from '../components/RefreshStatus';
 import { useState } from 'react';
 import Layout from '../components/Layout';
 import { useApi } from '../hooks/useApi';
@@ -8,7 +9,7 @@ type Filter = 'all' | 'online' | 'offline';
 
 export default function Services() {
   const { stack } = useStack();
-  const { data: services, loading } = useApi<ServiceJson[]>(`/api/services/${stack}`, 5000);
+  const { data: services, loading, error, updatedAt } = useApi<ServiceJson[]>(`/api/services/${stack}`, 5000);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -31,7 +32,7 @@ export default function Services() {
     <Layout
       page="services"
       topbarRight={
-        <span className="live-row"><span className="live-dot"></span>live · 5s</span>
+        <RefreshStatus updatedAt={updatedAt} failed={!!error} />
       }
     >
       <div className="content">
@@ -95,8 +96,8 @@ export default function Services() {
                           ? svc.proxy_dependencies.flat().map((d, i) => <span key={`${d}-${i}`} className="dep-tag">{d}</span>)
                           : <span style={{ color: 'var(--t2)', fontSize: 11 }}>—</span>}
                       </td>
-                      <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--cyan)' }}>
-                        {totalSessions > 0 ? totalSessions : <span style={{ color: 'var(--t2)' }}>0</span>}
+                      <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--green)' }}>
+                        {totalSessions}
                       </td>
                       <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--t2)', fontSize: 11 }}>
                         {svc.timeout_secs != null ? `${svc.timeout_secs}s` : '—'}
@@ -119,7 +120,7 @@ export default function Services() {
                                         <tr key={i}>
                                           <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--cyan)' }}>{r.ip}</td>
                                           <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--t1)' }}>:{r.port}</td>
-                                          <td style={{ fontFamily: "'JetBrains Mono',monospace", color: r.active_sessions > 0 ? 'var(--green)' : 'var(--t2)' }}>{r.active_sessions}</td>
+                                          <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--green)' }}>{r.active_sessions}</td>
                                           <td><span className={`badge ${r.suspended ? 'b-amber' : 'b-green'}`}>{r.suspended ? 'Paused' : 'Running'}</span></td>
                                           {r.docker_container && <td style={{ color: 'var(--t2)', fontSize: 10 }}>{r.docker_container}</td>}
                                         </tr>

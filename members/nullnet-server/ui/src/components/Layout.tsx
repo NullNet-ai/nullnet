@@ -38,6 +38,12 @@ const NAV = [
   },
 ];
 
+function ObservationStatus({ stack }: { stack: string }) {
+  const { data, error } = useApi<{ observation_active: boolean }>(`/api/service-config/${encodeURIComponent(stack)}`, 5000);
+  if (error || !data?.observation_active) return null;
+  return <span className="nav-count live" title="Observation mode is active for this stack">active</span>;
+}
+
 export default function Layout({ page, topbarRight, children }: Props) {
   const { stack, setStack, editing, setEditing } = useStack();
   const { user } = useAuth();
@@ -100,6 +106,7 @@ export default function Layout({ page, topbarRight, children }: Props) {
                   >
                     <span className="nav-icon">{item.icon}</span>
                     {item.label}
+                    {item.id === 'observation' && <ObservationStatus key={stack} stack={stack} />}
                     {item.id === 'sessions' && sessionCount !== null && (
                       <span className={'nav-count' + ('live' in item && item.live ? ' live' : '')}>{sessionCount}</span>
                     )}

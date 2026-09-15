@@ -168,6 +168,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     routes,
     observations,
     observation_counts,
+    session_policy_counts,
 );
 
 diesel::table! {
@@ -192,3 +193,12 @@ diesel::table! {
 
 diesel::joinable!(observations -> stacks (stack));
 diesel::joinable!(observation_counts -> observations (observation_id));
+
+diesel::table! {
+    session_policy_counts (stack, direction, blocked) {
+        stack -> Text,
+        direction -> Text,
+        blocked -> Bool,
+        session_count -> BigInt,
+    }
+}

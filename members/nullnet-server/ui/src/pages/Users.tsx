@@ -1,3 +1,4 @@
+import RefreshStatus from '../components/RefreshStatus';
 import { useState } from 'react';
 import Layout from '../components/Layout';
 import Modal from '../components/Modal';
@@ -72,7 +73,7 @@ interface EditFormState {
 
 export default function Users() {
   const { user: currentUser } = useAuth();
-  const { data: users, loading, refetch } = useApi<UserJson[]>('/api/auth/users', 10000);
+  const { data: users, loading, refetch, error, updatedAt } = useApi<UserJson[]>('/api/auth/users', 10000);
   const [deleting, setDeleting] = useState<Set<string>>(new Set());
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -254,7 +255,7 @@ export default function Users() {
   const mfaValid = !mfaIsSelf || mfaCode.length === 6;
 
   return (
-    <Layout page="users">
+    <Layout page="users" topbarRight={<RefreshStatus updatedAt={updatedAt} failed={!!error} refreshMs={10000} />}>
       <div className="content">
         <div className="hero-row">
           <span className="hero-num">{list.length}</span>

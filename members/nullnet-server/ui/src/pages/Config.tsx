@@ -1,3 +1,4 @@
+import RefreshStatus from '../components/RefreshStatus';
 import { useMemo, useRef, useState } from 'react';
 import Layout from '../components/Layout';
 import Modal from '../components/Modal';
@@ -405,7 +406,7 @@ function protocolLabel(s: ServiceConfigJson): string {
 
 export default function Config() {
   const { stack, setStack } = useStack();
-  const { data, loading, error, refetch } = useApi<ServiceConfigListJson>(`/api/service-config/${stack}`, 5000);
+  const { data, loading, error, refetch, updatedAt } = useApi<ServiceConfigListJson>(`/api/service-config/${stack}`, 5000);
   const { data: stacks, refetch: refetchStacks } = useApi<string[]>('/api/stacks', 10000);
   // Stable across renders with no data change, so it's a safe useMemo dep below.
   const services = useMemo(() => data?.services ?? [], [data]);
@@ -617,7 +618,7 @@ export default function Config() {
   );
 
   return (
-    <Layout page="config">
+    <Layout page="config" topbarRight={<RefreshStatus updatedAt={updatedAt} failed={!!error} />}>
       <div className="content">
         <div className="page-title">Configuration</div>
         <div className="page-sub">

@@ -1,3 +1,4 @@
+import RefreshStatus from '../components/RefreshStatus';
 import { useState } from 'react';
 import Layout from '../components/Layout';
 import { useApi } from '../hooks/useApi';
@@ -7,7 +8,7 @@ import { useDragResize } from '../hooks/useDragResize';
 
 export default function Nodes() {
   const { stack } = useStack();
-  const { data: nodes, loading } = useApi<NodeJson[]>(`/api/nodes/${stack}`, 5000);
+  const { data: nodes, loading, error, updatedAt } = useApi<NodeJson[]>(`/api/nodes/${stack}`, 5000);
   const [selected, setSelected] = useState<string | null>(null);
   const { width: dpWidth, onResizeStart } = useDragResize(300, 200, 560);
 
@@ -23,7 +24,7 @@ export default function Nodes() {
       topbarRight={
         <>
           <span style={{ fontSize: 11, color: 'var(--t2)' }}>{nodes?.length ?? 0} connected</span>
-          <span className="live-row"><span className="live-dot"></span>live · 5s</span>
+          <RefreshStatus updatedAt={updatedAt} failed={!!error} />
         </>
       }
     >

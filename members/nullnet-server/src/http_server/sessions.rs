@@ -320,8 +320,41 @@ fn synthesize_live(
 }
 
 #[derive(Serialize)]
+struct PolicyDirectionCounts {
+    ingress: i64,
+    egress: i64,
+}
+
+#[derive(Serialize)]
+struct BusyServiceJson {
+    service: String,
+    count: i64,
+}
+
+#[derive(Serialize)]
 struct CountJson {
     active: i64,
+    ingress: i64,
+    egress: i64,
+    backend: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allowed: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blocked: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allowed_by_direction: Option<PolicyDirectionCounts>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blocked_by_direction: Option<PolicyDirectionCounts>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    busiest_services: Option<Vec<BusyServiceJson>>,
+}
+
+#[derive(Default, Deserialize)]
+pub(super) struct CountQuery {
+    #[serde(default)]
+    include_policy: bool,
+    #[serde(default)]
+    include_busiest: bool,
 }
 
 /// `GET /api/sessions/{stack}/count` — the live session count the sidebar
@@ -330,13 +363,76 @@ struct CountJson {
 pub(super) async fn count_handler(
     Extension(ctx): Extension<AuthContext>,
     Path(stack): Path<String>,
+    Query(params): Query<CountQuery>,
     State(state): State<AppState>,
 ) -> Response {
     if let Err(resp) = require_scope(&ctx, Scope::SessionsRead) {
         return resp;
     }
+    let counts = match state.db.sessions().active_counts(&stack).await {
+        Ok(counts) => counts.into_iter().collect::<HashMap<_, _>>(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let policy = if params.include_policy {
+        match state.db.sessions().policy_counts(&stack).await {
+            Ok(counts) => Some(counts.into_iter().collect::<HashMap<_, _>>()),
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+    } else {
+        None
+    };
+    let busiest_services = if params.include_busiest {
+        match state.db.sessions().busiest_services(&stack).await {
+            Ok(rows) => Some(
+                rows.into_iter()
+                    .map(|(service, count)| BusyServiceJson { service, count })
+                    .collect(),
+            ),
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+    } else {
+        None
+    };
     axum::Json(CountJson {
-        active: state.sessions.count_active(&stack).await,
+        busiest_services,
+        active: counts.values().sum(),
+        allowed: policy.as_ref().map(|counts| {
+            counts
+                .iter()
+                .filter(|((blocked, _), _)| !*blocked)
+                .map(|(_, count)| count)
+                .sum()
+        }),
+        blocked: policy.as_ref().map(|counts| {
+            counts
+                .iter()
+                .filter(|((blocked, _), _)| *blocked)
+                .map(|(_, count)| count)
+                .sum()
+        }),
+        allowed_by_direction: policy.as_ref().map(|counts| PolicyDirectionCounts {
+            ingress: counts
+                .get(&(false, INGRESS.into()))
+                .copied()
+                .unwrap_or_default(),
+            egress: counts
+                .get(&(false, EGRESS.into()))
+                .copied()
+                .unwrap_or_default(),
+        }),
+        blocked_by_direction: policy.as_ref().map(|counts| PolicyDirectionCounts {
+            ingress: counts
+                .get(&(true, INGRESS.into()))
+                .copied()
+                .unwrap_or_default(),
+            egress: counts
+                .get(&(true, EGRESS.into()))
+                .copied()
+                .unwrap_or_default(),
+        }),
+        ingress: counts.get(INGRESS).copied().unwrap_or_default(),
+        egress: counts.get(EGRESS).copied().unwrap_or_default(),
+        backend: counts.get(BACKEND).copied().unwrap_or_default(),
     })
     .into_response()
 }

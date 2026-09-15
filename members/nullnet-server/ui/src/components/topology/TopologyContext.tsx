@@ -13,6 +13,7 @@ import { sessionGraph } from './sessionGraph';
 // ── Data context ──────────────────────────────────────────────────────────────
 
 interface TopologyData {
+  updatedAt: number | null;
   sessionHistory: SessionsHistoryPage | null;
   refreshSessions: () => void;
   allowedLinks: Set<string>;
@@ -28,7 +29,7 @@ interface TopologyData {
 }
 
 const TopologyDataContext = createContext<TopologyData>({
-  sessionHistory: null, refreshSessions: () => {}, allowedLinks: new Set(),
+  updatedAt: null, sessionHistory: null, refreshSessions: () => {}, allowedLinks: new Set(),
   records: [], range: null, setRange: () => {}, loading: true, error: null,
   graph: null,
   services: null,
@@ -138,12 +139,12 @@ export function TopologyProvider({
   if (!range) params.set('active', 'true');
   appendTimeSpan(params, range);
   const query = params.toString();
-  const { data, loading, error, refresh: refreshSessions } = useSessionHistory(stack, query, Infinity, range == null);
-  const { data: savedConfig } = useApi<ServiceConfigListJson>(`/api/service-config/${stack}`, 5000);
+  const { data, loading, error, refresh: refreshSessions, updatedAt: sessionsUpdated } = useSessionHistory(stack, query, Infinity, range == null);
+  const { data: savedConfig, updatedAt: configUpdated, error: configError } = useApi<ServiceConfigListJson>(`/api/service-config/${stack}`, 5000);
   const allowedLinks = useMemo(() => new Set((savedConfig?.services ?? []).flatMap(s => s.backends.map(peer => `${s.name}\0${peer}`))), [savedConfig]);
-  const { data: liveGraph, error: graphError } = useApi<GraphJson>(`/api/graph/${stack}`, range ? undefined : 5000);
-  const { data: services } = useApi<ServiceJson[]>(`/api/services/${stack}`, range ? undefined : 5000);
-  const { data: chains } = useApi<ChainJson[]>(`/api/chains/${stack}`, range ? undefined : 5000);
+  const { data: liveGraph, error: graphError, updatedAt: graphUpdated } = useApi<GraphJson>(`/api/graph/${stack}`, range ? undefined : 5000);
+  const { data: services, updatedAt: servicesUpdated, error: servicesError } = useApi<ServiceJson[]>(`/api/services/${stack}`, range ? undefined : 5000);
+  const { data: chains, updatedAt: chainsUpdated, error: chainsError } = useApi<ChainJson[]>(`/api/chains/${stack}`, range ? undefined : 5000);
   const records = useMemo(() => (data?.sessions ?? []).filter(s => !s.blocked), [data]);
   const graph = useMemo(() => {
     if (!data || !liveGraph) return null;
@@ -223,7 +224,7 @@ export function TopologyProvider({
       : null;
 
   return (
-    <TopologyDataContext.Provider value={{ sessionHistory: data, refreshSessions, allowedLinks, graph, services, sessions, chains, records, range, setRange, loading, error: error ?? graphError }}>
+    <TopologyDataContext.Provider value={{ updatedAt: [sessionsUpdated, configUpdated, graphUpdated, servicesUpdated, chainsUpdated].every(t => t != null) ? Math.min(sessionsUpdated!, configUpdated!, graphUpdated!, servicesUpdated!, chainsUpdated!) : null, sessionHistory: data, refreshSessions, allowedLinks, graph, services, sessions, chains, records, range, setRange, loading, error: error ?? graphError ?? configError ?? servicesError ?? chainsError }}>
       <TopologyUIContext.Provider
         value={{
           ...uiState,

@@ -7,7 +7,6 @@ interface Props {
   graph: GraphJson;
   allowedLinks?: Set<string>;
   showProxies?: boolean;
-  proxyGap?: number;
   selectedNodeId?: string | null;
   selectedEdgeKey?: string | null;
   onNodeClick?: (id: string) => void;
@@ -38,7 +37,7 @@ function edgeColor(e: TopoEdge): string {
 // filled cell = row → col has an edge. Zero edge crossings by construction,
 // at the cost of not reading as a path the way the node-link views do.
 export default function TopologyMatrix({
-  graph, allowedLinks, showProxies = true, proxyGap = 36, selectedNodeId = null, selectedEdgeKey = null, onNodeClick, onEdgeClick, onBgClick,
+  graph, allowedLinks, showProxies = true, selectedNodeId = null, selectedEdgeKey = null, onNodeClick, onEdgeClick, onBgClick,
 }: Props) {
   const { nodes, edges } = buildTopoGraph(graph);
   const nodeIds = new Set(nodes.map(n => n.id));
@@ -76,22 +75,20 @@ export default function TopologyMatrix({
   }
   const hasHighlight = hi >= 0 || hj >= 0;
 
-  const proxyCount = order.filter(n => n.kind === 'proxy').length;
-  const gap = proxyCount > 0 && proxyCount < order.length ? proxyGap : 0;
-  const offset = (i: number) => i * CELL + (i >= proxyCount ? gap : 0);
-  const cellX = (i: number) => LABEL_COL_W + offset(i);
-  const cellY = (i: number) => HEADER_ROW_H + offset(i);
-  const w = LABEL_COL_W + order.length * CELL + gap;
-  const h = HEADER_ROW_H + order.length * CELL + gap;
+  const cellX = (i: number) => LABEL_COL_W + i * CELL;
+  const cellY = (i: number) => HEADER_ROW_H + i * CELL;
+  const w = LABEL_COL_W + order.length * CELL;
+  const h = HEADER_ROW_H + order.length * CELL;
 
   return (
     <svg viewBox={`0 0 ${w} ${h}`} xmlns="http://www.w3.org/2000/svg"
       style={{ width: '100%', display: 'block', fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
       {onBgClick && <rect x={0} y={0} width={w} height={h} fill="transparent" onClick={onBgClick} />}
 
-      {order.map((_, i) => order.map((_, j) => (
+      {order.map((row, i) => order.map((col, j) => (
         <rect key={`grid${i}-${j}`} x={cellX(j)} y={cellY(i)} width={CELL} height={CELL}
-          fill="none" stroke="rgba(255,255,255,.06)" pointerEvents="none" />
+          fill="none" stroke="rgba(255,255,255,.06)"
+          strokeDasharray={row.kind === 'proxy' || col.kind === 'proxy' ? '3 2' : undefined} pointerEvents="none" />
       )))}
 
       {hi >= 0 && <rect x={0} y={cellY(hi)} width={LABEL_COL_W} height={CELL}
@@ -111,6 +108,7 @@ export default function TopologyMatrix({
         const key = `${rowNode.id}\0${colNode.id}`;
         const e = edgeByPair.get(key);
         const isSel = selectedEdgeKey === key;
+        const proxyCell = rowNode.kind === 'proxy' || colNode.kind === 'proxy';
         const allowed = allowedLinks?.has(key);
         const dimmed = hasHighlight && i !== hi && j !== hj;
         const x = cellX(j), y = cellY(i);
@@ -130,7 +128,8 @@ export default function TopologyMatrix({
                 <title>{`${e.from} → ${e.to} (${count} session${count === 1 ? '' : 's'})`}</title>
                 <rect x={x + 2} y={y + 2} width={CELL - 4} height={CELL - 4} rx="3"
                   fill={edgeColor(e)} opacity={isSel ? 1 : 0.7}
-                  stroke={isSel ? 'rgba(91,156,246,.9)' : 'none'} strokeWidth={isSel ? 1.5 : 0} />
+                  stroke={isSel ? 'rgba(91,156,246,.9)' : proxyCell ? edgeColor(e) : 'none'}
+                  strokeWidth={isSel ? 1.5 : proxyCell ? 1 : 0} strokeDasharray={proxyCell ? '3 2' : undefined} />
                 <text x={x + CELL / 2} y={y + CELL / 2 + 3} textAnchor="middle"
                     fill="rgba(3,5,8,.85)" fontSize="8" fontWeight="700" pointerEvents="none">
                     {count < 1000 ? count : compactCount.format(count).toLowerCase()}

@@ -47,6 +47,7 @@ fn internal(error: impl std::fmt::Debug) -> Response {
     )
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) async fn require_inactive(state: &AppState, stack: &str) -> Result<(), Response> {
     if state
         .db
@@ -64,6 +65,7 @@ pub(super) async fn require_inactive(state: &AppState, stack: &str) -> Result<()
     Ok(())
 }
 
+#[allow(clippy::result_large_err)]
 async fn saved_services(state: &AppState, stack: &str) -> Result<Vec<ServiceToml>, Response> {
     ServicesToml::stack_services_from_db(&state.db, stack)
         .await
@@ -100,6 +102,7 @@ fn suggested(mut services: Vec<ServiceToml>, counts: &[ObservedEdge]) -> Vec<Ser
     services
 }
 
+#[allow(clippy::result_large_err)]
 async fn response(state: &AppState, row: &ObservationRow) -> Result<ObservationJson, Response> {
     let saved: Vec<ServiceToml> = serde_json::from_str(&row.saved_config).map_err(internal)?;
     let counts = state
@@ -139,6 +142,7 @@ async fn response(state: &AppState, row: &ObservationRow) -> Result<ObservationJ
     })
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) async fn list_handler(
     Extension(ctx): Extension<AuthContext>,
     Path(stack): Path<String>,
@@ -170,6 +174,7 @@ pub(super) async fn list_handler(
     }))
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) async fn start_handler(
     Extension(ctx): Extension<AuthContext>,
     Path(stack): Path<String>,
@@ -209,6 +214,7 @@ pub(super) async fn start_handler(
     .map_err(internal)?
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) async fn stop_handler(
     Extension(ctx): Extension<AuthContext>,
     Path((stack, id)): Path<(String, i64)>,
@@ -246,6 +252,7 @@ pub(super) async fn stop_handler(
     .map_err(internal)?
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) async fn apply_handler(
     Extension(ctx): Extension<AuthContext>,
     Path((stack, id)): Path<(String, i64)>,

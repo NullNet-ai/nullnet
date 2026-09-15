@@ -1,3 +1,4 @@
+import RefreshStatus from '../components/RefreshStatus';
 import { useMemo, useState } from 'react';
 import { useStack } from '../StackContext';
 import { useAuth } from '../AuthContext';
@@ -34,7 +35,7 @@ function Changes({ title, links }: { title: string; links: ObservationLink[] }) 
 function ObservationPage({ stack }: { stack: string }) {
   const { user } = useAuth();
   const canWrite = user?.role === 'admin' || user?.scopes.includes('config:write');
-  const { data, error, refetch } = useApi<ObservationListJson>(`/api/observation/${encodeURIComponent(stack)}`, 5000);
+  const { data, error, refetch, updatedAt } = useApi<ObservationListJson>(`/api/observation/${encodeURIComponent(stack)}`, 5000);
   const current = data?.stack === stack ? data : null;
   const observations = current?.observations;
   const active = observations?.find(o => o.ended_at == null);
@@ -65,7 +66,7 @@ function ObservationPage({ stack }: { stack: string }) {
     }
   }
 
-  return <Layout page="observation" topbarRight={active ? <span className="live-row">observing · 5s</span> : undefined}>
+  return <Layout page="observation" topbarRight={<RefreshStatus updatedAt={updatedAt} failed={!!error} />}>
     <div className="content">
       <div className="page-title">Observation</div>
       <div className="page-sub">Discover backend dependencies from service-to-service sessions.</div>

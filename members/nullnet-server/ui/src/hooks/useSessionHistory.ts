@@ -23,14 +23,14 @@ export async function fetchSessionPages(stack: string, query: string, pages: num
 export function useSessionHistory(stack: string, query: string, pages = 1, poll = true) {
   const key = `${stack}\0${query}\0${pages}`;
   const [tick, setTick] = useState(0);
-  const [state, setState] = useState<{ key: string; data: SessionsHistoryPage | null; error: string | null }>({ key: '', data: null, error: null });
+  const [state, setState] = useState<{ key: string; data: SessionsHistoryPage | null; error: string | null; updatedAt: number | null }>({ updatedAt: null, key: '', data: null, error: null });
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     fetchSessionPages(stack, query, pages, controller.signal)
-      .then(data => { if (!controller.signal.aborted) setState({ key, data, error: null }); })
+      .then(data => { if (!controller.signal.aborted) setState({ key, data, error: null, updatedAt: Date.now() }); })
       .catch(error => {
-        if (!controller.signal.aborted) setState(prev => ({ key, data: prev.key === key ? prev.data : null, error: String(error) }));
+        if (!controller.signal.aborted) setState(prev => ({ key, data: prev.key === key ? prev.data : null, error: String(error), updatedAt: prev.key === key ? prev.updatedAt : null }));
       })
       .finally(() => {
         if (poll && !controller.signal.aborted) timer = setTimeout(() => setTick(t => t + 1), 5000);
@@ -40,6 +40,7 @@ export function useSessionHistory(stack: string, query: string, pages = 1, poll 
   const current = state.key === key;
   return {
     data: current ? state.data : null,
+    updatedAt: current ? state.updatedAt : null,
     error: current ? state.error : null,
     loading: !current || (!state.data && !state.error),
     refresh: () => setTick(t => t + 1),
