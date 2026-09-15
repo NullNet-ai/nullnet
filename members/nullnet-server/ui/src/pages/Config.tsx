@@ -405,7 +405,7 @@ function protocolLabel(s: ServiceConfigJson): string {
 
 export default function Config() {
   const { stack, setStack } = useStack();
-  const { data, loading, error, refetch } = useApi<ServiceConfigListJson>(`/api/service-config/${stack}`);
+  const { data, loading, error, refetch } = useApi<ServiceConfigListJson>(`/api/service-config/${stack}`, 5000);
   const { data: stacks, refetch: refetchStacks } = useApi<string[]>('/api/stacks', 10000);
   // Stable across renders with no data change, so it's a safe useMemo dep below.
   const services = useMemo(() => data?.services ?? [], [data]);
@@ -424,6 +424,7 @@ export default function Config() {
   const [importing, setImporting] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
 
+  const observing = data?.observation_active ?? false;
   const noStack = !stack.trim();
   const notFound = !noStack && !loading && !!error && error.includes('404');
 
@@ -631,6 +632,7 @@ export default function Config() {
           )}
         </div>
 
+        {observing && <div className="modal-err" role="status">Observation is active. This is the saved configuration; stop observation to edit it.</div>}
         {noStack && (
           <div className="cfg-empty">
             <div style={{ color: 'var(--t2)', fontSize: 13 }}>Name a stack to create it:</div>
@@ -684,6 +686,7 @@ export default function Config() {
                   className="card-action"
                   style={{ background: 'none', border: 'none', cursor: 'pointer' }}
                   onClick={openAdd}
+                  disabled={observing}
                 >
                   + Add service
                 </button>
@@ -722,9 +725,9 @@ export default function Config() {
                       </td>
                       <td style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                         <button className="save-btn" onClick={() => openEdit(i)}>
-                          Edit
+                          {observing ? 'View' : 'Edit'}
                         </button>
-                        <button className="teardown-btn" onClick={() => remove(i)} disabled={deleting.has(i)}>
+                        <button className="teardown-btn" onClick={() => remove(i)} disabled={observing || deleting.has(i)}>
                           {deleting.has(i) ? '…' : 'Delete'}
                         </button>
                       </td>
@@ -748,7 +751,7 @@ export default function Config() {
               <button
                 className="save-btn"
                 onClick={() => importInputRef.current?.click()}
-                disabled={importing}
+                disabled={observing || importing}
               >
                 {importing ? 'Importing…' : 'Import from TOML'}
               </button>
@@ -763,7 +766,7 @@ export default function Config() {
                   if (file) importStack(file);
                 }}
               />
-              <button className="teardown-btn" onClick={removeStack}>
+              <button className="teardown-btn" onClick={removeStack} disabled={observing}>
                 Delete stack
               </button>
             </div>
@@ -777,6 +780,7 @@ export default function Config() {
         title={editingIndex === null ? 'Add service' : 'Edit service'}
       >
         <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <fieldset disabled={observing} style={{ display: 'contents' }}>
           <label className="modal-field">
             <span>Name</span>
             <input
@@ -974,10 +978,11 @@ export default function Config() {
 
           {formError && <div className="modal-err">{formError}</div>}
           <div className="modal-actions">
-            <button className="save-btn" disabled={busy || !formValid}>
+            <button className="save-btn" disabled={observing || busy || !formValid}>
               {busy ? 'Saving…' : editingIndex === null ? 'Add' : 'Save'}
             </button>
           </div>
+          </fieldset>
         </form>
       </Modal>
     </Layout>

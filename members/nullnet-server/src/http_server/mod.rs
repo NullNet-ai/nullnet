@@ -18,6 +18,7 @@ mod events_stream;
 mod graph;
 mod health;
 mod nodes;
+mod observation;
 mod routes;
 mod service_config;
 mod services;
@@ -30,6 +31,7 @@ const HTTP_PORT: u16 = 8080;
 
 #[derive(Clone)]
 pub(crate) struct AppState {
+    pub(crate) config_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) services: Arc<RwLock<StackMap>>,
     /// Explicit `[[route]]` entries, partitioned by stack name — read for
     /// cross-stack `(host, path)` conflict checks on config/route saves. See
@@ -82,6 +84,19 @@ pub async fn serve(
         .route(
             "/api/service-config/{stack}/import",
             post(service_config::import_handler),
+        )
+        .route("/api/observation/{stack}", get(observation::list_handler))
+        .route(
+            "/api/observation/{stack}/start",
+            post(observation::start_handler),
+        )
+        .route(
+            "/api/observation/{stack}/{id}/stop",
+            post(observation::stop_handler),
+        )
+        .route(
+            "/api/observation/{stack}/{id}/apply",
+            post(observation::apply_handler),
         )
         .route("/api/graph/{stack}", get(graph::graph_handler))
         .route("/api/sessions/{stack}", get(sessions::list_handler))

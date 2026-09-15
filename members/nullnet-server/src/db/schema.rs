@@ -166,4 +166,29 @@ diesel::allow_tables_to_appear_in_same_query!(
     service_triggers,
     service_dependencies,
     routes,
+    observations,
+    observation_counts,
 );
+
+diesel::table! {
+    observations (id) {
+        id -> BigInt,
+        stack -> Text,
+        started_at -> BigInt,
+        ended_at -> Nullable<BigInt>,
+        applied -> Bool,
+        saved_config -> Text,
+    }
+}
+
+diesel::table! {
+    observation_counts (observation_id, source, destination) {
+        observation_id -> BigInt,
+        source -> Text,
+        destination -> Text,
+        count -> BigInt,
+    }
+}
+
+diesel::joinable!(observations -> stacks (stack));
+diesel::joinable!(observation_counts -> observations (observation_id));

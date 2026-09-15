@@ -27,6 +27,7 @@ const KIND_LABELS: Record<string, string> = {
   session_created: 'session_created',
   session_torn_down: 'session_torn_down',
   net_teardown_unconfirmed: 'net_teardown_unconfirmed',
+  observation_changed: 'observation_changed',
   config_reloaded: 'config_reloaded',
   config_stack_removed: 'config_stack_removed',
   route_conflict: 'route_conflict',
@@ -126,6 +127,8 @@ function eventDetail(e: EventJson): string {
       return `net ${e.net_id} · ${e.service} · ${e.client_ip}`;
     case 'net_teardown_unconfirmed':
       return `net ${e.net_id} · ${e.node_ip} never confirmed teardown`;
+    case 'observation_changed':
+      return `${e.stack} · observation #${e.observation_id} ${e.action}`;
     case 'config_reloaded':
     case 'config_stack_removed':
       return e.stack;

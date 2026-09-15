@@ -6,7 +6,7 @@ import { apiFetch } from '../lib/apiFetch';
 import MfaSetupDialog from './MfaSetupDialog';
 import { useRef, useState, useEffect } from 'react';
 
-type Page = 'dashboard' | 'topology' | 'services' | 'nodes' | 'sessions' | 'config' | 'routes' | 'certificates' | 'events' | 'users';
+type Page = 'dashboard' | 'topology' | 'services' | 'nodes' | 'sessions' | 'config' | 'observation' | 'routes' | 'certificates' | 'events' | 'users';
 
 interface Props {
   page: Page;
@@ -31,6 +31,7 @@ const NAV = [
       { id: 'events', icon: '≡', label: 'Events', to: '/events' },
       { id: 'certificates', icon: '⛨', label: 'Certificates', to: '/certificates' },
       { id: 'config', icon: '⚙', label: 'Config', to: '/config' },
+      { id: 'observation', icon: '◷', label: 'Observation', to: '/observation' },
       { id: 'routes', icon: '↪', label: 'Routes', to: '/routes' },
       { id: 'users', icon: '⚉', label: 'Users', to: '/users', adminOnly: true },
     ],

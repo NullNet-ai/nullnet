@@ -104,6 +104,7 @@ async fn main() -> Result<(), Error> {
     let nullnet = init_nullnet(db.clone()).await?;
     let certificates = nullnet.certificates();
     let app_state = http_server::AppState {
+        config_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         services: nullnet.services().clone(),
         routes: nullnet.routes().clone(),
         match_index: nullnet.match_index().clone(),

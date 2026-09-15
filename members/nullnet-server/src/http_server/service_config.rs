@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize)]
 struct ServiceConfigResponse {
     services: Vec<ServiceToml>,
+    observation_active: bool,
 }
 
 #[derive(Deserialize)]
@@ -41,7 +42,14 @@ pub(super) async fn service_config_handler(
         return StatusCode::BAD_REQUEST.into_response();
     }
     match ServicesToml::stack_services_from_db(&state.db, &stack).await {
-        Ok(Some(services)) => axum::Json(ServiceConfigResponse { services }).into_response(),
+        Ok(Some(services)) => match state.db.observations().active(&stack).await {
+            Ok(active) => axum::Json(ServiceConfigResponse {
+                services,
+                observation_active: active.is_some(),
+            })
+            .into_response(),
+            Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        },
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             eprintln!("failed to load service config for '{stack}': {e:?}");
@@ -69,6 +77,11 @@ pub(super) async fn save_handler(
     }
     if !valid_stack_name(&stack) {
         return rejected(StatusCode::BAD_REQUEST, "invalid stack name");
+    }
+
+    let _config_guard = state.config_lock.lock().await;
+    if let Err(response) = super::observation::require_inactive(&state, &stack).await {
+        return response;
     }
 
     // 1. Syntax + semantic validation, against this stack's current routes.
@@ -131,6 +144,11 @@ pub(super) async fn delete_handler(
     }
     if !valid_stack_name(&stack) {
         return rejected(StatusCode::BAD_REQUEST, "invalid stack name");
+    }
+
+    let _config_guard = state.config_lock.lock().await;
+    if let Err(response) = super::observation::require_inactive(&state, &stack).await {
+        return response;
     }
 
     match state.db.stacks().exists(&stack).await {
@@ -214,6 +232,11 @@ pub(super) async fn import_handler(
     }
     if !valid_stack_name(&stack) {
         return rejected(StatusCode::BAD_REQUEST, "invalid stack name");
+    }
+
+    let _config_guard = state.config_lock.lock().await;
+    if let Err(response) = super::observation::require_inactive(&state, &stack).await {
+        return response;
     }
 
     // 1. Syntax + semantic validation, against this TOML's own routes.

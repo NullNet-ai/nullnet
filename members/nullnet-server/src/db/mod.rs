@@ -22,6 +22,7 @@ mod certs;
 mod events;
 mod login_attempts;
 mod models;
+mod observations;
 mod refresh_tokens;
 mod schema;
 mod sessions;
@@ -37,6 +38,7 @@ pub(crate) use login_attempts::LoginAttemptRepository;
 #[cfg(test)]
 pub(crate) use models::SessionRow;
 pub(crate) use models::{RouteRow, ServiceDependencyRow, ServiceRow, ServiceTriggerRow};
+pub(crate) use observations::{ObservationRepository, ObservationRow, ObservedEdge};
 pub(crate) use refresh_tokens::RefreshTokenRepository;
 pub(crate) use sessions::{SessionGeo, SessionRepository};
 pub(crate) use stacks::{RouteInsert, ServiceInsert, StackRepository};
@@ -135,6 +137,10 @@ impl Db {
 
     pub(crate) fn events(&self) -> EventRepository {
         EventRepository::new(self.conn.clone())
+    }
+
+    pub(crate) fn observations(&self) -> ObservationRepository {
+        ObservationRepository::new(self.conn.clone())
     }
 
     pub(crate) fn sessions(&self) -> SessionRepository {

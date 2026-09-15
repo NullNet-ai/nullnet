@@ -4,6 +4,7 @@ All Nullnet releases with the relative changes are documented in this file.
 
 ## [UNRELEASED]
 ### Added
+- Add per-stack observation mode with all-to-all backend triggers and configuration suggestions
 - Show backend trigger sessions in session history with a destination service peer, gray N/A policy, and a Kind column ([#189](https://github.com/NullNet-ai/nullnet/pull/189))
 - Serve the UI with a managed certificate selected by `UI_TLS_DOMAIN`, with first-run self-signed setup and automatic certificate reload ([#188](https://github.com/NullNet-ai/nullnet/pull/188))
 - Enable one-year HSTS on proxy HTTPS responses by default, with `HSTS_ENABLED=false` for development ([#188](https://github.com/NullNet-ai/nullnet/pull/188))
