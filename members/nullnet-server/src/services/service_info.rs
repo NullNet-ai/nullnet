@@ -638,14 +638,17 @@ impl RegisteredServiceInfo {
             .map(|r| (r.ip, r.docker_container.clone()))
     }
 
-    pub(crate) fn client_net_id(&self, client: &Client) -> Option<u32> {
+    pub(crate) fn client_info(&self, client: &Client) -> Option<&ClientInfo> {
         self.replicas.iter().find_map(|r| {
             r.clients
                 .clients()
                 .get(client)
                 .filter(|ci| !ci.is_pending())
-                .map(ClientInfo::net_id)
         })
+    }
+
+    pub(crate) fn client_net_id(&self, client: &Client) -> Option<u32> {
+        self.client_info(client).map(ClientInfo::net_id)
     }
 
     /// The wake-up for an edge another task is already building, if any.
@@ -675,7 +678,15 @@ impl RegisteredServiceInfo {
     pub(crate) fn find_reusable_network_on_proxy(
         &self,
         proxy_ip: IpAddr,
-    ) -> Option<(Upstream, Ipv4Addr, Ipv4Addr, u32, IpAddr, Option<String>)> {
+    ) -> Option<(
+        Upstream,
+        Ipv4Addr,
+        Ipv4Addr,
+        u32,
+        IpAddr,
+        Option<String>,
+        u128,
+    )> {
         let best = self
             .replicas
             .iter()
@@ -688,15 +699,16 @@ impl RegisteredServiceInfo {
                             ci.server_net(),
                             ci.net_id(),
                             r,
+                            ci.time_ms(),
                         ))
                     } else {
                         None
                     }
                 })
             })
-            .min_by_key(|(chains, _, _, _, _)| *chains);
+            .min_by_key(|(chains, _, _, _, _, _)| *chains);
 
-        let (_, client_net, server_net, net_id, replica) = best?;
+        let (_, client_net, server_net, net_id, replica, setup_ms) = best?;
         Some((
             Upstream {
                 ip: server_net.to_string(),
@@ -707,6 +719,7 @@ impl RegisteredServiceInfo {
             net_id,
             replica.ip,
             replica.docker_container.clone(),
+            setup_ms,
         ))
     }
 

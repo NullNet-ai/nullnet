@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { GraphJson } from '../../types';
 import type { TopoNode, TopoEdge } from './types';
-import { buildTopoGraph } from './layout';
+import { buildTopoGraph, edgeSessionCount } from './layout';
 
 interface Props {
   graph: GraphJson;
@@ -15,6 +15,7 @@ interface Props {
 const CELL = 26;
 const LABEL_COL_W = 150;
 const HEADER_ROW_H = 150;
+const compactCount = new Intl.NumberFormat('en', { notation: 'compact', maximumSignificantDigits: 2 });
 
 function shortLabel(id: string): string {
   return id.length > 18 ? `${id.slice(0, 17)}…` : id;
@@ -26,12 +27,11 @@ function kindColor(n: TopoNode): string {
 }
 
 function edgeColor(e: TopoEdge): string {
-  return e.isEgress ? 'rgba(167,139,250,.75)' : e.isProxyHop ? 'rgba(251,191,36,.7)' : 'rgba(91,156,246,.75)';
+  return e.isEgress ? 'rgba(167,139,250,.75)' : e.isProxyHop ? 'rgba(251,191,36,.7)' : 'rgba(255,255,255,.35)';
 }
 
 // Adjacency-matrix view of the same graph the other layouts draw as a
-// node-link diagram: rows/cols ordered proxies-then-services (internet
-// omitted — every proxy trivially connects to it, an uninformative row/col),
+// node-link diagram: rows/cols ordered proxies-then-services,
 // filled cell = row → col has an edge. Zero edge crossings by construction,
 // at the cost of not reading as a path the way the node-link views do.
 export default function TopologyMatrix({
@@ -39,13 +39,11 @@ export default function TopologyMatrix({
 }: Props) {
   const { nodes, edges } = buildTopoGraph(graph);
   const order = nodes
-    .filter(n => n.kind !== 'internet')
-    .sort((a, b) => (a.kind === b.kind ? a.id.localeCompare(b.id) : a.kind === 'proxy' ? -1 : 1));
+    .sort((a, b) => ({ proxy: 1, service: 2 }[a.kind] - { proxy: 1, service: 2 }[b.kind] || a.id.localeCompare(b.id)));
   const indexOf = new Map(order.map((n, i) => [n.id, i]));
 
   const edgeByPair = new Map<string, TopoEdge>();
   for (const e of edges) {
-    if (e.isInternetEdge) continue;
     edgeByPair.set(`${e.from}\0${e.to}`, e);
   }
 
@@ -103,7 +101,7 @@ export default function TopologyMatrix({
         const isSel = selectedEdgeKey === key;
         const dimmed = hasHighlight && i !== hi && j !== hj;
         const x = LABEL_COL_W + j * CELL, y = HEADER_ROW_H + i * CELL;
-        const count = e?.originalIndices.length ?? 0;
+        const count = e ? edgeSessionCount(e, graph) : 0;
         return (
           <g key={key}
             onMouseEnter={() => setHoveredCell({ rowId: rowNode.id, colId: colNode.id })}
@@ -113,16 +111,14 @@ export default function TopologyMatrix({
             <rect x={x} y={y} width={CELL} height={CELL} fill="transparent" />
             {e && (
               <>
-                <title>{`${e.from} → ${e.to}${count > 1 ? ` (${count} sessions)` : ''}`}</title>
+                <title>{`${e.from} → ${e.to} (${count} session${count === 1 ? '' : 's'})`}</title>
                 <rect x={x + 2} y={y + 2} width={CELL - 4} height={CELL - 4} rx="3"
                   fill={edgeColor(e)} opacity={isSel ? 1 : 0.7}
                   stroke={isSel ? 'rgba(91,156,246,.9)' : 'none'} strokeWidth={isSel ? 1.5 : 0} />
-                {count > 1 && (
-                  <text x={x + CELL / 2} y={y + CELL / 2 + 3} textAnchor="middle"
+                <text x={x + CELL / 2} y={y + CELL / 2 + 3} textAnchor="middle"
                     fill="rgba(3,5,8,.85)" fontSize="8" fontWeight="700" pointerEvents="none">
-                    {count}
-                  </text>
-                )}
+                    {count < 1000 ? count : compactCount.format(count).toLowerCase()}
+                </text>
               </>
             )}
           </g>
@@ -135,7 +131,7 @@ export default function TopologyMatrix({
           onMouseEnter={() => setHoveredCell({ rowId: n.id, colId: n.id })} onMouseLeave={() => setHoveredCell(null)}
           style={{ cursor: onNodeClick ? 'pointer' : 'default' }}>
           <rect x={0} y={HEADER_ROW_H + i * CELL} width={LABEL_COL_W} height={CELL} fill="transparent" />
-          <circle cx={10} cy={HEADER_ROW_H + i * CELL + CELL / 2} r="3" fill={kindColor(n)} />
+          <circle cx={10} cy={HEADER_ROW_H + i * CELL + CELL / 2} r="3" fill={graph.historical && n.kind === 'service' ? 'var(--t2)' : kindColor(n)} />
           <text x={20} y={HEADER_ROW_H + i * CELL + CELL / 2 + 3}
             fill={n.id === selectedNodeId ? 'rgba(91,156,246,.95)' : 'rgba(255,255,255,.7)'}
             fontSize="9" fontFamily="'JetBrains Mono',monospace">
@@ -153,8 +149,8 @@ export default function TopologyMatrix({
             onMouseEnter={() => setHoveredCell({ rowId: n.id, colId: n.id })} onMouseLeave={() => setHoveredCell(null)}
             style={{ cursor: onNodeClick ? 'pointer' : 'default' }}>
             <rect x={x - CELL / 2} y={0} width={CELL} height={HEADER_ROW_H} fill="transparent" />
-            <g transform={`rotate(-45, ${x}, ${y})`}>
-              <circle cx={x} cy={y} r="3" fill={kindColor(n)} />
+            <g transform={`rotate(-90, ${x}, ${y})`}>
+              <circle cx={x} cy={y} r="3" fill={graph.historical && n.kind === 'service' ? 'var(--t2)' : kindColor(n)} />
               <text x={x + 6} y={y + 3}
                 fill={n.id === selectedNodeId ? 'rgba(91,156,246,.95)' : 'rgba(255,255,255,.7)'}
                 fontSize="9" fontFamily="'JetBrains Mono',monospace">

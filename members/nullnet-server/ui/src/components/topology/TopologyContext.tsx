@@ -1,14 +1,26 @@
-import { createContext, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
-import type { ChainJson, GraphJson, ServiceJson, SessionJson } from '../../types';
+import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import type { ChainJson, GraphJson, ServiceJson, SessionJson, SessionRecordJson, SessionsHistoryPage } from '../../types';
 import type { LayoutMode, PanelState } from './types';
-import { INTERNET_ID, LAYOUT_MODES } from './types';
+import { LAYOUT_MODES } from './types';
 
 const LAYOUT_MODE_STORAGE_KEY = 'topology-layout-mode';
 import { useApi } from '../../hooks/useApi';
+import { useSessionHistory } from '../../hooks/useSessionHistory';
+import type { TimeSpan } from '../TimeSpanFilter';
+import { appendTimeSpan } from '../../lib/sessions';
+import { sessionGraph } from './sessionGraph';
 
 // ── Data context ──────────────────────────────────────────────────────────────
 
 interface TopologyData {
+  sessionHistory: SessionsHistoryPage | null;
+  refreshSessions: () => void;
+  loadMoreSessions: () => void;
+  records: SessionRecordJson[];
+  range: TimeSpan | null;
+  setRange: (range: TimeSpan | null) => void;
+  loading: boolean;
+  error: string | null;
   graph: GraphJson | null;
   services: ServiceJson[] | null;
   sessions: SessionJson[] | null;
@@ -16,6 +28,8 @@ interface TopologyData {
 }
 
 const TopologyDataContext = createContext<TopologyData>({
+  sessionHistory: null, refreshSessions: () => {}, loadMoreSessions: () => {},
+  records: [], range: null, setRange: () => {}, loading: true, error: null,
   graph: null,
   services: null,
   sessions: null,
@@ -54,12 +68,6 @@ const initialUIState: UIState = {
 function uiReducer(state: UIState, action: UIAction): UIState {
   switch (action.type) {
     case 'NODE_CLICKED': {
-      if (action.nodeId === INTERNET_ID) {
-        return {
-          ...state,
-          panel: state.panel?.type === 'internet' ? null : { type: 'internet' },
-        };
-      }
       return {
         ...state,
         panel:
@@ -125,13 +133,32 @@ export function TopologyProvider({
   stack: string;
   children: React.ReactNode;
 }) {
-  // Poll the graph (5s) as well as re-fetching on SSE session events below: egress
-  // destinations change the graph but emit no event (they're deliberately off the
-  // event pipeline), so the SSE nudge alone would leave them stale until refresh.
-  const { data: graph, refetch } = useApi<GraphJson>(`/api/graph/${stack}`, 5000);
-  const { data: services } = useApi<ServiceJson[]>(`/api/services/${stack}`, 5000);
-  const { data: sessions, refetch: refetchSessions } = useApi<SessionJson[]>(`/api/sessions/${stack}`, 5000);
-  const { data: chains, refetch: refetchChains } = useApi<ChainJson[]>(`/api/chains/${stack}`);
+  const [range, setRange] = useState<TimeSpan | null>(null);
+  const params = new URLSearchParams();
+  if (!range) params.set('active', 'true');
+  appendTimeSpan(params, range);
+  const query = params.toString();
+  const historyKey = `${stack}\0${query}`;
+  const [pagination, setPagination] = useState({ key: historyKey, pages: 1 });
+  const pages = range ? (pagination.key === historyKey ? pagination.pages : 1) : Infinity;
+  const loadMoreSessions = () => setPagination({ key: historyKey, pages: pages + 1 });
+  const { data, loading, error, refresh: refreshSessions } = useSessionHistory(stack, query, pages, range == null);
+  const { data: liveGraph, error: graphError } = useApi<GraphJson>(`/api/graph/${stack}`, range ? undefined : 5000);
+  const { data: services } = useApi<ServiceJson[]>(`/api/services/${stack}`, range ? undefined : 5000);
+  const { data: chains } = useApi<ChainJson[]>(`/api/chains/${stack}`, range ? undefined : 5000);
+  const records = useMemo(() => (data?.sessions ?? []).filter(s => !s.blocked), [data]);
+  const graph = useMemo(() => {
+    if (!data || !liveGraph) return null;
+    return sessionGraph(liveGraph, records, range != null);
+  }, [data, liveGraph, range, records]);
+  const sessions = useMemo<SessionJson[]>(() => range ? [] : records
+    .filter(s => s.direction === 'ingress' && s.ended_at == null)
+    .map(s => ({
+      id: s.id, network_id: s.net_id, client_ip: s.peer_ip, service: s.service,
+      client_net: s.detail.client_net ?? '', server_net: s.detail.server_net ?? '',
+      chain_depth: s.detail.chain_depth ?? 1, created_at: s.started_at,
+      country_code: s.country_code, asn: s.asn, org: s.org,
+    })), [records, range]);
 
   const [uiState, dispatch] = useReducer(uiReducer, initialUIState);
 
@@ -142,41 +169,14 @@ export function TopologyProvider({
   }, [uiState.layoutMode]);
 
   // Reset panel and focus when the active stack changes (not on initial mount).
-  const prevStackRef = useRef(stack);
+  const selectionKey = `${stack}\0${query}`;
+  const prevStackRef = useRef(selectionKey);
   useEffect(() => {
-    if (prevStackRef.current !== stack) {
-      prevStackRef.current = stack;
+    if (prevStackRef.current !== selectionKey) {
+      prevStackRef.current = selectionKey;
       dispatch({ type: 'STACK_CHANGED' });
     }
-  }, [stack]);
-
-  // SSE: re-fetch graph and chains whenever a session is created or torn down.
-  // Also clears client focus immediately when the focused client's session tears down.
-  const refetchRef = useRef(refetch);
-  refetchRef.current = refetch;
-  const refetchChainsRef = useRef(refetchChains);
-  refetchChainsRef.current = refetchChains;
-  const refetchSessionsRef = useRef(refetchSessions);
-  refetchSessionsRef.current = refetchSessions;
-  const focusedClientIpRef = useRef(uiState.focusedClientIp);
-  focusedClientIpRef.current = uiState.focusedClientIp;
-  useEffect(() => {
-    const es = new EventSource('/api/events/stream');
-    es.onmessage = (ev) => {
-      try {
-        const event = JSON.parse(ev.data);
-        if (event.type === 'session_created' || event.type === 'session_torn_down') {
-          refetchRef.current();
-          refetchChainsRef.current();
-          refetchSessionsRef.current();
-        }
-        if (event.type === 'session_torn_down' && event.client_ip === focusedClientIpRef.current) {
-          dispatch({ type: 'FOCUS_CLEARED' });
-        }
-      } catch { /* ignore */ }
-    };
-    return () => es.close();
-  }, []);
+  }, [selectionKey]);
 
   useEffect(() => {
     if (!uiState.focusedClientIp || !sessions) return;
@@ -187,11 +187,11 @@ export function TopologyProvider({
 
   const nodeIps = useMemo(() => {
     const m = new Map<string, string>();
-    for (const svc of services ?? []) {
+    for (const svc of range ? [] : services ?? []) {
       if (svc.replicas.length > 0) m.set(svc.name, svc.replicas[0].ip);
     }
     return m;
-  }, [services]);
+  }, [services, range]);
 
   const focusedSessions = useMemo(
     () =>
@@ -217,7 +217,6 @@ export function TopologyProvider({
 
   const selectedNodeId =
     uiState.panel?.type === 'node' ? uiState.panel.nodeId :
-    uiState.panel?.type === 'internet' ? INTERNET_ID :
     null;
 
   const selectedEdgeKey =
@@ -226,7 +225,7 @@ export function TopologyProvider({
       : null;
 
   return (
-    <TopologyDataContext.Provider value={{ graph, services, sessions, chains }}>
+    <TopologyDataContext.Provider value={{ sessionHistory: data, refreshSessions, loadMoreSessions, graph, services, sessions, chains, records, range, setRange, loading, error: error ?? graphError }}>
       <TopologyUIContext.Provider
         value={{
           ...uiState,

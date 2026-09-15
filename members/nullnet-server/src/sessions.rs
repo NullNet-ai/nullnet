@@ -26,6 +26,7 @@ use crate::geo::GeoInfo;
 use serde::Serialize;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
@@ -161,6 +162,8 @@ impl SessionStore {
         client_ip: &str,
         client_net: &str,
         server_net: &str,
+        proxy_ip: IpAddr,
+        setup_ms: u128,
         geo: Option<GeoInfo>,
     ) {
         let Some(db) = self.db.get() else { return };
@@ -168,6 +171,8 @@ impl SessionStore {
             "client_net": client_net,
             "server_net": server_net,
             "chain_depth": 1,
+            "proxy_ip": proxy_ip.to_string(),
+            "setup_ms": setup_ms,
         })
         .to_string();
         if let Err(e) = db
@@ -196,12 +201,14 @@ impl SessionStore {
         key: &crate::orchestrator::BackendKey,
         net_id: u32,
         destination: &str,
+        setup_ms: Option<u128>,
     ) -> Option<i64> {
         let db = self.db.get()?;
         let detail = json!({
             "node_ip": key.1.to_string(),
             "container": key.2,
             "port": key.3,
+            "setup_ms": setup_ms,
         })
         .to_string();
         match db
@@ -337,6 +344,7 @@ impl SessionStore {
         node_ip: &str,
         container: Option<&str>,
         proxy_ip: &str,
+        setup_ms: u128,
         last_seen: i64,
         blocked: bool,
         active: bool,
@@ -387,6 +395,7 @@ impl SessionStore {
             "node_ip": node_ip,
             "container": container,
             "proxy_ip": proxy_ip,
+            "setup_ms": setup_ms,
         })
         .to_string();
         if let Err(e) = repo
@@ -520,6 +529,32 @@ mod tests {
                 .unwrap(),
         );
         store
+    }
+
+    #[tokio::test]
+    async fn ingress_history_keeps_proxy_after_session_ends() {
+        let store = store().await;
+        store
+            .open_ingress(
+                "s1",
+                "web",
+                10,
+                "1.2.3.4",
+                "10.0.0.1",
+                "10.0.0.2",
+                "192.0.2.1".parse().unwrap(),
+                12,
+                None,
+            )
+            .await;
+        store.close_ingress(10, "web", "1.2.3.4").await;
+        let page = store
+            .query("s1", None, None, None, None, None, None, None, 10)
+            .await;
+        assert_eq!(page.sessions.len(), 1);
+        assert!(page.sessions[0].ended_at.is_some());
+        assert_eq!(page.sessions[0].detail["proxy_ip"], "192.0.2.1");
+        assert_eq!(page.sessions[0].detail["setup_ms"], 12);
     }
 
     /// A run of denials from one peer is one row, not one per refused packet,

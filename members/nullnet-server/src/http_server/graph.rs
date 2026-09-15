@@ -19,5 +19,6 @@ pub(super) async fn graph_handler(
         return StatusCode::NOT_FOUND.into_response();
     };
     let egress_edges = state.orchestrator.egress_edges_snapshot().await;
-    axum::Json(render_graph_json(stack_map, &egress_edges)).into_response()
+    let proxies = state.orchestrator.connected_proxy_ips().await;
+    axum::Json(render_graph_json(stack_map, &egress_edges, proxies)).into_response()
 }

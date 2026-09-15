@@ -20,7 +20,7 @@ export default function ServiceNodePanel({ node, service, onDepClick }: Props) {
           <span className={`badge ${node.registered ? 'b-green' : 'b-dim'}`}>
             {node.registered ? 'Registered' : 'Unregistered'}
           </span>
-          {node.entry_point && <span className="badge b-blue" style={{ marginLeft: 6 }}>Entry Point</span>}
+          {node.entry_point && <span className="badge b-amber" style={{ marginLeft: 6 }}>Entry Point</span>}
         </div>
       </div>
 

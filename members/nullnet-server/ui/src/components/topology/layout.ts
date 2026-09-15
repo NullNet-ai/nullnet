@@ -1,28 +1,23 @@
 import type { GraphJson } from '../../types';
-import { NODE_W, NODE_H, H_GAP, V_GAP, INET_W, INET_H, INET_Y, INET_PROXY_GAP, INTERNET_ID, PLACEHOLDER_PROXY_ID } from './types';
+import { NODE_W, NODE_H, H_GAP, V_GAP } from './types';
 import type { Pos, TopoNode, TopoEdge } from './types';
+
+export function edgeSessionCount(edge: TopoEdge, graph: GraphJson): number {
+  return edge.originalIndices.reduce((count, idx) => {
+    const source = graph.edges[idx];
+    return count + (source.session_count ?? (edge.isEgress ? source.destinations?.filter(d => d.active).length ?? 0 : 1));
+  }, 0);
+}
 
 export function buildTopoGraph(graph: GraphJson): { nodes: TopoNode[]; edges: TopoEdge[] } {
   const nodes: TopoNode[] = graph.nodes.map(n => ({ ...n, kind: 'service' as const }));
-  // Proxy nodes come from both inbound (via_proxy) and outbound egress (to).
-  const proxyIps = new Set<string>();
+  // Include idle connected proxies and endpoints of edges still being torn down.
+  const proxyIps = new Set(graph.proxies);
   for (const e of graph.edges) {
     if (e.via_proxy) proxyIps.add(e.via_proxy);
-    if (e.egress) proxyIps.add(e.to);
+    if (e.egress && e.to) proxyIps.add(e.to);
   }
   for (const ip of proxyIps) nodes.push({ kind: 'proxy', id: ip });
-
-  // Internet + proxy are always shown, even with no active connections — fall
-  // back to a non-interactive placeholder proxy node when none are live.
-  if (proxyIps.size === 0) {
-    nodes.push({ kind: 'proxy', id: PLACEHOLDER_PROXY_ID, placeholder: true });
-  }
-  nodes.push({ kind: 'internet', id: INTERNET_ID });
-
-  const inetEdges: TopoEdge[] = [];
-  for (const ip of proxyIps) {
-    inetEdges.push({ from: INTERNET_ID, to: ip, net_id: -1, setup_ms: 0, isProxyHop: false, isInternetEdge: true, isEgress: false, originalIndices: [] });
-  }
 
   // De-duplicate service/proxy edges by (from, to) key — multiple sessions share one drawn edge.
   // Egress edges are kept in a separate map so they never merge with an inbound
@@ -34,50 +29,37 @@ export function buildTopoGraph(graph: GraphJson): { nodes: TopoNode[]; edges: To
     if (e.egress) {
       const k = `${e.from}\0${e.to}`;
       if (!egressMap.has(k)) {
-        egressMap.set(k, { from: e.from, to: e.to, net_id: e.net_id, setup_ms: e.setup_ms, isProxyHop: false, isInternetEdge: false, isEgress: true, originalIndices: [] });
+        egressMap.set(k, { from: e.from, to: e.to, net_id: e.net_id, setup_ms: e.setup_ms, isProxyHop: false, isEgress: true, originalIndices: [] });
       }
       egressMap.get(k)!.originalIndices.push(idx);
     } else if (e.via_proxy) {
-      const k1 = `${e.from}\0${e.via_proxy}`;
-      if (!edgeMap.has(k1)) {
-        edgeMap.set(k1, { from: e.from, to: e.via_proxy, net_id: e.net_id, setup_ms: 0, isProxyHop: true, isInternetEdge: false, isEgress: false, originalIndices: [] });
+      const k = `${e.via_proxy}\0${e.to}`;
+      if (!edgeMap.has(k)) {
+        edgeMap.set(k, { from: e.via_proxy, to: e.to, net_id: e.net_id, setup_ms: e.setup_ms, isProxyHop: true, isEgress: false, originalIndices: [] });
       }
-      edgeMap.get(k1)!.originalIndices.push(idx);
-
-      const k2 = `${e.via_proxy}\0${e.to}`;
-      if (!edgeMap.has(k2)) {
-        edgeMap.set(k2, { from: e.via_proxy, to: e.to, net_id: e.net_id, setup_ms: e.setup_ms, isProxyHop: true, isInternetEdge: false, isEgress: false, originalIndices: [] });
-      }
-      edgeMap.get(k2)!.originalIndices.push(idx);
+      edgeMap.get(k)!.originalIndices.push(idx);
     } else {
       const k = `${e.from}\0${e.to}`;
       if (!edgeMap.has(k)) {
-        edgeMap.set(k, { from: e.from, to: e.to, net_id: e.net_id, setup_ms: e.setup_ms, isProxyHop: false, isInternetEdge: false, isEgress: false, originalIndices: [] });
+        edgeMap.set(k, { from: e.from, to: e.to, net_id: e.net_id, setup_ms: e.setup_ms, isProxyHop: e.session?.direction === 'ingress', isEgress: false, originalIndices: [] });
       }
       edgeMap.get(k)!.originalIndices.push(idx);
     }
   }
-  return { nodes, edges: [...inetEdges, ...edgeMap.values(), ...egressMap.values()] };
+  const nodeIds = new Set(nodes.map(n => n.id));
+  return { nodes, edges: [...edgeMap.values(), ...egressMap.values()].filter(e => nodeIds.has(e.from) && nodeIds.has(e.to)) };
 }
 
 export function layoutNodes(nodes: TopoNode[], edges: TopoEdge[]): { pos: Map<string, Pos>; waypoints: Map<string, Pos[]> } {
-  const hasInternet = nodes.some(n => n.kind === 'internet');
   const proxyNodes = nodes.filter(n => n.kind === 'proxy');
   const serviceNodes = nodes.filter(n => n.kind === 'service');
   const pos = new Map<string, Pos>();
 
-  // Proxy row y shifts down when internet node is present
-  const proxyRowY = hasInternet ? INET_Y + INET_H + INET_PROXY_GAP : V_GAP;
+  const proxyRowY = V_GAP;
 
   proxyNodes.forEach((n, i) => {
     pos.set(n.id, { x: H_GAP + i * (NODE_W + H_GAP), y: proxyRowY });
   });
-
-  // Internet node — centered over the proxy row
-  if (hasInternet && proxyNodes.length > 0) {
-    const proxyRowCenter = H_GAP + ((proxyNodes.length - 1) * (NODE_W + H_GAP)) / 2 + NODE_W / 2;
-    pos.set(INTERNET_ID, { x: proxyRowCenter - INET_W / 2, y: INET_Y });
-  }
 
   const svcOffsetY = proxyNodes.length > 0 ? proxyRowY + NODE_H + V_GAP : V_GAP;
   const svcSet = new Set(serviceNodes.map(n => n.id));
@@ -171,12 +153,10 @@ export function layoutNodes(nodes: TopoNode[], edges: TopoEdge[]): { pos: Map<st
   // fixed, never reordered). Egress edges participate too — a service several
   // layers deep still needs to reach the proxy row, and without a reserved
   // lane its bow-right routing has to sweep across whatever sits in between.
-  // Internet edges are routed separately and don't participate.
   const waypointIds = new Map<string, string[]>(); // edge key -> dummy ids, source→dest order
   const effLayer = (id: string): number | null => (proxySet.has(id) ? -1 : layer.get(id) ?? null);
   let dummySeq = 0;
   for (const e of edges) {
-    if (e.isInternetEdge) continue;
     const fromOk = svcSet.has(e.from) || proxySet.has(e.from);
     const toOk = svcSet.has(e.to) || proxySet.has(e.to);
     if (!fromOk || !toOk) continue;
@@ -260,19 +240,11 @@ export function layoutNodes(nodes: TopoNode[], edges: TopoEdge[]): { pos: Map<st
   return { pos, waypoints };
 }
 
-// Every node is NODE_W x NODE_H except the internet node, which is its own
-// (smaller) pill size — shared by any layout math that needs real node extents.
-export function nodeSize(node: TopoNode | undefined): { w: number; h: number } {
-  return node?.kind === 'internet' ? { w: INET_W, h: INET_H } : { w: NODE_W, h: NODE_H };
-}
-
-export function svgDims(pos: Map<string, Pos>, nodes: TopoNode[]): { w: number; h: number } {
-  const nodeById = new Map(nodes.map(n => [n.id, n]));
+export function svgDims(pos: Map<string, Pos>): { w: number; h: number } {
   let maxX = 0, maxY = 0;
-  for (const [id, { x, y }] of pos.entries()) {
-    const { w: nw, h: nh } = nodeSize(nodeById.get(id));
-    maxX = Math.max(maxX, x + nw);
-    maxY = Math.max(maxY, y + nh);
+  for (const { x, y } of pos.values()) {
+    maxX = Math.max(maxX, x + NODE_W);
+    maxY = Math.max(maxY, y + NODE_H);
   }
   return { w: maxX + H_GAP, h: maxY + V_GAP };
 }
@@ -395,15 +367,6 @@ export function edgeLabelPoints(
     dst: { x: midX, y: midY + 32, anchor: 'middle' },
     mid: { x: midX, y: midY },
   };
-}
-
-export function inetEdgePath(from: Pos, to: Pos): string {
-  const x1 = from.x + INET_W / 2;
-  const y1 = from.y + INET_H;
-  const x2 = to.x + NODE_W / 2;
-  const y2 = to.y;
-  const cy = (y1 + y2) / 2;
-  return `M ${x1} ${y1} C ${x1} ${cy}, ${x2} ${cy}, ${x2} ${y2}`;
 }
 
 // Egress edge (initiator service → gateway proxy). Both ends attach on the node's
