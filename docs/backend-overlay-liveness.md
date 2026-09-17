@@ -135,6 +135,8 @@ alone is not a fix. Both settings were restored to zero afterward.
 The ARP capture is `/tmp/ll-egress-recheck-arp.log` on 192.168.1.104.
 This confirms a separate same-host egress defect, not an idle-teardown
 failure or merely an unavailable external test fixture.
+The subsequent fix and its regression/lifecycle evidence are documented in
+[Same-host egress](same-host-egress.md).
 
 Detailed local lab evidence is under
 `/root/nullnet-liveness-20260917/evidence/`; CI output is in

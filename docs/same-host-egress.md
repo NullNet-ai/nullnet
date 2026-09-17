@@ -52,4 +52,56 @@ The full Linux CI command set passed on the final source: formatting, builds,
 Clippy, Rust tests, UI polling tests and eBPF build/lint. The client binary
 SHA-256 deployed to both hosts is
 `e3a6d8758e82d86e5ea504954ca209661fd33840f91852bbf0476185abf56ed6`.
-Live regression and lifecycle verification is in progress.
+Server: 258 tests; proxy: 38 tests; client: 91 tests, with two existing
+live-environment tests ignored.
+
+Observed on this build:
+
+- Same-host and cross-host egress each passed 100 HTTP requests and a
+  160-second request. The original backend 160-second reproduction also
+  passed, retaining its edge until the response completed.
+- A container attached to two custom Docker bridges, both with masquerading
+  disabled, reached the external fixture from each source IP. Internal HTTP
+  requests also passed, with the server observing the original source IPs.
+- Stopping that container removed edge 106's six rules. Its replacement used
+  `172.30.195.99` and `172.30.196.99` instead of the old `.2` addresses; all
+  four external/internal probes passed, and no tagged rules retained the old
+  addresses. Another container's local-egress rules remained installed.
+- Killing the client with `SIGKILL` and restarting it removed all stale tagged
+  rules while preserving a separate operator-rule sentinel. Traffic was
+  rechecked successfully after the test containers and configuration settled.
+- A destination-block policy denied requests on both hosts; restoring the
+  allow policy restored HTTP 200. The policy change used the existing
+  conntrack-flush behavior.
+- Two initiators passed 1,200 backend requests each, plus 60 requests on each
+  of the `a -> b` and `b -> c` dependency paths: 2,520 backend requests total.
+- In a separate simultaneous test, ingress was explicitly pinned to the
+  **same local container** doing egress. It passed 1,200 backend requests,
+  received 200 HTTP 200 proxy requests, and completed a 60-second external
+  request while a second destination's short HTTP connection closed.
+  Server-side ingress logs confirmed all 200 requests reached that local
+  container, not its replica on the other host.
+- Graph snapshots at 20 and 40 seconds showed edge 105 with destination
+  `203.0.113.77` active and `203.0.113.78` inactive. The shared edge stayed
+  present and the long request completed. Separate load covered two external
+  IPs and ports 8080/8081.
+- UDP echo passed 20/20 exchanges on local default-Docker, local custom-network
+  and cross-host paths with the edge established.
+- With the normal conntrack timeouts unchanged, edge 105 disappeared from
+  the graph after becoming idle, and all three of its tagged rules were gone.
+  The next external request rebuilt the local edge and returned HTTP 200.
+  The cleanup/rebuild checks passed at 13:45:11/13:45:12 UTC.
+
+Test setup corrections are retained in the raw evidence: an initial ingress
+run targeted a service still configured as backend-only; the corrected run
+set its entry-point timeout. The UDP fixture initially replied from its Docker
+address instead of the synthetic public address; binding the listener to the
+public address corrected it. One restart probe overlapped configuration changes
+and timed out; subsequent stable-configuration probes passed on both addresses.
+
+Evidence is under `/root/nullnet-liveness-20260917/evidence/local-egress/`
+on both hosts, with same-container graph snapshots and results under
+`evidence/local-egress-pinned/` on 104. These checks cover the existing IPv4
+Docker routing model; they are not a claim that arbitrary host routing or
+firewall configurations work without valid routes and permissions.
+The temporary extra fixture-port allowances were removed after testing.
