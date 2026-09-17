@@ -1150,7 +1150,7 @@ pub fn spawn_reconcile_task(
             // from the union of their dumps.
             let mut by_container: std::collections::HashMap<String, Vec<Ipv4Addr>> =
                 std::collections::HashMap::new();
-            for ip in cache.ips() {
+            for ip in cache.all_ips() {
                 if let Some(container) = cache.get(ip) {
                     by_container.entry(container).or_default().push(ip);
                 }
