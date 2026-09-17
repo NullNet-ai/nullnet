@@ -1,7 +1,7 @@
 import type { SessionDirection, SessionRecordJson } from '../types';
 import { flagEmoji, countryName } from '../geo';
 
-const KIND_BADGE: Record<SessionDirection, string> = { ingress: 'b-amber', egress: 'b-purple', backend: 'b-dim' };
+const KIND_BADGE: Record<SessionDirection, string> = { ingress: 'b-amber', egress: 'b-purple', backend: 'b-white' };
 
 export function SessionNet({ session, stacked = false }: { session: SessionRecordJson; stacked?: boolean }) {
   return <NetId id={session.net_id} setupMs={session.detail.setup_ms} stacked={stacked} />;

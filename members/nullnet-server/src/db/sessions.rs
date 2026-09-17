@@ -1,6 +1,6 @@
 use crate::db::AsyncSqlite;
 use crate::db::models::{NewSessionRow, SessionRow};
-use crate::db::schema::sessions;
+use crate::db::schema::{session_policy_counts, sessions};
 use diesel::prelude::*;
 use diesel::sqlite::Sqlite;
 use diesel_async::RunQueryDsl;
@@ -445,6 +445,52 @@ impl SessionRepository {
             .handle_err(location!())
     }
 
+    pub(crate) async fn active_counts(&self, stack: &str) -> Result<Vec<(String, i64)>, Error> {
+        let mut conn = self.conn.lock().await;
+        sessions::table
+            .filter(sessions::stack.eq(stack.to_owned()))
+            .filter(sessions::ended_at.is_null())
+            .group_by(sessions::direction)
+            .select((sessions::direction, diesel::dsl::count_star()))
+            .load::<(String, i64)>(&mut *conn)
+            .await
+            .handle_err(location!())
+    }
+
+    pub(crate) async fn busiest_services(&self, stack: &str) -> Result<Vec<(String, i64)>, Error> {
+        let mut conn = self.conn.lock().await;
+        sessions::table
+            .filter(sessions::stack.eq(stack.to_owned()))
+            .filter(sessions::ended_at.is_null())
+            .group_by(sessions::service)
+            .select((sessions::service, diesel::dsl::count_star()))
+            .order((diesel::dsl::count_star().desc(), sessions::service.asc()))
+            .limit(3)
+            .load::<(String, i64)>(&mut *conn)
+            .await
+            .handle_err(location!())
+    }
+
+    pub(crate) async fn policy_counts(
+        &self,
+        stack: &str,
+    ) -> Result<Vec<((bool, String), i64)>, Error> {
+        let mut conn = self.conn.lock().await;
+        session_policy_counts::table
+            .filter(session_policy_counts::stack.eq(stack.to_owned()))
+            .filter(session_policy_counts::session_count.gt(0))
+            .select((
+                (
+                    session_policy_counts::blocked,
+                    session_policy_counts::direction,
+                ),
+                session_policy_counts::session_count,
+            ))
+            .load::<((bool, String), i64)>(&mut *conn)
+            .await
+            .handle_err(location!())
+    }
+
     /// Distinct service names that appear in `stack`'s history, for the UI's
     /// service filter — a service that has since been deregistered still has
     /// sessions worth filtering to.
@@ -558,6 +604,167 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(active.iter().map(|r| r.net_id).collect::<Vec<_>>(), vec![4]);
+    }
+
+    #[tokio::test]
+    async fn busiest_services_rank_only_active_rows_in_the_stack() {
+        let db = test_db().await;
+        let repo = db.sessions();
+        let geo = SessionGeo::default();
+        let mut id = 1;
+        for (stack, service, count) in [
+            ("s1", "a", 3),
+            ("s1", "b", 3),
+            ("s1", "c", 2),
+            ("s1", "d", 1),
+            ("s2", "other", 10),
+        ] {
+            for _ in 0..count {
+                repo.open(
+                    "egress", stack, service, id, "1.2.3.4", &geo, false, "{}", 100,
+                )
+                .await
+                .unwrap();
+                id += 1;
+            }
+        }
+        repo.close_egress_edge(1, 200).await.unwrap();
+        assert_eq!(
+            repo.busiest_services("s1").await.unwrap(),
+            vec![("b".into(), 3), ("a".into(), 2), ("c".into(), 2),]
+        );
+        assert!(repo.busiest_services("empty").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn policy_counts_follow_backfill_policy_changes_rollback_and_retention() {
+        use diesel_async::SimpleAsyncConnection;
+        let db = test_db().await;
+        let repo = db.sessions();
+        let geo = SessionGeo::default();
+        {
+            let mut conn = repo.conn.lock().await;
+            conn.batch_execute(include_str!(
+                "migrations/2026-09-16-000001_session_counts/down.sql"
+            ))
+            .await
+            .unwrap();
+        }
+        repo.open("egress", "s1", "web", 1, "1.2.3.4", &geo, false, "{}", 100)
+            .await
+            .unwrap();
+        {
+            let mut conn = repo.conn.lock().await;
+            conn.batch_execute(include_str!(
+                "migrations/2026-09-16-000001_session_counts/up.sql"
+            ))
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            repo.policy_counts("s1").await.unwrap(),
+            vec![((false, "egress".into()), 1)]
+        );
+        repo.touch("egress", 1, "1.2.3.4", &geo, true, 150)
+            .await
+            .unwrap();
+        repo.touch("egress", 1, "1.2.3.4", &geo, true, 160)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.policy_counts("s1").await.unwrap(),
+            vec![((true, "egress".into()), 1)]
+        );
+        {
+            let mut conn = repo.conn.lock().await;
+            conn.batch_execute(
+                "BEGIN; UPDATE sessions SET blocked = 0 WHERE net_id = 1; ROLLBACK;",
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            repo.policy_counts("s1").await.unwrap(),
+            vec![((true, "egress".into()), 1)]
+        );
+        repo.close_egress_edge(1, 200).await.unwrap();
+        assert_eq!(
+            repo.policy_counts("s1").await.unwrap(),
+            vec![((true, "egress".into()), 1)]
+        );
+        repo.delete_ended_before(201).await.unwrap();
+        assert!(repo.policy_counts("s1").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn policy_counts_include_closed_rows_but_exclude_backends_and_other_stacks() {
+        let db = test_db().await;
+        let repo = db.sessions();
+        let geo = SessionGeo::default();
+        for (id, direction, stack, blocked) in [
+            (1, "ingress", "s1", false),
+            (2, "egress", "s1", false),
+            (3, "egress", "s1", true),
+            (4, "backend", "s1", false),
+            (5, "ingress", "s2", false),
+        ] {
+            repo.open(
+                direction, stack, "web", id, "1.2.3.4", &geo, blocked, "{}", 100,
+            )
+            .await
+            .unwrap();
+        }
+        repo.close_egress_edge(2, 200).await.unwrap();
+        repo.record_blocked_ingress("s1", "web", "2.3.4.5", &geo, "{}", 100, 100)
+            .await
+            .unwrap();
+        let counts: std::collections::HashMap<_, _> = repo
+            .policy_counts("s1")
+            .await
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(counts.get(&(false, "ingress".into())), Some(&1));
+        assert_eq!(counts.get(&(false, "egress".into())), Some(&1));
+        assert_eq!(counts.get(&(true, "ingress".into())), Some(&1));
+        assert_eq!(counts.get(&(true, "egress".into())), Some(&1));
+        assert_eq!(counts.len(), 4);
+        assert!(repo.policy_counts("empty").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn active_counts_group_directions_and_exclude_other_stacks_and_closed_rows() {
+        let db = test_db().await;
+        let repo = db.sessions();
+        let geo = SessionGeo::default();
+        for (id, direction, stack) in [
+            (1, "ingress", "s1"),
+            (2, "egress", "s1"),
+            (3, "backend", "s1"),
+            (4, "backend", "s1"),
+            (5, "egress", "s2"),
+        ] {
+            repo.open(
+                direction, stack, "web", id, "1.2.3.4", &geo, false, "{}", 100,
+            )
+            .await
+            .unwrap();
+        }
+        repo.close_egress_edge(2, 200).await.unwrap();
+        let counts: std::collections::HashMap<_, _> = repo
+            .active_counts("s1")
+            .await
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(counts.get("ingress"), Some(&1));
+        assert_eq!(counts.get("backend"), Some(&2));
+        assert_eq!(counts.get("egress"), None);
+        assert_eq!(
+            counts.values().sum::<i64>(),
+            repo.count_active("s1").await.unwrap()
+        );
+        assert!(repo.active_counts("empty").await.unwrap().is_empty());
     }
 
     #[tokio::test]

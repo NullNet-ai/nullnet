@@ -1,7 +1,7 @@
 import type { GraphJson, GraphEdgeJson, GraphNodeJson, SessionRecordJson } from '../../types';
 
 export function sessionGraph(live: GraphJson, sessions: SessionRecordJson[], historical: boolean): GraphJson {
-  const nodes = new Map<string, GraphNodeJson>(historical ? [] : live.nodes.map(n => [n.id, n]));
+  const nodes = new Map<string, GraphNodeJson>(live.nodes.map(n => [n.id, n]));
   const proxies = new Set(live.proxies);
   function service(id: string) {
     if (!nodes.has(id)) nodes.set(id, { id, registered: false, entry_point: false, replica_count: 0, active_replica_count: 0, paused_replica_count: 0 });

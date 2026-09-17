@@ -5,6 +5,8 @@ import { buildTopoGraph, edgeSessionCount } from './layout';
 
 interface Props {
   graph: GraphJson;
+  allowedLinks?: Set<string>;
+  showProxies?: boolean;
   selectedNodeId?: string | null;
   selectedEdgeKey?: string | null;
   onNodeClick?: (id: string) => void;
@@ -35,10 +37,18 @@ function edgeColor(e: TopoEdge): string {
 // filled cell = row → col has an edge. Zero edge crossings by construction,
 // at the cost of not reading as a path the way the node-link views do.
 export default function TopologyMatrix({
-  graph, selectedNodeId = null, selectedEdgeKey = null, onNodeClick, onEdgeClick, onBgClick,
+  graph, allowedLinks, showProxies = true, selectedNodeId = null, selectedEdgeKey = null, onNodeClick, onEdgeClick, onBgClick,
 }: Props) {
   const { nodes, edges } = buildTopoGraph(graph);
-  const order = nodes
+  const nodeIds = new Set(nodes.map(n => n.id));
+  for (const link of allowedLinks ?? []) {
+    for (const id of link.split('\0')) {
+      if (nodeIds.has(id)) continue;
+      nodes.push({ id, kind: 'service', registered: false, entry_point: false, replica_count: 0, active_replica_count: 0, paused_replica_count: 0 });
+      nodeIds.add(id);
+    }
+  }
+  const order = nodes.filter(n => showProxies || n.kind !== 'proxy')
     .sort((a, b) => ({ proxy: 1, service: 2 }[a.kind] - { proxy: 1, service: 2 }[b.kind] || a.id.localeCompare(b.id)));
   const indexOf = new Map(order.map((n, i) => [n.id, i]));
 
@@ -65,6 +75,8 @@ export default function TopologyMatrix({
   }
   const hasHighlight = hi >= 0 || hj >= 0;
 
+  const cellX = (i: number) => LABEL_COL_W + i * CELL;
+  const cellY = (i: number) => HEADER_ROW_H + i * CELL;
   const w = LABEL_COL_W + order.length * CELL;
   const h = HEADER_ROW_H + order.length * CELL;
 
@@ -73,23 +85,20 @@ export default function TopologyMatrix({
       style={{ width: '100%', display: 'block', fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
       {onBgClick && <rect x={0} y={0} width={w} height={h} fill="transparent" onClick={onBgClick} />}
 
-      {order.map((_, i) => (
-        <line key={`h${i}`} x1={LABEL_COL_W} y1={HEADER_ROW_H + i * CELL} x2={w} y2={HEADER_ROW_H + i * CELL}
-          stroke="rgba(255,255,255,.06)" />
-      ))}
-      {order.map((_, j) => (
-        <line key={`v${j}`} x1={LABEL_COL_W + j * CELL} y1={0} x2={LABEL_COL_W + j * CELL} y2={h}
-          stroke="rgba(255,255,255,.06)" />
-      ))}
+      {order.map((row, i) => order.map((col, j) => (
+        <rect key={`grid${i}-${j}`} x={cellX(j)} y={cellY(i)} width={CELL} height={CELL}
+          fill="none" stroke="rgba(255,255,255,.06)"
+          strokeDasharray={row.kind === 'proxy' || col.kind === 'proxy' ? '3 2' : undefined} pointerEvents="none" />
+      )))}
 
-      {hi >= 0 && (
-        <rect x={0} y={HEADER_ROW_H + hi * CELL} width={w} height={CELL}
+      {hi >= 0 && <rect x={0} y={cellY(hi)} width={LABEL_COL_W} height={CELL}
+        fill="rgba(91,156,246,.06)" pointerEvents="none" />}
+      {hj >= 0 && <rect x={cellX(hj)} y={0} width={CELL} height={HEADER_ROW_H}
+        fill="rgba(91,156,246,.06)" pointerEvents="none" />}
+      {order.map((_, i) => order.map((_, j) => (i === hi || j === hj) && (
+        <rect key={`highlight${i}-${j}`} x={cellX(j)} y={cellY(i)} width={CELL} height={CELL}
           fill="rgba(91,156,246,.06)" pointerEvents="none" />
-      )}
-      {hj >= 0 && (
-        <rect x={LABEL_COL_W + hj * CELL} y={0} width={CELL} height={h}
-          fill="rgba(91,156,246,.06)" pointerEvents="none" />
-      )}
+      )))}
 
       {/* Every (row, col) position is hoverable — not just the ones with an
           edge — so pointing anywhere in the grid tells you which row/column
@@ -99,8 +108,10 @@ export default function TopologyMatrix({
         const key = `${rowNode.id}\0${colNode.id}`;
         const e = edgeByPair.get(key);
         const isSel = selectedEdgeKey === key;
+        const proxyCell = rowNode.kind === 'proxy' || colNode.kind === 'proxy';
+        const allowed = allowedLinks?.has(key);
         const dimmed = hasHighlight && i !== hi && j !== hj;
-        const x = LABEL_COL_W + j * CELL, y = HEADER_ROW_H + i * CELL;
+        const x = cellX(j), y = cellY(i);
         const count = e ? edgeSessionCount(e, graph) : 0;
         return (
           <g key={key}
@@ -109,12 +120,16 @@ export default function TopologyMatrix({
             onClick={e && onEdgeClick ? (ev: React.MouseEvent) => { ev.stopPropagation(); onEdgeClick(e.from, e.to, e.originalIndices); } : undefined}
             style={{ cursor: e && onEdgeClick ? 'pointer' : 'default', opacity: dimmed ? 0.15 : 1 }}>
             <rect x={x} y={y} width={CELL} height={CELL} fill="transparent" />
+            {allowed && <rect x={x + 1} y={y + 1} width={CELL - 2} height={CELL - 2} rx="3"
+              fill="none" stroke="rgba(225,230,240,.95)" strokeWidth="2.5" pointerEvents="none" />}
+            {!e && allowed && <title>{`${rowNode.id} → ${colNode.id}: allowed in saved configuration, no sessions in this period`}</title>}
             {e && (
               <>
                 <title>{`${e.from} → ${e.to} (${count} session${count === 1 ? '' : 's'})`}</title>
                 <rect x={x + 2} y={y + 2} width={CELL - 4} height={CELL - 4} rx="3"
                   fill={edgeColor(e)} opacity={isSel ? 1 : 0.7}
-                  stroke={isSel ? 'rgba(91,156,246,.9)' : 'none'} strokeWidth={isSel ? 1.5 : 0} />
+                  stroke={isSel ? 'rgba(91,156,246,.9)' : proxyCell ? edgeColor(e) : 'none'}
+                  strokeWidth={isSel ? 1.5 : proxyCell ? 1 : 0} strokeDasharray={proxyCell ? '3 2' : undefined} />
                 <text x={x + CELL / 2} y={y + CELL / 2 + 3} textAnchor="middle"
                     fill="rgba(3,5,8,.85)" fontSize="8" fontWeight="700" pointerEvents="none">
                     {count < 1000 ? count : compactCount.format(count).toLowerCase()}
@@ -130,9 +145,9 @@ export default function TopologyMatrix({
           onClick={onNodeClick ? (ev: React.MouseEvent) => { ev.stopPropagation(); onNodeClick(n.id); } : undefined}
           onMouseEnter={() => setHoveredCell({ rowId: n.id, colId: n.id })} onMouseLeave={() => setHoveredCell(null)}
           style={{ cursor: onNodeClick ? 'pointer' : 'default' }}>
-          <rect x={0} y={HEADER_ROW_H + i * CELL} width={LABEL_COL_W} height={CELL} fill="transparent" />
-          <circle cx={10} cy={HEADER_ROW_H + i * CELL + CELL / 2} r="3" fill={graph.historical && n.kind === 'service' ? 'var(--t2)' : kindColor(n)} />
-          <text x={20} y={HEADER_ROW_H + i * CELL + CELL / 2 + 3}
+          <rect x={0} y={cellY(i)} width={LABEL_COL_W} height={CELL} fill="transparent" />
+          <circle cx={10} cy={cellY(i) + CELL / 2} r="3" fill={graph.historical && n.kind === 'service' ? 'var(--t2)' : kindColor(n)} />
+          <text x={20} y={cellY(i) + CELL / 2 + 3}
             fill={n.id === selectedNodeId ? 'rgba(91,156,246,.95)' : 'rgba(255,255,255,.7)'}
             fontSize="9" fontFamily="'JetBrains Mono',monospace">
             {shortLabel(n.id)}
@@ -141,7 +156,7 @@ export default function TopologyMatrix({
       ))}
 
       {order.map((n, j) => {
-        const x = LABEL_COL_W + j * CELL + CELL / 2;
+        const x = cellX(j) + CELL / 2;
         const y = HEADER_ROW_H - 8;
         return (
           <g key={`c${n.id}`}

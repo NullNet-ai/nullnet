@@ -1,3 +1,4 @@
+import RefreshStatus from '../components/RefreshStatus';
 import { useState } from 'react';
 import Layout from '../components/Layout';
 import { useApi } from '../hooks/useApi';
@@ -62,7 +63,7 @@ function formatExpiry(unix: number | null): { text: string; color: string } {
 }
 
 export default function Certificates() {
-  const { data: certs, loading, refetch } = useApi<CertJson[]>('/api/certificates', 10000);
+  const { data: certs, loading, refetch, error, updatedAt } = useApi<CertJson[]>('/api/certificates', 10000);
   const [deleting, setDeleting] = useState<Set<string>>(new Set());
 
   // Let's Encrypt (ACME / DNS-01) request form
@@ -126,7 +127,7 @@ export default function Certificates() {
   const canRequest = leDomain.trim() !== '' && credsComplete && !leSubmitting;
 
   return (
-    <Layout page="certificates">
+    <Layout page="certificates" topbarRight={<RefreshStatus updatedAt={updatedAt} failed={!!error} refreshMs={10000} />}>
       <div className="content">
         <div className="hero-row">
           <span className="hero-num">{list.length}</span>

@@ -369,3 +369,18 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   ```
   ./setup-client.sh
   ```
+
+
+### Observation mode
+
+Open **Observation** below Config and confirm the checkbox to enable all directed
+backend links within the selected stack. Activation lists any port conflicts;
+every destination must have a declared nonzero port. Proxy dependencies stay
+unchanged. The saved configuration is read-only until observation stops.
+
+The service-only matrix counts backend sessions since activation (including ones
+already open). Gray borders mark saved backend links. Counts persist across
+restarts and session retention; `SESSION_RETENTION_DAYS` still controls session
+details. Stop observation to restore the saved config and review added/unused
+backends. Applying updates only backend lists. Completed observations remain
+available; results cannot overwrite a configuration edited since activation.

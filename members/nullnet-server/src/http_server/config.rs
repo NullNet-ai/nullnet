@@ -132,39 +132,7 @@ pub(super) async fn reload_and_apply(state: &AppState) -> Result<(), Error> {
     let route_conflicts = detect_route_conflicts(&loaded_routes);
     let name_conflicts = detect_name_conflicts(&loaded_services);
     if conflicts.is_empty() && route_conflicts.is_empty() && name_conflicts.is_empty() {
-        let mut index = state.match_index.write().await;
-        {
-            let mut services_mut = state.services.write().await;
-            apply_config_update(&mut services_mut, loaded_services, &state.orchestrator).await;
-            for (stack, entries) in &loaded_index {
-                let stack_map = services_mut.get_mut(stack).unwrap();
-                let mut changes = Vec::new();
-                for entry in entries {
-                    if let Some(host_ip) = entry.host_ip
-                        && let Some(ServiceInfo::Registered(reg)) = stack_map.get(&entry.name)
-                    {
-                        for replica in reg.replicas() {
-                            if replica.ip() != std::net::IpAddr::V4(host_ip) {
-                                changes.push(ServiceChange::ReplicaRemoved {
-                                    name: entry.name.clone(),
-                                    ip: replica.ip(),
-                                    docker_container: replica
-                                        .docker_container()
-                                        .map(str::to_string),
-                                });
-                            }
-                        }
-                    }
-                }
-                apply_changes(changes, stack_map, None, &state.orchestrator, stack).await;
-            }
-        }
-        *index = loaded_index;
-        drop(index);
-        *state.routes.write().await = loaded_routes;
-        state.config_changed.notify_one();
-        state.port_mappings_changed.notify_one();
-        state.http_routes_changed.notify_one();
+        apply_loaded(state, loaded_services, loaded_index, loaded_routes).await;
     } else {
         for c in conflicts {
             state
@@ -200,4 +168,44 @@ pub(super) async fn reload_and_apply(state: &AppState) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// Apply a prevalidated snapshot after its durable state has been saved.
+pub(super) async fn apply_loaded(
+    state: &AppState,
+    loaded_services: StackMap,
+    loaded_index: crate::services::input::MatchIndex,
+    loaded_routes: RouteMap,
+) {
+    let mut index = state.match_index.write().await;
+    {
+        let mut services_mut = state.services.write().await;
+        apply_config_update(&mut services_mut, loaded_services, &state.orchestrator).await;
+        for (stack, entries) in &loaded_index {
+            let stack_map = services_mut.get_mut(stack).unwrap();
+            let mut changes = Vec::new();
+            for entry in entries {
+                if let Some(host_ip) = entry.host_ip
+                    && let Some(ServiceInfo::Registered(reg)) = stack_map.get(&entry.name)
+                {
+                    for replica in reg.replicas() {
+                        if replica.ip() != std::net::IpAddr::V4(host_ip) {
+                            changes.push(ServiceChange::ReplicaRemoved {
+                                name: entry.name.clone(),
+                                ip: replica.ip(),
+                                docker_container: replica.docker_container().map(str::to_string),
+                            });
+                        }
+                    }
+                }
+            }
+            apply_changes(changes, stack_map, None, &state.orchestrator, stack).await;
+        }
+    }
+    *index = loaded_index;
+    drop(index);
+    *state.routes.write().await = loaded_routes;
+    state.config_changed.notify_one();
+    state.port_mappings_changed.notify_one();
+    state.http_routes_changed.notify_one();
 }

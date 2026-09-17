@@ -1,3 +1,4 @@
+import RefreshStatus from '../components/RefreshStatus';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Layout from '../components/Layout';
@@ -27,6 +28,7 @@ const KIND_LABELS: Record<string, string> = {
   session_created: 'session_created',
   session_torn_down: 'session_torn_down',
   net_teardown_unconfirmed: 'net_teardown_unconfirmed',
+  observation_changed: 'observation_changed',
   config_reloaded: 'config_reloaded',
   config_stack_removed: 'config_stack_removed',
   route_conflict: 'route_conflict',
@@ -126,6 +128,8 @@ function eventDetail(e: EventJson): string {
       return `net ${e.net_id} · ${e.service} · ${e.client_ip}`;
     case 'net_teardown_unconfirmed':
       return `net ${e.net_id} · ${e.node_ip} never confirmed teardown`;
+    case 'observation_changed':
+      return `${e.stack} · observation #${e.observation_id} ${e.action}`;
     case 'config_reloaded':
     case 'config_stack_removed':
       return e.stack;
@@ -293,7 +297,9 @@ export default function Events() {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [paused, setPaused] = useState(false);
-  const [liveCount, setLiveCount] = useState(0);
+  const [streamState, setStreamState] = useState<'connecting' | 'connected' | 'failed'>('connecting');
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+  const [historyFailed, setHistoryFailed] = useState(false);
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
 
@@ -301,14 +307,19 @@ export default function Events() {
   useEffect(() => {
     let cancelled = false;
     setInitialLoading(true);
+    setUpdatedAt(null);
+    setHistoryFailed(false);
     fetchEventsPage(kindFilter, severityFilter, null)
       .then(page => {
         if (cancelled) return;
+        setUpdatedAt(Date.now());
+        setHistoryFailed(false);
         setEvents(page.events.slice().reverse());
         setNextBeforeId(page.next_before_id);
       })
       .catch(() => {
         if (!cancelled) {
+          setHistoryFailed(true);
           setEvents([]);
           setNextBeforeId(null);
         }
@@ -339,6 +350,8 @@ export default function Events() {
   // paginated fetch above), so every message here is genuinely new.
   useEffect(() => {
     const es = new EventSource('/api/events/stream');
+    es.onopen = () => setStreamState('connected');
+    es.onerror = () => setStreamState('failed');
 
     es.onmessage = (ev) => {
       try {
@@ -348,7 +361,7 @@ export default function Events() {
             const next = [...prev, event];
             return next.length > MAX_EVENTS ? next.slice(next.length - MAX_EVENTS) : next;
           });
-          setLiveCount(c => c + 1);
+          setUpdatedAt(Date.now());
         }
       } catch {
         // ignore malformed
@@ -379,10 +392,8 @@ export default function Events() {
     <Layout
       page="events"
       topbarRight={
-        <span className="live-row">
-          <span style={{ width: 6, height: 6, borderRadius: '50%', display: 'inline-block', background: paused ? 'var(--t3)' : 'var(--green)', marginRight: 5 }} />
-          {paused ? 'paused' : `live · ${liveCount} received`}
-        </span>
+        <RefreshStatus updatedAt={updatedAt} failed={historyFailed || streamState === 'failed'} refreshMs={null}
+          paused={paused} live={!initialLoading && streamState === 'connected'} />
       }
     >
       <div className="content">

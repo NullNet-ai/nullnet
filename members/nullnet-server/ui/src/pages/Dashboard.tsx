@@ -1,239 +1,125 @@
-import { useMemo } from 'react';
-import SessionRows from '../components/SessionRows';
+import { Link } from 'react-router-dom';
 import Layout from '../components/Layout';
 import { useApi } from '../hooks/useApi';
+import RefreshStatus from '../components/RefreshStatus';
 import { useStack } from '../StackContext';
-import type { NodeJson } from '../types';
-import { TopologyProvider, useTopologyData, useTopologyUI } from '../components/topology/TopologyContext';
-import TopologyGraph from '../components/topology/TopologyGraph';
-import TopologyPanel from '../components/topology/TopologyPanel';
+import type { NodeJson, ServiceJson } from '../types';
 
-function DashboardView() {
-  const { stack } = useStack();
-  const { graph, services, sessionHistory, refreshSessions, loading, error } = useTopologyData();
-  const { panel, dispatch } = useTopologyUI();
+interface SessionCounts {
+  active: number;
+  busiest_services: { service: string; count: number }[];
+  allowed: number;
+  blocked: number;
+  allowed_by_direction: { ingress: number; egress: number };
+  blocked_by_direction: { ingress: number; egress: number };
+  egress: number;
+  ingress: number;
+  backend: number;
+}
 
-  const { data: nodes } = useApi<NodeJson[]>(`/api/nodes/${stack}`, 5000);
-  const liveSessions = sessionHistory?.sessions ?? [];
-  const sessionCount = sessionHistory?.active_count ?? 0;
-  const nodeCount = nodes?.length ?? 0;
-  const edgeCount = graph?.edges.length ?? 0;
-  const nodeCountG = graph?.nodes.length ?? 0;
-  const registeredCount = graph?.nodes.filter(n => n.registered).length ?? 0;
-  const proxyCount = graph
-    ? new Set(graph.edges.filter(e => e.via_proxy).map(e => e.via_proxy!)).size
-    : 0;
+function SessionCountCard({ kind, counts }: { kind: 'active' | 'allowed' | 'blocked'; counts: SessionCounts | null }) {
+  const total = counts?.[kind];
+  const directions = kind === 'active' ? counts : counts?.[`${kind}_by_direction`];
+  const parts = [
+    { direction: 'ingress', label: 'Ingress', count: directions?.ingress ?? 0, color: 'var(--amber)' },
+    { direction: 'egress', label: 'Egress', count: directions?.egress ?? 0, color: 'var(--purple)' },
+    ...(kind === 'active' ? [{ direction: 'backend', label: 'Backend', count: counts?.backend ?? 0, color: 'var(--t0)' }] : []),
+  ];
+  const sum = parts.reduce((value, part) => value + part.count, 0);
+  const link = kind === 'active' ? '/sessions?status=active' : `/sessions?policy=${kind}`;
+  const point = (angle: number, radius = 62) => `${70 + radius * Math.cos(angle)},${70 + radius * Math.sin(angle)}`;
+  return <div className="stat glass policy-card">
+    <div className="policy-summary">
+      <Link to={link} className="policy-total">
+        <div className="stat-label">{kind === 'active' ? 'Active' : kind === 'allowed' ? 'Allowed' : 'Blocked'} sessions</div>
+        <div className="stat-value" style={{ color: kind === 'blocked' ? 'var(--red)' : 'var(--green)' }}>{total ?? '—'}</div>
+        <div className="stat-sub">{kind === 'active' ? 'all directions' : 'all retained history'}</div>
+      </Link>
 
-  // sorted: registered first, then alpha
-  const sortedNodes = useMemo(() => {
-    if (!graph) return [];
-    return [...graph.nodes].sort((a, b) => {
-      if (a.registered !== b.registered) return a.registered ? -1 : 1;
-      return a.id.localeCompare(b.id);
-    });
-  }, [graph]);
-
-  // look up max_networks from services context for the services card
-  const maxNetByName = useMemo(() => {
-    const m = new Map<string, number | undefined>();
-    for (const s of services ?? []) m.set(s.name, s.max_networks);
-    return m;
-  }, [services]);
-
-  return (
-    <>
-      <div className="content">
-        {/* 3 rows: stats (auto) | info section (220px) | topology (auto, grows with content) */}
-        <div style={{ display: 'grid', gridTemplateRows: 'auto 220px auto', gap: 12 }}>
-
-          {/* ── Row 1: stat cards ── */}
-          <div className="stats" style={{ marginBottom: 0 }}>
-            <div className="stat glass">
-              <div className="stat-label">Sessions</div>
-              <div className="stat-value" style={{ color: 'var(--cyan)' }}>{sessionCount}</div>
-              <div className="stat-sub">active sessions</div>
-            </div>
-            <div className="stat glass">
-              <div className="stat-label">Services</div>
-              <div className="stat-value">
-                {registeredCount}<span className="denom">/{nodeCountG}</span>
-              </div>
-              <div className="stat-sub">{nodeCountG - registeredCount} unregistered</div>
-            </div>
-            <div className="stat glass">
-              <div className="stat-label">Nodes</div>
-              <div className="stat-value" style={{ color: 'var(--green)' }}>{nodeCount}</div>
-              <div className="stat-sub">connected</div>
-            </div>
-          </div>
-
-          {/* ── Row 2: connections + services ── */}
-          <div style={{ display: 'flex', gap: 12, minHeight: 0 }}>
-
-            <div className="card glass" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', marginBottom: 0 }}>
-              <div className="card-head">
-                <span className="card-label">Live Sessions</span>
-                <span style={{ fontSize: 10, color: 'var(--t2)' }}>{liveSessions.length} active</span>
-              </div>
-              <div style={{ flex: 1, overflow: 'auto' }}>
-                {error && <div role="alert" style={{ padding: '10px 16px', color: 'var(--red)' }}>{error}</div>}
-                <table className="tbl">
-                  <thead>
-                    <tr>
-                      <th>Status</th><th>Service</th><th>Kind</th><th>Policy</th><th>Net ID</th>
-                      <th>Peer</th><th>Started</th><th>Ended</th><th>Duration</th><th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <SessionRows sessions={liveSessions} refresh={refreshSessions} />
-                    {liveSessions.length === 0 && <tr><td colSpan={10} style={{ padding: '20px 16px', color: 'var(--t2)' }}>
-                      {loading ? 'Loading…' : 'No active sessions'}
-                    </td></tr>}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Services status */}
-            <div className="card glass" style={{ width: 300, flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', marginBottom: 0 }}>
-              <div className="card-head">
-                <span className="card-label">Services</span>
-                <span style={{ fontSize: 10, color: 'var(--t2)' }}>
-                  {registeredCount} / {nodeCountG} registered
-                </span>
-              </div>
-              <div style={{ flex: 1, overflowY: 'auto' }}>
-                {sortedNodes.length === 0 ? (
-                  <div style={{ padding: '20px 18px', color: 'var(--t2)', fontSize: 11, textAlign: 'center' }}>
-                    No services
-                  </div>
-                ) : (
-                  sortedNodes.map(node => {
-                    const isHealthy = node.registered && node.active_replica_count > 0 && node.paused_replica_count === 0;
-                    const isDegraded = node.registered && (node.active_replica_count === 0 || node.paused_replica_count > 0);
-                    const dotColor = isHealthy ? 'var(--green)' : isDegraded ? 'var(--amber)' : 'var(--red)';
-                    const dotGlow = isHealthy
-                      ? '0 0 5px rgba(52,211,153,.7)'
-                      : isDegraded
-                        ? '0 0 5px rgba(251,191,36,.7)'
-                        : '0 0 5px rgba(248,113,113,.7)';
-                    const maxNet = maxNetByName.get(node.id);
-                    const activeSessions = graph!.edges.filter(e => e.from === node.id || e.to === node.id).length;
-
-                    return (
-                      <div
-                        key={node.id}
-                        onClick={() => dispatch({ type: 'NODE_CLICKED', nodeId: node.id })}
-                        style={{
-                          display: 'flex', alignItems: 'center', gap: 10,
-                          padding: '9px 16px',
-                          borderBottom: '1px solid rgba(255,255,255,.03)',
-                          cursor: 'pointer',
-                          background: panel?.type === 'node' && panel.nodeId === node.id
-                            ? 'rgba(91,156,246,.07)'
-                            : undefined,
-                          transition: 'background .12s',
-                        }}
-                        onMouseEnter={e => { if (!(panel?.type === 'node' && panel.nodeId === node.id)) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,.025)'; }}
-                        onMouseLeave={e => { if (!(panel?.type === 'node' && panel.nodeId === node.id)) (e.currentTarget as HTMLElement).style.background = ''; }}
-                      >
-                        <span style={{ width: 6, height: 6, borderRadius: '50%', background: dotColor, boxShadow: dotGlow, flexShrink: 0 }} />
-                        <span style={{ flex: 1, fontSize: 12, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {node.id}
-                        </span>
-                        {node.entry_point && (
-                          <span style={{ fontSize: 9, padding: '1px 6px', borderRadius: 20, background: 'rgba(167,139,250,.12)', border: '1px solid rgba(167,139,250,.25)', color: 'var(--purple)', flexShrink: 0, letterSpacing: '.04em' }}>
-                            EP
-                          </span>
-                        )}
-                        <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: 'var(--t2)', flexShrink: 0 }}>
-                          {node.active_replica_count}
-                          {maxNet !== undefined
-                            ? <span style={{ color: 'var(--t3)' }}>/{maxNet}</span>
-                            : <span style={{ color: 'var(--t3)' }}>/{node.replica_count}</span>
-                          }
-                        </span>
-                        {activeSessions > 0 && (
-                          <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 9, color: 'var(--cyan)', flexShrink: 0 }}>
-                            {activeSessions}↔
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-
-          </div>
-
-          {/* ── Row 3: topology grows to fit content ── */}
-          <div className="card glass" style={{ marginBottom: 0 }}>
-            <div className="card-head">
-              <span className="card-label">Service Topology</span>
-              <span style={{ fontSize: 10, color: 'var(--t2)', display: 'flex', gap: 10, alignItems: 'center' }}>
-                {graph ? (
-                  <>
-                    <span>{nodeCountG} services</span>
-                    {proxyCount > 0 && <span style={{ color: '#fbbf24' }}>{proxyCount} prox{proxyCount === 1 ? 'y' : 'ies'}</span>}
-                    <span>{edgeCount} edges</span>
-                  </>
-                ) : 'loading…'}
-              </span>
-            </div>
-
-            <div style={{ background: 'rgba(0,0,0,.25)' }}>
-              {!graph && (
-                <div style={{ color: 'var(--t2)', fontSize: 11, padding: '40px 0', textAlign: 'center' }}>
-                  loading topology…
-                </div>
-              )}
-              {graph && graph.nodes.length === 0 && (
-                <div style={{ color: 'var(--t2)', fontSize: 11, padding: '40px 0', textAlign: 'center' }}>
-                  No services registered for stack <b>{stack}</b>
-                </div>
-              )}
-              {graph && graph.nodes.length > 0 && (
-                <TopologyGraph grow anchor="top-left" />
-              )}
-            </div>
-
-            {proxyCount > 0 && (
-              <div style={{ padding: '8px 14px 10px', display: 'flex', gap: 16, fontSize: 10, color: 'var(--t2)', borderTop: '1px solid var(--gb)' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                  <span style={{ width: 20, height: 1.5, background: 'rgba(255,255,255,.25)', display: 'inline-block' }} />
-                  direct
-                </span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                  <span style={{ width: 20, height: 1.5, display: 'inline-block', backgroundImage: 'repeating-linear-gradient(90deg,rgba(251,191,36,.45) 0,rgba(251,191,36,.45) 4px,transparent 4px,transparent 7px)' }} />
-                  via proxy
-                </span>
-              </div>
-            )}
-          </div>
-
-        </div>
+    </div>
+    <div className="policy-chart">
+    <svg viewBox="0 0 140 140" className="policy-pie" aria-label={`${kind} sessions by direction`}>
+      {sum === 0 && <><circle cx="70" cy="70" r="54" fill="none" stroke="var(--gb)" strokeWidth="16" /><text x="70" y="70" textAnchor="middle" dominantBaseline="middle" fill="var(--t2)" fontSize="11">{directions ? 'No sessions' : 'Loading…'}</text></>}
+      {parts.map((part, index) => {
+        if (part.count === 0 || sum === 0) return null;
+        const start = -Math.PI / 2 + (parts.slice(0, index).reduce((value, previous) => value + previous.count, 0) / sum * Math.PI * 2);
+        const end = start + part.count / sum * Math.PI * 2;
+        const mid = (start + end) / 2;
+        return <Link key={part.direction} to={`${link}&direction=${part.direction}`} className="policy-slice"
+          aria-label={`${kind} ${part.label}: ${part.count} (${Math.round(part.count / sum * 100)}%)`}>
+          <title>{`${part.label}: ${part.count} (${Math.round(part.count / sum * 100)}%)`}</title>
+          <path d={`M${point(start)} A62,62 0 0 1 ${point(mid)} A62,62 0 0 1 ${point(end)} L${point(end, 46)} A46,46 0 0 0 ${point(mid, 46)} A46,46 0 0 0 ${point(start, 46)} Z`} fill={part.color} />
+        </Link>;
+      })}
+    </svg>
+      <div className="policy-legend">
+        {parts.map(part => <Link key={part.direction} to={`${link}&direction=${part.direction}`}>
+          <span className="dot" style={{ background: part.color }} />{part.label}
+          <span style={{ color: part.color }}>{directions ? part.count : '—'}</span>
+        </Link>)}
       </div>
+    </div>
+  </div>;
+}
 
-      <TopologyPanel />
-    </>
-  );
+function DashboardCards({ stack }: { stack: string }) {
+  const path = encodeURIComponent(stack);
+  const { data: counts, error: countsError, updatedAt: countsUpdated } = useApi<SessionCounts>(`/api/sessions/${path}/count?include_policy=true&include_busiest=true`, 5000);
+  const { data: services, error: servicesError, updatedAt: servicesUpdated } = useApi<ServiceJson[]>(`/api/services/${path}`, 5000);
+  const { data: nodes, error: nodesError, updatedAt: nodesUpdated } = useApi<NodeJson[]>(`/api/nodes/${path}`, 5000);
+  const registered = services?.filter(service => service.registered).length;
+  const unregistered = services ? services.length - registered! : 0;
+  const cards = [
+    { label: 'Services', value: registered, to: '/services', color: 'var(--green)', sub: services ? (services.length === 0 ? 'no services configured' : unregistered > 0 ? `${unregistered} unregistered` : 'all services registered') : 'registered services', subColor: unregistered > 0 ? 'var(--red)' : undefined, total: services?.length },
+    { label: 'Nodes', value: nodes?.length, to: '/nodes', color: 'var(--green)', sub: 'connected' },
+  ];
+  const updatedAt = countsUpdated != null && servicesUpdated != null && nodesUpdated != null
+    ? Math.min(countsUpdated, servicesUpdated, nodesUpdated) : null;
+  return <Layout page="dashboard" topbarRight={<RefreshStatus updatedAt={updatedAt} failed={!!(countsError || servicesError || nodesError)} />}><div className="content">
+    {(countsError || servicesError || nodesError) && <div className="modal-err" role="alert">Could not refresh dashboard: {countsError || servicesError || nodesError}</div>}
+    {[{ label: 'Active sessions', cards: [], className: 'dashboard-active' },
+      { label: 'Session policy', cards: [], className: 'dashboard-policy' },
+      { label: 'Infrastructure', cards, className: 'dashboard-infrastructure' }].map(group =>
+    <section key={group.label} aria-label={group.label} className="dashboard-section">
+      <h2 className="dashboard-section-title">{group.label}</h2>
+      <div className={`stats dashboard-stats ${group.className}`}>
+      {group.label === 'Active sessions' && <>
+        <SessionCountCard kind="active" counts={counts} />
+        <div className="stat glass">
+          <div className="stat-label">Busiest services · active sessions</div>
+          {!counts ? <div className="stat-sub">Loading…</div> : counts.busiest_services.length === 0
+            ? <div className="stat-sub">No active sessions</div>
+            : <ol className="busiest-services">
+              {counts.busiest_services.map(service => <li key={service.service}>
+                <Link to={`/sessions?status=active&service=${encodeURIComponent(service.service)}`}>
+                  <span title={service.service}>{service.service}</span><span aria-hidden="true">·</span><strong>{service.count}</strong>
+                </Link>
+              </li>)}
+            </ol>}
+        </div>
+      </>}
+      {group.label === 'Session policy' && <>
+        <SessionCountCard kind="allowed" counts={counts} />
+        <SessionCountCard kind="blocked" counts={counts} />
+      </>}
+      {group.cards.map(card => <Link key={card.label} to={card.to} className="stat glass stat-link">
+        <div className="stat-label">{card.label}</div>
+        <div className="stat-value" style={{ color: card.color }}>
+          {card.value ?? '—'}{card.total != null && <span className="denom">/{card.total}</span>}
+        </div>
+        <div className="stat-sub" style={{ color: card.subColor }}>{card.sub}</div>
+        {card.total != null && card.total > 0 && <div className="registration-bar"
+          role="meter" aria-label="Registered services" aria-valuemin={0} aria-valuemax={card.total} aria-valuenow={registered}
+          aria-valuetext={`${registered} of ${card.total} services registered`}>
+          <div style={{ width: `${registered! / card.total * 100}%` }} />
+        </div>}
+      </Link>)}
+      </div>
+    </section>)}
+  </div></Layout>;
 }
 
 export default function Dashboard() {
   const { stack } = useStack();
-  return (
-    <Layout
-      page="dashboard"
-      topbarRight={
-        <span style={{ fontSize: 11, color: 'var(--t1)', display: 'flex', alignItems: 'center', gap: 5 }}>
-          <span className="live-dot" />live · 5s
-        </span>
-      }
-    >
-      <TopologyProvider key={stack} stack={stack}>
-        <DashboardView />
-      </TopologyProvider>
-    </Layout>
-  );
+  return <DashboardCards key={stack} stack={stack} />;
 }

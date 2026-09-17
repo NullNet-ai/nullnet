@@ -50,6 +50,10 @@ jobs:
       - name: test
         run: cargo test -p ${{ matrix.package }} --verbose -- --nocapture
 
+      - name: UI polling tests
+        if: matrix.package == 'nullnet-server'
+        run: npm --prefix members/nullnet-server/ui test
+
   nightly-client:
     name: nightly - nullnet-client + ebpf
     runs-on: ubuntu-latest

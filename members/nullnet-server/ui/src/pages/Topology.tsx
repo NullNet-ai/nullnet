@@ -1,3 +1,4 @@
+import RefreshStatus from '../components/RefreshStatus';
 import Layout from '../components/Layout';
 import TimeSpanFilter from '../components/TimeSpanFilter';
 import { useStack } from '../StackContext';
@@ -34,13 +35,12 @@ function TopologyView() {
 }
 
 function TopologyPage() {
-  const { range, setRange, error, loading, sessionHistory, loadMoreSessions } = useTopologyData();
-  return <Layout page="topology" topbarRight={<span className="live-row">{range ? 'Time span' : 'live · 5s'}</span>}>
+  const { range, setRange, error, sessionHistory, updatedAt } = useTopologyData();
+  return <Layout page="topology" topbarRight={<RefreshStatus updatedAt={updatedAt} failed={!!error} refreshMs={range ? null : 5000} />}>
     <div style={{ padding: '12px 20px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
       <TimeSpanFilter value={range} onChange={setRange} />
       {range && sessionHistory && <span style={{ color: 'var(--t2)', fontSize: 11 }}>
         {sessionHistory.sessions.length} sessions loaded
-        {sessionHistory.next_before_id != null && <> · Partial topology <button className="dep-tag" disabled={loading} onClick={loadMoreSessions}>Load more</button></>}
       </span>}
       {error && <span role="alert" style={{ color: 'var(--red)' }}>{error}</span>}
     </div>

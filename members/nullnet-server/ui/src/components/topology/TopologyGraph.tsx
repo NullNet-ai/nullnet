@@ -12,7 +12,7 @@ interface Props {
 }
 
 export default function TopologyGraph({ height = 520, fill, anchor, grow }: Props) {
-  const { graph } = useTopologyData();
+  const { graph, allowedLinks } = useTopologyData();
   const {
     layoutMode,
     selectedNodeId,
@@ -41,6 +41,7 @@ export default function TopologyGraph({ height = 520, fill, anchor, grow }: Prop
       {layoutMode === 'matrix' ? (
         <TopologyMatrix
           graph={graph}
+          allowedLinks={allowedLinks}
           selectedNodeId={selectedNodeId}
           selectedEdgeKey={selectedEdgeKey}
           onNodeClick={id => dispatch({ type: 'NODE_CLICKED', nodeId: id })}

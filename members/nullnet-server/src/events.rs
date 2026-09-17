@@ -132,6 +132,12 @@ pub(crate) enum Event {
         node_ip: String,
         timestamp: u64,
     },
+    ObservationChanged {
+        stack: String,
+        observation_id: i64,
+        action: String,
+        timestamp: u64,
+    },
     ConfigReloaded {
         stack: String,
         timestamp: u64,
@@ -521,6 +527,7 @@ impl Event {
             Self::SessionCreated { .. } => "session_created",
             Self::SessionTornDown { .. } => "session_torn_down",
             Self::NetTeardownUnconfirmed { .. } => "net_teardown_unconfirmed",
+            Self::ObservationChanged { .. } => "observation_changed",
             Self::ConfigReloaded { .. } => "config_reloaded",
             Self::ConfigStackRemoved { .. } => "config_stack_removed",
             Self::PortMappingConflict { .. } => "port_mapping_conflict",
@@ -607,6 +614,7 @@ impl Event {
             | Self::SessionTornDown { .. }
             | Self::ProxyClientTimedOut { .. }
             | Self::MaxNetworksLimitEnforced { .. }
+            | Self::ObservationChanged { .. }
             | Self::ConfigReloaded { .. }
             | Self::ConfigStackRemoved { .. }
             | Self::ServiceUnregistered { .. }
@@ -786,6 +794,15 @@ impl Event {
         Self::NetTeardownUnconfirmed {
             net_id,
             node_ip,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn observation_changed(stack: String, observation_id: i64, action: &str) -> Self {
+        Self::ObservationChanged {
+            stack,
+            observation_id,
+            action: action.to_string(),
             timestamp: now_secs(),
         }
     }

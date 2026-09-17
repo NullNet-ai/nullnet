@@ -26,7 +26,7 @@ export default function ServiceNodePanel({ node, service, onDepClick }: Props) {
 
       <div style={spRow}>
         <div style={spKey}>Active Sessions</div>
-        <div style={{ ...spVal, color: 'var(--cyan)' }}>{totalSessions}</div>
+        <div style={{ ...spVal, color: 'var(--green)' }}>{totalSessions}</div>
       </div>
 
       <div style={spRow}>
@@ -93,7 +93,7 @@ export default function ServiceNodePanel({ node, service, onDepClick }: Props) {
                 <tr key={i}>
                   <td style={{ fontSize: 11, padding: '5px 0', borderBottom: '1px solid rgba(255,255,255,.03)', color: 'var(--cyan)', fontFamily: "'JetBrains Mono',monospace", maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{r.ip}</td>
                   <td style={{ fontSize: 11, padding: '5px 0', borderBottom: '1px solid rgba(255,255,255,.03)', color: 'var(--t1)', fontFamily: "'JetBrains Mono',monospace" }}>{r.port}</td>
-                  <td style={{ fontSize: 11, padding: '5px 0', borderBottom: '1px solid rgba(255,255,255,.03)', color: 'var(--t2)' }}>{r.active_sessions}</td>
+                  <td style={{ fontSize: 11, padding: '5px 0', borderBottom: '1px solid rgba(255,255,255,.03)', color: 'var(--green)' }}>{r.active_sessions}</td>
                 </tr>
               ))}
             </tbody>

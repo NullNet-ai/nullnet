@@ -1,3 +1,4 @@
+import RefreshStatus from '../components/RefreshStatus';
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import SessionRows from '../components/SessionRows';
@@ -35,7 +36,7 @@ export default function Sessions() {
   const queryKey = `${stack}\0${query}`;
   const [pagination, setPagination] = useState({ key: queryKey, pages: 1 });
   const pages = pagination.key === queryKey ? pagination.pages : 1;
-  const { data, loading, error, refresh } = useSessionHistory(stack, query.toString(), pages);
+  const { data, loading, error, refresh, updatedAt } = useSessionHistory(stack, query.toString(), pages);
   const services = data?.services ?? [];
   const activeCount = data?.active_count ?? 0;
   const nextBeforeId = data?.next_before_id;
@@ -73,11 +74,11 @@ export default function Sessions() {
   return (
     <Layout
       page="sessions"
-      topbarRight={<span className="live-row"><span className="live-dot"></span>live · 5s</span>}
+      topbarRight={<RefreshStatus updatedAt={updatedAt} failed={!!error} />}
     >
       <div className="content">
         <div className="hero-row">
-          <span className="hero-num">{activeCount}</span>
+          <span className="hero-num" style={{ color: 'var(--green)' }}>{activeCount}</span>
           <span className="hero-label">active sessions · {sessions.length} loaded</span>
         </div>
 

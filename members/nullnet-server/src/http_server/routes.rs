@@ -132,6 +132,11 @@ pub(super) async fn save_handler(
         return rejected(StatusCode::BAD_REQUEST, "invalid stack name");
     }
 
+    let _config_guard = state.config_lock.lock().await;
+    if let Err(response) = super::observation::require_inactive(&state, &stack).await {
+        return response;
+    }
+
     // 1. Validate each route's target against this stack's declared services.
     let services = state.services.read().await;
     let Some(stack_map) = services.get(&stack) else {

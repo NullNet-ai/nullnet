@@ -275,7 +275,12 @@ impl ServicesToml {
             let dependency_rows = db.stacks().dependencies_for(&service_ids).await?;
             let route_rows = db.stacks().routes_for(&stack_name).await?;
 
-            let services_toml = services_from_rows(service_rows, trigger_rows, dependency_rows);
+            let mut services_toml = services_from_rows(service_rows, trigger_rows, dependency_rows);
+            if db.observations().active(&stack_name).await?.is_some() {
+                observation_backends(&mut services_toml)
+                    .map_err(|errors| errors.join("; "))
+                    .handle_err(location!())?;
+            }
             let routes_toml: Vec<RouteToml> = route_rows.iter().map(route_toml_from_row).collect();
 
             let (services, match_entries, route_entries) =
@@ -1023,7 +1028,7 @@ pub(crate) async fn apply_config_update(
 /// JSON shape we want, so there's no separate JSON type to keep in sync.
 #[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct ServiceToml {
-    name: String,
+    pub(crate) name: String,
     /// Host-match key for a Docker service: the Swarm service label
     /// (`com.docker.swarm.service.name`) or, in standalone mode, the container
     /// name. A running container whose label equals this registers a replica.
@@ -1051,7 +1056,7 @@ pub(crate) struct ServiceToml {
     proxy_dependencies: Vec<Vec<String>>,
     /// Backend peers; their declared listening ports identify the triggers.
     #[serde(default)]
-    backends: Vec<String>,
+    pub(crate) backends: Vec<String>,
     /// Maximum number of networks that can be created for this service.
     /// Applies to proxy chains only (backend connections are unbounded).
     /// When the limit is reached, new proxy clients reuse an existing network
@@ -1075,6 +1080,45 @@ pub(crate) struct ServiceToml {
     egress_filter: FilterPolicy,
     #[serde(default, skip_serializing_if = "FilterPolicy::is_none")]
     ingress_filter: FilterPolicy,
+}
+
+/// Expand only backend triggers; saved config and proxy branches are untouched.
+pub(crate) fn observation_backends(services: &mut [ServiceToml]) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    if services.len() < 2 {
+        errors.push("Observation requires at least two declared services".to_string());
+    }
+    for source in services.iter() {
+        let mut ports = HashMap::new();
+        for peer in services.iter().filter(|peer| peer.name != source.name) {
+            match peer.port.filter(|port| *port != 0) {
+                None => errors.push(format!(
+                    "{} → {}: destination must declare a nonzero port",
+                    source.name, peer.name
+                )),
+                Some(port) => {
+                    if let Some(previous) = ports.insert(port, &peer.name) {
+                        errors.push(format!(
+                            "{}: {} and {} both use backend port {port}",
+                            source.name, previous, peer.name
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let names: Vec<_> = services.iter().map(|s| s.name.clone()).collect();
+    for service in services {
+        service.backends = names
+            .iter()
+            .filter(|name| **name != service.name)
+            .cloned()
+            .collect();
+    }
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]

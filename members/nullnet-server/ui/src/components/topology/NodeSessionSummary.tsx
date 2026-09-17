@@ -17,7 +17,7 @@ export default function NodeSessionSummary({ kind, id, count, historical }: {
     </div>
     <div style={spRow}>
       <div style={spKey}>{historical ? 'Sessions' : 'Active Sessions'}</div>
-      <div style={{ ...spVal, color: 'var(--cyan)' }}>{count}</div>
+      <div style={{ ...spVal, color: historical ? 'var(--t0)' : 'var(--green)' }}>{count}</div>
     </div>
   </>;
 }

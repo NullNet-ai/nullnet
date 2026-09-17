@@ -8,6 +8,7 @@ import Services from './pages/Services';
 import Nodes from './pages/Nodes';
 import Sessions from './pages/Sessions';
 import Config from './pages/Config';
+import Observation from './pages/Observation';
 import RoutesPage from './pages/Routes';
 import Events from './pages/Events';
 import Certificates from './pages/Certificates';
@@ -29,6 +30,7 @@ export default function App() {
             <Route path="/services" element={<RequireAuth><Services /></RequireAuth>} />
             <Route path="/nodes" element={<RequireAuth><Nodes /></RequireAuth>} />
             <Route path="/sessions" element={<RequireAuth><Sessions /></RequireAuth>} />
+            <Route path="/observation" element={<RequireAuth><Observation /></RequireAuth>} />
             <Route path="/config" element={<RequireAuth><Config /></RequireAuth>} />
             <Route path="/routes" element={<RequireAuth><RoutesPage /></RequireAuth>} />
             <Route path="/certificates" element={<RequireAuth><Certificates /></RequireAuth>} />

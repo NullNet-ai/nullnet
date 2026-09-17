@@ -6,7 +6,7 @@ import { apiFetch } from '../lib/apiFetch';
 import MfaSetupDialog from './MfaSetupDialog';
 import { useRef, useState, useEffect } from 'react';
 
-type Page = 'dashboard' | 'topology' | 'services' | 'nodes' | 'sessions' | 'config' | 'routes' | 'certificates' | 'events' | 'users';
+type Page = 'dashboard' | 'topology' | 'services' | 'nodes' | 'sessions' | 'config' | 'observation' | 'routes' | 'certificates' | 'events' | 'users';
 
 interface Props {
   page: Page;
@@ -31,11 +31,18 @@ const NAV = [
       { id: 'events', icon: '≡', label: 'Events', to: '/events' },
       { id: 'certificates', icon: '⛨', label: 'Certificates', to: '/certificates' },
       { id: 'config', icon: '⚙', label: 'Config', to: '/config' },
+      { id: 'observation', icon: '◷', label: 'Observation', to: '/observation' },
       { id: 'routes', icon: '↪', label: 'Routes', to: '/routes' },
       { id: 'users', icon: '⚉', label: 'Users', to: '/users', adminOnly: true },
     ],
   },
 ];
+
+function ObservationStatus({ stack }: { stack: string }) {
+  const { data, error } = useApi<{ observation_active: boolean }>(`/api/service-config/${encodeURIComponent(stack)}`, 5000);
+  if (error || !data?.observation_active) return null;
+  return <span className="nav-count live" title="Observation mode is active for this stack">active</span>;
+}
 
 export default function Layout({ page, topbarRight, children }: Props) {
   const { stack, setStack, editing, setEditing } = useStack();
@@ -99,6 +106,7 @@ export default function Layout({ page, topbarRight, children }: Props) {
                   >
                     <span className="nav-icon">{item.icon}</span>
                     {item.label}
+                    {item.id === 'observation' && <ObservationStatus key={stack} stack={stack} />}
                     {item.id === 'sessions' && sessionCount !== null && (
                       <span className={'nav-count' + ('live' in item && item.live ? ' live' : '')}>{sessionCount}</span>
                     )}

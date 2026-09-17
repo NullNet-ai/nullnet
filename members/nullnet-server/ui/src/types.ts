@@ -153,6 +153,7 @@ export type EventJson =
   | WithSeverity & { type: 'session_created'; net_id: number; service: string; client_ip: string }
   | WithSeverity & { type: 'session_torn_down'; net_id: number; service: string; client_ip: string }
   | WithSeverity & { type: 'net_teardown_unconfirmed'; net_id: number; node_ip: string }
+  | WithSeverity & { type: 'observation_changed'; stack: string; observation_id: number; action: string }
   | WithSeverity & { type: 'config_reloaded'; stack: string }
   | WithSeverity & { type: 'config_stack_removed'; stack: string }
   | WithSeverity & { type: 'route_conflict'; stack_a: string; stack_b: string; host: string; path: string }
@@ -322,6 +323,7 @@ export interface ServiceConfigJson {
 }
 
 export interface ServiceConfigListJson {
+  observation_active: boolean;
   services: ServiceConfigJson[];
 }
 
@@ -341,4 +343,23 @@ export interface RoutesResponseJson {
   /** Declared, proxy-reachable `protocol = "http"` service names in this
    * stack — populates the "backend service" dropdown when adding a route. */
   http_services: string[];
+}
+
+export interface ObservationLink { source: string; destination: string }
+export interface ObservationJson {
+  id: number;
+  started_at: number;
+  ended_at: number | null;
+  applied: boolean;
+  services: string[];
+  saved_links: ObservationLink[];
+  counts: (ObservationLink & { count: number })[];
+  added: ObservationLink[];
+  removed: ObservationLink[];
+}
+export interface ObservationListJson {
+  stack: string;
+  observations: ObservationJson[];
+  conflicts: string[];
+  trigger_count: number;
 }

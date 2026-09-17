@@ -1,3 +1,4 @@
+import RefreshStatus from '../components/RefreshStatus';
 import { useState } from 'react';
 import Layout from '../components/Layout';
 import Modal from '../components/Modal';
@@ -75,7 +76,7 @@ function targetLabel(r: RouteJson): string {
 
 export default function RoutesPage() {
   const { stack } = useStack();
-  const { data, loading, error, refetch } = useApi<RoutesResponseJson>(`/api/routes/${stack}`);
+  const { data, loading, error, refetch, updatedAt } = useApi<RoutesResponseJson>(`/api/routes/${stack}`);
   const routes = data?.routes ?? [];
   const httpServices = data?.http_services ?? [];
 
@@ -157,7 +158,7 @@ export default function RoutesPage() {
     (form.targetKind === 'service' ? form.service.trim() !== '' : form.redirectTo.trim() !== '');
 
   return (
-    <Layout page="routes">
+    <Layout page="routes" topbarRight={<RefreshStatus updatedAt={updatedAt} failed={!!error} refreshMs={null} />}>
       <div className="content">
         <div className="page-title">Routes</div>
         <div className="page-sub">
