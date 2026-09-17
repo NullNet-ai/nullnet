@@ -6,6 +6,8 @@ use std::net::Ipv4Addr;
 use std::sync::Mutex;
 
 pub(crate) enum EgressRecord {
+    /// Same-host gateway: source-scoped forwarding and NAT.
+    Local,
     /// Initiator side: source-routing + SNAT for `container_ip` over `br_name`.
     Steer {
         br_name: String,

@@ -116,6 +116,28 @@ Same-host egress to the synthetic external fixture returned `EHOSTUNREACH`
 on both unmodified main and the fixed client. That separate routing failure
 is not resolved by this change; no successful same-host egress claim is made.
 
+### Same-host egress recheck
+
+Rechecked after the fix was committed as `6f339ef`, with the same fixed lab
+binary. The external fixture returned HTTP 200 directly from the gateway;
+cross-host egress passed 3/3 requests, while same-host egress failed 3/3 with
+`EHOSTUNREACH`. A public destination confirmed this was not specific to the
+fixture: `http://1.1.1.1/` returned HTTP 301 directly from the gateway, while
+the same-host container failed with `EHOSTUNREACH` before receiving HTTP.
+
+On edge 109, packet capture showed ARP requests from bridge `br_109_c`
+(`10.0.3.108`) reaching `br_109_s` for its `10.0.3.106` address, with no
+reply; the gateway neighbor remained `FAILED`. Both addresses belong to
+the same host namespace. Temporarily setting `accept_local=1` on these two
+bridges restored neighbor resolution and allowed SYNs out through `ens18`.
+SYN-ACKs returned, but the container still timed out (0/3), so this setting
+alone is not a fix. Both settings were restored to zero afterward.
+The ARP capture is `/tmp/ll-egress-recheck-arp.log` on 192.168.1.104.
+This confirms a separate same-host egress defect, not an idle-teardown
+failure or merely an unavailable external test fixture.
+The subsequent fix and its regression/lifecycle evidence are documented in
+[Same-host egress](same-host-egress.md).
+
 Detailed local lab evidence is under
 `/root/nullnet-liveness-20260917/evidence/`; CI output is in
 `/tmp/nullnet-liveness-ci.log`. The reproduction and load scripts are
