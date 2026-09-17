@@ -14,6 +14,7 @@
 
 use super::RtNetLinkHandle;
 use super::netlink::{delete_link, get_link_by_name, set_link_mtu_up};
+use crate::nfqueue::BridgeIpCache;
 use futures::StreamExt;
 use ipnetwork::Ipv4Network;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
@@ -81,8 +82,24 @@ async fn lock(vxlan_id: u32) -> OwnedMutexGuard<()> {
 pub(crate) async fn setup(
     rtnetlink_handle: &RtNetLinkHandle,
     params: &VxlanSetupParams,
+    cache: &BridgeIpCache,
 ) -> Result<(), Error> {
     let _guard = lock(params.vxlan_id).await;
+    // Publish ownership before the interface can carry its first packet.
+    if let Some(container) = &params.docker_container {
+        cache.add_overlay(&params.ns_name, params.ns_net.ip(), container);
+    }
+    let result = setup_locked(rtnetlink_handle, params).await;
+    if result.is_err() {
+        cache.remove_overlay(&params.ns_name);
+    }
+    result
+}
+
+async fn setup_locked(
+    rtnetlink_handle: &RtNetLinkHandle,
+    params: &VxlanSetupParams,
+) -> Result<(), Error> {
     let handle = &rtnetlink_handle.handle;
 
     // Namespace: join the docker container's, or create a fresh standalone
@@ -385,6 +402,7 @@ async fn setup_cross_host(
 pub(crate) async fn teardown(
     rtnetlink_handle: &RtNetLinkHandle,
     params: &VxlanTeardownParams,
+    cache: &BridgeIpCache,
 ) -> Result<(), Error> {
     let _guard = lock(params.vxlan_id).await;
     let handle = &rtnetlink_handle.handle;
@@ -443,6 +461,7 @@ pub(crate) async fn teardown(
 
     // Remove the namespace veth pair.
     delete_if_exists(handle, &format!("{}-out", params.ns_name)).await?;
+    cache.remove_overlay(&params.ns_name);
 
     if params.docker_container.is_none() {
         // Standalone mode: delete the namespace we created (its `-in` end

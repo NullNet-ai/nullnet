@@ -128,6 +128,7 @@ pub(crate) async fn control_channel(
             }
             Some(net_message::Message::VxlanSetup(vxlan_setup)) => {
                 let rtnetlink_handle = rtnetlink_handle.clone();
+                let bridge_cache = bridge_cache.clone();
                 let triggers_state = triggers_state.clone();
                 let egress_state = egress_state.clone();
                 let sets = sets.clone();
@@ -143,12 +144,14 @@ pub(crate) async fn control_channel(
                         firewall_vxlan_ports,
                         egress_state,
                         sets,
+                        bridge_cache,
                     )
                     .await;
                 });
             }
             Some(net_message::Message::VxlanTeardown(vxlan_teardown)) => {
                 let rtnetlink_handle = rtnetlink_handle.clone();
+                let bridge_cache = bridge_cache.clone();
                 let triggers_state = triggers_state.clone();
                 let egress_state = egress_state.clone();
                 let sets = sets.clone();
@@ -164,6 +167,7 @@ pub(crate) async fn control_channel(
                         firewall_vxlan_ports,
                         egress_state,
                         sets,
+                        bridge_cache,
                     )
                     .await;
                 });
@@ -392,6 +396,7 @@ async fn handle_vxlan_setup(
     firewall_vxlan_ports: Arc<FirewallVxlanPorts>,
     egress_state: Arc<EgressState>,
     sets: LivenessSets,
+    bridge_cache: BridgeIpCache,
 ) -> Result<(), Error> {
     let egress_steer = message.egress_steer.unwrap_or(false);
     let egress_intercept = message.egress_intercept.unwrap_or(false);
@@ -491,7 +496,8 @@ async fn handle_vxlan_setup(
             message.docker_container.clone()
         },
     };
-    let setup_result = crate::commands::vxlan::setup(&rtnetlink_handle, &vxlan_params).await;
+    let setup_result =
+        crate::commands::vxlan::setup(&rtnetlink_handle, &vxlan_params, &bridge_cache).await;
     let error_code = if setup_result.is_err() { -1 } else { 0 };
     if let Err(e) = &setup_result {
         fire_event(
@@ -718,6 +724,7 @@ async fn handle_vxlan_teardown(
     firewall_vxlan_ports: Arc<FirewallVxlanPorts>,
     egress_state: Arc<EgressState>,
     sets: LivenessSets,
+    bridge_cache: BridgeIpCache,
 ) {
     let ack_id = message.msg_id.clone();
     // reverse egress steering/interception if this was an egress edge
@@ -790,7 +797,8 @@ async fn handle_vxlan_teardown(
         dstport: u16::try_from(message.dstport).unwrap_or(crate::DEFAULT_VXLAN_DSTPORT),
         docker_container: message.docker_container.clone(),
     };
-    let teardown_result = crate::commands::vxlan::teardown(&rtnetlink_handle, &vxlan_params).await;
+    let teardown_result =
+        crate::commands::vxlan::teardown(&rtnetlink_handle, &vxlan_params, &bridge_cache).await;
     if let Err(e) = &teardown_result {
         fire_event(
             &grpc,

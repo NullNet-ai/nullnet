@@ -18,14 +18,18 @@ const SANDBOX_PREFIX_LEN: usize = 12;
 /// which would freeze the cache forever.
 const DOCKER_SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Bridge-IP → container-name lookup the NFQUEUE listener consults on every
-/// queued packet. Populated by enumerating every Docker network and joining
-/// each endpoint back to its owning container, and kept fresh by an async
-/// watcher subscribed to `docker events`. Lock holds are brief; readers
-/// (per-packet) never block writers for long.
+/// Container address ownership for NFQUEUE and conntrack reconciliation.
+/// Docker refreshes own bridge addresses; VXLAN setup/teardown owns the
+/// additional addresses installed directly inside container namespaces.
 #[derive(Clone, Default)]
 pub struct BridgeIpCache {
-    inner: Arc<RwLock<HashMap<Ipv4Addr, String>>>,
+    inner: Arc<RwLock<AddressOwners>>,
+}
+
+#[derive(Default)]
+struct AddressOwners {
+    docker: HashMap<Ipv4Addr, String>,
+    overlays: HashMap<Ipv4Addr, (String, String)>,
 }
 
 impl BridgeIpCache {
@@ -34,17 +38,51 @@ impl BridgeIpCache {
     }
 
     pub fn get(&self, ip: Ipv4Addr) -> Option<String> {
-        self.inner.read().unwrap().get(&ip).cloned()
+        let owners = self.inner.read().unwrap();
+        owners
+            .overlays
+            .get(&ip)
+            .map(|(_, container)| container)
+            .or_else(|| owners.docker.get(&ip))
+            .cloned()
     }
 
-    /// All container bridge IPs currently known — the conntrack-flush scope
-    /// when an egress policy changes.
+    /// Docker-managed addresses retain the policy-reload conntrack flush scope.
     pub fn ips(&self) -> Vec<Ipv4Addr> {
-        self.inner.read().unwrap().keys().copied().collect()
+        self.inner.read().unwrap().docker.keys().copied().collect()
+    }
+
+    /// Liveness also needs interfaces installed outside Docker's inventory.
+    pub fn all_ips(&self) -> Vec<Ipv4Addr> {
+        let owners = self.inner.read().unwrap();
+        owners
+            .docker
+            .keys()
+            .chain(owners.overlays.keys())
+            .copied()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    pub(crate) fn add_overlay(&self, namespace: &str, ip: Ipv4Addr, container: &str) {
+        self.inner
+            .write()
+            .unwrap()
+            .overlays
+            .insert(ip, (namespace.into(), container.into()));
+    }
+
+    pub(crate) fn remove_overlay(&self, namespace: &str) {
+        self.inner
+            .write()
+            .unwrap()
+            .overlays
+            .retain(|_, (owner, _)| owner != namespace);
     }
 
     fn replace(&self, map: HashMap<Ipv4Addr, String>) {
-        *self.inner.write().unwrap() = map;
+        self.inner.write().unwrap().docker = map;
     }
 
     /// One-shot refresh: rebuild the map from the current Docker state.
@@ -366,6 +404,55 @@ async fn run_events_loop(cache: &BridgeIpCache, docker_changed: &Notify) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn docker_refresh_preserves_overlay_liveness_addresses() {
+        let cache = BridgeIpCache::new();
+        let bridge = Ipv4Addr::new(172, 17, 0, 3);
+        let overlay = Ipv4Addr::new(10, 0, 3, 43);
+        cache.replace(HashMap::from([(bridge, "source".into())]));
+        cache.add_overlay("ns_101_c", overlay, "source");
+        cache.replace(HashMap::from([(bridge, "source".into())]));
+
+        assert_eq!(cache.get(overlay).as_deref(), Some("source"));
+        let addresses: HashSet<_> = cache.all_ips().into_iter().collect();
+        assert_eq!(addresses, HashSet::from([bridge, overlay]));
+        assert_eq!(cache.ips(), vec![bridge]);
+    }
+
+    #[test]
+    fn same_host_teardown_keeps_the_other_endpoint_and_docker_address() {
+        let cache = BridgeIpCache::new();
+        let source = Ipv4Addr::new(10, 0, 3, 43);
+        let peer = Ipv4Addr::new(10, 0, 3, 41);
+        let bridge = Ipv4Addr::new(172, 17, 0, 3);
+        cache.replace(HashMap::from([(bridge, "source".into())]));
+        cache.add_overlay("ns_101_c", source, "source");
+        cache.add_overlay("ns_101_s", peer, "api");
+        cache.remove_overlay("ns_101_c");
+
+        assert_eq!(cache.get(source), None);
+        assert_eq!(cache.get(peer).as_deref(), Some("api"));
+        assert_eq!(cache.get(bridge).as_deref(), Some("source"));
+        cache.remove_overlay("ns_101_s");
+        cache.add_overlay("ns_101_c", source, "replacement");
+        assert_eq!(cache.get(source).as_deref(), Some("replacement"));
+    }
+
+    #[test]
+    fn rebuild_tracks_the_new_address_without_retaining_the_old_one() {
+        let cache = BridgeIpCache::new();
+        let old = Ipv4Addr::new(10, 0, 3, 43);
+        let new = Ipv4Addr::new(10, 0, 3, 51);
+        cache.add_overlay("ns_101_c", old, "source");
+        cache.remove_overlay("ns_101_c");
+        cache.add_overlay("ns_102_c", new, "source");
+        cache.replace(HashMap::new());
+
+        assert_eq!(cache.get(old), None);
+        assert_eq!(cache.get(new).as_deref(), Some("source"));
+        assert_eq!(cache.all_ips(), vec![new]);
+    }
 
     fn idx_with(name: &str, sandbox_prefix: &str) -> ContainerIndex {
         let mut names = HashSet::new();
