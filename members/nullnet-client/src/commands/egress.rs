@@ -332,6 +332,7 @@ pub(crate) fn remove_steer(net_id: u32, br_dev: &str, snat_src: Ipv4Addr, contai
 /// come from the tables named in `ip rule`, and SNAT rules from the overlay
 /// bridges they leave by.
 pub(crate) fn purge_stale_steers() {
+    remove_local_forwards(None);
     let mut tables = 0usize;
     for net_id in stale_steer_net_ids() {
         let table = table_for(net_id).to_string();
@@ -433,51 +434,7 @@ pub(crate) fn install_gateway_forward(br_dev: &str, br_net: &str) -> bool {
         eprintln!("[egress] gateway forward: no default-route NIC found; not installed");
         return false;
     };
-    let mut ok = true;
-    // MASQUERADE overlay traffic leaving the real NIC (source rewritten to the
-    // gateway's public IP; conntrack reverses it for replies).
-    ok &= sudo_ok(
-        "iptables MASQUERADE gateway",
-        &[
-            "iptables",
-            "-t",
-            "nat",
-            "-A",
-            "POSTROUTING",
-            "-s",
-            br_net,
-            "-o",
-            &nic,
-            "-j",
-            "MASQUERADE",
-        ],
-    );
-    // Permit forwarding both ways (Docker often defaults FORWARD to DROP): new
-    // flows overlay->NIC, established replies NIC->overlay.
-    ok &= sudo_ok(
-        "iptables FORWARD out",
-        &[
-            "iptables", "-A", "FORWARD", "-i", br_dev, "-o", &nic, "-j", "ACCEPT",
-        ],
-    );
-    ok &= sudo_ok(
-        "iptables FORWARD back",
-        &[
-            "iptables",
-            "-A",
-            "FORWARD",
-            "-i",
-            &nic,
-            "-o",
-            br_dev,
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "ESTABLISHED,RELATED",
-            "-j",
-            "ACCEPT",
-        ],
-    );
+    let ok = apply_forward_rules(&forward_rules(Some(br_dev), br_net, Some(&nic)), "-A");
     if ok {
         println!("[egress] gateway forward: {br_net} on {br_dev} -> MASQUERADE out {nic}");
     }
@@ -486,33 +443,35 @@ pub(crate) fn install_gateway_forward(br_dev: &str, br_net: &str) -> bool {
 
 /// Reverse of `install_gateway_forward`. Best-effort; recomputes the NIC.
 pub(crate) fn remove_gateway_forward(br_dev: &str, br_net: &str) {
-    let Some(nic) = default_route_iface() else {
-        return;
+    if let Some(nic) = default_route_iface() {
+        apply_forward_rules(&forward_rules(Some(br_dev), br_net, Some(&nic)), "-D");
+    }
+}
+
+type ForwardRules = Vec<(&'static str, Vec<String>)>;
+
+fn forward_rules(device: Option<&str>, source: &str, nic: Option<&str>) -> ForwardRules {
+    let (out_flag, out_value, back_flag, back_value) = match device {
+        Some(dev) => ("-i", dev, "-o", dev),
+        None => ("-s", source, "-d", source),
     };
-    let _ = sudo(&[
-        "iptables",
-        "-t",
-        "nat",
-        "-D",
-        "POSTROUTING",
-        "-s",
-        br_net,
-        "-o",
-        &nic,
-        "-j",
-        "MASQUERADE",
-    ]);
-    let _ = sudo(&[
-        "iptables", "-D", "FORWARD", "-i", br_dev, "-o", &nic, "-j", "ACCEPT",
-    ]);
-    let _ = sudo(&[
-        "iptables",
-        "-D",
-        "FORWARD",
-        "-i",
-        &nic,
-        "-o",
-        br_dev,
+    let mut nat = vec!["POSTROUTING", "-s", source];
+    let mut out = vec!["FORWARD", out_flag, out_value];
+    let mut back = vec!["FORWARD"];
+    if let Some(nic) = nic {
+        nat.extend(["-o", nic]);
+        out.extend(["-o", nic]);
+        back.extend(["-i", nic]);
+    }
+    back.extend([back_flag, back_value]);
+    if device.is_none() {
+        nat.extend(["-m", "set", "!", "--match-set", INTERNAL_SET, "dst"]);
+        out.extend(["-m", "set", "!", "--match-set", INTERNAL_SET, "dst"]);
+        back.extend(["-m", "set", "!", "--match-set", INTERNAL_SET, "src"]);
+    }
+    nat.extend(["-j", "MASQUERADE"]);
+    out.extend(["-j", "ACCEPT"]);
+    back.extend([
         "-m",
         "conntrack",
         "--ctstate",
@@ -520,6 +479,86 @@ pub(crate) fn remove_gateway_forward(br_dev: &str, br_net: &str) {
         "-j",
         "ACCEPT",
     ]);
+    [("nat", nat), ("filter", out), ("filter", back)]
+        .into_iter()
+        .map(|(table, args)| (table, args.into_iter().map(String::from).collect()))
+        .collect()
+}
+
+fn apply_forward_rules(rules: &ForwardRules, operation: &str) -> bool {
+    let mut ok = true;
+    for (table, rule) in rules {
+        let mut args = vec!["iptables", "-t", table, operation];
+        args.extend(rule.iter().map(String::as_str));
+        ok &= sudo_ok("gateway forwarding rule", &args);
+    }
+    ok
+}
+
+const LOCAL_FORWARD_COMMENT: &str = "nullnet-local-egress-";
+
+/// Same-host egress needs one NAT pass, scoped to the initiator's address.
+pub(crate) fn install_local_forward(net_id: u32, container_ips: &[Ipv4Addr]) -> bool {
+    if !remove_local_forwards(Some(net_id)) {
+        return false;
+    }
+    let mut rules: ForwardRules = container_ips
+        .iter()
+        .flat_map(|ip| forward_rules(None, &ip.to_string(), None))
+        .collect();
+    for (_, rule) in &mut rules {
+        rule.extend([
+            "-m".into(),
+            "comment".into(),
+            "--comment".into(),
+            format!("{LOCAL_FORWARD_COMMENT}{net_id}"),
+        ]);
+    }
+    if !apply_forward_rules(&rules, "-A") {
+        remove_local_forwards(Some(net_id));
+        return false;
+    }
+    println!("[egress] local gateway net {net_id}: {container_ips:?} -> host routing + MASQUERADE");
+    true
+}
+
+/// Discover exact installed rules so cleanup also survives a NIC change/restart.
+pub(crate) fn remove_local_forwards(net_id: Option<u32>) -> bool {
+    let mut ok = true;
+    for (table, chain) in [("nat", "POSTROUTING"), ("filter", "FORWARD")] {
+        let Some(output) = sudo_output(&["iptables", "-t", table, "-S", chain]) else {
+            eprintln!("[egress] could not inspect {table}/{chain} for local gateway cleanup");
+            ok = false;
+            continue;
+        };
+        for rule in parse_local_forward_rules(&output, net_id) {
+            let mut args = vec!["iptables", "-t", table, "-D"];
+            args.extend(rule.iter().map(String::as_str));
+            ok &= sudo_ok("local gateway cleanup", &args);
+        }
+    }
+    ok
+}
+
+fn parse_local_forward_rules(output: &str, net_id: Option<u32>) -> Vec<Vec<String>> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<_> = line
+                .split_whitespace()
+                .map(|p| p.trim_matches('"'))
+                .collect();
+            if parts.first() != Some(&"-A") {
+                return None;
+            }
+            let comment = parts.windows(2).find(|p| p[0] == "--comment")?[1];
+            let id: u32 = comment.strip_prefix(LOCAL_FORWARD_COMMENT)?.parse().ok()?;
+            if net_id.is_some_and(|wanted| wanted != id) {
+                return None;
+            }
+            Some(parts.into_iter().skip(1).map(String::from).collect())
+        })
+        .collect()
 }
 
 /// The interface carrying the host's default route (where internet-bound,
@@ -563,7 +602,55 @@ pub(crate) fn container_ipv4(container: &str) -> Option<Ipv4Addr> {
 
 #[cfg(test)]
 mod purge_tests {
-    use super::{parse_overlay_snat_rules, parse_steer_net_ids};
+    use super::{
+        forward_rules, parse_local_forward_rules, parse_overlay_snat_rules, parse_steer_net_ids,
+    };
+
+    #[test]
+    fn cross_host_forwarding_rules_preserve_existing_scope() {
+        let rules = forward_rules(Some("br_101_s"), "10.0.3.40/29", Some("eth0"));
+        let actual: Vec<_> = rules
+            .iter()
+            .map(|(table, args)| (*table, args.join(" ")))
+            .collect();
+        assert_eq!(actual, vec![
+            ("nat", "POSTROUTING -s 10.0.3.40/29 -o eth0 -j MASQUERADE".into()),
+            ("filter", "FORWARD -i br_101_s -o eth0 -j ACCEPT".into()),
+            ("filter", "FORWARD -i eth0 -o br_101_s -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT".into()),
+        ]);
+    }
+
+    #[test]
+    fn local_forwarding_excludes_internal_traffic_and_unsolicited_replies() {
+        let rules = forward_rules(None, "172.30.0.2", None);
+        for (_, rule) in &rules[..2] {
+            let text = rule.join(" ");
+            assert!(text.contains("-s 172.30.0.2"));
+            assert!(text.contains("! --match-set nullnet_internal_dsts dst"));
+            assert!(!text.contains("-o "));
+        }
+        let back = rules[2].1.join(" ");
+        assert!(back.contains("-d 172.30.0.2"));
+        assert!(back.contains("! --match-set nullnet_internal_dsts src"));
+        assert!(back.contains("--ctstate ESTABLISHED,RELATED"));
+    }
+
+    #[test]
+    fn local_cleanup_is_scoped_to_tagged_edge_and_preserves_other_rules() {
+        let output = "-P FORWARD DROP\n\
+-A FORWARD -s 172.17.0.2/32 -m comment --comment \"nullnet-local-egress-101\" -j ACCEPT\n\
+-A FORWARD -s 172.17.0.3/32 -m comment --comment nullnet-local-egress-102 -j ACCEPT\n\
+-A FORWARD -m comment --comment operator-rule -j ACCEPT\n\
+-A FORWARD -m comment --comment nullnet-local-egress-invalid -j ACCEPT\n";
+        let edge = parse_local_forward_rules(output, Some(101));
+        assert_eq!(edge.len(), 1);
+        assert_eq!(
+            edge[0].join(" "),
+            "FORWARD -s 172.17.0.2/32 -m comment --comment nullnet-local-egress-101 -j ACCEPT"
+        );
+        assert_eq!(parse_local_forward_rules(output, None).len(), 2);
+        assert!(parse_local_forward_rules(output, Some(103)).is_empty());
+    }
 
     /// Real `ip rule show`: the kernel's three defaults, one steer catch-all
     /// (net id 101 → table 10101), its internal bypasses, and an operator's own

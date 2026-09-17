@@ -532,21 +532,48 @@ async fn handle_vxlan_setup(
             .as_ref()
             .and_then(|hm| hm.ip.parse::<Ipv4Addr>().ok());
         let snat_src = br_net.ip();
-        let container_ip = message
-            .docker_container
-            .as_deref()
-            .and_then(egress::container_ipv4);
+        let local_gateway = local_ip == remote_ip;
+        let container_ip = message.docker_container.as_deref().and_then(|container| {
+            if local_gateway {
+                let source = triggers_state
+                    .peek_container_ip(container, crate::triggers::EGRESS_TRIGGER_PORT);
+                (!source.is_unspecified()).then_some(source)
+            } else {
+                egress::container_ipv4(container)
+            }
+        });
         match (proxy_gw, container_ip) {
             (Some(gw), Some(cip)) => {
-                if egress::install_steer(vxlan_id, &br_name, gw, snat_src, cip) {
-                    egress_state.record(
-                        vxlan_id,
-                        EgressRecord::Steer {
-                            br_name: br_name.clone(),
-                            snat_src,
-                            container_ip: cip,
-                        },
-                    );
+                // A local gateway routes directly with one NAT pass. Sending
+                // it through two root-namespace bridges breaks ARP and return NAT.
+                let installed = if local_gateway {
+                    let mut sources: Vec<_> = bridge_cache
+                        .ips()
+                        .into_iter()
+                        .filter(|ip| {
+                            bridge_cache.get(*ip).as_deref() == message.docker_container.as_deref()
+                        })
+                        .collect();
+                    if !sources.contains(&cip) {
+                        sources.push(cip);
+                    }
+                    egress::install_local_forward(vxlan_id, &sources)
+                } else {
+                    egress::install_steer(vxlan_id, &br_name, gw, snat_src, cip)
+                };
+                if installed {
+                    if local_gateway {
+                        egress_state.record(vxlan_id, EgressRecord::Local);
+                    } else {
+                        egress_state.record(
+                            vxlan_id,
+                            EgressRecord::Steer {
+                                br_name: br_name.clone(),
+                                snat_src,
+                                container_ip: cip,
+                            },
+                        );
+                    }
                     // Steering is live — release any egress SYN the NFQUEUE
                     // listener is holding for this initiator. Mirrors the
                     // backend DNAT→mark_active ordering (install first, then
@@ -590,7 +617,7 @@ async fn handle_vxlan_setup(
                 );
             }
         }
-    } else if egress_intercept {
+    } else if egress_intercept && local_ip != remote_ip {
         if egress::install_gateway_forward(&br_name, &message.br_net) {
             egress_state.record(
                 vxlan_id,
@@ -728,8 +755,12 @@ async fn handle_vxlan_teardown(
 ) {
     let ack_id = message.msg_id.clone();
     // reverse egress steering/interception if this was an egress edge
+    let mut local_cleanup_ok = true;
     if let Some(rec) = egress_state.take(message.vxlan_id) {
         match rec {
+            EgressRecord::Local => {
+                local_cleanup_ok = egress::remove_local_forwards(Some(message.vxlan_id));
+            }
             EgressRecord::Steer {
                 br_name,
                 snat_src,
@@ -799,7 +830,7 @@ async fn handle_vxlan_teardown(
     };
     let teardown_result =
         crate::commands::vxlan::teardown(&rtnetlink_handle, &vxlan_params, &bridge_cache).await;
-    if let Err(e) = &teardown_result {
+    if !local_cleanup_ok || teardown_result.is_err() {
         fire_event(
             &grpc,
             AgentEventKind::VxlanTeardownFailed(AgentVxlanTeardownFailed {
@@ -808,12 +839,14 @@ async fn handle_vxlan_teardown(
                 error_code: -1,
             }),
         );
-        eprintln!("[vxlan_teardown] {}", e.to_str());
+        if let Err(e) = &teardown_result {
+            eprintln!("[vxlan_teardown] {}", e.to_str());
+        }
     }
 
     println!(
         "VXLAN {} in {} ms",
-        if teardown_result.is_ok() {
+        if local_cleanup_ok && teardown_result.is_ok() {
             "teardown completed"
         } else {
             "teardown FAILED"
