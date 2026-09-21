@@ -120,8 +120,7 @@ async fn setup_locked(
             // Idempotent, like the script: a leftover namespace from a
             // previous run is reused rather than treated as fatal.
             let _ =
-                command_status(Command::new("sudo").args(["ip", "netns", "add", &params.ns_name]))
-                    .await;
+                command_status(Command::new("ip").args(["netns", "add", &params.ns_name])).await;
             None
         }
     };
@@ -188,10 +187,8 @@ async fn setup_locked(
     }
 
     // Enable forwarding (Docker sets FORWARD policy to DROP).
-    let _ =
-        command_status(Command::new("sudo").args(["sysctl", "-w", "net.ipv4.ip_forward=1"])).await;
-    let _ =
-        command_status(Command::new("sudo").args(["iptables", "-P", "FORWARD", "ACCEPT"])).await;
+    let _ = command_status(Command::new("sysctl").args(["-w", "net.ipv4.ip_forward=1"])).await;
+    let _ = command_status(Command::new("iptables").args(["-P", "FORWARD", "ACCEPT"])).await;
 
     Ok(())
 }
@@ -267,7 +264,7 @@ async fn setup_same_host(
         // rtnetlink's `.port(1)` builds an SCI on port 256 while the `ip macsec
         // rx port 1` calls below key on port 1 — no frame ever matches.
         // `port` must precede `cipher`: iproute2's parser is positional here.
-        sudo_checked(&[
+        privileged_checked(&[
             "ip",
             "link",
             "add",
@@ -290,7 +287,7 @@ async fn setup_same_host(
         // used. Left unsuppressed (a real failure here should be loud).
         let key_id = format!("{:032x}", params.vxlan_id);
         let peer_mac_str = format_mac(&peer_mac);
-        sudo_checked(&[
+        privileged_checked(&[
             "ip",
             "macsec",
             "add",
@@ -306,7 +303,7 @@ async fn setup_same_host(
             &params.key_hex,
         ])
         .await?;
-        sudo_checked(&[
+        privileged_checked(&[
             "ip",
             "macsec",
             "add",
@@ -319,7 +316,7 @@ async fn setup_same_host(
             "on",
         ])
         .await?;
-        sudo_checked(&[
+        privileged_checked(&[
             "ip",
             "macsec",
             "add",
@@ -405,7 +402,7 @@ pub(crate) async fn teardown(
     let spi = xfrm_spi(params.vxlan_id);
     if params.dstport != crate::DEFAULT_VXLAN_DSTPORT {
         let dstport = params.dstport.to_string();
-        let _ = sudo_quiet(&[
+        let _ = privileged_quiet(&[
             "ip",
             "xfrm",
             "policy",
@@ -418,7 +415,7 @@ pub(crate) async fn teardown(
             "out",
         ])
         .await;
-        let _ = sudo_quiet(&[
+        let _ = privileged_quiet(&[
             "ip",
             "xfrm",
             "policy",
@@ -432,7 +429,7 @@ pub(crate) async fn teardown(
         ])
         .await;
     }
-    let _ = sudo_quiet(&[
+    let _ = privileged_quiet(&[
         "ip",
         "xfrm",
         "state",
@@ -462,7 +459,7 @@ pub(crate) async fn teardown(
         .join(&params.ns_name)
         .exists()
     {
-        sudo_checked(&["ip", "netns", "del", &params.ns_name]).await?;
+        privileged_checked(&["ip", "netns", "del", &params.ns_name]).await?;
     }
 
     Ok(())
@@ -470,7 +467,7 @@ pub(crate) async fn teardown(
 
 // helpers -----------------------------------------------------------------------------------------
 
-// Commands may wait on Docker, PAM or the kernel; keep that work off runtime
+// Commands may wait on Docker or the kernel; keep that work off runtime
 // workers and cap child processes independently of the number of tunnel tasks.
 async fn command_status(command: &mut Command) -> std::io::Result<std::process::ExitStatus> {
     let _permit = COMMAND_SLOTS
@@ -592,14 +589,14 @@ async fn configure_ns_in(params: &VxlanSetupParams, ns_pid: Option<u32>) -> Resu
 }
 
 async fn ns_exec(prefix: &[String], extra: &[&str]) -> Result<(), Error> {
-    let status = command_status(Command::new("sudo").args(prefix).args(extra))
+    let status = command_status(Command::new(&prefix[0]).args(&prefix[1..]).args(extra))
         .await
         .handle_err(location!())?;
     if status.success() {
         Ok(())
     } else {
         Err(format!(
-            "`sudo {} {}` failed: {status}",
+            "`{} {}` failed: {status}",
             prefix.join(" "),
             extra.join(" ")
         ))
@@ -607,21 +604,21 @@ async fn ns_exec(prefix: &[String], extra: &[&str]) -> Result<(), Error> {
     }
 }
 
-async fn sudo_checked(args: &[&str]) -> Result<(), Error> {
-    let status = command_status(Command::new("sudo").args(args))
+async fn privileged_checked(args: &[&str]) -> Result<(), Error> {
+    let status = command_status(Command::new(args[0]).args(&args[1..]))
         .await
         .handle_err(location!())?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("`sudo {}` failed: {status}", args.join(" "))).handle_err(location!())
+        Err(format!("`{}` failed: {status}", args.join(" "))).handle_err(location!())
     }
 }
 
-/// `sudo` with output captured rather than inherited, for calls whose failure
+/// Privileged command with captured output, for calls whose failure
 /// is the expected steady state (deleting state that isn't there).
-async fn sudo_quiet(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
-    command_output(Command::new("sudo").args(args))
+async fn privileged_quiet(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
+    command_output(Command::new(args[0]).args(&args[1..]))
         .await
         .map(|o| o.status)
 }
@@ -635,7 +632,7 @@ fn xfrm_spi(vxlan_id: u32) -> String {
 
 async fn purge_xfrm_spi(vxlan_id: u32) {
     let spi = xfrm_spi(vxlan_id);
-    let _ = sudo_quiet(&[
+    let _ = privileged_quiet(&[
         "ip",
         "xfrm",
         "state",
@@ -666,7 +663,7 @@ async fn install_xfrm(params: &VxlanSetupParams) -> Result<(), Error> {
     // Outbound: this host -> remote. Inbound: remote -> this host. Argument
     // order matters to `ip xfrm`'s positional parser — see the script this
     // was ported from for the (extensively tested) details.
-    sudo_checked(&[
+    privileged_checked(&[
         "ip",
         "xfrm",
         "state",
@@ -687,7 +684,7 @@ async fn install_xfrm(params: &VxlanSetupParams) -> Result<(), Error> {
         "transport",
     ])
     .await?;
-    sudo_checked(&[
+    privileged_checked(&[
         "ip",
         "xfrm",
         "policy",
@@ -715,7 +712,7 @@ async fn install_xfrm(params: &VxlanSetupParams) -> Result<(), Error> {
         "transport",
     ])
     .await?;
-    sudo_checked(&[
+    privileged_checked(&[
         "ip",
         "xfrm",
         "state",
@@ -736,7 +733,7 @@ async fn install_xfrm(params: &VxlanSetupParams) -> Result<(), Error> {
         "transport",
     ])
     .await?;
-    sudo_checked(&[
+    privileged_checked(&[
         "ip",
         "xfrm",
         "policy",

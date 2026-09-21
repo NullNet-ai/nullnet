@@ -14,6 +14,8 @@ Cursor, Gemini CLI, …). Read this before starting work, and follow the gates i
   real API source (not memory, not docs summaries) and confirm the approach
   before writing code.
 - **No code duplicates.** Re-use existing code and logic where applicable.
+- **Protect latency.** Keep database and external I/O outside shared locks unless ordering requires it; preserve lifecycle serialization and bound concurrent work.
+- **Check performance regressions.** For routing, storage or lifecycle changes, compare encrypted cold/warm concurrent load and teardown timings, including errors and cleanup, before declaring ready.
 
 ## Submitting a PR
 

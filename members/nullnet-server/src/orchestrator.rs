@@ -895,7 +895,7 @@ impl Orchestrator {
     pub(crate) async fn take_due_backend_sessions(
         &self,
         debounce: Duration,
-    ) -> Vec<(BackendKey, String)> {
+    ) -> Vec<(BackendKey, String, Option<i64>)> {
         let now = Instant::now();
         let mut sessions = self.backend_sessions.write().await;
         let due: Vec<BackendKey> = sessions
@@ -914,12 +914,10 @@ impl Orchestrator {
             }
         }
         drop(sessions);
-        let mut chains = Vec::with_capacity(expired.len());
-        for (key, session) in expired {
-            self.sessions.close_backend(session.history_id).await;
-            chains.push((key, session.stack));
-        }
-        chains
+        expired
+            .into_iter()
+            .map(|(key, session)| (key, session.stack, session.history_id))
+            .collect()
     }
 
     /// How long until the nearest trigger chain becomes reapable, if any.
@@ -1954,10 +1952,11 @@ mod session_history_tests {
             let close = async {
                 match mode {
                     0 => orch.cancel_backend_session(&key, generation).await,
-                    1 => assert_eq!(
-                        orch.take_due_backend_sessions(Duration::ZERO).await.len(),
-                        1
-                    ),
+                    1 => {
+                        let expired = orch.take_due_backend_sessions(Duration::ZERO).await;
+                        assert_eq!(expired.len(), 1);
+                        orch.sessions.close_backend(expired[0].2).await;
+                    }
                     _ => {
                         orch.forget_backend_sessions("api", key.1, None, &[8080])
                             .await
@@ -2048,10 +2047,9 @@ mod session_history_tests {
             );
         }
         orch.set_backend_liveness(&key, false).await;
-        assert_eq!(
-            orch.take_due_backend_sessions(Duration::ZERO).await.len(),
-            1
-        );
+        let expired = orch.take_due_backend_sessions(Duration::ZERO).await;
+        assert_eq!(expired.len(), 1);
+        orch.sessions.close_backend(expired[0].2).await;
         assert_eq!(db.sessions().count_active("prod").await.unwrap(), 1);
         let replacement = orch
             .claim_backend_session(key.clone(), "prod")

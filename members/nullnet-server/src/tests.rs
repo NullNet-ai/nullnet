@@ -3328,6 +3328,62 @@ async fn node_hosting_no_trigger_service_gets_nothing() {
 const BACKEND_LIVENESS: &str = "backend_liveness";
 
 #[tokio::test]
+async fn backend_reap_history_wait_releases_topology() {
+    let server = NullnetGrpcImpl::new_for_test(load_fixture(BACKEND_LIVENESS).await);
+    register_services(
+        &server,
+        &HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]),
+        8080,
+    )
+    .await;
+    let db = attach_session_db(&server).await;
+    server
+        .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None)
+        .await
+        .unwrap();
+    assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 1);
+    let key = ("A".to_string(), ip(1, 1, 1, 1), None, 5555);
+    server
+        .orchestrator()
+        .set_backend_liveness(&key, false)
+        .await;
+    let db_guard = db.hold_connection().await;
+    let reap = reap_idle_backend_chains(
+        server.services(),
+        server.orchestrator(),
+        std::time::Duration::ZERO,
+    );
+    tokio::pin!(reap);
+    assert!(futures::poll!(&mut reap).is_pending());
+    assert!(
+        server.services().try_read().is_ok(),
+        "history close holds the global topology lock"
+    );
+    assert_net_ids_in_use(&server, 0).await;
+    let task_server = server.clone();
+    let replacement = tokio::spawn(async move {
+        task_server
+            .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None)
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !server.orchestrator().holds_backend_session(&key).await {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(db_guard);
+    reap.await;
+    replacement.await.unwrap().unwrap();
+    assert_net_ids_in_use(&server, 1).await;
+    assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 1);
+    report_backend_idle_and_reap(&server, "A", key.1, 5555).await;
+    assert_net_ids_in_use(&server, 0).await;
+    assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 0);
+}
+
+#[tokio::test]
 async fn backend_pending_history_allows_teardown_and_replacement() {
     let server = NullnetGrpcImpl::new_for_test(load_fixture(BACKEND_LIVENESS).await);
     register_services(
@@ -3361,9 +3417,8 @@ async fn backend_pending_history_allows_teardown_and_replacement() {
         {
             tokio::task::yield_now().await;
         }
-        let mut services = server.services().write().await;
         reap_idle_backend_chains(
-            &mut services,
+            server.services(),
             server.orchestrator(),
             std::time::Duration::ZERO,
         )
@@ -3447,9 +3502,12 @@ async fn trigger_atomic_backend_idle_during_setup_is_preserved() {
     gate.add_permits(64);
     build.await.unwrap().unwrap();
     {
-        let mut guard = server.services().write().await;
-        reap_idle_backend_chains(&mut guard, server.orchestrator(), std::time::Duration::ZERO)
-            .await;
+        reap_idle_backend_chains(
+            server.services(),
+            server.orchestrator(),
+            std::time::Duration::ZERO,
+        )
+        .await;
     }
     assert_net_ids_in_use(&server, 0).await;
 }
@@ -3553,8 +3611,12 @@ async fn report_backend_idle_and_reap(
         .orchestrator()
         .set_backend_liveness(&(service.to_string(), ip, None, port), false)
         .await;
-    let mut guard = server.services().write().await;
-    reap_idle_backend_chains(&mut guard, server.orchestrator(), std::time::Duration::ZERO).await;
+    reap_idle_backend_chains(
+        server.services(),
+        server.orchestrator(),
+        std::time::Duration::ZERO,
+    )
+    .await;
 }
 
 /// The Step 4 path: once the initiator's connections on the trigger port are
@@ -3626,9 +3688,12 @@ async fn a_second_reap_pass_releases_nothing_more() {
         .set_backend_liveness(&("A".to_string(), ip(1, 1, 1, 1), None, 5555), false)
         .await;
     for _ in 0..3 {
-        let mut guard = server.services().write().await;
-        reap_idle_backend_chains(&mut guard, server.orchestrator(), std::time::Duration::ZERO)
-            .await;
+        reap_idle_backend_chains(
+            server.services(),
+            server.orchestrator(),
+            std::time::Duration::ZERO,
+        )
+        .await;
     }
 
     assert_eq!(
@@ -4683,9 +4748,12 @@ port = 6666
         .orchestrator()
         .set_backend_liveness(&("source".into(), source_ip, None, 5555), false)
         .await;
-    let mut guard = server.services().write().await;
-    reap_idle_backend_chains(&mut guard, server.orchestrator(), std::time::Duration::ZERO).await;
-    drop(guard);
+    reap_idle_backend_chains(
+        server.services(),
+        server.orchestrator(),
+        std::time::Duration::ZERO,
+    )
+    .await;
     assert_net_ids_in_use(&server, 0).await;
 }
 

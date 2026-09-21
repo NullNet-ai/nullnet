@@ -65,8 +65,8 @@ pub(crate) async fn check_timeouts(
             .reap_idle_egress_edges(LIVENESS_REAP_DEBOUNCE)
             .await;
 
+        reap_idle_backend_chains(&services, &orchestrator, LIVENESS_REAP_DEBOUNCE).await;
         let mut services_mut = services.write().await;
-        reap_idle_backend_chains(&mut services_mut, &orchestrator, LIVENESS_REAP_DEBOUNCE).await;
         let stack_names: Vec<String> = services_mut.keys().cloned().collect();
         for stack in stack_names {
             if let Some(stack_map) = services_mut.get_mut(&stack) {
@@ -85,27 +85,34 @@ pub(crate) async fn check_timeouts(
 /// same edges. Taking the session out of the map is what makes it happen
 /// exactly once, however many duplicate close reports arrive.
 pub(crate) async fn reap_idle_backend_chains(
-    services: &mut StackMap,
+    services: &RwLock<StackMap>,
     orchestrator: &Orchestrator,
     debounce: Duration,
 ) {
-    for (key, stack) in orchestrator.take_due_backend_sessions(debounce).await {
+    let mut services = services.write().await;
+    let expired = orchestrator.take_due_backend_sessions(debounce).await;
+    for (key, stack, _) in &expired {
         let (service, ip, docker, port) = key;
-        let Some(stack_map) = services.get_mut(&stack) else {
+        let Some(stack_map) = services.get_mut(stack) else {
             continue;
         };
         println!(
             "Trigger chain '{service}' ({ip}) port {port} idle past the debounce; releasing its hold"
         );
         release_backend_chain(
-            &service,
-            ip,
+            service,
+            *ip,
             docker.as_deref(),
-            port,
+            *port,
             stack_map,
             orchestrator,
         )
         .await;
+    }
+    // Topology is settled; row IDs keep delayed closes scoped to old generations.
+    drop(services);
+    for (_, _, history_id) in expired {
+        orchestrator.sessions.close_backend(history_id).await;
     }
 }
 
