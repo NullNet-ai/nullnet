@@ -9,4 +9,4 @@ fi
 
 BR_NAME=$1
 
-sudo ip link set $BR_NAME down && sudo ip link del $BR_NAME
+ip link set $BR_NAME down && ip link del $BR_NAME

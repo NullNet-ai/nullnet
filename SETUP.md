@@ -31,7 +31,7 @@ plus the shared gRPC interface.
 
 The repository should be cloned under `/root` so the provided `setup-*.sh` scripts and
 `.service` units work without changes.
-The supplied systemd services run as root; the client executes privileged VXLAN lifecycle commands directly.
+Run the setup scripts as root. The supplied systemd services also run as root; privileged commands execute directly without sudo.
 
 ## Usage
 
