@@ -2045,9 +2045,9 @@ async fn run_net_chain_setup(
     // built is holding a refcount nobody will ever spend. Hand them back
     // instead of stranding them and their net ids.
     let mut services_mut = services.write().await;
-    let backend_lost = if let Some((key, generation)) = &owner {
+    let backend_history = if let Some((key, generation)) = &owner {
         if any_failure {
-            false
+            None
         } else {
             let source = Client::new_service(key.0.clone(), key.1, key.2.clone());
             let first = successful
@@ -2062,7 +2062,7 @@ async fn run_net_chain_setup(
                     _ => None,
                 })
                 .map(ClientInfo::time_ms);
-            !orchestrator
+            orchestrator
                 .finish_backend_session(
                     key,
                     *generation,
@@ -2073,8 +2073,9 @@ async fn run_net_chain_setup(
                 .await
         }
     } else {
-        false
+        None
     };
+    let backend_lost = owner.is_some() && !any_failure && backend_history.is_none();
     let orphaned = backend_lost || {
         let guard = &services_mut;
         successful
@@ -2110,6 +2111,10 @@ async fn run_net_chain_setup(
     }
 
     drop(services_mut);
+
+    if let Some(history) = backend_history {
+        orchestrator.persist_backend_session(history).await;
+    }
 
     // Past the unwind check, so every branch is up and these sessions are real.
     for edge in &successful {

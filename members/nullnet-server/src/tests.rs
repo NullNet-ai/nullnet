@@ -3328,6 +3328,75 @@ async fn node_hosting_no_trigger_service_gets_nothing() {
 const BACKEND_LIVENESS: &str = "backend_liveness";
 
 #[tokio::test]
+async fn backend_pending_history_allows_teardown_and_replacement() {
+    let server = NullnetGrpcImpl::new_for_test(load_fixture(BACKEND_LIVENESS).await);
+    register_services(
+        &server,
+        &HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]),
+        8080,
+    )
+    .await;
+    let db = attach_session_db(&server).await;
+    let db_guard = db.hold_connection().await;
+    let key = ("A".to_string(), ip(1, 1, 1, 1), None, 5555);
+    let task_server = server.clone();
+    let first = tokio::spawn(async move {
+        task_server
+            .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None)
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !server.orchestrator().holds_backend_session(&key).await {
+            tokio::task::yield_now().await;
+        }
+        server
+            .orchestrator()
+            .set_backend_liveness(&key, false)
+            .await;
+        while server
+            .orchestrator()
+            .nearest_backend_expiry(std::time::Duration::ZERO)
+            .await
+            .is_none()
+        {
+            tokio::task::yield_now().await;
+        }
+        let mut services = server.services().write().await;
+        reap_idle_backend_chains(
+            &mut services,
+            server.orchestrator(),
+            std::time::Duration::ZERO,
+        )
+        .await;
+    })
+    .await
+    .expect("history storage blocked topology or teardown");
+    assert!(!first.is_finished());
+    assert_net_ids_in_use(&server, 0).await;
+    let task_server = server.clone();
+    let replacement = tokio::spawn(async move {
+        task_server
+            .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None)
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !server.orchestrator().holds_backend_session(&key).await {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(db_guard);
+    first.await.unwrap().unwrap();
+    replacement.await.unwrap().unwrap();
+    assert_net_ids_in_use(&server, 1).await;
+    assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 1);
+    report_backend_idle_and_reap(&server, "A", key.1, 5555).await;
+    assert_net_ids_in_use(&server, 0).await;
+    assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 0);
+}
+
+#[tokio::test]
 async fn trigger_atomic_concurrent_backend_claims_release_once() {
     let server = NullnetGrpcImpl::new_for_test(load_fixture(BACKEND_LIVENESS).await);
     register_services(

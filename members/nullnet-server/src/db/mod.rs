@@ -146,6 +146,11 @@ impl Db {
     pub(crate) fn sessions(&self) -> SessionRepository {
         SessionRepository::new(self.conn.clone())
     }
+
+    #[cfg(test)]
+    pub(crate) async fn hold_connection(&self) -> impl Send + '_ {
+        self.conn.lock().await
+    }
 }
 
 /// Unix seconds, for `updated_at` columns.

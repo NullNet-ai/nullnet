@@ -46,13 +46,7 @@ pub(crate) struct RouteInsert<'a> {
     pub(crate) preserve_query: bool,
 }
 
-/// Typed access to a stack's normalized config: `stacks` (existence),
-/// `services`/`service_triggers`/`service_dependencies`, and `routes`. A
-/// stack is the atomic unit the rest of the app always loads/saves as a
-/// whole (mirrors `ParsedStack`/the whole-list-replace HTTP contract), so
-/// `put_services`/`put_routes` each replace their stack's full list in one
-/// held connection lock — the same "acquire once, do several statements"
-/// pattern `RefreshTokenRepository::rotate` already uses.
+/// Atomic replacement of a stack's services, routes, or both.
 pub(crate) struct StackRepository {
     conn: Arc<Mutex<AsyncSqlite>>,
 }
@@ -81,25 +75,6 @@ impl StackRepository {
             .optional()
             .handle_err(location!())?;
         Ok(found.is_some())
-    }
-
-    /// Insert the stack if it's new, otherwise just bump `updated_at` — this
-    /// runs on every services/routes save (not only on first creation), so
-    /// it doubles as the stack's "last modified" timestamp.
-    async fn ensure_exists(conn: &mut AsyncSqlite, stack: &str) -> Result<(), Error> {
-        let new_row = NewStack {
-            name: stack,
-            updated_at: super::now(),
-        };
-        diesel::insert_into(stacks::table)
-            .values(&new_row)
-            .on_conflict(stacks::name)
-            .do_update()
-            .set(&new_row)
-            .execute(conn)
-            .await
-            .handle_err(location!())?;
-        Ok(())
     }
 
     pub(crate) async fn services_for(&self, stack: &str) -> Result<Vec<ServiceRow>, Error> {
@@ -148,107 +123,139 @@ impl StackRepository {
             .handle_err(location!())
     }
 
-    /// Whole-list replace: ensure the stack exists (so this also doubles as
-    /// "create a stack"), delete its current `services` rows (cascades
-    /// their `service_triggers`/`service_dependencies` rows), and insert
-    /// `new_services`.
     pub(crate) async fn put_services(
         &self,
         stack: &str,
         new_services: &[ServiceInsert<'_>],
     ) -> Result<(), Error> {
-        let mut conn = self.conn.lock().await;
-        Self::ensure_exists(&mut conn, stack).await?;
-        diesel::delete(services::table.filter(services::stack.eq(stack)))
-            .execute(&mut *conn)
+        self.put_configuration(stack, Some(new_services), None)
             .await
-            .handle_err(location!())?;
-
-        for s in new_services {
-            let new_row = NewServiceRow {
-                stack,
-                name: s.name,
-                docker_container: s.docker_container,
-                process_path: s.process_path,
-                host_ip: s.host_ip,
-                pausable: s.pausable,
-                port: s.port,
-                timeout: s.timeout,
-                max_networks: s.max_networks,
-                protocol: s.protocol,
-                listen_port: s.listen_port,
-                egress_filter: s.egress_filter.clone(),
-                ingress_filter: s.ingress_filter.clone(),
-            };
-            let service_id: i32 = diesel::insert_into(services::table)
-                .values(&new_row)
-                .returning(services::id)
-                .get_result(&mut *conn)
-                .await
-                .handle_err(location!())?;
-
-            // SQLite doesn't support diesel's multi-row batch insert (a
-            // single INSERT with several VALUES tuples) the way Postgres
-            // does, so each row is its own statement — fine at this scale
-            // (a handful of triggers/branches per service, an admin-time
-            // operation, not a hot path).
-            for peer in &s.backends {
-                diesel::insert_into(service_triggers::table)
-                    .values(NewServiceTriggerRow {
-                        service_id,
-                        peer: peer.clone(),
-                    })
-                    .execute(&mut *conn)
-                    .await
-                    .handle_err(location!())?;
-            }
-            for (i, chain) in s.dependencies.iter().enumerate() {
-                diesel::insert_into(service_dependencies::table)
-                    .values(NewServiceDependencyRow {
-                        service_id,
-                        branch_index: i32::try_from(i).unwrap_or(i32::MAX),
-                        chain: chain.clone(),
-                    })
-                    .execute(&mut *conn)
-                    .await
-                    .handle_err(location!())?;
-            }
-        }
-        Ok(())
     }
 
-    /// Whole-list replace for `routes`, same shape as `put_services`.
     pub(crate) async fn put_routes(
         &self,
         stack: &str,
         new_routes: &[RouteInsert<'_>],
     ) -> Result<(), Error> {
-        let mut conn = self.conn.lock().await;
-        Self::ensure_exists(&mut conn, stack).await?;
-        diesel::delete(routes::table.filter(routes::stack.eq(stack)))
-            .execute(&mut *conn)
-            .await
-            .handle_err(location!())?;
+        self.put_configuration(stack, None, Some(new_routes)).await
+    }
 
-        for r in new_routes {
-            diesel::insert_into(routes::table)
-                .values(NewRouteRow {
-                    stack,
-                    host: r.host,
-                    path: r.path,
-                    target_kind: r.target_kind,
-                    target_service: r.target_service,
+    pub(crate) async fn put_configuration(
+        &self,
+        stack: &str,
+        new_services: Option<&[ServiceInsert<'_>]>,
+        new_routes: Option<&[RouteInsert<'_>]>,
+    ) -> Result<(), Error> {
+        let service_rows = new_services.map(|items| {
+            items
+                .iter()
+                .map(|s| {
+                    (
+                        NewServiceRow {
+                            stack: stack.to_string(),
+                            name: s.name.to_string(),
+                            docker_container: s.docker_container.map(str::to_string),
+                            process_path: s.process_path.map(str::to_string),
+                            host_ip: s.host_ip.map(str::to_string),
+                            pausable: s.pausable,
+                            port: s.port,
+                            timeout: s.timeout,
+                            max_networks: s.max_networks,
+                            protocol: s.protocol.map(str::to_string),
+                            listen_port: s.listen_port,
+                            egress_filter: s.egress_filter.clone(),
+                            ingress_filter: s.ingress_filter.clone(),
+                        },
+                        s.backends.clone(),
+                        s.dependencies.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        let route_rows = new_routes.map(|items| {
+            items
+                .iter()
+                .map(|r| NewRouteRow {
+                    stack: stack.to_string(),
+                    host: r.host.to_string(),
+                    path: r.path.to_string(),
+                    target_kind: r.target_kind.to_string(),
+                    target_service: r.target_service.map(str::to_string),
                     strip_prefix: r.strip_prefix,
-                    redirect_to: r.redirect_to,
+                    redirect_to: r.redirect_to.map(str::to_string),
                     redirect_status: r.redirect_status,
                     preserve_path: r.preserve_path,
                     preserve_query: r.preserve_query,
                 })
-                .execute(&mut *conn)
-                .await
-                .handle_err(location!())?;
-        }
-        Ok(())
+                .collect::<Vec<_>>()
+        });
+        let stack = stack.to_string();
+        let mut conn = self.conn.lock().await;
+        // One blocking transaction also completes safely if the caller disconnects.
+        conn.spawn_blocking(move |conn| {
+            conn.transaction::<(), diesel::result::Error, _>(|conn| {
+                let row = NewStack {
+                    name: &stack,
+                    updated_at: super::now(),
+                };
+                diesel::RunQueryDsl::execute(
+                    diesel::insert_into(stacks::table)
+                        .values(&row)
+                        .on_conflict(stacks::name)
+                        .do_update()
+                        .set(&row),
+                    conn,
+                )?;
+                if let Some(items) = service_rows {
+                    diesel::RunQueryDsl::execute(
+                        diesel::delete(services::table.filter(services::stack.eq(&stack))),
+                        conn,
+                    )?;
+                    for (row, backends, dependencies) in items {
+                        let service_id: i32 = diesel::RunQueryDsl::get_result(
+                            diesel::insert_into(services::table)
+                                .values(row)
+                                .returning(services::id),
+                            conn,
+                        )?;
+                        for peer in backends {
+                            diesel::RunQueryDsl::execute(
+                                diesel::insert_into(service_triggers::table)
+                                    .values(NewServiceTriggerRow { service_id, peer }),
+                                conn,
+                            )?;
+                        }
+                        for (i, chain) in dependencies.into_iter().enumerate() {
+                            diesel::RunQueryDsl::execute(
+                                diesel::insert_into(service_dependencies::table).values(
+                                    NewServiceDependencyRow {
+                                        service_id,
+                                        branch_index: i32::try_from(i).unwrap_or(i32::MAX),
+                                        chain,
+                                    },
+                                ),
+                                conn,
+                            )?;
+                        }
+                    }
+                }
+                if let Some(items) = route_rows {
+                    diesel::RunQueryDsl::execute(
+                        diesel::delete(routes::table.filter(routes::stack.eq(&stack))),
+                        conn,
+                    )?;
+                    for row in items {
+                        diesel::RunQueryDsl::execute(
+                            diesel::insert_into(routes::table).values(row),
+                            conn,
+                        )?;
+                    }
+                }
+                Ok(())
+            })
+        })
+        .await
+        .handle_err(location!())
     }
 
     /// Delete the stack; cascades to its services (and their
@@ -301,6 +308,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_service_replace_preserves_previous_configuration() {
+        let db = test_db().await;
+        let repo = db.stacks();
+        repo.put_services("alpha", &[service("original")])
+            .await
+            .unwrap();
+        let original = repo.services_for("alpha").await.unwrap()[0].id;
+        assert!(
+            repo.put_services("alpha", &[service("duplicate"), service("duplicate")])
+                .await
+                .is_err()
+        );
+        let rows = repo.services_for("alpha").await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, original);
+        assert_eq!(rows[0].name, "original");
+        assert_eq!(repo.triggers_for(&[original]).await.unwrap().len(), 1);
+        assert_eq!(repo.dependencies_for(&[original]).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_import_rolls_back_services_and_routes_together() {
+        let db = test_db().await;
+        let repo = db.stacks();
+        repo.put_configuration(
+            "alpha",
+            Some(&[service("web")]),
+            Some(&[route("old.example.com")]),
+        )
+        .await
+        .unwrap();
+        let original = repo.services_for("alpha").await.unwrap()[0].id;
+        assert!(
+            repo.put_configuration(
+                "alpha",
+                Some(&[service("replacement")]),
+                Some(&[
+                    route("duplicate.example.com"),
+                    route("duplicate.example.com")
+                ]),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(repo.services_for("alpha").await.unwrap()[0].id, original);
+        assert_eq!(
+            repo.routes_for("alpha").await.unwrap()[0].host,
+            "old.example.com"
+        );
+        assert_eq!(repo.triggers_for(&[original]).await.unwrap().len(), 1);
+        assert!(
+            repo.put_services("new", &[service("duplicate"), service("duplicate")])
+                .await
+                .is_err()
+        );
+        assert!(!repo.exists("new").await.unwrap());
+    }
+
+    #[tokio::test]
     async fn put_services_round_trips_service_triggers_and_dependencies() {
         let db = test_db().await;
         let repo = db.stacks();
@@ -345,13 +411,9 @@ mod tests {
         assert_eq!(triggers.len(), 1); // re-created for the new row, not doubled
     }
 
-    #[tokio::test]
-    async fn put_routes_round_trips_and_replaces() {
-        let db = test_db().await;
-        let repo = db.stacks();
-
-        let route = RouteInsert {
-            host: "ops.example.com",
+    fn route(host: &str) -> RouteInsert<'_> {
+        RouteInsert {
+            host,
             path: "/",
             target_kind: "service",
             target_service: Some("web"),
@@ -360,7 +422,14 @@ mod tests {
             redirect_status: None,
             preserve_path: false,
             preserve_query: false,
-        };
+        }
+    }
+
+    #[tokio::test]
+    async fn put_routes_round_trips_and_replaces() {
+        let db = test_db().await;
+        let repo = db.stacks();
+        let route = route("ops.example.com");
         repo.put_routes("alpha", &[route]).await.unwrap();
         let routes = repo.routes_for("alpha").await.unwrap();
         assert_eq!(routes.len(), 1);

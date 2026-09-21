@@ -380,6 +380,7 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
   ```
   Setup applies and persists a conntrack limit of at least 1,048,576 entries,
   preserving a higher existing limit. No manual sysctl configuration is needed.
+  It also keeps NetworkManager from managing Nullnet-owned interfaces.
 
 
 ### Observation mode

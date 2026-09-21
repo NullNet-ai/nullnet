@@ -271,15 +271,9 @@ pub(super) async fn import_handler(
     if state
         .db
         .stacks()
-        .put_services(&stack, &service_inserts)
+        .put_configuration(&stack, Some(&service_inserts), Some(&route_inserts))
         .await
         .is_err()
-        || state
-            .db
-            .stacks()
-            .put_routes(&stack, &route_inserts)
-            .await
-            .is_err()
     {
         return rejected(
             StatusCode::INTERNAL_SERVER_ERROR,

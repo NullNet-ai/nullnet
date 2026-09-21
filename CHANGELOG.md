@@ -25,6 +25,8 @@ All Nullnet releases with the relative changes are documented in this file.
 - Install BPF linker as a prebuilt binary rather than compiling it from source ([#158](https://github.com/NullNet-ai/nullnet/pull/158))
 ### Removed
 ### Fixed
+- Release backend session locks during history writes and save configuration changes atomically in one transaction ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
+- Keep NetworkManager from adopting Nullnet-owned interfaces during tunnel creation ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
 - Batch event persistence, bound RPC bursts, accelerate VXLAN lifecycle operations, and wait for both endpoints before releasing backend/egress traffic ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
 - Route same-host egress directly with container-scoped forwarding and NAT ([#197](https://github.com/NullNet-ai/nullnet/pull/197))
 - Track container overlay addresses when deciding whether backend connections are idle ([#196](https://github.com/NullNet-ai/nullnet/pull/196))
