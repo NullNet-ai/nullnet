@@ -1,5 +1,6 @@
 use nullnet_grpc_lib::nullnet_grpc::HostMapping;
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
@@ -94,7 +95,7 @@ pub fn purge_stale_mappings() {
     if let Ok(content) = std::fs::read_to_string(HOSTS_PATH) {
         let cleaned = strip_marked(&content);
         if cleaned != content {
-            match std::fs::write(HOSTS_PATH, &cleaned) {
+            match write_hosts_file(Path::new(HOSTS_PATH), &cleaned) {
                 Ok(()) => swept += 1,
                 Err(e) => eprintln!("[hosts] purge: writing {HOSTS_PATH} failed: {e}"),
             }
@@ -200,9 +201,17 @@ fn edit_hosts_file(path: &Path, edit: impl FnOnce(&str) -> String) -> Result<boo
     if updated == current {
         return Ok(false);
     }
-    std::fs::write(path, &updated)
+    write_hosts_file(path, &updated)
         .map_err(|e| format!("writing {} failed: {e}", path.display()))?;
     Ok(true)
+}
+
+// Keep Docker's bind-mounted inode. Truncate only after writing so an abrupt
+// process exit cannot empty the file between open(O_TRUNC) and write.
+pub(crate) fn write_hosts_file(path: &Path, content: &str) -> std::io::Result<()> {
+    let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
+    file.write_all(content.as_bytes())?;
+    file.set_len(content.len() as u64)
 }
 
 #[cfg(test)]

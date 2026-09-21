@@ -2,6 +2,7 @@ use crate::orchestrator::Orchestrator;
 use crate::services::changes::{
     ServiceChange, apply_changes, dep_chain_has_pending, release_backend_chain,
 };
+use crate::services::clients::Client;
 use crate::services::input::StackMap;
 use crate::services::service_info::ServiceInfo;
 use std::collections::HashMap;
@@ -66,16 +67,60 @@ pub(crate) async fn check_timeouts(
             .await;
 
         reap_idle_backend_chains(&services, &orchestrator, LIVENESS_REAP_DEBOUNCE).await;
+        reap_ingress_timeouts(&services, &orchestrator).await;
         let mut services_mut = services.write().await;
-        let stack_names: Vec<String> = services_mut.keys().cloned().collect();
-        for stack in stack_names {
-            if let Some(stack_map) = services_mut.get_mut(&stack) {
-                apply_timeouts(stack_map, &orchestrator, &stack).await;
-            }
-        }
         crate::services::service_info::reconcile_container_pauses(&mut services_mut, &orchestrator)
             .await;
     }
+}
+
+pub(crate) async fn reap_ingress_timeouts(
+    services: &RwLock<StackMap>,
+    orchestrator: &Orchestrator,
+) {
+    let candidates: Vec<_> = services
+        .read()
+        .await
+        .iter()
+        .flat_map(|(stack, services)| {
+            collect_timed_out_clients(services)
+                .into_iter()
+                .map(|change| (stack.clone(), change))
+        })
+        .collect();
+    for (stack, change) in candidates {
+        // Keep each chain transaction ordered, but let routing run between clients.
+        let mut guard = services.write().await;
+        if let Some(services) = guard.get_mut(&stack) {
+            apply_timeout_candidate(change, services, orchestrator, &stack).await;
+        }
+    }
+}
+
+async fn apply_timeout_candidate(
+    change: ServiceChange,
+    services: &mut HashMap<String, ServiceInfo>,
+    orchestrator: &Orchestrator,
+    stack: &str,
+) {
+    if let ServiceChange::ProxyClientTimedOut { name, client } = &change
+        && client_timed_out(services, name, client)
+    {
+        apply_changes(vec![change], services, None, orchestrator, stack).await;
+    }
+}
+
+fn client_timed_out(services: &HashMap<String, ServiceInfo>, name: &str, client: &Client) -> bool {
+    let Some(ServiceInfo::Registered(reg)) = services.get(name) else {
+        return false;
+    };
+    let Some(timeout) = services[name].timeout().filter(|timeout| *timeout != 0) else {
+        return false;
+    };
+    reg.proxy_client_expired(client, Duration::from_secs(timeout))
+        && !reg.client_replica(client).is_some_and(|(ip, docker)| {
+            dep_chain_has_pending(name, ip, docker.as_deref(), services)
+        })
 }
 
 /// Release the hold of every trigger chain whose connections are provably gone.
@@ -116,14 +161,15 @@ pub(crate) async fn reap_idle_backend_chains(
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn apply_timeouts(
     services: &mut HashMap<String, ServiceInfo>,
     orchestrator: &Orchestrator,
     stack: &str,
 ) {
     let changes = collect_timed_out_clients(services);
-    if !changes.is_empty() {
-        apply_changes(changes, services, None, orchestrator, stack).await;
+    for change in changes {
+        apply_timeout_candidate(change, services, orchestrator, stack).await;
     }
 }
 
@@ -184,4 +230,37 @@ fn nearest_timeout(services: &HashMap<String, ServiceInfo>) -> Duration {
     }
 
     nearest
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stale_expiry_candidates_preserve_renewed_connections_and_grace() {
+        let server = crate::tests::proxy_timeout_setup().await;
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let candidates = collect_timed_out_clients(&server.services().read().await["default"]);
+        assert_eq!(candidates.len(), 2);
+        let proxy1 = "5.5.5.5".parse().unwrap();
+        let proxy2 = "6.6.6.6".parse().unwrap();
+        server
+            .handle_proxy_request("A", proxy1, "10.0.0.1")
+            .await
+            .unwrap();
+        server
+            .handle_proxy_request("A", proxy2, "10.0.0.2")
+            .await
+            .unwrap();
+        server.mark_connection_closed("A", proxy2, "10.0.0.2").await;
+        let mut guard = server.services().write().await;
+        let services = guard.get_mut("default").unwrap();
+        for candidate in candidates {
+            apply_timeout_candidate(candidate, services, server.orchestrator(), "default").await;
+        }
+        let ServiceInfo::Registered(reg) = &services["A"] else {
+            unreachable!()
+        };
+        assert_eq!(reg.client_count(), 2);
+    }
 }

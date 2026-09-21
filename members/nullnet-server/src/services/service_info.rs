@@ -826,15 +826,17 @@ impl RegisteredServiceInfo {
                     .clients
                     .clients()
                     .iter()
-                    .filter(|(c, ci)| {
-                        c.is_proxy().is_some()
-                            && !ci.is_pending()
-                            && ci.open_connections() == 0
-                            && now.duration_since(ci.latest()) >= timeout
-                    })
+                    .filter(|(c, ci)| c.is_proxy().is_some() && ci.idle_expired(now, timeout))
                     .map(|(c, _)| c.clone())
             })
             .collect()
+    }
+
+    pub(crate) fn proxy_client_expired(&self, client: &Client, timeout: Duration) -> bool {
+        client.is_proxy().is_some()
+            && self
+                .client_info(client)
+                .is_some_and(|ci| ci.idle_expired(Instant::now(), timeout))
     }
 
     pub(crate) fn nearest_proxy_expiry(&self, timeout: Duration) -> Option<Duration> {

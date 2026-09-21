@@ -4,7 +4,7 @@ use crate::ebpf::{FirewallPeers, FirewallVxlanPorts, NetId};
 use crate::egress_policy::{FLUSH_SUPPRESSION, PolicyVerdicts, flush_container_conntrack};
 use crate::egress_state::{EgressRecord, EgressState};
 use crate::host_mappings::{
-    HOSTS_MARKER, HostMappingsState, edit_container_hosts, hosts_file_lock,
+    HOSTS_MARKER, HostMappingsState, edit_container_hosts, hosts_file_lock, write_hosts_file,
 };
 use crate::nfqueue::BridgeIpCache;
 use crate::peers::peer::{Peers, VethKey};
@@ -74,7 +74,7 @@ pub(crate) async fn control_channel(
     sets: LivenessSets,
 ) -> Result<(), Error> {
     let (outbound, grpc_rx) = mpsc::channel(64);
-    let mut inbound = server
+    let (mut inbound, flow) = server
         .control_channel(grpc_rx)
         .await
         .handle_err(location!())?;
@@ -84,7 +84,15 @@ pub(crate) async fn control_channel(
         AgentEventKind::ControlChannelEstablished(AgentControlChannelEstablished {}),
     );
 
-    while let Ok(Some(message)) = inbound.message().await {
+    while let Ok(Some(message)) = inbound.message().await.inspect_err(|error| {
+        eprintln!("Control channel from server failed: {error:?}");
+    }) {
+        if !flow
+            .receive(message.delivery_sequence, message.delivery_receipt)
+            .await
+        {
+            continue;
+        }
         let rtnetlink_handle = rtnetlink_handle.clone();
         let peers = peers.clone();
         let outbound = outbound.clone();
@@ -1028,8 +1036,11 @@ fn add_host_mapping(hm: &HostMapping, docker_container: Option<&str>) -> Result<
     } else {
         // host-targeted: upsert into the host's /etc/hosts
         let content = std::fs::read_to_string(path).handle_err(location!())?;
-        std::fs::write(path, upsert_hosts_entry(&content, &hm.name, &entry))
-            .handle_err(location!())?;
+        write_hosts_file(
+            std::path::Path::new(path),
+            &upsert_hosts_entry(&content, &hm.name, &entry),
+        )
+        .handle_err(location!())?;
     }
 
     Ok(())
@@ -1070,8 +1081,11 @@ fn remove_host_mapping(hm: &HostMapping, docker_container: Option<&str>) -> Resu
     } else {
         // host-targeted: drop this net's line from the host file
         let content = std::fs::read_to_string(path).handle_err(location!())?;
-        std::fs::write(path, remove_hosts_entry(&content, &hm.name, &hm.ip))
-            .handle_err(location!())?;
+        write_hosts_file(
+            std::path::Path::new(path),
+            &remove_hosts_entry(&content, &hm.name, &hm.ip),
+        )
+        .handle_err(location!())?;
     }
 
     Ok(())

@@ -137,9 +137,8 @@ pub(crate) enum Event {
         client_ip: String,
         timestamp: u64,
     },
-    /// An endpoint never confirmed a teardown, so the net id went back to the
-    /// pool unverified. Its kernel state may still exist on that node, and a
-    /// later edge reusing the id would collide with it.
+    /// Cleanup exceeded its deadline. Keep the id reserved until completion
+    /// or disconnect rather than colliding with the endpoint's old state.
     NetTeardownUnconfirmed {
         net_id: u32,
         node_ip: String,

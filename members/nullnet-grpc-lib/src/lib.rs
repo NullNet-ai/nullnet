@@ -1,4 +1,5 @@
 pub mod certificate_names;
+pub mod control_flow;
 mod control_tls_verifier;
 mod proto;
 
@@ -15,7 +16,6 @@ use std::{future::Future, path::Path, sync::Arc};
 use tokio::sync::{Semaphore, mpsc};
 use tonic::Request;
 pub use tonic::Streaming;
-use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, ClientTlsConfig};
 
 // Each unary request can buffer its protobuf DATA frame plus an empty EOS
@@ -104,16 +104,18 @@ impl NullnetGrpcInterface {
     pub async fn control_channel(
         &self,
         receiver: mpsc::Receiver<MsgId>,
-    ) -> Result<Streaming<NetMessage>, String> {
-        let receiver = ReceiverStream::new(receiver);
+    ) -> Result<(Streaming<NetMessage>, control_flow::ControlFlow), String> {
+        let (receiver, flow) = control_flow::ControlStream::new(receiver);
 
-        Ok(self
-            .client
-            .clone()
-            .control_channel(Request::new(receiver))
-            .await
-            .map_err(|e| e.to_string())?
-            .into_inner())
+        Ok((
+            self.client
+                .clone()
+                .control_channel(Request::new(receiver))
+                .await
+                .map_err(|e| e.to_string())?
+                .into_inner(),
+            flow,
+        ))
     }
 
     #[allow(clippy::missing_errors_doc)]

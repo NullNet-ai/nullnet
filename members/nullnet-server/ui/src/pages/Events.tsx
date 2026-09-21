@@ -133,7 +133,7 @@ function eventDetail(e: EventJson): string {
     case 'session_torn_down':
       return `net ${e.net_id} · ${e.service} · ${e.client_ip}`;
     case 'net_teardown_unconfirmed':
-      return `net ${e.net_id} · ${e.node_ip} never confirmed teardown`;
+      return `net ${e.net_id} · ${e.node_ip} teardown overdue; ID kept reserved`;
     case 'observation_changed':
       return `${e.stack} · observation #${e.observation_id} ${e.action}`;
     case 'config_reloaded':

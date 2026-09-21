@@ -265,6 +265,12 @@ impl ClientInfo {
         self.latest
     }
 
+    pub(super) fn idle_expired(&self, now: Instant, timeout: std::time::Duration) -> bool {
+        !self.is_pending()
+            && self.open_connections() == 0
+            && now.duration_since(self.latest()) >= timeout
+    }
+
     pub(crate) fn created_at(&self) -> SystemTime {
         self.created_at
     }

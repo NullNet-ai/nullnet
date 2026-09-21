@@ -383,6 +383,10 @@ Run the setup scripts as root. The supplied systemd services also run as root; p
   preserving a higher existing limit. No manual sysctl configuration is needed.
   It also keeps NetworkManager from managing Nullnet-owned interfaces.
 
+On upgrades, deploy the server, proxy and all clients from the same revision.
+Client startup cleans stale Nullnet network state while preserving Docker interfaces;
+routine container restarts are unnecessary. Containers already damaged by an older
+client's cleanup need a one-time restart (Swarm: `docker service update --force SERVICE`).
 
 ### Observation mode
 

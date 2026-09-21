@@ -267,6 +267,16 @@ fn privileged_output(args: &[&str]) -> Option<String> {
 mod xfrm_tests {
     use super::{parse_xfrm_policies, parse_xfrm_states};
 
+    #[test]
+    fn orphan_namespace_cleanup_is_scoped_to_nullnet_names() {
+        for name in ["ns_101_s", "ns_101_c"] {
+            assert!(super::is_nullnet_namespace(name));
+        }
+        for name in ["ns_custom", "ns_101_backup", "ns_01_c", "ns_+1_c", "ns__s"] {
+            assert!(!super::is_nullnet_namespace(name), "{name}");
+        }
+    }
+
     /// One of ours (net id 101 → spi 0x0000046d = 1101) and one unrelated SA
     /// whose SPI sits outside the pool range.
     const STATE_SHOW: &str = "\
@@ -496,7 +506,7 @@ fn vxlan_cleanup_network() {
                         .map(|mut c| c.wait())
                         .handle_err(location!());
                 }
-            } else if device.name.starts_with("veth-") {
+            } else if netlink::is_nullnet_veth(&device.name) {
                 println!("Cleaning up existing same-host veth pair: {}", device.name);
                 let _ = std::process::Command::new("ip")
                     .args(["link", "del", &device.name])
@@ -521,6 +531,34 @@ fn vxlan_cleanup_network() {
             }
         }
     }
+
+    // Interrupted setup can leave a namespace with no host-side interface.
+    if let Ok(namespaces) = std::fs::read_dir("/var/run/netns") {
+        for entry in namespaces.flatten() {
+            let name = entry.file_name();
+            if let Some(name) = name.to_str()
+                && is_nullnet_namespace(name)
+            {
+                let _ = std::process::Command::new("ip")
+                    .args(["netns", "del", name])
+                    .status()
+                    .handle_err(location!());
+            }
+        }
+    }
+}
+
+fn is_nullnet_namespace(name: &str) -> bool {
+    let Some(suffix) = name.strip_prefix("ns_") else {
+        return false;
+    };
+    let Some(id) = suffix
+        .strip_suffix("_s")
+        .or_else(|| suffix.strip_suffix("_c"))
+    else {
+        return false;
+    };
+    id.parse::<u32>().is_ok_and(|value| value.to_string() == id)
 }
 
 /// Cleanup existing veth and VLANs

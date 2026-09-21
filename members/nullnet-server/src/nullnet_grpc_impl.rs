@@ -424,12 +424,13 @@ impl NullnetGrpcImpl {
         request: Request<Streaming<MsgId>>,
     ) -> Result<Response<<NullnetGrpcImpl as NullnetGrpc>::ControlChannelStream>, Error> {
         let (outbound, receiver) = mpsc::channel(64);
+        let (stream, flow) = nullnet_grpc_lib::control_flow::ControlStream::new(receiver);
 
         self.orchestrator
-            .add_client(request, outbound, self.services.clone())
+            .add_client(request, outbound, self.services.clone(), flow)
             .await?;
 
-        Ok(Response::new(ReceiverStream::new(receiver)))
+        Ok(Response::new(stream))
     }
 
     // Concurrent first-time setup is race-safe for single-hop deps (check-and-
@@ -2597,7 +2598,8 @@ impl NullnetGrpc for NullnetGrpcImpl {
             .map_err(|err| Status::internal(err.to_str()))
     }
 
-    type ControlChannelStream = ReceiverStream<Result<NetMessage, Status>>;
+    type ControlChannelStream =
+        nullnet_grpc_lib::control_flow::ControlStream<Result<NetMessage, Status>>;
 
     async fn control_channel(
         &self,

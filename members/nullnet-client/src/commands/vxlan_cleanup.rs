@@ -2,17 +2,33 @@ use futures::TryStreamExt;
 use rtnetlink::packet_route::link::LinkAttribute;
 use rtnetlink::{Handle, LinkUnspec};
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{OwnedMutexGuard, mpsc, oneshot};
 
 // A single worker owns this temporary group; only retiring links enter it.
 const RETIRING_GROUP: u32 = 0x4e40_0000;
+const DELETE_BATCH: usize = 128;
+static ACTIVE_SETUPS: AtomicUsize = AtomicUsize::new(0);
 type Request = (
     u32,
     Arc<OwnedMutexGuard<()>>,
     oneshot::Sender<Result<(), String>>,
 );
 static CLEANUP: OnceLock<mpsc::Sender<Request>> = OnceLock::new();
+
+pub(super) struct SetupGuard;
+
+pub(super) fn track_setup() -> SetupGuard {
+    ACTIVE_SETUPS.fetch_add(1, Ordering::Relaxed);
+    SetupGuard
+}
+
+impl Drop for SetupGuard {
+    fn drop(&mut self) {
+        ACTIVE_SETUPS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 pub(super) async fn remove(
     handle: &Handle,
@@ -23,8 +39,22 @@ pub(super) async fn remove(
         let (sender, mut receiver) = mpsc::channel::<Request>(1024);
         let handle = handle.clone();
         tokio::spawn(async move {
-            let mut batch = Vec::with_capacity(128);
-            while receiver.recv_many(&mut batch, 128).await != 0 {
+            let mut batch = Vec::with_capacity(DELETE_BATCH);
+            while let Some(first) = receiver.recv().await {
+                batch.push(first);
+                // Deletion holds RTNL. Yield between smaller batches while setup
+                // is active; the counter is only a scheduling hint, never a lock.
+                let limit = if ACTIVE_SETUPS.load(Ordering::Relaxed) == 0 {
+                    DELETE_BATCH
+                } else {
+                    16
+                };
+                while batch.len() < limit {
+                    match receiver.try_recv() {
+                        Ok(request) => batch.push(request),
+                        Err(_) => break,
+                    }
+                }
                 let groups = batch.iter().map(|(group, _, _)| *group).collect();
                 let result = remove_groups(&handle, groups).await;
                 for (_, _guard, response) in batch.drain(..) {
@@ -97,5 +127,28 @@ async fn delete_group(handle: &Handle, group: u32) -> Result<(), String> {
             Ok(())
         }
         Err(error) => Err(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancelled_setup_releases_its_scheduling_hint() {
+        let first = track_setup();
+        let (started, received) = oneshot::channel();
+        let setup = tokio::spawn(async move {
+            let _guard = track_setup();
+            started.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        received.await.unwrap();
+        assert_eq!(ACTIVE_SETUPS.load(Ordering::Relaxed), 2);
+        drop(first);
+        assert_eq!(ACTIVE_SETUPS.load(Ordering::Relaxed), 1);
+        setup.abort();
+        assert!(setup.await.unwrap_err().is_cancelled());
+        assert_eq!(ACTIVE_SETUPS.load(Ordering::Relaxed), 0);
     }
 }

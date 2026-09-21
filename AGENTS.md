@@ -48,7 +48,8 @@ Every change ships only after it has run end-to-end on real hosts.
 - The gRPC control channel is TLS. Each host needs `JWT_SIGNING_KEY`,
   `MFA_ENCRYPTION_KEY`, `CONTROL_SERVICE_TLS_SAN`, and `ca-cert.pem` present in
   `/root/nullnet/`, plus a rebuilt proxy. See SETUP.md for the full setup.
-- Containers need a restart after nullnet restarts.
+- Verify client restart recovery without restarting application containers;
+  startup cleanup must preserve Docker-owned interfaces and routes.
 - To restart a Swarm stack, use `docker service update --force`.
 - The default-deny eBPF firewall blocks Swarm ports. `2377`, `7946`, and `4789`
   must be in the `.env` allowlists on strict nodes, or the worker goes Down.

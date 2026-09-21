@@ -721,7 +721,7 @@ async fn node_disconnected_proxy1() {
 
 const PROXY_TIMEOUT: &str = "proxy_timeout";
 
-async fn proxy_timeout_setup() -> NullnetGrpcImpl {
+pub(crate) async fn proxy_timeout_setup() -> NullnetGrpcImpl {
     let services = load_fixture(PROXY_TIMEOUT).await;
     let server = NullnetGrpcImpl::new_for_test(services);
 
@@ -748,6 +748,38 @@ async fn proxy_timeout_setup() -> NullnetGrpcImpl {
     drop(guard);
 
     server
+}
+
+#[tokio::test]
+async fn mass_expiry_allows_reads_between_client_teardowns() {
+    let server = proxy_timeout_setup().await;
+    let proxy = ip(5, 5, 5, 5);
+    for i in 3..131 {
+        setup_proxy_chain(&server, "A", proxy, &format!("10.0.0.{i}")).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let (log, gate) = server.orchestrator().register_gated_client(proxy).await;
+    let worker = server.clone();
+    let reap = tokio::spawn(async move {
+        crate::timeout::reap_ingress_timeouts(worker.services(), worker.orchestrator()).await;
+    });
+    wait_for_log(&log, |messages| !messages.is_empty()).await;
+    let reader = server.clone();
+    let read = tokio::spawn(async move {
+        let _guard = reader.services().read().await;
+    });
+    tokio::task::yield_now().await;
+    // Unblock one send if the bounded control queue is already full.
+    gate.add_permits(1);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), read).await;
+    gate.add_permits(1000);
+    reap.await.unwrap();
+    assert!(result.is_ok(), "bulk expiry monopolized the services lock");
+    let guard = server.services().read().await;
+    let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] else {
+        unreachable!()
+    };
+    assert_eq!(reg.client_count(), 0);
 }
 
 /// After A's timeout (1s), both proxy clients on A expire. B's proxy client
@@ -4138,7 +4170,7 @@ async fn a_failed_edge_rollback_keeps_a_concurrent_holder() {
          teardowns sent: {torn:?})"
     );
     // No assertion on the pool here: host b never acks its teardown either, so
-    // the id is deliberately held until `TEARDOWN_ACK_GRACE` expires. What must
+    // the id is deliberately held until cleanup or disconnect. What must
     // hold immediately is that no entry is left behind for it.
     let _ = in_use;
     assert_eq!(

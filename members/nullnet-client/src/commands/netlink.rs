@@ -99,7 +99,7 @@ async fn delete_all_veths(handle: &Handle) {
         if let Ok(link) = link_res
             && link.attributes.iter().any(|attr| {
                 if let LinkAttribute::IfName(name) = attr
-                    && name.starts_with("veth")
+                    && is_nullnet_veth(name)
                 {
                     true
                 } else {
@@ -110,6 +110,18 @@ async fn delete_all_veths(handle: &Handle) {
             let _ = delete_link(handle, link).await;
         }
     }
+}
+
+pub(super) fn is_nullnet_veth(name: &str) -> bool {
+    let Some(suffix) = name.strip_prefix("veth-") else {
+        return false;
+    };
+    let id = suffix
+        .strip_suffix("-s")
+        .or_else(|| suffix.strip_suffix("-c"))
+        .or_else(|| suffix.strip_suffix('p'))
+        .unwrap_or(suffix);
+    id.parse::<u32>().is_ok_and(|value| value.to_string() == id)
 }
 
 async fn delete_veth(handle: &Handle, vlan_id: u16) {
@@ -251,4 +263,27 @@ pub(super) async fn delete_link(handle: &Handle, link: LinkMessage) -> Result<()
         .handle_err(location!())?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::is_nullnet_veth;
+
+    #[test]
+    fn startup_preserves_docker_and_unrelated_veths() {
+        for name in [
+            "veth0a3f12",
+            "veth123456",
+            "veth-custom",
+            "veth-12-backup",
+            "veth-01",
+            "veth-+1",
+            "veth-",
+        ] {
+            assert!(!is_nullnet_veth(name), "{name}");
+        }
+        for name in ["veth-101", "veth-101p", "veth-101-s", "veth-101-c"] {
+            assert!(is_nullnet_veth(name), "{name}");
+        }
+    }
 }

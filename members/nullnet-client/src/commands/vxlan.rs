@@ -92,6 +92,7 @@ pub(crate) async fn setup(
     cache: &BridgeIpCache,
 ) -> Result<(), Error> {
     let _guard = lock(params.vxlan_id).await;
+    let _setup = super::vxlan_cleanup::track_setup();
     // Publish ownership before the interface can carry its first packet.
     if let Some(container) = &params.docker_container {
         cache.add_overlay(&params.ns_name, params.ns_net.ip(), container);
@@ -549,11 +550,11 @@ async fn configure_ns_in(params: &VxlanSetupParams, ns_pid: Option<u32>) -> Resu
     let veth_in = format!("{}-in", params.ns_name);
     let prefix: Vec<String> = match ns_pid {
         Some(pid) => vec!["nsenter".into(), "-t".into(), pid.to_string(), "-n".into()],
+        // Only network state changes here; avoid cloning the mount namespace.
         None => vec![
-            "ip".into(),
-            "netns".into(),
-            "exec".into(),
-            params.ns_name.clone(),
+            "nsenter".into(),
+            format!("--net=/var/run/netns/{}", params.ns_name),
+            "--".into(),
         ],
     };
 

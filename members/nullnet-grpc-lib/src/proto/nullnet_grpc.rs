@@ -21,7 +21,11 @@ pub struct NetType {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NetMessage {
-    #[prost(oneof = "net_message::Message", tags = "1, 2, 3, 4, 5, 6, 7")]
+    #[prost(uint64, tag = "9")]
+    pub delivery_sequence: u64,
+    #[prost(uint64, tag = "10")]
+    pub delivery_receipt: u64,
+    #[prost(oneof = "net_message::Message", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
     pub message: ::core::option::Option<net_message::Message>,
 }
 /// Nested message and enum types in `NetMessage`.
@@ -46,7 +50,17 @@ pub mod net_message {
         /// Egress country-policy changed on the server (fire-and-forget)
         #[prost(message, tag = "7")]
         EgressPolicyChanged(super::EgressPolicyChanged),
+        #[prost(message, tag = "8")]
+        NetReady(super::NetReady),
     }
+}
+/// Both endpoints are prepared; the initiator may release held packets.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NetReady {
+    #[prost(message, optional, tag = "1")]
+    pub msg_id: ::core::option::Option<MsgId>,
+    #[prost(uint32, tag = "2")]
+    pub net_id: u32,
 }
 /// A service's egress country lists changed on a config reload. The client
 /// drops its cached policy verdicts and flushes conntrack for its registered
@@ -196,6 +210,10 @@ pub struct VxlanTeardown {
 pub struct MsgId {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub delivery_sequence: u64,
+    #[prost(uint64, tag = "3")]
+    pub delivery_receipt: u64,
 }
 /// Raw local observations a client reports; the server joins them against the
 /// match keys in services/<stack>.toml. One observation may match many services.

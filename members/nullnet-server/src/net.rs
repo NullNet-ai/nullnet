@@ -103,15 +103,22 @@ impl NetExt for Net {
         dstport: Option<u16>,
         msg_id: String,
     ) -> NetMessage {
-        let msg_id = Some(MsgId { id: msg_id });
+        let msg_id = Some(MsgId {
+            id: msg_id,
+            ..Default::default()
+        });
         match self {
             Net::Vlan => NetMessage {
+                delivery_sequence: 0,
+                delivery_receipt: 0,
                 message: Some(net_message::Message::VlanTeardown(VlanTeardown {
                     vlan_id: net_id,
                     msg_id,
                 })),
             },
             Net::Vxlan => NetMessage {
+                delivery_sequence: 0,
+                delivery_receipt: 0,
                 message: Some(net_message::Message::VxlanTeardown(VxlanTeardown {
                     vxlan_id: net_id,
                     ns_name: format!("ns_{net_id}_{side}"),
@@ -161,8 +168,13 @@ fn vlan_setup(
     Some((
         local_veth,
         NetMessage {
+            delivery_sequence: 0,
+            delivery_receipt: 0,
             message: Some(net_message::Message::VlanSetup(VlanSetup {
-                msg_id: Some(MsgId { id: msg_id }),
+                msg_id: Some(MsgId {
+                    id: msg_id,
+                    ..Default::default()
+                }),
                 vlan_id,
                 local_veth: local_veth.to_string(),
                 remote_veth: remote_veth.to_string(),
@@ -252,8 +264,13 @@ fn vxlan_setup(
     Some((
         local_net_ip,
         NetMessage {
+            delivery_sequence: 0,
+            delivery_receipt: 0,
             message: Some(net_message::Message::VxlanSetup(VxlanSetup {
-                msg_id: Some(MsgId { id: msg_id }),
+                msg_id: Some(MsgId {
+                    id: msg_id,
+                    ..Default::default()
+                }),
                 vxlan_id,
                 ns_name: format!("ns_{vxlan_id}_{side}"),
                 ns_net: ns_net.to_string(),
