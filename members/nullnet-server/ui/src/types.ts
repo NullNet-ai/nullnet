@@ -128,6 +128,8 @@ export type Severity = 'info' | 'warning' | 'error';
 type WithSeverity = { severity: Severity; timestamp: number };
 
 export type EventJson =
+  | WithSeverity & { type: 'event_persistence_failed'; error_message: string; queued_events: number }
+  | WithSeverity & { type: 'event_persistence_recovered'; queued_events: number }
   // Existing server events
   | WithSeverity & { type: 'node_connected'; ip: string }
   | WithSeverity & { type: 'node_disconnected'; ip: string }

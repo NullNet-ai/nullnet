@@ -67,6 +67,14 @@ impl HostMappingsState {
     pub fn take_vxlan(&self, vxlan_id: u32) -> Option<(HostMapping, Option<String>)> {
         self.by_vxlan.lock().unwrap().remove(&vxlan_id)
     }
+
+    // Keep publication ordered before teardown takes and removes the mapping.
+    pub fn with_vxlan(&self, vxlan_id: u32, apply: impl FnOnce(&HostMapping, Option<&str>)) {
+        let mappings = self.by_vxlan.lock().unwrap();
+        if let Some((mapping, container)) = mappings.get(&vxlan_id) {
+            apply(mapping, container.as_deref());
+        }
+    }
 }
 
 /// Drop every mapping this process's predecessor left behind, on the host and

@@ -37,14 +37,9 @@ fn fire_event(grpc: &NullnetGrpcInterface, kind: AgentEventKind) {
     });
 }
 
-/// Confirm a completed teardown so the server can return the net id to its
-/// pool. Must be called only once the teardown has actually run — the whole
-/// point of the ack is that the id stays out of circulation until this edge's
-/// kernel state is gone.
-///
-/// `msg_id` is absent when the server predates the ack field; there is then
-/// nothing to confirm and the server falls back to its grace timer.
-async fn ack_teardown(
+/// Confirm a completed control operation. Teardown acknowledgements follow
+/// all kernel cleanup so the server can safely reuse the net id.
+async fn ack_control(
     outbound: &Sender<MsgId>,
     msg_id: Option<MsgId>,
     grpc: &NullnetGrpcInterface,
@@ -170,6 +165,41 @@ pub(crate) async fn control_channel(
                         bridge_cache,
                     )
                     .await;
+                });
+            }
+            Some(net_message::Message::NetReady(ready)) => {
+                let triggers_state = triggers_state.clone();
+                tokio::spawn(async move {
+                    let grpc = server.clone();
+                    tokio::task::spawn_blocking(move || {
+                        host_mappings_state.with_vxlan(ready.net_id, |mapping, container| {
+                            if add_host_mapping(mapping, container).is_err() {
+                                fire_event(
+                                    &grpc,
+                                    AgentEventKind::HostMappingFailed(AgentHostMappingFailed {
+                                        hostname: mapping.name.clone(),
+                                        ip: mapping.ip.clone(),
+                                        docker_container: container.map(String::from),
+                                    }),
+                                );
+                            }
+                        });
+                    })
+                    .await
+                    .expect("host mapping publication task panicked");
+                    if triggers_state.mark_ready(ready.net_id) {
+                        ack_control(&outbound, ready.msg_id, &server, "net_ready").await;
+                    } else {
+                        fire_event(
+                            &server,
+                            AgentEventKind::VxlanSetupFailed(AgentVxlanSetupFailed {
+                                vxlan_id: ready.net_id,
+                                ns_name: format!("ns_{}_c", ready.net_id),
+                                error_code: -1,
+                            }),
+                        );
+                        eprintln!("NetReady for {} has no installed steering", ready.net_id);
+                    }
                 });
             }
             Some(net_message::Message::ContainerSuspend(container_suspend)) => {
@@ -379,7 +409,7 @@ async fn handle_vlan_teardown(
 
     // Acked last: the server frees the net id on this, so everything above must
     // already be undone.
-    ack_teardown(&outbound, ack_id, &grpc, "vlan_teardown").await;
+    ack_control(&outbound, ack_id, &grpc, "vlan_teardown").await;
 
     Ok(())
 }
@@ -574,12 +604,10 @@ async fn handle_vxlan_setup(
                             },
                         );
                     }
-                    // Steering is live — release any egress SYN the NFQUEUE
-                    // listener is holding for this initiator. Mirrors the
-                    // backend DNAT→mark_active ordering (install first, then
-                    // wake, so the freed packet finds the rule in place).
+                    // Record local steering; NetReady releases packets only
+                    // after the gateway also acknowledges setup.
                     if let Some(container) = message.docker_container.as_deref() {
-                        triggers_state.mark_active(
+                        triggers_state.mark_prepared(
                             container,
                             crate::triggers::EGRESS_TRIGGER_PORT,
                             vxlan_id,
@@ -636,7 +664,11 @@ async fn handle_vxlan_setup(
             );
         }
     } else if let Some(host_mapping) = &message.host_mapping {
-        if add_host_mapping(host_mapping, message.docker_container.as_deref()).is_err() {
+        // Backend names stay on their trigger address until both endpoints
+        // are ready; publishing early lets container ARP bypass NFQUEUE.
+        if message.dnat_port.is_none()
+            && add_host_mapping(host_mapping, message.docker_container.as_deref()).is_err()
+        {
             fire_event(
                 &grpc,
                 AgentEventKind::HostMappingFailed(AgentHostMappingFailed {
@@ -652,18 +684,8 @@ async fn handle_vxlan_setup(
             message.docker_container.clone(),
         );
 
-        // backend-entry edge: install DNAT(dnat_port -> overlay_ip) so the
-        // initiator's traffic on that local port is steered into the new
-        // VXLAN.
-        //
-        // Order matters. The NFQUEUE listener is parked on a `Notify` that
-        // `mark_active` fires; once woken it verdicts ACCEPT and the held
-        // packet traverses `nat PREROUTING`. The DNAT rule MUST already be
-        // installed by then, so we:
-        //   1. peek the initiator's bridge IP (stashed at `mark_pending`)
-        //   2. install DNAT with `-s <container_ip>`
-        //   3. mark_active → wakes the waiter, packet released into the new
-        //      rule
+        // Install scoped DNAT before acknowledging local setup. NetReady
+        // releases held packets once the receiving endpoint is also ready.
         if let Some(dnat_port) = message.dnat_port
             && let Ok(dnat_port) = u16::try_from(dnat_port)
             && let Ok(overlay_ip) = host_mapping.ip.parse::<Ipv4Addr>()
@@ -676,12 +698,12 @@ async fn handle_vxlan_setup(
             // untrustworthy first — otherwise a rebuild under open connections
             // reads as 1->0 and decrements the chain out from under them.
             sets.suppress_trigger(container_key, dnat_port, FLUSH_SUPPRESSION);
-            // Only promote to Active if the DNAT rule is actually live. Waking
+            // Only record prepared steering if the DNAT rule is actually live. Waking
             // the held packet without it would release the SYN into a missing
             // rule (→ misroute to the original dest); instead leave it Pending
             // so the listener drops at ACTIVE_TIMEOUT.
             if dnat::install(dnat_port, overlay_ip, container_ip) {
-                triggers_state.mark_active(
+                triggers_state.mark_prepared(
                     container_key,
                     dnat_port,
                     vxlan_id,
@@ -826,7 +848,6 @@ async fn handle_vxlan_teardown(
         // A malformed dstport just means the (already-idempotent) XFRM
         // policy cleanup below is skipped — everything else still tears down.
         dstport: u16::try_from(message.dstport).unwrap_or(crate::DEFAULT_VXLAN_DSTPORT),
-        docker_container: message.docker_container.clone(),
     };
     let teardown_result =
         crate::commands::vxlan::teardown(&rtnetlink_handle, &vxlan_params, &bridge_cache).await;
@@ -857,7 +878,7 @@ async fn handle_vxlan_teardown(
     // Acked last: the server frees the net id on this, so every kernel object
     // named after it — bridge, veth/macsec pair, XFRM SA, DNAT — must already
     // be gone.
-    ack_teardown(&outbound, ack_id, &grpc, "vxlan_teardown").await;
+    ack_control(&outbound, ack_id, &grpc, "vxlan_teardown").await;
 }
 
 /// Pause an idle container. Fire-and-forget: the server marks the replica

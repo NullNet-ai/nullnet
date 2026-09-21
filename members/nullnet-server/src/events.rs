@@ -1,3 +1,5 @@
+mod persistence;
+
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,6 +44,17 @@ pub(crate) struct EventEnvelope<'a> {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum Event {
+    #[serde(rename = "event_persistence_failed")]
+    PersistenceFailed {
+        error_message: String,
+        queued_events: usize,
+        timestamp: u64,
+    },
+    #[serde(rename = "event_persistence_recovered")]
+    PersistenceRecovered {
+        queued_events: usize,
+        timestamp: u64,
+    },
     NodeConnected {
         ip: String,
         timestamp: u64,
@@ -513,6 +526,8 @@ pub(crate) enum Event {
 impl Event {
     pub(crate) fn kind(&self) -> &'static str {
         match self {
+            Self::PersistenceFailed { .. } => "event_persistence_failed",
+            Self::PersistenceRecovered { .. } => "event_persistence_recovered",
             Self::NodeConnected { .. } => "node_connected",
             Self::NodeDisconnected { .. } => "node_disconnected",
             Self::ServiceRegistered { .. } => "service_registered",
@@ -606,7 +621,8 @@ impl Event {
                     Severity::Error
                 }
             }
-            Self::NodeConnected { .. }
+            Self::PersistenceRecovered { .. }
+            | Self::NodeConnected { .. }
             | Self::ServiceRegistered { .. }
             | Self::SetupStarted { .. }
             | Self::SetupAck { .. }
@@ -642,7 +658,8 @@ impl Event {
             | Self::ProxyClientNotInet { .. }
             | Self::ProxyDisconnected { .. } => Severity::Warning,
 
-            Self::SetupTimeout { .. }
+            Self::PersistenceFailed { .. }
+            | Self::SetupTimeout { .. }
             | Self::EdgePromotionLost { .. }
             | Self::ChainOwnerLost { .. }
             | Self::NetTeardownUnconfirmed { .. }
@@ -1444,22 +1461,18 @@ pub(crate) struct EventPage {
     pub(crate) next_before_id: Option<i64>,
 }
 
-/// Shared event store: durably backed by the `events` DB table (pruned on a
-/// retention timer — see `events_retention.rs`), plus a broadcast channel for
-/// live SSE subscribers. `db` is filled in once via [`Self::attach_db`] —
-/// the many in-process unit tests that build an `Orchestrator` directly never
-/// call it, so their events still broadcast live but aren't persisted, which
-/// is all those tests need.
+/// Bounded persistence queue with batched commits and live SSE after commit.
+/// Unattached stores only broadcast, as used by in-process orchestrator tests.
 #[derive(Clone)]
 pub(crate) struct EventStore {
-    db: Arc<OnceLock<Db>>,
+    writer: Arc<OnceLock<persistence::Writer>>,
     tx: broadcast::Sender<Event>,
 }
 
 impl std::fmt::Debug for EventStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EventStore")
-            .field("db_attached", &self.db.get().is_some())
+            .field("db_attached", &self.writer.get().is_some())
             .finish()
     }
 }
@@ -1468,42 +1481,36 @@ impl EventStore {
     pub(crate) fn new() -> Self {
         let (tx, _) = broadcast::channel(512);
         Self {
-            db: Arc::new(OnceLock::new()),
+            writer: Arc::new(OnceLock::new()),
             tx,
         }
     }
 
-    /// Wire in DB-backed persistence. A no-op after the first call.
+    /// Attach one bounded, batching writer shared by every store clone.
     pub(crate) fn attach_db(&self, db: Db) {
-        let _ = self.db.set(db);
+        self.writer
+            .get_or_init(|| persistence::Writer::start(db, self.tx.clone()));
     }
 
     pub(crate) async fn emit(&self, event: Event) {
-        if let Some(db) = self.db.get() {
-            let kind = event.kind();
-            match serde_json::to_value(&event) {
-                Ok(payload) => {
-                    let timestamp = payload
-                        .get("timestamp")
-                        .and_then(serde_json::Value::as_i64)
-                        .unwrap_or_else(|| now_secs() as i64);
-                    if let Err(e) = db
-                        .events()
-                        .insert(
-                            kind,
-                            event.severity().as_str(),
-                            timestamp,
-                            &payload.to_string(),
-                        )
-                        .await
-                    {
-                        eprintln!("Failed to persist event '{kind}': {e:?}");
-                    }
-                }
-                Err(e) => eprintln!("Failed to serialize event '{kind}' for persistence: {e:#}"),
-            }
+        if let Some(writer) = self.writer.get() {
+            writer.emit(event).await;
+        } else {
+            let _ = self.tx.send(event);
         }
-        let _ = self.tx.send(event);
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        if let Some(writer) = self.writer.get() {
+            writer.shutdown().await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn flush(&self) {
+        if let Some(writer) = self.writer.get() {
+            writer.flush().await;
+        }
     }
 
     /// Most-recent-first page of persisted events, optionally filtered by
@@ -1519,14 +1526,15 @@ impl EventStore {
         before_id: Option<i64>,
         limit: i64,
     ) -> EventPage {
-        let Some(db) = self.db.get() else {
+        let Some(writer) = self.writer.get() else {
             return EventPage {
                 events: vec![],
                 next_before_id: None,
             };
         };
         let severity_str = severity.map(Severity::as_str);
-        let rows = db
+        let rows = writer
+            .db
             .events()
             .query(kind, severity_str, since, until, before_id, limit)
             .await

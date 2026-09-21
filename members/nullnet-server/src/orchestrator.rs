@@ -8,7 +8,8 @@ use crate::services::changes::{apply_changes, detect_node_disconnect_changes};
 use crate::services::input::StackMap;
 use crate::sessions::SessionStore;
 use nullnet_grpc_lib::nullnet_grpc::{
-    ContainerResume, ContainerSuspend, EgressPolicyChanged, MsgId, Net, NetMessage, net_message,
+    ContainerResume, ContainerSuspend, EgressPolicyChanged, MsgId, Net, NetMessage, NetReady,
+    net_message,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
@@ -396,7 +397,10 @@ impl Orchestrator {
         );
         let (proxy_ok, init_ok) = tokio::join!(proxy_res, init_res);
 
-        if proxy_ok.is_none() || init_ok.is_none() {
+        if proxy_ok.is_none()
+            || init_ok.is_none()
+            || !self.send_net_ready(initiator_ip, net_id).await
+        {
             self.events
                 .emit(Event::setup_timeout(net_id, service.to_string()))
                 .await;
@@ -965,14 +969,9 @@ impl Orchestrator {
         encrypted: bool,
         egress: EgressRole,
     ) -> Option<Ipv4Addr> {
-        let outbound = self.clients.read().await.get(&dest).cloned();
-        if let Some(outbound) = outbound {
-            let (tx, rx) = oneshot::channel();
-            let msg_id = Uuid::new_v4().to_string();
-            self.pending.lock().await.insert(msg_id.clone(), tx);
-
-            let (server_net, message) = NET_TYPE.setup(
-                msg_id.clone(),
+        self.send_control(dest, |msg_id| {
+            NET_TYPE.setup(
+                msg_id.id,
                 dest,
                 remote_server_name,
                 net_id,
@@ -983,22 +982,48 @@ impl Orchestrator {
                 dstport,
                 encrypted,
                 egress,
-            )?;
+            )
+        })
+        .await
+    }
 
-            if outbound.send(Ok(message)).await.is_err() {
-                self.pending.lock().await.remove(&msg_id);
-                return None;
-            }
-
-            if let Ok(result) = tokio::time::timeout(Duration::from_secs(30), rx).await {
-                result.ok().map(|()| server_net)
-            } else {
-                self.pending.lock().await.remove(&msg_id);
+    async fn send_control<T>(
+        &self,
+        dest: IpAddr,
+        message: impl FnOnce(MsgId) -> Option<(T, NetMessage)>,
+    ) -> Option<T> {
+        let outbound = self.clients.read().await.get(&dest).cloned()?;
+        let id = Uuid::new_v4().to_string();
+        let (value, message) = message(MsgId { id: id.clone() })?;
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().await.insert(id.clone(), tx);
+        if outbound.send(Ok(message)).await.is_err() {
+            self.pending.lock().await.remove(&id);
+            return None;
+        }
+        match tokio::time::timeout(Duration::from_secs(30), rx).await {
+            Ok(Ok(())) => Some(value),
+            _ => {
+                self.pending.lock().await.remove(&id);
                 None
             }
-        } else {
-            None
         }
+    }
+
+    pub(crate) async fn send_net_ready(&self, dest: IpAddr, net_id: u32) -> bool {
+        self.send_control(dest, |msg_id| {
+            Some((
+                (),
+                NetMessage {
+                    message: Some(net_message::Message::NetReady(NetReady {
+                        msg_id: Some(msg_id),
+                        net_id,
+                    })),
+                },
+            ))
+        })
+        .await
+        .is_some()
     }
 
     /// Fire-and-forget: tell the host running `docker_container` to `docker pause` it.
@@ -1047,34 +1072,20 @@ impl Orchestrator {
         dest: IpAddr,
         docker_container: String,
     ) -> bool {
-        let outbound = self.clients.read().await.get(&dest).cloned();
-        let Some(outbound) = outbound else {
-            return false;
-        };
-
-        let (tx, rx) = oneshot::channel();
-        let msg_id = Uuid::new_v4().to_string();
-        self.pending.lock().await.insert(msg_id.clone(), tx);
-
         println!("Resuming container '{docker_container}' on {dest}");
-        let message = NetMessage {
-            message: Some(net_message::Message::ContainerResume(ContainerResume {
-                msg_id: Some(MsgId { id: msg_id.clone() }),
-                docker_container,
-            })),
-        };
-
-        if outbound.send(Ok(message)).await.is_err() {
-            self.pending.lock().await.remove(&msg_id);
-            return false;
-        }
-
-        if let Ok(result) = tokio::time::timeout(Duration::from_secs(30), rx).await {
-            result.is_ok()
-        } else {
-            self.pending.lock().await.remove(&msg_id);
-            false
-        }
+        self.send_control(dest, |msg_id| {
+            Some((
+                (),
+                NetMessage {
+                    message: Some(net_message::Message::ContainerResume(ContainerResume {
+                        msg_id: Some(msg_id),
+                        docker_container,
+                    })),
+                },
+            ))
+        })
+        .await
+        .is_some()
     }
 
     pub(crate) async fn allocate_net_id(&self) -> Option<u32> {
@@ -1342,6 +1353,7 @@ impl Orchestrator {
                     | Some(net_message::Message::VxlanSetup(
                         nullnet_grpc_lib::nullnet_grpc::VxlanSetup { msg_id, .. },
                     ))
+                    | Some(net_message::Message::NetReady(NetReady { msg_id, .. }))
                     | Some(net_message::Message::ContainerResume(ContainerResume {
                         msg_id, ..
                     }))
@@ -1353,9 +1365,10 @@ impl Orchestrator {
                     )) => msg_id.clone(),
                     _ => None,
                 };
+                let activation = matches!(msg.message, Some(net_message::Message::NetReady(_)));
                 log_task.lock().await.push(msg);
                 if let Some(msg_id) = ack_id {
-                    if let Ok(permit) = gate_task.acquire().await {
+                    if !activation && let Ok(permit) = gate_task.acquire().await {
                         permit.forget();
                     }
                     if let Some(tx) = pending.lock().await.remove(&msg_id.id) {
@@ -1393,6 +1406,7 @@ impl Orchestrator {
                     | Some(net_message::Message::VxlanSetup(
                         nullnet_grpc_lib::nullnet_grpc::VxlanSetup { msg_id, .. },
                     ))
+                    | Some(net_message::Message::NetReady(NetReady { msg_id, .. }))
                     | Some(net_message::Message::ContainerResume(ContainerResume {
                         msg_id, ..
                     })) => msg_id.clone(),

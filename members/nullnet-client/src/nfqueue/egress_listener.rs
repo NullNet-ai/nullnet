@@ -1,14 +1,8 @@
 //! Egress-trigger NFQUEUE listener (queue 1) — hold-until-steered.
 //!
-//! The kernel queues the first packet of each NEW flow to a non-internal
-//! destination (see `commands::egress`). For a packet whose source maps to a
-//! registered service container we fire `egress_trigger` so the server builds the
-//! per-initiator egress edge to the gateway, and — unlike the old accept-and-retry
-//! model — we **hold** the packet (defer the verdict) until steering is installed.
-//! `control_channel` calls `TriggersState::mark_active` right after
-//! `egress::install_steer` succeeds; that wakes the held handler, which verdicts
-//! ACCEPT. The released packet then hits the freshly-installed `ip rule` and is
-//! policy-routed into the tunnel, so the original SYN is not dropped.
+//! Hold the first packet while the server builds the initiator's gateway edge.
+//! VxlanSetup installs local steering; NetReady releases packets only after
+//! both endpoints acknowledge setup, so SYNs cannot enter an unfinished peer.
 //!
 //! This reuses the backend-trigger machinery wholesale: the shared
 //! `recv_loop::spawn_queue_loop` plumbing and the `TriggersState` lifecycle,
@@ -46,7 +40,7 @@ const QUEUE_MAX_LEN: u32 = 4096;
 /// the RPC cancels the server's handler mid-build.
 const TRIGGER_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long the handler holds the packet waiting for steering to be installed
-/// (`mark_active`) before giving up.
+/// (`mark_ready`) before giving up.
 const STEER_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the handler waits for the server's egress policy verdict.
 const POLICY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -264,7 +258,7 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Decision {
         TriggerClaim::Pending(notify) => tracked(wait_for_steer(ctx, &container, notify).await),
         TriggerClaim::Start(notify) => {
             // Register the waiter BEFORE the gRPC round-trip: the server can
-            // dispatch the egress `VxlanSetup` (→ `mark_active`) faster than its
+            // dispatch the egress `NetReady` (→ `mark_ready`) faster than its
             // reply to `egress_trigger` returns, and `notify_waiters` only wakes
             // already-registered futures (see the backend listener for the race).
             let notified = notify.notified();
@@ -366,7 +360,7 @@ async fn policy_allows(ctx: &EgressCtx, container: &str, dst_ip: Ipv4Addr) -> bo
 /// Verdict for a held packet whose `egress_trigger` errored or timed out.
 ///
 /// The RPC failing says nothing about the `VxlanSetup`: it can land, install
-/// steering and `mark_active` while the RPC is still in flight (observed in
+/// steering and `mark_ready` while the RPC is still in flight (observed in
 /// production — steer live at +2s, RPC abandoned at +5s). So clear the entry
 /// only while it is still `Pending`, and release the packet if steering did go
 /// live after all.

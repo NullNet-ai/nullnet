@@ -2367,7 +2367,13 @@ async fn setup_edge(
 
     let (server_ok, client_ok) = tokio::join!(server_res, client_res);
 
-    if server_ok.is_none() || client_ok.is_none() {
+    // Local steering must not release packets into an unfinished peer.
+    let activate = *NET_TYPE == Net::Vxlan
+        && (backend_entry_port.is_some() || client_egress == EgressRole::Steer);
+    if server_ok.is_none()
+        || client_ok.is_none()
+        || (activate && !orchestrator.send_net_ready(client_ethernet, net_id).await)
+    {
         if client.is_proxy().is_some() {
             orchestrator
                 .events

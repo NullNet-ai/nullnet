@@ -4687,3 +4687,50 @@ port = 5555
     assert_net_ids_in_use(&server, 0).await;
     assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 0);
 }
+
+#[tokio::test]
+async fn backend_packets_are_released_only_after_both_setup_acks() {
+    let services = load_fixture(BACKEND_LIVENESS).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+    register_services(
+        &server,
+        &HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]),
+        8080,
+    )
+    .await;
+    let initiator = server
+        .orchestrator()
+        .register_recording_client(ip(1, 1, 1, 1))
+        .await;
+    let (receiver, gate) = server
+        .orchestrator()
+        .register_gated_client(ip(2, 2, 2, 2))
+        .await;
+    let task_server = server.clone();
+    let build = tokio::spawn(async move {
+        task_server
+            .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None)
+            .await
+    });
+    wait_for_log(&receiver, |messages| !setup_net_ids(messages).is_empty()).await;
+    assert!(
+        !initiator
+            .lock()
+            .await
+            .iter()
+            .any(|message| matches!(message.message, Some(net_message::Message::NetReady(_))))
+    );
+    gate.add_permits(1);
+    build.await.unwrap().unwrap();
+    let messages = initiator.lock().await;
+    let setup = setup_net_ids(&messages);
+    let ready: Vec<_> = messages
+        .iter()
+        .filter_map(|message| match &message.message {
+            Some(net_message::Message::NetReady(ready)) => Some(ready.net_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ready.len(), 1);
+    assert!(setup.contains(&ready[0]));
+}

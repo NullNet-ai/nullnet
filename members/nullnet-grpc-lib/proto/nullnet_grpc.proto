@@ -129,7 +129,14 @@ message NetMessage {
     ContainerResume container_resume = 6;
     // Egress country-policy changed on the server (fire-and-forget)
     EgressPolicyChanged egress_policy_changed = 7;
+    NetReady net_ready = 8;
   }
+}
+
+// Both endpoints are prepared; the initiator may release held packets.
+message NetReady {
+  MsgId msg_id = 1;
+  uint32 net_id = 2;
 }
 
 // A service's egress country lists changed on a config reload. The client

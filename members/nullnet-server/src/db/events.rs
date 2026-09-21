@@ -8,6 +8,13 @@ use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+pub(crate) struct EventInsert {
+    pub(crate) kind: &'static str,
+    pub(crate) severity: &'static str,
+    pub(crate) timestamp: i64,
+    pub(crate) payload: String,
+}
+
 /// Typed access to the `events` table: durable storage for `crate::events::Event`,
 /// with time-based deletion so volume never grows unbounded (see `events_retention.rs`).
 pub(crate) struct EventRepository {
@@ -17,6 +24,29 @@ pub(crate) struct EventRepository {
 impl EventRepository {
     pub(super) fn new(conn: Arc<Mutex<AsyncSqlite>>) -> Self {
         Self { conn }
+    }
+
+    pub(crate) async fn insert_batch(&self, rows: Vec<EventInsert>) -> Result<(), Error> {
+        let mut conn = self.conn.lock().await;
+        conn.spawn_blocking(move |conn| {
+            conn.transaction::<(), diesel::result::Error, _>(|conn| {
+                for row in &rows {
+                    let values = NewEventRow {
+                        kind: row.kind,
+                        severity: row.severity,
+                        timestamp: row.timestamp,
+                        payload: &row.payload,
+                    };
+                    diesel::RunQueryDsl::execute(
+                        diesel::insert_into(events::table).values(values),
+                        conn,
+                    )?;
+                }
+                Ok(())
+            })
+        })
+        .await
+        .handle_err(location!())
     }
 
     pub(crate) async fn insert(
@@ -197,5 +227,126 @@ mod tests {
         let remaining = repo.query(None, None, None, None, None, 10).await.unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].timestamp, 500);
+    }
+
+    #[tokio::test]
+    async fn a_failed_batch_rolls_back_every_row() {
+        use super::*;
+        let db = test_db().await;
+        let repo = db.events();
+        diesel::sql_query("CREATE TRIGGER reject_event BEFORE INSERT ON events WHEN NEW.payload = 'reject' BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;")
+            .execute(&mut *repo.conn.lock().await).await.unwrap();
+        let rows = vec![
+            EventInsert {
+                kind: "node_connected",
+                severity: "info",
+                timestamp: 100,
+                payload: "{}".into(),
+            },
+            EventInsert {
+                kind: "node_connected",
+                severity: "info",
+                timestamp: 100,
+                payload: "reject".into(),
+            },
+        ];
+        assert!(repo.insert_batch(rows).await.is_err());
+        assert!(
+            repo.query(None, None, None, None, None, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn event_enqueue_does_not_wait_for_storage_and_shutdown_drains() {
+        use crate::events::{Event, EventStore};
+        let db = test_db().await;
+        let store = EventStore::new();
+        store.attach_db(db.clone());
+        let mut live = store.subscribe();
+        let repo = db.events();
+        let guard = repo.conn.lock().await;
+        for i in 0..512 {
+            store
+                .emit(Event::node_connected(format!("192.0.2.{i}")))
+                .await;
+        }
+        assert!(live.try_recv().is_err());
+        drop(guard);
+        store.flush().await;
+        assert_eq!(
+            repo.query(None, None, None, None, None, 1000)
+                .await
+                .unwrap()
+                .len(),
+            512
+        );
+        store
+            .emit(Event::node_connected("198.51.100.1".into()))
+            .await;
+        store.shutdown().await;
+        let rows = repo
+            .query(None, None, None, None, None, 1000)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 513);
+        assert!(rows[0].payload.contains("198.51.100.1"));
+    }
+
+    #[tokio::test]
+    async fn event_writer_retries_without_losing_events_and_reports_recovery() {
+        use super::*;
+        use crate::events::{Event, EventStore};
+        let db = test_db().await;
+        let repo = db.events();
+        diesel::sql_query("CREATE TRIGGER reject_event BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;")
+            .execute(&mut *repo.conn.lock().await).await.unwrap();
+        let store = EventStore::new();
+        store.attach_db(db.clone());
+        let mut live = store.subscribe();
+        store.emit(Event::node_connected("192.0.2.1".into())).await;
+        let failure = tokio::time::timeout(std::time::Duration::from_secs(5), live.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(failure, Event::PersistenceFailed { .. }));
+        assert!(
+            repo.query(None, None, None, None, None, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        store.emit(Event::node_connected("192.0.2.2".into())).await;
+        diesel::sql_query("DROP TRIGGER reject_event")
+            .execute(&mut *repo.conn.lock().await)
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), store.shutdown())
+            .await
+            .unwrap();
+        let rows = repo.query(None, None, None, None, None, 10).await.unwrap();
+        assert_eq!(rows.len(), 4);
+        for row in &rows {
+            let payload: serde_json::Value = serde_json::from_str(&row.payload).unwrap();
+            assert_eq!(payload["type"], row.kind);
+        }
+        assert_eq!(
+            rows.iter().filter(|r| r.kind == "node_connected").count(),
+            2
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.kind == "event_persistence_failed")
+                .count(),
+            1
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.kind == "event_persistence_recovered")
+                .count(),
+            1
+        );
     }
 }

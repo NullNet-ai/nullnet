@@ -11,6 +11,7 @@ mod netlink;
 pub(crate) mod nfqueue;
 mod ovs;
 pub(crate) mod vxlan;
+mod vxlan_cleanup;
 
 pub(crate) async fn setup_br0(rtnetlink_handle: &RtNetLinkHandle) {
     // create the bridge
