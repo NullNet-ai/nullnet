@@ -13,6 +13,7 @@ All Nullnet releases with the relative changes are documented in this file.
 - Per-service egress/ingress traffic filters: arbitrary AND/OR/group combinations of Country, Organization, Src IP (ingress), and Dst IP (egress) conditions, evaluated via `rpn-predicate-interpreter` — replaces the country-only egress/ingress policy ([#171](https://github.com/NullNet-ai/nullnet/pull/171) — fixes [#143](https://github.com/NullNet-ai/nullnet/issues/143))
 - Persist ingress and egress sessions to SQLite and show the full history on the Sessions page, filterable by status, service, direction, and policy verdict, with its own retention window ([#170](https://github.com/NullNet-ai/nullnet/pull/170) — fixes [#156](https://github.com/NullNet-ai/nullnet/issues/156))
 ### Changed
+- Update HTTP/2 to h2 0.4.19 and remove the control-frame receipt workaround, retaining bounded RPC work ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
 - Remove redundant sudo calls from the root client, startup cleanup and setup scripts ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
 - Avoid redundant sudo in the root client’s VXLAN lifecycle and release the topology lock before persisting idle backend session closures ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
 - Configure persistent conntrack capacity during client setup, preserving higher host limits ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
@@ -28,7 +29,7 @@ All Nullnet releases with the relative changes are documented in this file.
 ### Removed
 ### Fixed
 - Balance capped networks by their total client count and attach clients atomically under concurrent requests ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
-- Prevent mass expiry from monopolizing routing locks, bound control delivery and deletion batches, preserve Docker interfaces on recovery, and prevent premature tunnel-ID reuse ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
+- Prevent mass expiry from monopolizing routing locks, bound deletion batches, preserve Docker interfaces on recovery, and prevent premature tunnel-ID reuse ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
 - Release backend session locks during history writes and save configuration changes atomically in one transaction ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
 - Keep NetworkManager from adopting Nullnet-owned interfaces during tunnel creation ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
 - Batch event persistence, bound RPC bursts, accelerate VXLAN lifecycle operations, and wait for both endpoints before releasing backend/egress traffic ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).

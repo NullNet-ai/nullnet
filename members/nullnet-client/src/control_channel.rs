@@ -74,7 +74,7 @@ pub(crate) async fn control_channel(
     sets: LivenessSets,
 ) -> Result<(), Error> {
     let (outbound, grpc_rx) = mpsc::channel(64);
-    let (mut inbound, flow) = server
+    let mut inbound = server
         .control_channel(grpc_rx)
         .await
         .handle_err(location!())?;
@@ -87,12 +87,6 @@ pub(crate) async fn control_channel(
     while let Ok(Some(message)) = inbound.message().await.inspect_err(|error| {
         eprintln!("Control channel from server failed: {error:?}");
     }) {
-        if !flow
-            .receive(message.delivery_sequence, message.delivery_receipt)
-            .await
-        {
-            continue;
-        }
         let rtnetlink_handle = rtnetlink_handle.clone();
         let peers = peers.clone();
         let outbound = outbound.clone();

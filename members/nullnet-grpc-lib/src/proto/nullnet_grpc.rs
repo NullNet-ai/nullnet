@@ -21,10 +21,6 @@ pub struct NetType {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NetMessage {
-    #[prost(uint64, tag = "9")]
-    pub delivery_sequence: u64,
-    #[prost(uint64, tag = "10")]
-    pub delivery_receipt: u64,
     #[prost(oneof = "net_message::Message", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
     pub message: ::core::option::Option<net_message::Message>,
 }
@@ -210,10 +206,6 @@ pub struct VxlanTeardown {
 pub struct MsgId {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
-    #[prost(uint64, tag = "2")]
-    pub delivery_sequence: u64,
-    #[prost(uint64, tag = "3")]
-    pub delivery_receipt: u64,
 }
 /// Raw local observations a client reports; the server joins them against the
 /// match keys in services/<stack>.toml. One observation may match many services.

@@ -424,10 +424,10 @@ impl NullnetGrpcImpl {
         request: Request<Streaming<MsgId>>,
     ) -> Result<Response<<NullnetGrpcImpl as NullnetGrpc>::ControlChannelStream>, Error> {
         let (outbound, receiver) = mpsc::channel(64);
-        let (stream, flow) = nullnet_grpc_lib::control_flow::ControlStream::new(receiver);
+        let stream = ReceiverStream::new(receiver);
 
         self.orchestrator
-            .add_client(request, outbound, self.services.clone(), flow)
+            .add_client(request, outbound, self.services.clone())
             .await?;
 
         Ok(Response::new(stream))
@@ -2592,8 +2592,7 @@ impl NullnetGrpc for NullnetGrpcImpl {
             .map_err(|err| Status::internal(err.to_str()))
     }
 
-    type ControlChannelStream =
-        nullnet_grpc_lib::control_flow::ControlStream<Result<NetMessage, Status>>;
+    type ControlChannelStream = ReceiverStream<Result<NetMessage, Status>>;
 
     async fn control_channel(
         &self,

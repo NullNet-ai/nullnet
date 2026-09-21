@@ -2,7 +2,7 @@
 
 Compared **main** (`28a4c2e`), **perf** and **capped-perf** (same code, `max_networks = 10` for every service). Two Linux hosts, each with 8 vCPUs and 16 GiB RAM; 12 services, 24 replicas and 19 backend relationships. Requests exercised those backends. ESP/AES-GCM, MACsec AES-256-GCM and control-channel TLS stayed enabled.
 
-Uncapped single/large-load results use `03a4fd6`; the 32-request warm test was repeated after the balancing fix.
+The comparison below predates the HTTP/2 update. Uncapped single/large-load results use `03a4fd6`; the warm test was repeated after the balancing fix.
 
 ## Results
 
@@ -18,6 +18,22 @@ Uncapped single/large-load results use `03a4fd6`; the 32-request warm test was r
 | Same 10-minute test, final 5 minutes: average / successful requests/second | Not measured | 1.27 s / 1,570 | 0.71 s / 2,829 |
 
 Main’s cold-client test stopped at its time limit after 2,026 attempts. Individual request latency includes queueing; burst duration divided by request count is **not** individual latency. Endpoint teardown excludes idle timeout and includes kernel work. These are individual lab trials; host load varies. The cap does not affect isolated setup, so small differences there are normal variation.
+
+## Where cold requests spend time
+
+A separate encrypted, capped 60-second profiling run served **138,223 requests, all successful**. The first request from each of 2,000 simultaneous clients averaged **12.40 seconds**, broken down as follows (a fresh trial, separate from the 10-minute comparison above):
+
+| Part of the first request | Average |
+|---|---:|
+| Waiting for an available gRPC call slot | 11.98 s (96.6%) |
+| Executing policy and routing calls, including setup when needed | 0.28 s |
+| Connecting to the proxy and remaining request work | 0.14 s |
+
+Slow cold setups hold slots while other requests queue; most clients subsequently reuse networks. Endpoint setup averaged 2.04 s on the busier host and 0.41 s on the other. Kernel samples showed network-configuration and firewall waits, but do not establish an unavoidable kernel limit.
+
+The old HTTP/2 dependency disconnected twice with `too_many_data_frames` when the shared call limit was raised from 32 to 64. Updating `h2` from 0.4.16 to 0.4.19 brings upstream fixes for frame accounting ([release notes](https://github.com/hyperium/h2/blob/v0.4.19/CHANGELOG.md)). Removing all request limits still overloaded tunnel creation. A replacement server-side limit was slower and was discarded. The existing 32-call limit remains; only the extra transport receipt protocol is removed. Setup, readiness and teardown acknowledgements remain intact.
+
+The updated build's capped burst served **124,742 requests successfully**, but one initial request reached the **180-second timeout**. Its cause remains unresolved; this is **not a clean validation pass**. The other 1,999 first requests averaged **10.29 s**. A subsequent warm test served **47,053 requests**, all successful, averaging **13.60 ms / 2,351 requests per second**. No HTTP/2 disconnect or daemon restart occurred during these tests. These individual trials do not prove a speed improvement from the update. A short uncapped test also passed 64/64 cold requests (1.64 s average), using a 5-second idle timeout to shorten cleanup. Both hosts returned to zero owned interfaces, namespaces and matching IPsec entries; graph and active sessions also reached zero. Original configuration and routes were restored, with all 24 application processes unchanged. Full Linux CI passed; the unresolved stall keeps end-to-end verification incomplete.
 
 ## Correctness and remaining limits
 

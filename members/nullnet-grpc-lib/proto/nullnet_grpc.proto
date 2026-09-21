@@ -131,8 +131,6 @@ message NetMessage {
     EgressPolicyChanged egress_policy_changed = 7;
     NetReady net_ready = 8;
   }
-  uint64 delivery_sequence = 9;
-  uint64 delivery_receipt = 10;
 }
 
 // Both endpoints are prepared; the initiator may release held packets.
@@ -249,8 +247,6 @@ message VxlanTeardown {
 
 message MsgId {
   string id = 1;
-  uint64 delivery_sequence = 2;
-  uint64 delivery_receipt = 3;
 }
 
 // Raw local observations a client reports; the server joins them against the

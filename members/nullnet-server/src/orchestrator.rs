@@ -208,7 +208,6 @@ impl Orchestrator {
         request: Request<Streaming<MsgId>>,
         outbound: OutboundStream,
         services: Arc<RwLock<StackMap>>,
-        flow: nullnet_grpc_lib::control_flow::ControlFlow,
     ) -> Result<(), Error> {
         let client_ip = request
             .remote_addr()
@@ -227,12 +226,6 @@ impl Orchestrator {
             while let Ok(Some(msg_id)) = inbound.message().await.inspect_err(|error| {
                 eprintln!("Control channel from '{client_ip}' failed: {error:?}");
             }) {
-                if !flow
-                    .receive(msg_id.delivery_sequence, msg_id.delivery_receipt)
-                    .await
-                {
-                    continue;
-                }
                 if let Some(tx) = orchestrator.pending.lock().await.remove(&msg_id.id) {
                     let _ = tx.send(());
                 }
@@ -1047,10 +1040,7 @@ impl Orchestrator {
     ) -> Option<T> {
         let outbound = self.clients.read().await.get(&dest).cloned()?;
         let id = Uuid::new_v4().to_string();
-        let (value, message) = message(MsgId {
-            id: id.clone(),
-            ..Default::default()
-        })?;
+        let (value, message) = message(MsgId { id: id.clone() })?;
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id.clone(), tx);
         if outbound.send(Ok(message)).await.is_err() {
@@ -1071,8 +1061,6 @@ impl Orchestrator {
             Some((
                 (),
                 NetMessage {
-                    delivery_sequence: 0,
-                    delivery_receipt: 0,
                     message: Some(net_message::Message::NetReady(NetReady {
                         msg_id: Some(msg_id),
                         net_id,
@@ -1091,8 +1079,6 @@ impl Orchestrator {
         if let Some(outbound) = outbound {
             println!("Suspending container '{docker_container}' on {dest}");
             let message = NetMessage {
-                delivery_sequence: 0,
-                delivery_receipt: 0,
                 message: Some(net_message::Message::ContainerSuspend(ContainerSuspend {
                     docker_container,
                 })),
@@ -1116,8 +1102,6 @@ impl Orchestrator {
         for (ip, outbound) in outbounds {
             println!("Notifying {ip} of egress policy change");
             let message = NetMessage {
-                delivery_sequence: 0,
-                delivery_receipt: 0,
                 message: Some(net_message::Message::EgressPolicyChanged(
                     EgressPolicyChanged {},
                 )),
@@ -1139,8 +1123,6 @@ impl Orchestrator {
             Some((
                 (),
                 NetMessage {
-                    delivery_sequence: 0,
-                    delivery_receipt: 0,
                     message: Some(net_message::Message::ContainerResume(ContainerResume {
                         msg_id: Some(msg_id),
                         docker_container,

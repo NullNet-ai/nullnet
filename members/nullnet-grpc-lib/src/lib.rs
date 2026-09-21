@@ -1,5 +1,4 @@
 pub mod certificate_names;
-pub mod control_flow;
 mod control_tls_verifier;
 mod proto;
 
@@ -16,10 +15,11 @@ use std::{future::Future, path::Path, sync::Arc};
 use tokio::sync::{Semaphore, mpsc};
 use tonic::Request;
 pub use tonic::Streaming;
+use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, ClientTlsConfig};
 
-// Each unary request can buffer its protobuf DATA frame plus an empty EOS
-// frame. Keep those below h2's 100-small-frame budget, leaving room for streams.
+// Bound concurrent RPC work, including cold tunnel creation. Removing this
+// limit overloads setup during large bursts even with corrected h2 accounting.
 const MAX_IN_FLIGHT_UNARY: usize = 32;
 
 /// Why a `proxy` lookup failed.
@@ -77,8 +77,6 @@ impl NullnetGrpcInterface {
         }
     }
 
-    // Hold admission through body decoding, not just response headers. Bursts
-    // of small protobuf bodies otherwise exhaust h2's buffered-frame budget.
     // Streams stay independent so setup acknowledgements can always progress.
     async fn unary<T>(
         &self,
@@ -104,18 +102,16 @@ impl NullnetGrpcInterface {
     pub async fn control_channel(
         &self,
         receiver: mpsc::Receiver<MsgId>,
-    ) -> Result<(Streaming<NetMessage>, control_flow::ControlFlow), String> {
-        let (receiver, flow) = control_flow::ControlStream::new(receiver);
+    ) -> Result<Streaming<NetMessage>, String> {
+        let receiver = ReceiverStream::new(receiver);
 
-        Ok((
-            self.client
-                .clone()
-                .control_channel(Request::new(receiver))
-                .await
-                .map_err(|e| e.to_string())?
-                .into_inner(),
-            flow,
-        ))
+        Ok(self
+            .client
+            .clone()
+            .control_channel(Request::new(receiver))
+            .await
+            .map_err(|e| e.to_string())?
+            .into_inner())
     }
 
     #[allow(clippy::missing_errors_doc)]
