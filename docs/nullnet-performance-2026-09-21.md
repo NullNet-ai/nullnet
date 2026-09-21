@@ -1,56 +1,34 @@
 # Nullnet performance — 21 September 2026
 
-**Overload handling and recovery improved substantially. Creating thousands of cold tunnels still takes time; the exact production outage is not proven fixed.**
+Compared **main** (`28a4c2e`), **perf** and **capped-perf** (same code, `max_networks = 10` for every service). Two Linux hosts, each with 8 vCPUs and 16 GiB RAM; 12 services, 24 replicas and 19 backend relationships. Requests exercised those backends. ESP/AES-GCM, MACsec AES-256-GCM and control-channel TLS stayed enabled.
 
-Compared main (`28a4c2e`), previous perf (`8486e6e`), and perf with these changes on two Linux hosts, each with 8 vCPUs and 16 GiB RAM. Tests used 12 services, 19 backend relationships and 24 replicas. Requests called configured backends. Encryption remained enabled: ESP/AES-GCM between hosts, MACsec AES-256-GCM locally, and TLS for control messages.
+Uncapped single/large-load results use `03a4fd6`; the 32-request warm test was repeated after the balancing fix.
 
-## One tunnel at a time
+## Results
 
-Twenty isolated cross-host rounds per build, without overlapping operations. Every request succeeded; encrypted packet counters were checked.
-
-| Measurement | Main average | Current average |
-|---|---:|---:|
-| Complete setup shown beside the Net ID in the UI | 186.4 ms | 68.3 ms |
-| Setup inside one endpoint | 171.3 ms | 61.9 ms |
-| Teardown inside one endpoint | 212.2 ms | 119.3 ms |
-
-Endpoint timings include Nullnet, commands and kernel work. Complete setup waits for both endpoints. Teardown excludes idle grace and earlier steering/host-file cleanup. These isolated timings are essentially unchanged from previous perf.
-
-## New clients arriving while older tunnels expire
-
-One new source IP per request, 64 requests in flight, up to 2,048 clients, normal 60-second idle settings and a 15-minute test limit.
-
-| Build | Requests | Successful | Elapsed time |
+| Measurement | Main | Perf | Capped-perf |
 |---|---:|---:|---:|
-| Main | 2,026 | 7.11% | 930 s |
-| Previous perf | 2,048 | 99.46% | 216 s |
-| Current | 2,048 | 100% | 150 s |
+| Single cold request, average of 20 isolated rounds | 211.9 ms | 82.0 ms | 76.9 ms |
+| Setup beside Net ID in the UI, same rounds | 186.4 ms | 68.3 ms | 64.1 ms |
+| One endpoint’s setup / teardown, same rounds | 171.3 / 212.2 ms | 61.9 / 119.3 ms | 57.3 / 102.0 ms |
+| 2,048 new clients, 64 concurrent: successful requests/second | 0.15 | 13.69 | 136.22 |
+| Same cold workload: requests served successfully | 7.11% | 100% | 100% |
+| Warm requests from one IP, 32 concurrent: average / successful requests/second | 287.9 ms / 110 | 9.1 ms / 3,522 | 9.0 ms / 3,553 |
+| 2,000 distinct clients together: average first-request time | Not measured | 44.26 s | 18.37 s |
+| Same 10-minute test, final 5 minutes: average / successful requests/second | Not measured | 1.27 s / 1,570 | 0.71 s / 2,829 |
 
-Main stopped serving successful requests after the first minute while direct application probes averaged 0.58 ms. Two minutes after traffic stopped, 1,152 interfaces and 278 namespaces remained despite an empty graph/history.
+Main’s cold-client test stopped at its time limit after 2,026 attempts. Individual request latency includes queueing; burst duration divided by request count is **not** individual latency. Endpoint teardown excludes idle timeout and includes kernel work. These are individual lab trials; host load varies. The cap does not affect isolated setup, so small differences there are normal variation.
 
-Current request p99 was **12.69 seconds**, versus 42.34 seconds on previous perf. Cleanup returned both hosts to zero graph entries, active history, owned interfaces and namespaces **about 160 seconds after traffic stopped**, without restarting. On the busier host, average setup fell from 3.00 to 1.95 seconds, but logged teardown rose from 41.0 to 89.0 seconds, including queueing. Faster setup does not make every teardown faster.
+## Correctness and remaining limits
 
-## 2,000 distinct clients together
+The capped 10-minute run served **1,615,122 requests, all successful**. Each service used 10 networks with **16–17 clients each**; previously one network could hold 158 clients while the others held one. New clients now select and join the least-shared network atomically; existing sessions stay sticky.
 
-Starting with zero tunnels, 2,000 source IPs generated **779,394 requests over ten minutes, all successful**. All 24 replicas were active, with 2,038 graph connections. A separate cleanup probe added 12 connections.
+All 12 tested shared networks survived until their final client expired, about **60.25 seconds after its last response**. A 15-second open request also survived a 5-second idle timeout; teardown followed 5.05 seconds after its response. Each of those 12 received exactly one teardown per endpoint. Cleanup returned graph entries, active sessions, owned interfaces and namespaces to zero without restarting.
 
-| Measurement | Previous perf: average / p99 | Current: average / p99 |
-|---|---:|---:|
-| Each client's first request | 44.89 s / 96.38 s | 44.26 s / 85.93 s |
-| Established tunnels, final five minutes | 1.97 s / 2.99 s | 1.27 s / 2.19 s |
+Perf fixes control-message overload, unnecessary lock holding and database work, premature tunnel-ID reuse, and unsafe startup cleanup. Event storage remains enabled; average configuration-save time fell from 155.1 to 10.1 ms. Setup configures conntrack automatically. Restart recovery preserved all 24 application containers and their interfaces/routes; no Docker restart was required.
 
-All first requests finished within **87.32 seconds**, versus 98.11 seconds previously. Established traffic sustained **1,570 requests/second**, versus 1,019. Average setup beside Net IDs was **1.32 seconds**, versus 1.55 seconds. Request times also include queueing before setup; dividing total elapsed time by client count does not give individual latency. These are individual trials, not guarantees.
+Cold bursts can temporarily exceed the cap while networks are being created; this behavior is unchanged. Kernel contention and queued teardown still limit large uncapped cold bursts. Connection-tracking notification overflows still occurred, but cleanup recovered automatically. Main left 1,152 owned interfaces and 278 namespaces after its overload test; perf cleaned up automatically.
 
-During mass cleanup, the separate application probe had no failures: **17 ms average, 632 ms maximum** after the main load stopped. Graph reads peaked at **208 ms** during this period. Before the final fix, expiry held the shared services lock for **48 seconds**, and a graph request timed out after **30 seconds**. Expiry now releases the lock between clients and rechecks activity before removal. Both hosts subsequently cleaned everything without restarting.
+Full Linux CI passed, including 275 server tests plus client, proxy, gRPC, eBPF and UI checks. The new concurrent test spreads 200 clients evenly across 10 networks.
 
-## What changed and what remains
-
-- Streaming control messages now have a bounded delivery window, fixing the reproduced HTTP/2 `too_many_data_frames` disconnect. Delivery receipts remain separate from operation completion.
-- IDs and ports remain reserved until teardown completes or its connection closes. Old port records are removed before IDs become reusable. Lifecycle and per-network serialization remain.
-- Startup preserves Docker/foreign interfaces and removes owned orphan namespaces. Host-file writes avoid truncating before writing. Restarting Nullnet preserved all **24 container processes, interfaces and routes**, plus operator host-file entries; no Docker/container restart was needed.
-- Namespace entry avoids unnecessary mount-namespace creation. In a kernel-only deletion probe, smaller batches reduced the pause from **5.05–5.18 s to 0.80–0.94 s**. Deletion uses smaller batches during setup and larger ones while idle. Kernel locks serialize individual changes, not whole tunnel lifecycles. Contention and queued teardown still limit cold-load performance.
-- Earlier changes batch event writes without disabling informational events, move safe history writes outside shared locks, and reduce configuration-save averages from **155.1 to 10.1 ms**. Setup configures conntrack capacity automatically and prevents NetworkManager from adopting Nullnet interfaces; unnecessary root-daemon sudo calls were removed.
-
-Full Linux CI passed, including 274 server tests, concurrency/late-ack regressions, client/proxy/gRPC tests, eBPF checks and UI tests/build. Final encrypted load and restart/cleanup checks passed. p99 means 99% of requests completed within that duration.
-
-Production routing lookups also stalled on **established sessions**, reaching **121–151 seconds** while direct application responses took **5.6 ms**. The lab reproduced sustained failure on main, but not that exact episode. Its initiating cause and deployed revision remain unconfirmed; real application/database workloads and frontend HTTPS costs were not reproduced. This report consolidates the relevant incident findings; no production deployment was performed.
+The incident included **121–151-second routing lookups on established sessions**, versus 5.6 ms for direct application responses. Main’s sustained failure was reproduced, but that exact production episode and its initiating cause remain unconfirmed. Real application/database work and frontend HTTPS were not reproduced; no production deployment was performed.

@@ -1787,6 +1787,71 @@ async fn multi_replica_first_step_container_disconnect() {
 
 const MAX_NETWORKS: &str = "max_networks";
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn max_networks_balances_shared_networks_under_concurrent_requests() {
+    let config: ServicesToml = toml::from_str(
+        r#"[[services]]
+name = "A"
+timeout = 60
+max_networks = 10
+proxy_dependencies = [["B"]]
+"#,
+    )
+    .unwrap();
+    let server = std::sync::Arc::new(NullnetGrpcImpl::new_for_test(into_stack_map(
+        config.services_map().unwrap(),
+    )));
+    let proxy = ip(5, 5, 5, 5);
+    register_services(
+        &server,
+        &HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]),
+        8080,
+    )
+    .await;
+    server.orchestrator().register_fake_client(proxy).await;
+    for i in 1..=10 {
+        setup_proxy_chain(&server, "A", proxy, &format!("10.0.0.{i}")).await;
+    }
+    assert_net_ids_in_use(&server, 11).await;
+
+    let mut requests = tokio::task::JoinSet::new();
+    for i in 11..=200 {
+        let server = server.clone();
+        requests.spawn(async move {
+            setup_proxy_chain(&server, "A", proxy, &format!("10.0.0.{i}")).await;
+        });
+    }
+    while let Some(result) = requests.join_next().await {
+        result.unwrap();
+    }
+    assert_net_ids_in_use(&server, 11).await;
+    let guard = server.services().read().await;
+    let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] else {
+        panic!("A should be registered");
+    };
+    let mut users = HashMap::<u32, usize>::new();
+    for replica in reg.replicas() {
+        for ci in replica.clients().values() {
+            *users.entry(ci.net_id()).or_default() += 1;
+        }
+    }
+    assert_eq!(users.len(), 10);
+    assert!(users.values().all(|count| *count == 20), "{users:?}");
+    let ServiceInfo::Registered(dep) = &stack_view(&guard)["B"] else {
+        panic!("B should be registered");
+    };
+    assert_eq!(dep.client_count(), 1);
+    assert_eq!(
+        dep.replicas()[0]
+            .clients()
+            .values()
+            .next()
+            .unwrap()
+            .active_chains(),
+        200
+    );
+}
+
 /// Full lifecycle:
 ///   1. First client creates network (2 net IDs: proxy→A, A→B)
 ///   2. Second client reuses (still 2 net IDs, but A has 2 proxy clients)

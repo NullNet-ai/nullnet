@@ -27,6 +27,7 @@ All Nullnet releases with the relative changes are documented in this file.
 - Install BPF linker as a prebuilt binary rather than compiling it from source ([#158](https://github.com/NullNet-ai/nullnet/pull/158))
 ### Removed
 ### Fixed
+- Balance capped networks by their total client count and attach clients atomically under concurrent requests ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
 - Prevent mass expiry from monopolizing routing locks, bound control delivery and deletion batches, preserve Docker interfaces on recovery, and prevent premature tunnel-ID reuse ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
 - Release backend session locks during history writes and save configuration changes atomically in one transaction ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
 - Keep NetworkManager from adopting Nullnet-owned interfaces during tunnel creation ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).

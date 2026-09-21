@@ -634,24 +634,46 @@ impl NullnetGrpcImpl {
             registered = reg.clone();
         }
 
-        // Max-networks: if the limit is reached, reuse the least-used existing
-        // network on the same proxy instead of creating a new one.
-        if let Some(max) = registered.max_networks()
-            && registered.proxy_clients_count() >= max as usize
-            && let Some((
-                upstream,
-                client_net,
-                server_net,
-                net_id,
-                replica_ip,
-                replica_docker,
-                setup_ms,
-            )) = registered.find_reusable_network_on_proxy(proxy_ip)
-        {
-            println!(
-                "Max networks ({max}) reached for '{service_name}', \
-                 reusing network on proxy {proxy_ip}"
-            );
+        // Select and attach under one lock so concurrent clients see current usage.
+        let reused = if registered.max_networks().is_some() {
+            let mut services = self.services.write().await;
+            let reuse = services.get_mut(&stack).and_then(|stack_map| {
+                let ServiceInfo::Registered(reg) = stack_map.get_mut(service_name)? else {
+                    return None;
+                };
+                let max = reg.max_networks()?;
+                if reg.proxy_clients_count() < max as usize {
+                    return None;
+                }
+                let network = reg.find_reusable_network_on_proxy(proxy_ip)?;
+                let (_, client_net, server_net, net_id, replica_ip, replica_docker, setup_ms) =
+                    &network;
+                reg.add_client_to_replica(
+                    *replica_ip,
+                    replica_docker.as_deref(),
+                    proxy_client.clone(),
+                    ClientInfo::new(proxy_ip, *client_net, *server_net, *net_id, *setup_ms, None),
+                );
+                reg.add_chain(&proxy_client);
+                let dep_edges = collect_dep_chain_edges(
+                    service_name,
+                    *replica_ip,
+                    replica_docker.as_deref(),
+                    stack_map,
+                );
+                for (dep_client, dep_name) in dep_edges {
+                    if let Some(ServiceInfo::Registered(dep_reg)) = stack_map.get_mut(&dep_name) {
+                        dep_reg.add_chain(&dep_client);
+                    }
+                }
+                Some((max, network))
+            });
+            drop(services);
+            reuse
+        } else {
+            None
+        };
+        if let Some((max, (upstream, client_net, server_net, net_id, _, _, setup_ms))) = reused {
             self.orchestrator
                 .events
                 .emit(Event::max_networks_limit_enforced(
@@ -661,34 +683,6 @@ impl NullnetGrpcImpl {
                     max,
                 ))
                 .await;
-            let mut services_mut = self.services.write().await;
-            if let Some(stack_map) = services_mut.get_mut(&stack) {
-                if let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(service_name) {
-                    // Create a new Client entry sharing the existing network
-                    let new_ci =
-                        ClientInfo::new(proxy_ip, client_net, server_net, net_id, setup_ms, None);
-                    reg.add_client_to_replica(
-                        replica_ip,
-                        replica_docker.as_deref(),
-                        proxy_client.clone(),
-                        new_ci,
-                    );
-                    reg.add_chain(&proxy_client);
-                }
-                // Increment chains on each dependency edge (intra-stack)
-                let dep_edges = collect_dep_chain_edges(
-                    service_name,
-                    replica_ip,
-                    replica_docker.as_deref(),
-                    stack_map,
-                );
-                for (dep_client, dep_name) in dep_edges {
-                    if let Some(ServiceInfo::Registered(dep_reg)) = stack_map.get_mut(&dep_name) {
-                        dep_reg.add_chain(&dep_client);
-                    }
-                }
-            }
-            drop(services_mut);
 
             // Reusing a network still starts a session for *this* client: it
             // gets its own client entry and its own teardown, so it needs its
