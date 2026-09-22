@@ -1,0 +1,8 @@
+baseline 8 8 16 0 313.85
+optimized 8 8 16 0 639.87
+CONFIGURATIONS_IDENTICAL
+optimized-confirm 8 8 1000 0 458.3
+optimized-control 32 8 1000 0 612.12
+optimized-control 32 8 1000 1 632.16
+optimized-confirm 8 8 1000 1 633.17
+EQUIVALENCE_COMPLETE

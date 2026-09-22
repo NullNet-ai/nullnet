@@ -1,0 +1,33 @@
+{
+  "user_chosen_baseline": {
+    "workers": 32,
+    "slots": 8
+  },
+  "pid_iptables_only_candidate": {
+    "workers": 8,
+    "slots": 8,
+    "103": {
+      "rate": 379.9413891926486,
+      "min": 377.8321185250225,
+      "max": 383.6828880696082,
+      "p99_ms": 28.46674600004917,
+      "burst_completion_p99_seconds": 2.609986397001194,
+      "n": 11
+    },
+    "104": {
+      "rate": 375.4870048147092,
+      "min": 299.88850016609234,
+      "max": 384.8297885356952,
+      "p99_ms": 34.087300999090075,
+      "burst_completion_p99_seconds": 2.640740270000606,
+      "n": 11
+    },
+    "mean_rate": 377.7141970036789
+  },
+  "fully_batched_candidate": {
+    "workers": 32,
+    "slots": 8,
+    "scope": "Conservative choice from final 8 versus 32 worker comparison; full grid not rerun for batching",
+    "universal_optimum_proven": false
+  }
+}

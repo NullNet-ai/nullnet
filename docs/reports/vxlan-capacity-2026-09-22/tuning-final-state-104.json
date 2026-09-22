@@ -1,0 +1,39 @@
+{
+  "original_apps_unchanged": true,
+  "original_apps": {
+    "/mystack_actix-sample.1.ks9gtktrp9tahh7zjx650jvci": {
+      "pid": 2964,
+      "started": "2026-09-22T14:48:54.892389718Z",
+      "docker_addresses": [
+        "10.0.1.8"
+      ],
+      "addresses_intact": true,
+      "gateways_intact": true
+    },
+    "/portainer": {
+      "pid": 1677,
+      "started": "2026-09-22T14:48:43.945030463Z",
+      "docker_addresses": [
+        "172.17.0.2"
+      ],
+      "addresses_intact": true,
+      "gateways_intact": true
+    }
+  },
+  "benchmark_leftovers": 0,
+  "services": {
+    "nullnet-client": {
+      "state": "active",
+      "exe": "/root/nullnet/target/release/nullnet-client"
+    },
+    "nullnet-server": {
+      "state": "active",
+      "exe": "/root/nullnet/target/release/nullnet-server"
+    },
+    "nullnet-proxy": {
+      "state": "active",
+      "exe": "/root/nullnet/target/release/nullnet-proxy"
+    }
+  },
+  "configuration_equivalent": true
+}

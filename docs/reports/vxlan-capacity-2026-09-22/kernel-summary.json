@@ -1,0 +1,126 @@
+[
+  {
+    "host": "103",
+    "ports": "unique",
+    "functions": {
+      "synchronize_rcu_expedited": {
+        "calls": 1003,
+        "total_seconds": 0.1707438400000002,
+        "mean_ms": 0.1702331405782652
+      },
+      "synchronize_net": {
+        "calls": 1001,
+        "total_seconds": 0.17269003199999977,
+        "mean_ms": 0.17251751448551447
+      },
+      "synchronize_rcu": {
+        "calls": 1000,
+        "total_seconds": 18.615889569999993,
+        "mean_ms": 18.61588957
+      },
+      "udp_tunnel_sock_release": {
+        "calls": 1000,
+        "total_seconds": 18.625110539999998,
+        "mean_ms": 18.62511054
+      },
+      "vxlan_sock_release": {
+        "calls": 1000,
+        "total_seconds": 18.91302520000001,
+        "mean_ms": 18.9130252
+      }
+    }
+  },
+  {
+    "host": "103",
+    "ports": "shared",
+    "functions": {
+      "synchronize_rcu_expedited": {
+        "calls": 1003,
+        "total_seconds": 0.009972918999999983,
+        "mean_ms": 0.009943089730807576
+      },
+      "synchronize_net": {
+        "calls": 1001,
+        "total_seconds": 0.010302716999999992,
+        "mean_ms": 0.010292424575424576
+      },
+      "vxlan_sock_release": {
+        "calls": 1000,
+        "total_seconds": 0.028497882000000016,
+        "mean_ms": 0.028497882000000002
+      },
+      "synchronize_rcu": {
+        "calls": 1,
+        "total_seconds": 0.01765982,
+        "mean_ms": 17.65982
+      },
+      "udp_tunnel_sock_release": {
+        "calls": 1,
+        "total_seconds": 0.017670270000000002,
+        "mean_ms": 17.670270000000002
+      }
+    }
+  },
+  {
+    "host": "104",
+    "ports": "unique",
+    "functions": {
+      "synchronize_rcu_expedited": {
+        "calls": 1003,
+        "total_seconds": 0.10633401799999986,
+        "mean_ms": 0.10601597008973082
+      },
+      "synchronize_net": {
+        "calls": 1001,
+        "total_seconds": 0.10795416400000005,
+        "mean_ms": 0.10784631768231769
+      },
+      "synchronize_rcu": {
+        "calls": 1000,
+        "total_seconds": 19.363482879999985,
+        "mean_ms": 19.36348288
+      },
+      "udp_tunnel_sock_release": {
+        "calls": 1000,
+        "total_seconds": 19.37234050999998,
+        "mean_ms": 19.372340509999997
+      },
+      "vxlan_sock_release": {
+        "calls": 1000,
+        "total_seconds": 19.586390749999996,
+        "mean_ms": 19.58639075
+      }
+    }
+  },
+  {
+    "host": "104",
+    "ports": "shared",
+    "functions": {
+      "synchronize_rcu_expedited": {
+        "calls": 1003,
+        "total_seconds": 0.009716902999999987,
+        "mean_ms": 0.009687839481555334
+      },
+      "synchronize_net": {
+        "calls": 1001,
+        "total_seconds": 0.009988101,
+        "mean_ms": 0.009978122877122877
+      },
+      "vxlan_sock_release": {
+        "calls": 1000,
+        "total_seconds": 0.03360817699999998,
+        "mean_ms": 0.033608177
+      },
+      "synchronize_rcu": {
+        "calls": 1,
+        "total_seconds": 0.02313709,
+        "mean_ms": 23.13709
+      },
+      "udp_tunnel_sock_release": {
+        "calls": 1,
+        "total_seconds": 0.02315784,
+        "mean_ms": 23.15784
+      }
+    }
+  }
+]

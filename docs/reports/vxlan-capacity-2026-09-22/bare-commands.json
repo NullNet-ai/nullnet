@@ -1,0 +1,98 @@
+{
+  "Docker PID lookup (container alternative)": {
+    "api": "CLI / Docker API",
+    "command": "docker inspect -f '{{.State.Pid}}' CONTAINER"
+  },
+  "Namespace creation": {
+    "api": "CLI / unshare + mount",
+    "command": "ip netns add NS"
+  },
+  "Stale veth lookup": {
+    "api": "RTM_GETLINK",
+    "command": "IFLA_IFNAME=VETH_OUT; single-name lookup, no NLM_F_DUMP"
+  },
+  "Veth pair creation into namespace": {
+    "api": "RTM_NEWLINK",
+    "command": "kind=veth; name=VETH_OUT; mtu=1080; group=GROUP; peer={name=VETH_IN, mtu=1080, NET_NS_PID=PID (Docker) or NET_NS_FD=NS_FD (standalone)}"
+  },
+  "Namespace address": {
+    "api": "CLI / RTM_NEWADDR",
+    "command": "nsenter -t PID -n ip addr add NS_IP/30 dev VETH_IN (Docker); standalone: nsenter --net=/var/run/netns/NS -- ip addr add NS_IP/30 dev VETH_IN"
+  },
+  "Namespace interface UP": {
+    "api": "CLI / link update",
+    "command": "nsenter -t PID -n ip link set VETH_IN up (Docker); standalone: nsenter --net=/var/run/netns/NS -- ip link set VETH_IN up"
+  },
+  "Namespace default route": {
+    "api": "CLI / RTM_NEWROUTE",
+    "command": "nsenter --net=/var/run/netns/NS -- ip route add default via BRIDGE_IP"
+  },
+  "Stale bridge lookup": {
+    "api": "RTM_GETLINK",
+    "command": "IFLA_IFNAME=BRIDGE; single-name lookup, no NLM_F_DUMP"
+  },
+  "Bridge creation": {
+    "api": "RTM_NEWLINK",
+    "command": "kind=bridge; name=BRIDGE; group=GROUP"
+  },
+  "Bridge and veth lookup": {
+    "api": "2 x RTM_GETLINK",
+    "command": "IFLA_IFNAME=BRIDGE, then IFLA_IFNAME=VETH_OUT (two lookups per endpoint)"
+  },
+  "Bridge address": {
+    "api": "RTM_NEWADDR",
+    "command": "family=AF_INET; prefixlen=30; index=BRIDGE_IFINDEX; IFA_ADDRESS=IFA_LOCAL=BRIDGE_IP"
+  },
+  "Bridge MTU and UP": {
+    "api": "RTM_SETLINK",
+    "command": "index=BRIDGE_IFINDEX; IFLA_MTU=1080; IFF_UP flag and change bit"
+  },
+  "Veth bridge attach MTU UP": {
+    "api": "RTM_SETLINK",
+    "command": "index=VETH_OUT_IFINDEX; IFLA_MASTER=BRIDGE_IFINDEX; IFLA_MTU=1080; IFF_UP"
+  },
+  "Four stale cross-host lookups": {
+    "api": "4 x RTM_GETLINK",
+    "command": "IFLA_IFNAME in {macsec-ID-s, macsec-ID-c, veth-ID-s, vxlan-NS}; four single-name lookups per endpoint"
+  },
+  "VXLAN creation": {
+    "api": "RTM_NEWLINK",
+    "command": "kind=vxlan; name=vxlan-NS; group=GROUP; IFLA_VXLAN_ID=VNI; LOCAL=LOCAL_IP; GROUP=REMOTE_IP; PORT=UDP_PORT"
+  },
+  "VXLAN lookup": {
+    "api": "RTM_GETLINK",
+    "command": "IFLA_IFNAME=vxlan-NS; single-name lookup, no NLM_F_DUMP"
+  },
+  "VXLAN bridge attach MTU UP": {
+    "api": "RTM_SETLINK",
+    "command": "index=VXLAN_IFINDEX; IFLA_MASTER=BRIDGE_IFINDEX; IFLA_MTU=1080; IFF_UP"
+  },
+  "IPsec key derivation subprocess": {
+    "api": "CLI",
+    "command": "sha256sum (stdin: ASCII KEY_HEX); take first 8 digest hex characters as salt; AEAD_KEY=0x + KEY_HEX + salt"
+  },
+  "IPsec state out": {
+    "api": "CLI / NETLINK_XFRM",
+    "command": "ip xfrm state add src LOCAL_IP dst REMOTE_IP proto esp spi SPI aead 'rfc4106(gcm(aes))' AEAD_KEY 128 mode transport"
+  },
+  "IPsec policy out": {
+    "api": "CLI / NETLINK_XFRM",
+    "command": "ip xfrm policy add src LOCAL_IP dst REMOTE_IP proto udp dport UDP_PORT dir out tmpl src LOCAL_IP dst REMOTE_IP proto esp spi SPI mode transport"
+  },
+  "IPsec state in": {
+    "api": "CLI / NETLINK_XFRM",
+    "command": "ip xfrm state add src REMOTE_IP dst LOCAL_IP proto esp spi SPI aead 'rfc4106(gcm(aes))' AEAD_KEY 128 mode transport"
+  },
+  "IPsec policy in": {
+    "api": "CLI / NETLINK_XFRM",
+    "command": "ip xfrm policy add src REMOTE_IP dst LOCAL_IP proto udp dport UDP_PORT dir in tmpl src REMOTE_IP dst LOCAL_IP proto esp spi SPI mode transport"
+  },
+  "Forwarding sysctl": {
+    "api": "CLI / procfs",
+    "command": "sysctl -w net.ipv4.ip_forward=1"
+  },
+  "Forwarding iptables policy": {
+    "api": "CLI / nftables backend",
+    "command": "iptables -P FORWARD ACCEPT"
+  }
+}
