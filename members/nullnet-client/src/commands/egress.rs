@@ -62,7 +62,7 @@ fn cidr_contains(cidr: &str, ip: Ipv4Addr) -> bool {
     (u32::from(ip) & mask) == (u32::from(base) & mask)
 }
 
-fn sudo(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
+fn privileged(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
     // For iptables, inject `-w` (wait for the xtables lock) right after the
     // binary so concurrent per-edge VxlanSetup tasks don't fail on lock
     // contention. Other commands (ip, sysctl) are passed through unchanged.
@@ -71,14 +71,14 @@ fn sudo(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
         v.push("iptables");
         v.push("-w");
         v.extend_from_slice(&args[1..]);
-        return Command::new("sudo").args(&v).status();
+        return Command::new(v[0]).args(&v[1..]).status();
     }
-    Command::new("sudo").args(args).status()
+    Command::new(args[0]).args(&args[1..]).status()
 }
 
 /// Run a rule that must apply; log on failure. Returns success.
-fn sudo_ok(label: &str, args: &[&str]) -> bool {
-    match sudo(args) {
+fn privileged_ok(label: &str, args: &[&str]) -> bool {
+    match privileged(args) {
         Ok(s) if s.success() => true,
         Ok(s) => {
             eprintln!("[egress] {label} exited {s}");
@@ -97,7 +97,7 @@ fn sudo_ok(label: &str, args: &[&str]) -> bool {
 /// where unused.
 pub(crate) fn init() {
     // internal-destination ipset: create + repopulate.
-    sudo_ok(
+    privileged_ok(
         "ipset create internal",
         &[
             "ipset",
@@ -109,9 +109,9 @@ pub(crate) fn init() {
             "inet",
         ],
     );
-    sudo_ok("ipset flush internal", &["ipset", "flush", INTERNAL_SET]);
+    privileged_ok("ipset flush internal", &["ipset", "flush", INTERNAL_SET]);
     for range in INTERNAL_RANGES {
-        sudo_ok(
+        privileged_ok(
             "ipset add internal",
             &["ipset", "add", "-exist", INTERNAL_SET, range],
         );
@@ -144,10 +144,10 @@ pub(crate) fn init() {
         ];
         let mut del = vec!["iptables", "-D", "PREROUTING"];
         del.extend_from_slice(&rule);
-        let _ = sudo(&del);
+        let _ = privileged(&del);
         let mut add = vec!["iptables", "-A", "PREROUTING"];
         add.extend_from_slice(&rule);
-        sudo_ok(
+        privileged_ok(
             &format!("iptables -A PREROUTING egress NFQUEUE {proto}"),
             &add,
         );
@@ -157,7 +157,7 @@ pub(crate) fn init() {
     // can be routed from the overlay bridge out the real NIC. Harmless on
     // non-gateway nodes. Per-edge MASQUERADE is added on demand (see
     // `install_gateway_forward`).
-    sudo_ok(
+    privileged_ok(
         "sysctl ip_forward",
         &["sysctl", "-w", "net.ipv4.ip_forward=1"],
     );
@@ -216,7 +216,9 @@ pub(crate) fn install_steer(
         return false;
     }
 
-    remove_steer(net_id, br_dev, snat_src, container_ip);
+    if !remove_steer(net_id, br_dev, snat_src, container_ip) {
+        return false;
+    }
 
     let table = table_for(net_id).to_string();
     let base = prio_base(net_id);
@@ -227,7 +229,7 @@ pub(crate) fn install_steer(
     // service-to-service and control-plane routing is unchanged.
     for (i, range) in INTERNAL_RANGES.iter().enumerate() {
         let prio = (base + i as u32).to_string();
-        ok &= sudo_ok(
+        ok &= privileged_ok(
             "ip rule add internal bypass",
             &[
                 "ip", "rule", "add", "from", &cip, "to", range, "lookup", "main", "priority", &prio,
@@ -236,14 +238,14 @@ pub(crate) fn install_steer(
     }
     // Catch-all: everything else from this container → the egress table.
     let catch_all = (base + 15).to_string();
-    ok &= sudo_ok(
+    ok &= privileged_ok(
         "ip rule add egress catch-all",
         &[
             "ip", "rule", "add", "from", &cip, "lookup", &table, "priority", &catch_all,
         ],
     );
     // The egress table's only route: default via the proxy overlay IP.
-    ok &= sudo_ok(
+    ok &= privileged_ok(
         "ip route add egress default",
         &[
             "ip",
@@ -260,7 +262,7 @@ pub(crate) fn install_steer(
     );
     // SNAT the container's traffic leaving the overlay bridge to the overlay
     // source, so the proxy routes replies back through the tunnel.
-    ok &= sudo_ok(
+    ok &= privileged_ok(
         "iptables SNAT egress",
         &[
             "iptables",
@@ -283,27 +285,47 @@ pub(crate) fn install_steer(
             "[egress] steer net {net_id}: {cip} -> via {proxy_gw} dev {br_dev} (snat {snat_src})"
         );
     } else {
-        // Partial install (e.g. a transient failure mid-sequence): roll back
-        // whatever applied so we don't leak policy rules / SNAT for a net that
-        // may never be reused. Teardown otherwise keys on EgressState, which the
-        // caller only records on success.
+        // Roll back partial installation now; recorded state also lets the
+        // eventual teardown retry any cleanup that fails here.
         eprintln!("[egress] steer net {net_id} partial install; rolling back");
         remove_steer(net_id, br_dev, snat_src, container_ip);
     }
     ok
 }
 
-/// Reverse of `install_steer`. Best-effort; ignores rules that don't exist.
-pub(crate) fn remove_steer(net_id: u32, br_dev: &str, snat_src: Ipv4Addr, container_ip: Ipv4Addr) {
+/// Reverse steering, accepting already-absent rules but reporting cleanup failures.
+pub(crate) fn remove_steer(
+    net_id: u32,
+    br_dev: &str,
+    snat_src: Ipv4Addr,
+    container_ip: Ipv4Addr,
+) -> bool {
     let table = table_for(net_id).to_string();
     let base = prio_base(net_id);
     let cip = container_ip.to_string();
-    for i in 0..16u32 {
-        let prio = (base + i).to_string();
-        let _ = sudo(&["ip", "rule", "del", "priority", &prio]);
+    let Some(rules) = privileged_output(&["ip", "rule", "show"]) else {
+        return false;
+    };
+    let mut ok = true;
+    for priority in rules
+        .lines()
+        .filter_map(|line| line.split_once(':')?.0.trim().parse::<u32>().ok())
+    {
+        if (base..base + 16).contains(&priority) {
+            ok &= privileged_ok(
+                "remove egress rule",
+                &["ip", "rule", "del", "priority", &priority.to_string()],
+            );
+        }
     }
-    let _ = sudo(&["ip", "route", "flush", "table", &table]);
-    let _ = sudo(&[
+    ok &= Command::new("ip")
+        .args(["route", "flush", "table", &table])
+        .output()
+        .is_ok_and(|out| {
+            out.status.success()
+                || String::from_utf8_lossy(&out.stderr).contains("FIB table does not exist")
+        });
+    ok &= remove_iptables_rule(&[
         "iptables",
         "-t",
         "nat",
@@ -318,6 +340,7 @@ pub(crate) fn remove_steer(net_id: u32, br_dev: &str, snat_src: Ipv4Addr, contai
         "--to-source",
         &snat_src.to_string(),
     ]);
+    ok
 }
 
 /// Drop policy-routing state left behind by a previous run.
@@ -341,9 +364,9 @@ pub(crate) fn purge_stale_steers() {
             // Most of the band is legitimately absent — a steer only ever uses
             // the internal bypasses plus the catch-all — so the misses are the
             // expected case, not something to spell out on every startup.
-            let _ = sudo_quiet(&["ip", "rule", "del", "priority", &(base + i).to_string()]);
+            let _ = privileged_quiet(&["ip", "rule", "del", "priority", &(base + i).to_string()]);
         }
-        let _ = sudo(&["ip", "route", "flush", "table", &table]);
+        let _ = privileged(&["ip", "route", "flush", "table", &table]);
         tables += 1;
     }
 
@@ -351,7 +374,7 @@ pub(crate) fn purge_stale_steers() {
     for spec in stale_overlay_snat_rules() {
         let mut args: Vec<&str> = vec!["iptables", "-t", "nat"];
         args.extend(spec.iter().map(String::as_str));
-        if sudo(&args).map(|s| s.success()).unwrap_or(false) {
+        if privileged(&args).map(|s| s.success()).unwrap_or(false) {
             snats += 1;
         }
     }
@@ -363,7 +386,7 @@ pub(crate) fn purge_stale_steers() {
 /// internal-bypass rules use `lookup main`, so the catch-all is what identifies
 /// the band — a partial install missing it is left for `install_steer` to heal.
 fn stale_steer_net_ids() -> Vec<u32> {
-    parse_steer_net_ids(&sudo_output(&["ip", "rule", "show"]).unwrap_or_default())
+    parse_steer_net_ids(&privileged_output(&["ip", "rule", "show"]).unwrap_or_default())
 }
 
 fn parse_steer_net_ids(out: &str) -> Vec<u32> {
@@ -389,7 +412,7 @@ fn parse_steer_net_ids(out: &str) -> Vec<u32> {
 /// verb yields the matching delete.
 fn stale_overlay_snat_rules() -> Vec<Vec<String>> {
     parse_overlay_snat_rules(
-        &sudo_output(&["iptables", "-t", "nat", "-S", "POSTROUTING"]).unwrap_or_default(),
+        &privileged_output(&["iptables", "-t", "nat", "-S", "POSTROUTING"]).unwrap_or_default(),
     )
 }
 
@@ -411,17 +434,20 @@ fn parse_overlay_snat_rules(out: &str) -> Vec<Vec<String>> {
         .collect()
 }
 
-fn sudo_output(args: &[&str]) -> Option<String> {
-    let out = Command::new("sudo").args(args).output().ok()?;
+fn privileged_output(args: &[&str]) -> Option<String> {
+    let out = Command::new(args[0]).args(&args[1..]).output().ok()?;
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// `sudo` with stderr captured rather than inherited, for calls whose failure
+/// Privileged command with stderr captured rather than inherited, for calls whose failure
 /// is the expected steady state (deleting a rule that isn't there).
-fn sudo_quiet(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
-    Command::new("sudo").args(args).output().map(|o| o.status)
+fn privileged_quiet(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
+    Command::new(args[0])
+        .args(&args[1..])
+        .output()
+        .map(|o| o.status)
 }
 
 /// Gateway side: forward decapsulated external-bound packets arriving on
@@ -429,7 +455,9 @@ fn sudo_quiet(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
 /// to that NIC's address (MASQUERADE). netfilter conntrack de-SNATs the replies
 /// back over the tunnel. Replaces the old TPROXY-to-forward-proxy path.
 pub(crate) fn install_gateway_forward(br_dev: &str, br_net: &str) -> bool {
-    remove_gateway_forward(br_dev, br_net);
+    if !remove_gateway_forward(br_dev, br_net) {
+        return false;
+    }
     let Some(nic) = default_route_iface() else {
         eprintln!("[egress] gateway forward: no default-route NIC found; not installed");
         return false;
@@ -441,11 +469,26 @@ pub(crate) fn install_gateway_forward(br_dev: &str, br_net: &str) -> bool {
     ok
 }
 
-/// Reverse of `install_gateway_forward`. Best-effort; recomputes the NIC.
-pub(crate) fn remove_gateway_forward(br_dev: &str, br_net: &str) {
-    if let Some(nic) = default_route_iface() {
-        apply_forward_rules(&forward_rules(Some(br_dev), br_net, Some(&nic)), "-D");
-    }
+/// Discover the installed NIC rather than assuming the default route is unchanged.
+pub(crate) fn remove_gateway_forward(br_dev: &str, br_net: &str) -> bool {
+    let Ok(network) = br_net.parse::<ipnetwork::Ipv4Network>() else {
+        return false;
+    };
+    let subnet = format!("{}/{}", network.network(), network.prefix());
+    remove_forward_rules(|output| {
+        output
+            .lines()
+            .filter_map(|line| {
+                let parts: Vec<_> = line.split_whitespace().collect();
+                let owns = parts.windows(2).any(|p| {
+                    (p[0] == "-s" && p[1] == subnet)
+                        || (matches!(p[0], "-i" | "-o") && p[1] == br_dev)
+                });
+                (parts.first() == Some(&"-A") && owns)
+                    .then(|| parts.into_iter().skip(1).map(String::from).collect())
+            })
+            .collect()
+    })
 }
 
 type ForwardRules = Vec<(&'static str, Vec<String>)>;
@@ -490,9 +533,23 @@ fn apply_forward_rules(rules: &ForwardRules, operation: &str) -> bool {
     for (table, rule) in rules {
         let mut args = vec!["iptables", "-t", table, operation];
         args.extend(rule.iter().map(String::as_str));
-        ok &= sudo_ok("gateway forwarding rule", &args);
+        ok &= if operation == "-D" {
+            remove_iptables_rule(&args)
+        } else {
+            privileged_ok("gateway forwarding rule", &args)
+        };
     }
     ok
+}
+
+// A failed delete is benign only if a successful check confirms absence.
+fn remove_iptables_rule(args: &[&str]) -> bool {
+    if privileged(args).is_ok_and(|status| status.success()) {
+        return true;
+    }
+    let mut check = args.to_vec();
+    check[3] = "-C";
+    privileged(&check).is_ok_and(|status| status.code() == Some(1))
 }
 
 const LOCAL_FORWARD_COMMENT: &str = "nullnet-local-egress-";
@@ -524,17 +581,21 @@ pub(crate) fn install_local_forward(net_id: u32, container_ips: &[Ipv4Addr]) -> 
 
 /// Discover exact installed rules so cleanup also survives a NIC change/restart.
 pub(crate) fn remove_local_forwards(net_id: Option<u32>) -> bool {
+    remove_forward_rules(|output| parse_local_forward_rules(output, net_id))
+}
+
+fn remove_forward_rules(select: impl Fn(&str) -> Vec<Vec<String>>) -> bool {
     let mut ok = true;
     for (table, chain) in [("nat", "POSTROUTING"), ("filter", "FORWARD")] {
-        let Some(output) = sudo_output(&["iptables", "-t", table, "-S", chain]) else {
-            eprintln!("[egress] could not inspect {table}/{chain} for local gateway cleanup");
+        let Some(output) = privileged_output(&["iptables", "-t", table, "-S", chain]) else {
+            eprintln!("[egress] could not inspect {table}/{chain} for gateway cleanup");
             ok = false;
             continue;
         };
-        for rule in parse_local_forward_rules(&output, net_id) {
+        for rule in select(&output) {
             let mut args = vec!["iptables", "-t", table, "-D"];
             args.extend(rule.iter().map(String::as_str));
-            ok &= sudo_ok("local gateway cleanup", &args);
+            ok &= privileged_ok("gateway cleanup", &args);
         }
     }
     ok

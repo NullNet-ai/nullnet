@@ -22,7 +22,7 @@ pub(crate) fn init() {
     // ipset: create if missing, flush so we start with no ports. Both must
     // succeed — without them the iptables rules below match an empty/missing
     // set and queue nothing.
-    sudo_must(
+    privileged_must(
         "ipset create",
         &[
             "ipset",
@@ -34,11 +34,11 @@ pub(crate) fn init() {
             "0-65535",
         ],
     );
-    sudo_must("ipset flush", &["ipset", "flush", SET_NAME]);
+    privileged_must("ipset flush", &["ipset", "flush", SET_NAME]);
 
     // ESTABLISHED,RELATED bypass at top of mangle PREROUTING. Pre-delete is
     // intentional idempotency — silently ignore its result.
-    let _ = sudo(&[
+    let _ = privileged(&[
         "iptables",
         "-t",
         "mangle",
@@ -51,7 +51,7 @@ pub(crate) fn init() {
         "-j",
         "ACCEPT",
     ]);
-    sudo_must(
+    privileged_must(
         "iptables -I PREROUTING ESTABLISHED bypass",
         &[
             "iptables",
@@ -72,7 +72,7 @@ pub(crate) fn init() {
     // NFQUEUE rules for tcp + udp. Pre-deletes stay quiet; appends must
     // succeed or new flows on watched ports won't be queued.
     for proto in PROTOS {
-        let _ = sudo(&[
+        let _ = privileged(&[
             "iptables",
             "-t",
             "mangle",
@@ -91,7 +91,7 @@ pub(crate) fn init() {
             QUEUE_NUM,
             "--queue-bypass",
         ]);
-        sudo_must(
+        privileged_must(
             &format!("iptables -A PREROUTING NFQUEUE {proto}"),
             &[
                 "iptables",
@@ -118,11 +118,11 @@ pub(crate) fn init() {
     println!("[nfqueue] init: ipset {SET_NAME} ready, mangle PREROUTING rules installed");
 }
 
-/// Run a `sudo` command that must succeed for the NFQUEUE plumbing to be
+/// Run a privileged command that must succeed for the NFQUEUE plumbing to be
 /// usable, logging any failure. Used for ipset create/flush and iptables
 /// add operations; pre-delete idempotency calls bypass this and stay quiet.
-fn sudo_must(label: &str, args: &[&str]) {
-    match sudo(args) {
+fn privileged_must(label: &str, args: &[&str]) {
+    match privileged(args) {
         Ok(s) if s.success() => {}
         Ok(s) => eprintln!("[nfqueue] init: {label} exited {s}"),
         Err(e) => eprintln!("[nfqueue] init: {label}: {e}"),
@@ -136,7 +136,7 @@ pub(crate) fn apply_ports_diff(old: &HashSet<u16>, new: &HashSet<u16>) {
     for &port in old {
         if !new.contains(&port) {
             let port_s = port.to_string();
-            match sudo(&["ipset", "del", SET_NAME, &port_s]) {
+            match privileged(&["ipset", "del", SET_NAME, &port_s]) {
                 Ok(s) if s.success() => println!("[nfqueue] unwatched port {port}"),
                 Ok(s) => eprintln!("[nfqueue] ipset del {port} exited {s}"),
                 Err(e) => eprintln!("[nfqueue] ipset del {port}: {e}"),
@@ -146,7 +146,7 @@ pub(crate) fn apply_ports_diff(old: &HashSet<u16>, new: &HashSet<u16>) {
     for &port in new {
         if !old.contains(&port) {
             let port_s = port.to_string();
-            match sudo(&["ipset", "add", "-exist", SET_NAME, &port_s]) {
+            match privileged(&["ipset", "add", "-exist", SET_NAME, &port_s]) {
                 Ok(s) if s.success() => println!("[nfqueue] watching port {port}"),
                 Ok(s) => eprintln!("[nfqueue] ipset add {port} exited {s}"),
                 Err(e) => eprintln!("[nfqueue] ipset add {port}: {e}"),
@@ -155,6 +155,6 @@ pub(crate) fn apply_ports_diff(old: &HashSet<u16>, new: &HashSet<u16>) {
     }
 }
 
-fn sudo(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
-    Command::new("sudo").args(args).status()
+fn privileged(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
+    Command::new(args[0]).args(&args[1..]).status()
 }

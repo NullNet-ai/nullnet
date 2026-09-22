@@ -31,7 +31,7 @@ mod user_scopes;
 mod users;
 
 pub(crate) use certs::CertRepository;
-pub(crate) use events::EventRepository;
+pub(crate) use events::{EventInsert, EventRepository};
 pub(crate) use login_attempts::LoginAttemptRepository;
 /// Only the session-history tests read rows back as a typed struct; production
 /// code goes through `SessionStore`, which hands out `SessionRecordJson`.
@@ -145,6 +145,11 @@ impl Db {
 
     pub(crate) fn sessions(&self) -> SessionRepository {
         SessionRepository::new(self.conn.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn hold_connection(&self) -> impl Send + '_ {
+        self.conn.lock().await
     }
 }
 

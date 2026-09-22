@@ -24,9 +24,9 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::net::{IpAddr, Ipv4Addr};
 use std::os::fd::AsRawFd;
-use std::process::Command;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex, PoisonError};
-use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
+use tokio::process::Command;
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard, Semaphore};
 
 /// Matches `vxlan-setup.sh`'s `OVERLAY_MTU` — see that script's comment for
 /// how the 1080-byte ceiling was measured against this underlay.
@@ -36,6 +36,12 @@ const OVERLAY_MTU: u32 = 1080;
 /// underlying veth gets the extra room so the macsec interface on top of it
 /// can still carry a full `OVERLAY_MTU`-sized frame.
 const MACSEC_VETH_MTU: u32 = OVERLAY_MTU + 32;
+
+// Reserved link groups batch one tunnel side's deletion in a single RTNL
+// operation. Net ids use 21 bits; the low bit distinguishes the two sides.
+fn link_group(vxlan_id: u32, client_side: bool) -> u32 {
+    0x4e00_0000 | (vxlan_id << 1) | u32::from(client_side)
+}
 
 pub(crate) struct VxlanSetupParams {
     pub(crate) vxlan_id: u32,
@@ -56,7 +62,6 @@ pub(crate) struct VxlanTeardownParams {
     pub(crate) ns_name: String,
     pub(crate) br_name: String,
     pub(crate) dstport: u16,
-    pub(crate) docker_container: Option<String>,
 }
 
 /// Per-net-id serialization: setup runs once per side (`_s`/`_c`) of the same
@@ -68,6 +73,8 @@ pub(crate) struct VxlanTeardownParams {
 /// equivalent and simpler.
 static VXLAN_LOCKS: LazyLock<StdMutex<HashMap<u32, Arc<AsyncMutex<()>>>>> =
     LazyLock::new(|| StdMutex::new(HashMap::new()));
+
+static COMMAND_SLOTS: Semaphore = Semaphore::const_new(8);
 
 async fn lock(vxlan_id: u32) -> OwnedMutexGuard<()> {
     let entry = VXLAN_LOCKS
@@ -85,6 +92,7 @@ pub(crate) async fn setup(
     cache: &BridgeIpCache,
 ) -> Result<(), Error> {
     let _guard = lock(params.vxlan_id).await;
+    let _setup = super::vxlan_cleanup::track_setup();
     // Publish ownership before the interface can carry its first packet.
     if let Some(container) = &params.docker_container {
         cache.add_overlay(&params.ns_name, params.ns_net.ip(), container);
@@ -101,81 +109,58 @@ async fn setup_locked(
     params: &VxlanSetupParams,
 ) -> Result<(), Error> {
     let handle = &rtnetlink_handle.handle;
+    let group = link_group(params.vxlan_id, params.br_name.ends_with("_c"));
 
     // Namespace: join the docker container's, or create a fresh standalone
     // one. Creating/joining a namespace isn't an rtnetlink (RTM_*) operation
     // at all — it's `unshare(CLONE_NEWNET)` plus a bind mount — so this stays
     // a CLI call.
     let ns_pid = match &params.docker_container {
-        Some(container) => Some(docker_pid(container)?),
+        Some(container) => Some(docker_pid(container).await?),
         None => {
             // Idempotent, like the script: a leftover namespace from a
             // previous run is reused rather than treated as fatal.
-            let _ = Command::new("sudo")
-                .args(["ip", "netns", "add", &params.ns_name])
-                .status();
+            let _ =
+                command_status(Command::new("ip").args(["netns", "add", &params.ns_name])).await;
             None
         }
     };
 
-    // Veth pair connecting the namespace (`-in`) to the bridge (`-out`).
+    // Create the peer in its final namespace to avoid a second registration
+    // and the kernel synchronization required by moving an existing device.
     let veth_in = format!("{}-in", params.ns_name);
     let veth_out = format!("{}-out", params.ns_name);
-    delete_if_exists(handle, &veth_in).await?;
+    delete_if_exists(handle, &veth_out).await?;
+    let peer = LinkUnspec::new_with_name(&veth_in).mtu(OVERLAY_MTU);
+    let (peer, netns_file) = match ns_pid {
+        Some(pid) => (peer.setns_by_pid(pid).build(), None),
+        None => {
+            let file =
+                File::open(format!("/var/run/netns/{}", params.ns_name)).handle_err(location!())?;
+            (peer.setns_by_fd(file.as_raw_fd()).build(), Some(file))
+        }
+    };
     handle
         .link()
-        .add(LinkVeth::new(&veth_in, &veth_out).build())
+        .add(
+            LinkVeth::new(&veth_out, &veth_in)
+                .mtu(OVERLAY_MTU)
+                .link_group(group)
+                .set_info_data(InfoData::Veth(InfoVeth::Peer(peer)))
+                .build(),
+        )
         .execute()
         .await
         .handle_err(location!())?;
-    let link_in = get_link_by_name(handle, &veth_in).await?;
+    drop(netns_file);
 
-    // Move the namespace end into its target namespace. This is a normal
-    // RTM_NEWLINK from the root namespace (IFLA_NET_NS_PID/FD) — no need to
-    // actually enter the target namespace ourselves.
-    match ns_pid {
-        Some(pid) => {
-            let setns_req = LinkUnspec::new_with_index(link_in.header.index)
-                .setns_by_pid(pid)
-                .build();
-            handle
-                .link()
-                .set(setns_req)
-                .execute()
-                .await
-                .handle_err(location!())?;
-        }
-        None => {
-            // Kept alive across the `.execute().await` below: it's only the
-            // raw fd *number* that goes into the netlink message, so if the
-            // `File` were dropped (closing the fd) before the message is
-            // actually sent, the kernel would read a closed/reused fd —
-            // "Bad file descriptor" (EBADF) — instead of the namespace.
-            let netns_file =
-                File::open(format!("/var/run/netns/{}", params.ns_name)).handle_err(location!())?;
-            let setns_req = LinkUnspec::new_with_index(link_in.header.index)
-                .setns_by_fd(netns_file.as_raw_fd())
-                .build();
-            handle
-                .link()
-                .set(setns_req)
-                .execute()
-                .await
-                .handle_err(location!())?;
-        }
-    }
-
-    // Once moved, the veth's ifindex only exists inside the target
-    // namespace's own link table — configuring it needs a netlink socket
-    // bound to that namespace, which rtnetlink has no way to reach from
-    // here. Stays a couple of `ip netns exec`/`nsenter` calls.
-    configure_ns_in(params, ns_pid)?;
+    configure_ns_in(params, ns_pid).await?;
 
     // Bridge, with its own address, carrying the namespace's traffic.
     delete_if_exists(handle, &params.br_name).await?;
     handle
         .link()
-        .add(LinkBridge::new(&params.br_name).build())
+        .add(LinkBridge::new(&params.br_name).link_group(group).build())
         .execute()
         .await
         .handle_err(location!())?;
@@ -203,12 +188,8 @@ async fn setup_locked(
     }
 
     // Enable forwarding (Docker sets FORWARD policy to DROP).
-    let _ = Command::new("sudo")
-        .args(["sysctl", "-w", "net.ipv4.ip_forward=1"])
-        .status();
-    let _ = Command::new("sudo")
-        .args(["iptables", "-P", "FORWARD", "ACCEPT"])
-        .status();
+    let _ = command_status(Command::new("sysctl").args(["-w", "net.ipv4.ip_forward=1"])).await;
+    let _ = command_status(Command::new("iptables").args(["-P", "FORWARD", "ACCEPT"])).await;
 
     Ok(())
 }
@@ -226,7 +207,7 @@ async fn setup_same_host(
     // Drop artifacts left by a previous cross-host incarnation of this net
     // id — an edge switches branch when its peer relocates onto this host.
     delete_if_exists(handle, &format!("vxlan-{}", params.ns_name)).await?;
-    purge_xfrm_spi(params.vxlan_id);
+    purge_xfrm_spi(params.vxlan_id).await;
 
     let veth_s = format!("veth-{}-s", params.vxlan_id);
     let veth_c = format!("veth-{}-c", params.vxlan_id);
@@ -248,11 +229,13 @@ async fn setup_same_host(
         .add(
             LinkVeth::new(&veth_s, &veth_c)
                 .address(mac_s.clone())
+                .link_group(link_group(params.vxlan_id, false))
                 // Set both MACs at creation so udev never sees a random peer
                 // address and races us with MACAddressPolicy=persistent.
                 .set_info_data(InfoData::Veth(InfoVeth::Peer(
                     LinkUnspec::new_with_name(&veth_c)
                         .address(mac_c.clone())
+                        .link_group(link_group(params.vxlan_id, true))
                         .build(),
                 )))
                 .build(),
@@ -282,7 +265,7 @@ async fn setup_same_host(
         // rtnetlink's `.port(1)` builds an SCI on port 256 while the `ip macsec
         // rx port 1` calls below key on port 1 — no frame ever matches.
         // `port` must precede `cipher`: iproute2's parser is positional here.
-        sudo_checked(&[
+        privileged_checked(&[
             "ip",
             "link",
             "add",
@@ -297,14 +280,15 @@ async fn setup_same_host(
             "gcm-aes-256",
             "encrypt",
             "on",
-        ])?;
+        ])
+        .await?;
 
         // SA/key installation is a separate genl family ("macsec"), not
         // covered by rtnetlink — stays the same `ip macsec` calls the script
         // used. Left unsuppressed (a real failure here should be loud).
         let key_id = format!("{:032x}", params.vxlan_id);
         let peer_mac_str = format_mac(&peer_mac);
-        sudo_checked(&[
+        privileged_checked(&[
             "ip",
             "macsec",
             "add",
@@ -318,8 +302,9 @@ async fn setup_same_host(
             "key",
             &key_id,
             &params.key_hex,
-        ])?;
-        sudo_checked(&[
+        ])
+        .await?;
+        privileged_checked(&[
             "ip",
             "macsec",
             "add",
@@ -330,8 +315,9 @@ async fn setup_same_host(
             "address",
             &peer_mac_str,
             "on",
-        ])?;
-        sudo_checked(&[
+        ])
+        .await?;
+        privileged_checked(&[
             "ip",
             "macsec",
             "add",
@@ -349,7 +335,8 @@ async fn setup_same_host(
             "key",
             &key_id,
             &params.key_hex,
-        ])?;
+        ])
+        .await?;
 
         let macsec_link = get_link_by_name(handle, &macsec_if).await?;
         attach_and_size(handle, &macsec_link, br_index, OVERLAY_MTU).await?;
@@ -381,6 +368,7 @@ async fn setup_cross_host(
         .link()
         .add(
             LinkVxlan::new(&vxlan_name, params.vxlan_id)
+                .link_group(link_group(params.vxlan_id, params.br_name.ends_with("_c")))
                 .local(params.local_ip)
                 .remote(params.remote_ip)
                 .port(params.dstport)
@@ -393,7 +381,7 @@ async fn setup_cross_host(
     attach_and_size(handle, &vxlan_link, br_index, OVERLAY_MTU).await?;
 
     if params.encrypted {
-        install_xfrm(params)?;
+        install_xfrm(params).await?;
     }
 
     Ok(())
@@ -404,7 +392,7 @@ pub(crate) async fn teardown(
     params: &VxlanTeardownParams,
     cache: &BridgeIpCache,
 ) -> Result<(), Error> {
-    let _guard = lock(params.vxlan_id).await;
+    let guard = Arc::new(lock(params.vxlan_id).await);
     let handle = &rtnetlink_handle.handle;
 
     // This tunnel's XFRM state/policy pair, if any was installed. Matched on
@@ -415,7 +403,7 @@ pub(crate) async fn teardown(
     let spi = xfrm_spi(params.vxlan_id);
     if params.dstport != crate::DEFAULT_VXLAN_DSTPORT {
         let dstport = params.dstport.to_string();
-        let _ = sudo_quiet(&[
+        privileged_checked(&[
             "ip",
             "xfrm",
             "policy",
@@ -426,8 +414,9 @@ pub(crate) async fn teardown(
             &dstport,
             "dir",
             "out",
-        ]);
-        let _ = sudo_quiet(&[
+        ])
+        .await?;
+        privileged_checked(&[
             "ip",
             "xfrm",
             "policy",
@@ -438,9 +427,10 @@ pub(crate) async fn teardown(
             &dstport,
             "dir",
             "in",
-        ]);
+        ])
+        .await?;
     }
-    let _ = sudo_quiet(&[
+    privileged_checked(&[
         "ip",
         "xfrm",
         "state",
@@ -449,35 +439,52 @@ pub(crate) async fn teardown(
         "esp",
         "spi",
         &spi,
-    ]);
+    ])
+    .await?;
 
-    // Remove the VXLAN tunnel or same-host veth/macsec pair. Both are swept
-    // unconditionally — whichever branch setup took, only one set exists,
-    // and the other's absence is expected rather than an error.
-    delete_if_exists(handle, &format!("macsec-{}-s", params.vxlan_id)).await?;
-    delete_if_exists(handle, &format!("macsec-{}-c", params.vxlan_id)).await?;
-    delete_if_exists(handle, &format!("vxlan-{}", params.ns_name)).await?;
-    delete_if_exists(handle, &format!("veth-{}-s", params.vxlan_id)).await?;
+    // Parent deletion also removes veth peers and their MACsec children.
+    // Side-specific groups preserve the other side's bridge until its cleanup.
+    super::vxlan_cleanup::remove(
+        handle,
+        link_group(params.vxlan_id, params.br_name.ends_with("_c")),
+        guard.clone(),
+    )
+    .await
+    .handle_err(location!())?;
 
-    // Remove the namespace veth pair.
-    delete_if_exists(handle, &format!("{}-out", params.ns_name)).await?;
     cache.remove_overlay(&params.ns_name);
 
-    if params.docker_container.is_none() {
-        // Standalone mode: delete the namespace we created (its `-in` end
-        // goes with it). Docker mode: nothing to do, Docker manages its own
-        // namespace.
-        let _ = Command::new("sudo")
-            .args(["ip", "netns", "del", &params.ns_name])
-            .status();
+    // Egress steering creates a named namespace even for a Docker initiator.
+    // Delete the namespace we actually own, independent of the message's owner.
+    if std::path::Path::new("/var/run/netns")
+        .join(&params.ns_name)
+        .exists()
+    {
+        privileged_checked(&["ip", "netns", "del", &params.ns_name]).await?;
     }
-
-    delete_if_exists(handle, &params.br_name).await?;
 
     Ok(())
 }
 
 // helpers -----------------------------------------------------------------------------------------
+
+// Commands may wait on Docker or the kernel; keep that work off runtime
+// workers and cap child processes independently of the number of tunnel tasks.
+async fn command_status(command: &mut Command) -> std::io::Result<std::process::ExitStatus> {
+    let _permit = COMMAND_SLOTS
+        .acquire()
+        .await
+        .expect("command admission stays open");
+    command.kill_on_drop(true).status().await
+}
+
+async fn command_output(command: &mut Command) -> std::io::Result<std::process::Output> {
+    let _permit = COMMAND_SLOTS
+        .acquire()
+        .await
+        .expect("command admission stays open");
+    command.kill_on_drop(true).output().await
+}
 
 /// Deletes `name` if it exists; a no-op otherwise. Called on essentially
 /// every setup — "doesn't exist yet" is the routine, expected case (this is
@@ -527,28 +534,27 @@ async fn attach_and_size(
     Ok(())
 }
 
-fn docker_pid(container: &str) -> Result<u32, Error> {
-    let out = Command::new("docker")
-        .args(["inspect", "-f", "{{.State.Pid}}", container])
-        .output()
-        .handle_err(location!())?;
+async fn docker_pid(container: &str) -> Result<u32, Error> {
+    let out =
+        command_output(Command::new("docker").args(["inspect", "-f", "{{.State.Pid}}", container]))
+            .await
+            .handle_err(location!())?;
     String::from_utf8_lossy(&out.stdout)
         .trim()
         .parse::<u32>()
         .handle_err(location!())
 }
 
-/// Configures the namespace's own end of the veth pair (address, mtu/up,
-/// default route) from inside the namespace it was just moved into.
-fn configure_ns_in(params: &VxlanSetupParams, ns_pid: Option<u32>) -> Result<(), Error> {
+/// Configure the peer address, bring it up, and add a standalone default route.
+async fn configure_ns_in(params: &VxlanSetupParams, ns_pid: Option<u32>) -> Result<(), Error> {
     let veth_in = format!("{}-in", params.ns_name);
     let prefix: Vec<String> = match ns_pid {
         Some(pid) => vec!["nsenter".into(), "-t".into(), pid.to_string(), "-n".into()],
+        // Only network state changes here; avoid cloning the mount namespace.
         None => vec![
-            "ip".into(),
-            "netns".into(),
-            "exec".into(),
-            params.ns_name.clone(),
+            "nsenter".into(),
+            format!("--net=/var/run/netns/{}", params.ns_name),
+            "--".into(),
         ],
     };
 
@@ -562,19 +568,9 @@ fn configure_ns_in(params: &VxlanSetupParams, ns_pid: Option<u32>) -> Result<(),
             "dev",
             &veth_in,
         ],
-    )?;
-    ns_exec(
-        &prefix,
-        &[
-            "ip",
-            "link",
-            "set",
-            &veth_in,
-            "mtu",
-            &OVERLAY_MTU.to_string(),
-            "up",
-        ],
-    )?;
+    )
+    .await?;
+    ns_exec(&prefix, &["ip", "link", "set", &veth_in, "up"]).await?;
     if ns_pid.is_none() {
         // Standalone mode only: docker mode leaves routing to the container.
         ns_exec(
@@ -587,22 +583,21 @@ fn configure_ns_in(params: &VxlanSetupParams, ns_pid: Option<u32>) -> Result<(),
                 "via",
                 &params.br_net.ip().to_string(),
             ],
-        )?;
+        )
+        .await?;
     }
     Ok(())
 }
 
-fn ns_exec(prefix: &[String], extra: &[&str]) -> Result<(), Error> {
-    let status = Command::new("sudo")
-        .args(prefix)
-        .args(extra)
-        .status()
+async fn ns_exec(prefix: &[String], extra: &[&str]) -> Result<(), Error> {
+    let status = command_status(Command::new(&prefix[0]).args(&prefix[1..]).args(extra))
+        .await
         .handle_err(location!())?;
     if status.success() {
         Ok(())
     } else {
         Err(format!(
-            "`sudo {} {}` failed: {status}",
+            "`{} {}` failed: {status}",
             prefix.join(" "),
             extra.join(" ")
         ))
@@ -610,22 +605,23 @@ fn ns_exec(prefix: &[String], extra: &[&str]) -> Result<(), Error> {
     }
 }
 
-fn sudo_checked(args: &[&str]) -> Result<(), Error> {
-    let status = Command::new("sudo")
-        .args(args)
-        .status()
+async fn privileged_checked(args: &[&str]) -> Result<(), Error> {
+    let status = command_status(Command::new(args[0]).args(&args[1..]))
+        .await
         .handle_err(location!())?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("`sudo {}` failed: {status}", args.join(" "))).handle_err(location!())
+        Err(format!("`{}` failed: {status}", args.join(" "))).handle_err(location!())
     }
 }
 
-/// `sudo` with output captured rather than inherited, for calls whose failure
+/// Privileged command with captured output, for calls whose failure
 /// is the expected steady state (deleting state that isn't there).
-fn sudo_quiet(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
-    Command::new("sudo").args(args).output().map(|o| o.status)
+async fn privileged_quiet(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
+    command_output(Command::new(args[0]).args(&args[1..]))
+        .await
+        .map(|o| o.status)
 }
 
 /// SPI values 1-255 are IANA-reserved (RFC 4301) and the kernel's XFRM code
@@ -635,9 +631,9 @@ fn xfrm_spi(vxlan_id: u32) -> String {
     format!("0x{:08x}", vxlan_id + 1_000)
 }
 
-fn purge_xfrm_spi(vxlan_id: u32) {
+async fn purge_xfrm_spi(vxlan_id: u32) {
     let spi = xfrm_spi(vxlan_id);
-    let _ = sudo_quiet(&[
+    let _ = privileged_quiet(&[
         "ip",
         "xfrm",
         "state",
@@ -646,18 +642,19 @@ fn purge_xfrm_spi(vxlan_id: u32) {
         "esp",
         "spi",
         &spi,
-    ]);
+    ])
+    .await;
 }
 
 /// Installs this tunnel's IPsec/ESP state+policy (AES-256-GCM, transport
 /// mode) between the two hosts' physical IPs, scoped to this tunnel's
 /// dstport. A separate netlink protocol family (`NETLINK_XFRM`), not covered
 /// by rtnetlink — stays CLI, ported 1:1 from `vxlan-setup.sh`.
-fn install_xfrm(params: &VxlanSetupParams) -> Result<(), Error> {
+async fn install_xfrm(params: &VxlanSetupParams) -> Result<(), Error> {
     // RFC4106 GCM keys are "AES key || 4-byte salt". The server only hands
     // out a 32-byte AES key, so the salt is derived here, identically on
     // both ends, from that same key.
-    let salt = sha256sum_prefix(&params.key_hex)?;
+    let salt = sha256sum_prefix(&params.key_hex).await?;
     let aead_key = format!("0x{}{salt}", params.key_hex);
     let spi = xfrm_spi(params.vxlan_id);
     let dstport = params.dstport.to_string();
@@ -667,7 +664,7 @@ fn install_xfrm(params: &VxlanSetupParams) -> Result<(), Error> {
     // Outbound: this host -> remote. Inbound: remote -> this host. Argument
     // order matters to `ip xfrm`'s positional parser — see the script this
     // was ported from for the (extensively tested) details.
-    sudo_checked(&[
+    privileged_checked(&[
         "ip",
         "xfrm",
         "state",
@@ -686,8 +683,9 @@ fn install_xfrm(params: &VxlanSetupParams) -> Result<(), Error> {
         "128",
         "mode",
         "transport",
-    ])?;
-    sudo_checked(&[
+    ])
+    .await?;
+    privileged_checked(&[
         "ip",
         "xfrm",
         "policy",
@@ -713,8 +711,9 @@ fn install_xfrm(params: &VxlanSetupParams) -> Result<(), Error> {
         &spi,
         "mode",
         "transport",
-    ])?;
-    sudo_checked(&[
+    ])
+    .await?;
+    privileged_checked(&[
         "ip",
         "xfrm",
         "state",
@@ -733,8 +732,9 @@ fn install_xfrm(params: &VxlanSetupParams) -> Result<(), Error> {
         "128",
         "mode",
         "transport",
-    ])?;
-    sudo_checked(&[
+    ])
+    .await?;
+    privileged_checked(&[
         "ip",
         "xfrm",
         "policy",
@@ -760,13 +760,19 @@ fn install_xfrm(params: &VxlanSetupParams) -> Result<(), Error> {
         &spi,
         "mode",
         "transport",
-    ])?;
+    ])
+    .await?;
     Ok(())
 }
 
-fn sha256sum_prefix(key_hex: &str) -> Result<String, Error> {
-    use std::io::Write;
+async fn sha256sum_prefix(key_hex: &str) -> Result<String, Error> {
+    use tokio::io::AsyncWriteExt;
+    let _permit = COMMAND_SLOTS
+        .acquire()
+        .await
+        .expect("command admission stays open");
     let mut child = Command::new("sha256sum")
+        .kill_on_drop(true)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -777,8 +783,9 @@ fn sha256sum_prefix(key_hex: &str) -> Result<String, Error> {
         .ok_or("sha256sum stdin unavailable")
         .handle_err(location!())?
         .write_all(key_hex.as_bytes())
+        .await
         .handle_err(location!())?;
-    let out = child.wait_with_output().handle_err(location!())?;
+    let out = child.wait_with_output().await.handle_err(location!())?;
     let digest = String::from_utf8_lossy(&out.stdout);
     let hex = digest
         .split_whitespace()
@@ -805,6 +812,25 @@ fn format_mac(mac: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn command_wait_yields_and_preserves_output_and_status() {
+        let mut command = tokio::process::Command::new("sleep");
+        command.arg("2");
+        tokio::select! {
+            biased;
+            _ = super::command_status(&mut command) => panic!("child wait blocked the runtime"),
+            () = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+        }
+        let out = super::command_output(
+            tokio::process::Command::new("sh").args(["-c", "printf diagnostic; exit 7"]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.stdout, b"diagnostic");
+        assert_eq!(out.status.code(), Some(7));
+    }
+
     use super::{format_mac, veth_mac, xfrm_spi};
 
     /// Net id 101 -> spi 1101 = 0x44d, clear of the 1-255 IANA-reserved band.

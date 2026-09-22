@@ -11,12 +11,17 @@ use crate::nullnet_grpc::{
     ProxyConnectionEnd, ProxyRequest, ServiceReport, ServicesListResponse, Upstream,
 };
 pub use proto::*;
-use std::path::Path;
-use tokio::sync::mpsc;
+use std::{future::Future, path::Path, sync::Arc};
+use tokio::sync::{Semaphore, mpsc};
 use tonic::Request;
 pub use tonic::Streaming;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, ClientTlsConfig};
+
+// Bound concurrent RPC work, including cold tunnel creation. Removing this
+// limit overloads setup during large bursts even with corrected h2 accounting.
+const MAX_IN_FLIGHT_UNARY: usize = 32;
+const MAX_IN_FLIGHT_LIFECYCLE: usize = 8;
 
 /// Why a `proxy` lookup failed.
 #[derive(Debug)]
@@ -31,6 +36,8 @@ pub enum ProxyLookupError {
 #[derive(Clone)]
 pub struct NullnetGrpcInterface {
     client: NullnetGrpcClient<Channel>,
+    unary_slots: Arc<Semaphore>,
+    lifecycle_slots: Arc<Semaphore>,
 }
 
 impl NullnetGrpcInterface {
@@ -60,6 +67,8 @@ impl NullnetGrpcInterface {
             if let Ok(channel) = endpoint.connect().await {
                 return Ok(Self {
                     client: NullnetGrpcClient::new(channel),
+                    unary_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_UNARY)),
+                    lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
                 });
             }
 
@@ -71,11 +80,35 @@ impl NullnetGrpcInterface {
         }
     }
 
+    // Streams stay independent so setup acknowledgements can always progress.
+    async fn unary<T>(
+        &self,
+        request: impl Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+    ) -> Result<tonic::Response<T>, tonic::Status> {
+        let _permit = self
+            .unary_slots
+            .acquire()
+            .await
+            .expect("RPC limiter stays open");
+        request.await
+    }
+
+    // Renewals and closes must progress while cold setups occupy unary slots.
+    async fn lifecycle<T>(
+        &self,
+        request: impl Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+    ) -> Result<tonic::Response<T>, tonic::Status> {
+        let _permit = self
+            .lifecycle_slots
+            .acquire()
+            .await
+            .expect("RPC limiter stays open");
+        request.await
+    }
+
     #[allow(clippy::missing_errors_doc)]
     pub async fn network_type(&self) -> Result<NetType, String> {
-        self.client
-            .clone()
-            .network_type(Request::new(Empty {}))
+        self.unary(self.client.clone().network_type(Request::new(Empty {})))
             .await
             .map(tonic::Response::into_inner)
             .map_err(|e| e.to_string())
@@ -99,9 +132,7 @@ impl NullnetGrpcInterface {
 
     #[allow(clippy::missing_errors_doc)]
     pub async fn proxy(&self, message: ProxyRequest) -> Result<Upstream, ProxyLookupError> {
-        self.client
-            .clone()
-            .proxy(Request::new(message))
+        self.unary(self.client.clone().proxy(Request::new(message)))
             .await
             .map(tonic::Response::into_inner)
             .map_err(|e| {
@@ -120,12 +151,14 @@ impl NullnetGrpcInterface {
     /// pin the edge until the node disconnects.
     #[allow(clippy::missing_errors_doc)]
     pub async fn proxy_connection_closed(&self, message: ProxyConnectionEnd) -> Result<(), String> {
-        self.client
-            .clone()
-            .proxy_connection_closed(Request::new(message))
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        self.lifecycle(
+            self.client
+                .clone()
+                .proxy_connection_closed(Request::new(message)),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 
     /// Report an egress open-connection transition (0<->1) for one container.
@@ -135,15 +168,17 @@ impl NullnetGrpcInterface {
         initiator_container: String,
         active: bool,
     ) -> Result<(), String> {
-        self.client
-            .clone()
-            .egress_liveness(Request::new(EgressLivenessReport {
-                initiator_container,
-                active,
-            }))
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        self.lifecycle(
+            self.client
+                .clone()
+                .egress_liveness(Request::new(EgressLivenessReport {
+                    initiator_container,
+                    active,
+                })),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 
     /// Report a trigger-built chain's open-connection transition (0<->1).
@@ -158,17 +193,19 @@ impl NullnetGrpcInterface {
         initiator_container: String,
         active: bool,
     ) -> Result<(), String> {
-        self.client
-            .clone()
-            .backend_liveness(Request::new(BackendLivenessReport {
-                service_name,
-                port,
-                initiator_container,
-                active,
-            }))
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        self.lifecycle(
+            self.client
+                .clone()
+                .backend_liveness(Request::new(BackendLivenessReport {
+                    service_name,
+                    port,
+                    initiator_container,
+                    active,
+                })),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 
     #[allow(clippy::missing_errors_doc)]
@@ -176,9 +213,7 @@ impl NullnetGrpcInterface {
         &self,
         message: ServiceReport,
     ) -> Result<ServicesListResponse, String> {
-        self.client
-            .clone()
-            .services_list(Request::new(message))
+        self.unary(self.client.clone().services_list(Request::new(message)))
             .await
             .map(tonic::Response::into_inner)
             .map_err(|e| e.to_string())
@@ -191,16 +226,18 @@ impl NullnetGrpcInterface {
         port: u32,
         initiator_container: String,
     ) -> Result<(), String> {
-        self.client
-            .clone()
-            .backend_trigger(Request::new(BackendTriggerRequest {
-                service_name,
-                port,
-                initiator_container,
-            }))
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        self.unary(
+            self.client
+                .clone()
+                .backend_trigger(Request::new(BackendTriggerRequest {
+                    service_name,
+                    port,
+                    initiator_container,
+                })),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 
     /// Fire an egress trigger: the sending host observed a registered service
@@ -214,17 +251,19 @@ impl NullnetGrpcInterface {
         dst_ip: String,
         dst_port: u32,
     ) -> Result<(), String> {
-        self.client
-            .clone()
-            .egress_trigger(Request::new(EgressTriggerRequest {
-                service_name,
-                initiator_container,
-                dst_ip,
-                dst_port,
-            }))
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        self.unary(
+            self.client
+                .clone()
+                .egress_trigger(Request::new(EgressTriggerRequest {
+                    service_name,
+                    initiator_container,
+                    dst_ip,
+                    dst_port,
+                })),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 
     #[allow(clippy::missing_errors_doc)]
@@ -232,12 +271,14 @@ impl NullnetGrpcInterface {
         &self,
         entries: Vec<EgressDestinationEntry>,
     ) -> Result<(), String> {
-        self.client
-            .clone()
-            .report_egress_destination(Request::new(EgressDestinationReport { entries }))
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        self.unary(
+            self.client
+                .clone()
+                .report_egress_destination(Request::new(EgressDestinationReport { entries })),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 
     /// Ask whether the egress country policy allows `initiator_container` to
@@ -248,15 +289,17 @@ impl NullnetGrpcInterface {
         initiator_container: String,
         dst_ip: String,
     ) -> Result<bool, String> {
-        self.client
-            .clone()
-            .check_egress_destination(Request::new(EgressPolicyCheck {
-                initiator_container,
-                dst_ip,
-            }))
-            .await
-            .map(|resp| resp.into_inner().allowed)
-            .map_err(|e| e.to_string())
+        self.unary(
+            self.client
+                .clone()
+                .check_egress_destination(Request::new(EgressPolicyCheck {
+                    initiator_container,
+                    dst_ip,
+                })),
+        )
+        .await
+        .map(|resp| resp.into_inner().allowed)
+        .map_err(|e| e.to_string())
     }
 
     /// Ask whether the ingress country policy allows an external client at
@@ -268,22 +311,22 @@ impl NullnetGrpcInterface {
         service_name: String,
         client_ip: String,
     ) -> Result<bool, String> {
-        self.client
-            .clone()
-            .check_ingress(Request::new(IngressPolicyCheck {
-                service_name,
-                client_ip,
-            }))
-            .await
-            .map(|resp| resp.into_inner().allowed)
-            .map_err(|e| e.to_string())
+        self.unary(
+            self.client
+                .clone()
+                .check_ingress(Request::new(IngressPolicyCheck {
+                    service_name,
+                    client_ip,
+                })),
+        )
+        .await
+        .map(|resp| resp.into_inner().allowed)
+        .map_err(|e| e.to_string())
     }
 
     #[allow(clippy::missing_errors_doc)]
     pub async fn report_event(&self, event: AgentEvent) -> Result<(), String> {
-        self.client
-            .clone()
-            .report_event(Request::new(event))
+        self.unary(self.client.clone().report_event(Request::new(event)))
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -328,5 +371,76 @@ impl NullnetGrpcInterface {
             .await
             .map_err(|e| e.to_string())?
             .into_inner())
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn liveness_progresses_when_setup_admission_is_full() {
+        let interface = NullnetGrpcInterface {
+            client: NullnetGrpcClient::new(
+                Channel::from_static("http://127.0.0.1:1").connect_lazy(),
+            ),
+            unary_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_UNARY)),
+            lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
+        };
+        let _busy = interface
+            .unary_slots
+            .acquire_many(MAX_IN_FLIGHT_UNARY as u32)
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            interface.backend_liveness("backend".into(), 80, "container".into(), true),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "liveness was never admitted while setup occupied the slots"
+        );
+        assert!(
+            result.unwrap().is_err(),
+            "the intentionally absent server should reject the call"
+        );
+    }
+
+    #[tokio::test]
+    async fn clones_share_admission_and_cancellation_releases_capacity() {
+        let interface = NullnetGrpcInterface {
+            client: NullnetGrpcClient::new(
+                Channel::from_static("http://127.0.0.1:1").connect_lazy(),
+            ),
+            unary_slots: Arc::new(Semaphore::new(2)),
+            lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
+        };
+        let (entered, mut received) = mpsc::unbounded_channel();
+        let mut calls = tokio::task::JoinSet::new();
+        for _ in 0..3 {
+            let interface = interface.clone();
+            let entered = entered.clone();
+            calls.spawn(async move {
+                interface
+                    .unary(async {
+                        entered.send(()).unwrap();
+                        std::future::pending::<Result<tonic::Response<Empty>, tonic::Status>>()
+                            .await
+                    })
+                    .await
+            });
+        }
+        received.recv().await.unwrap();
+        received.recv().await.unwrap();
+        assert_eq!(interface.unary_slots.available_permits(), 0);
+        assert!(received.try_recv().is_err());
+        calls.shutdown().await;
+        assert_eq!(interface.unary_slots.available_permits(), 2);
+        let result: Result<tonic::Response<Empty>, _> = interface
+            .unary(async { Err(tonic::Status::unavailable("disconnected")) })
+            .await;
+        assert!(result.is_err());
+        assert_eq!(interface.unary_slots.available_permits(), 2);
     }
 }

@@ -34,6 +34,9 @@ const DEFAULT_DATABASE_URL: &str = "/var/nullnet/data/nullnet.db";
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    let shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
+    let shutdown_signal = shutdown.clone();
+    ctrlc::set_handler(move || shutdown_signal.notify_one()).handle_err(location!())?;
     // let _gag1: gag::Redirect<std::fs::File>;
     // let _gag2: gag::Redirect<std::fs::File>;
     // if let Some((gag1, gag2)) = redirect_stdout_stderr_to_file() {
@@ -125,17 +128,21 @@ async fn main() -> Result<(), Error> {
     // prune persisted events + ended sessions past their retention windows (issue #151)
     retention::start(app_state.db.clone(), retention::RetentionConfig::from_env());
 
-    tokio::select! {
+    let events = app_state.events.clone();
+    let result = tokio::select! {
         result = server
             .add_service(
                 NullnetGrpcServer::new(nullnet)
                     .max_decoding_message_size(50 * 1024 * 1024),
             )
             .serve(addr) => {
-            result.handle_err(location!())?;
+            result.handle_err(location!())
         }
-        () = http_server::serve(app_state, certificates) => {}
-    }
+        () = http_server::serve(app_state, certificates) => Ok(()),
+        () = shutdown.notified() => Ok(()),
+    };
+    events.shutdown().await;
+    result?;
 
     Ok(())
 }
@@ -150,12 +157,6 @@ async fn init_nullnet(db: db::Db) -> Result<NullnetGrpcImpl, Error> {
             process::exit(1);
         }));
     }
-
-    // handle termination signals: SIGINT, SIGTERM, SIGHUP
-    ctrlc::set_handler(move || {
-        process::exit(1);
-    })
-    .handle_err(location!())?;
 
     NullnetGrpcImpl::new(db).await
 }

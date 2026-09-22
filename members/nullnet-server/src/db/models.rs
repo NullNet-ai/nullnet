@@ -86,17 +86,17 @@ pub(crate) struct ServiceRow {
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = services)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-pub(crate) struct NewServiceRow<'a> {
-    pub(crate) stack: &'a str,
-    pub(crate) name: &'a str,
-    pub(crate) docker_container: Option<&'a str>,
-    pub(crate) process_path: Option<&'a str>,
-    pub(crate) host_ip: Option<&'a str>,
+pub(crate) struct NewServiceRow {
+    pub(crate) stack: String,
+    pub(crate) name: String,
+    pub(crate) docker_container: Option<String>,
+    pub(crate) process_path: Option<String>,
+    pub(crate) host_ip: Option<String>,
     pub(crate) pausable: bool,
     pub(crate) port: Option<i32>,
     pub(crate) timeout: Option<i64>,
     pub(crate) max_networks: Option<i32>,
-    pub(crate) protocol: Option<&'a str>,
+    pub(crate) protocol: Option<String>,
     pub(crate) listen_port: Option<i32>,
     pub(crate) egress_filter: Option<String>,
     pub(crate) ingress_filter: Option<String>,
@@ -161,14 +161,14 @@ pub(crate) struct RouteRow {
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = routes)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-pub(crate) struct NewRouteRow<'a> {
-    pub(crate) stack: &'a str,
-    pub(crate) host: &'a str,
-    pub(crate) path: &'a str,
-    pub(crate) target_kind: &'a str,
-    pub(crate) target_service: Option<&'a str>,
+pub(crate) struct NewRouteRow {
+    pub(crate) stack: String,
+    pub(crate) host: String,
+    pub(crate) path: String,
+    pub(crate) target_kind: String,
+    pub(crate) target_service: Option<String>,
     pub(crate) strip_prefix: bool,
-    pub(crate) redirect_to: Option<&'a str>,
+    pub(crate) redirect_to: Option<String>,
     pub(crate) redirect_status: Option<i32>,
     pub(crate) preserve_path: bool,
     pub(crate) preserve_query: bool,

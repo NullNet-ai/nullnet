@@ -31,7 +31,8 @@ pub enum Lifecycle {
         notify: Arc<Notify>,
         container_ip: Ipv4Addr,
     },
-    Active {
+    Installed {
+        ready: bool,
         vxlan_id: u32,
         overlay_ip: Ipv4Addr,
         container_ip: Ipv4Addr,
@@ -67,7 +68,8 @@ impl TriggersState {
     pub fn state(&self, container: &str, port: u16) -> TriggerState {
         let by_key = self.by_key.lock().unwrap();
         match by_key.get(&(container.to_string(), port)) {
-            Some(Lifecycle::Active { .. }) => TriggerState::Active,
+            Some(Lifecycle::Installed { ready: true, .. }) => TriggerState::Active,
+            Some(Lifecycle::Installed { ready: false, .. }) => TriggerState::Pending,
             Some(Lifecycle::Pending { since, .. }) if since.elapsed() < PENDING_TIMEOUT => {
                 TriggerState::Pending
             }
@@ -80,7 +82,14 @@ impl TriggersState {
         let mut by_key = self.by_key.lock().unwrap();
         let key = (container.to_string(), port);
         match by_key.get(&key) {
-            Some(Lifecycle::Active { .. }) => return TriggerClaim::Active,
+            Some(Lifecycle::Installed { ready: true, .. }) => return TriggerClaim::Active,
+            Some(Lifecycle::Installed {
+                ready: false,
+                notify,
+                ..
+            }) => {
+                return TriggerClaim::Pending(notify.clone());
+            }
             Some(Lifecycle::Pending { since, notify, .. }) if since.elapsed() < PENDING_TIMEOUT => {
                 return TriggerClaim::Pending(notify.clone());
             }
@@ -106,26 +115,20 @@ impl TriggersState {
         }
     }
 
-    /// Read the `container_ip` stashed at claim time without
-    /// mutating state. Used by `control_channel` to install DNAT *before*
-    /// promoting to `Active` — installing first ensures the held packet
-    /// (which wakes on `mark_active`'s `notify_waiters`) finds the DNAT rule
-    /// live by the time it traverses `nat PREROUTING`. Returns
-    /// `Ipv4Addr::UNSPECIFIED` if no entry exists.
+    /// Read the claimed container IP before installing scoped steering.
+    /// Installed entries retain it until teardown, including before NetReady.
     pub fn peek_container_ip(&self, container: &str, port: u16) -> Ipv4Addr {
         let by_key = self.by_key.lock().unwrap();
         match by_key.get(&(container.to_string(), port)) {
             Some(Lifecycle::Pending { container_ip, .. })
-            | Some(Lifecycle::Active { container_ip, .. }) => *container_ip,
+            | Some(Lifecycle::Installed { container_ip, .. }) => *container_ip,
             None => Ipv4Addr::UNSPECIFIED,
         }
     }
 
-    /// Promote to `Active` (storing `container_ip` so teardown can match the
-    /// DNAT rule's `-s`) and wake every handler awaiting the transition.
-    /// The caller is expected to install DNAT *before* calling this — the
-    /// wake-up is what allows the held packet to traverse the chain.
-    pub fn mark_active(
+    /// Record installed local steering without releasing packets. The server
+    /// sends NetReady only after both endpoints acknowledge setup.
+    pub fn mark_prepared(
         &self,
         container: &str,
         port: u16,
@@ -136,32 +139,55 @@ impl TriggersState {
         let mut by_key = self.by_key.lock().unwrap();
         let key = (container.to_string(), port);
         let notify = match by_key.remove(&key) {
-            Some(Lifecycle::Pending { notify, .. } | Lifecycle::Active { notify, .. }) => notify,
+            Some(Lifecycle::Pending { notify, .. } | Lifecycle::Installed { notify, .. }) => notify,
             None => Arc::new(Notify::new()),
         };
         by_key.insert(
             key,
-            Lifecycle::Active {
+            Lifecycle::Installed {
+                ready: false,
                 vxlan_id,
                 overlay_ip,
                 container_ip,
-                notify: notify.clone(),
+                notify,
             },
         );
-        // Hold the lock while waking so concurrent `state()` callers see
-        // `Active` before they have a chance to register a new waiter that
-        // would never get woken.
-        notify.notify_waiters();
     }
 
-    /// Drop only the pending generation owned by the failed caller.
-    ///
-    /// A trigger RPC that failed or timed out is not evidence that setup
-    /// failed: the `VxlanSetup` can land, install steering/DNAT and
-    /// `mark_active` while that RPC is still in flight. Dropping an `Active`
-    /// entry there discards the only record that the datapath is live, and the
-    /// server sends no second setup for an edge it already considers up — so
-    /// every later packet is held and dropped forever.
+    pub fn mark_ready(&self, vxlan_id: u32) -> bool {
+        let mut by_key = self.by_key.lock().unwrap();
+        for lifecycle in by_key.values_mut() {
+            if let Lifecycle::Installed {
+                vxlan_id: id,
+                ready,
+                notify,
+                ..
+            } = lifecycle
+                && *id == vxlan_id
+            {
+                *ready = true;
+                notify.notify_waiters();
+                return true;
+            }
+        }
+        false
+    }
+
+    #[cfg(test)]
+    pub fn mark_active(
+        &self,
+        container: &str,
+        port: u16,
+        vxlan_id: u32,
+        overlay_ip: Ipv4Addr,
+        container_ip: Ipv4Addr,
+    ) {
+        self.mark_prepared(container, port, vxlan_id, overlay_ip, container_ip);
+        assert!(self.mark_ready(vxlan_id));
+    }
+
+    /// Drop only the failed caller's pending claim. Installed steering must
+    /// survive RPC failure so teardown can still remove the exact DNAT rule.
     pub fn forget_pending(&self, container: &str, port: u16, owner: &Arc<Notify>) {
         let mut by_key = self.by_key.lock().unwrap();
         let key = (container.to_string(), port);
@@ -171,27 +197,27 @@ impl TriggersState {
         }
     }
 
-    /// Find the `Active` entry for `vxlan_id`, remove it, and return
+    /// Find the installed entry for `vxlan_id`, remove it, and return
     /// `(container, port, overlay_ip, container_ip)` so the caller can tear
     /// down DNAT with the matching `-s`.
     pub fn remove_by_vxlan(&self, vxlan_id: u32) -> Option<(String, u16, Ipv4Addr, Ipv4Addr)> {
         let mut by_key = self.by_key.lock().unwrap();
         let key = by_key.iter().find_map(|((c, p), lc)| match lc {
-            Lifecycle::Active { vxlan_id: v, .. } if *v == vxlan_id => Some((c.clone(), *p)),
+            Lifecycle::Installed { vxlan_id: v, .. } if *v == vxlan_id => Some((c.clone(), *p)),
             _ => None,
         })?;
         // The lock is held across the `iter().find_map` and the `remove`
-        // below, so the removed entry is guaranteed to be the same `Active`
+        // below, so the removed entry is guaranteed to be the same installed
         // one we just matched on. A `Pending` here would mean the lock
         // protection was broken.
         match by_key.remove(&key) {
-            Some(Lifecycle::Active {
+            Some(Lifecycle::Installed {
                 overlay_ip,
                 container_ip,
                 ..
             }) => Some((key.0, key.1, overlay_ip, container_ip)),
             Some(Lifecycle::Pending { .. }) | None => {
-                unreachable!("find_map matched Active for {key:?}; lock held across remove")
+                unreachable!("find_map matched Installed for {key:?}; lock held across remove")
             }
         }
     }
@@ -199,6 +225,43 @@ impl TriggersState {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn installed_trigger_waits_for_both_endpoints() {
+        let state = TriggersState::default();
+        let owner = state.mark_pending("c1", 80, IP);
+        let notified = owner.notified();
+        tokio::pin!(notified);
+        assert!(!notified.as_mut().enable());
+        state.mark_prepared("c1", 80, 42, OVERLAY, IP);
+        assert!(matches!(state.state("c1", 80), TriggerState::Pending));
+        assert!(matches!(
+            state.claim("c1", 80, IP),
+            TriggerClaim::Pending(_)
+        ));
+        assert!(!notified.as_mut().enable());
+        assert!(state.mark_ready(42));
+        notified.await;
+        assert!(matches!(state.claim("c1", 80, IP), TriggerClaim::Active));
+    }
+
+    #[test]
+    fn prepared_steering_survives_rpc_failure_and_is_cleaned_before_activation() {
+        let state = TriggersState::default();
+        let owner = state.mark_pending("c1", 80, IP);
+        state.mark_prepared("c1", 80, 42, OVERLAY, IP);
+        state.forget_pending("c1", 80, &owner);
+        assert_eq!(
+            state.remove_by_vxlan(42),
+            Some(("c1".into(), 80, OVERLAY, IP))
+        );
+        assert!(!state.mark_ready(42));
+        state.mark_prepared("c1", 80, 43, OVERLAY, IP);
+        assert!(!state.mark_ready(42));
+        assert!(matches!(state.state("c1", 80), TriggerState::Pending));
+        assert!(state.mark_ready(43));
+    }
+
     use super::*;
     use std::sync::Arc;
     use std::time::Duration;

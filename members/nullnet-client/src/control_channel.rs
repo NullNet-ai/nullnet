@@ -1,10 +1,12 @@
+mod lifecycle;
+
 use crate::commands::{RtNetLinkHandle, configure_access_port, dnat, egress, remove_vlan};
 use crate::conntrack::LivenessSets;
 use crate::ebpf::{FirewallPeers, FirewallVxlanPorts, NetId};
 use crate::egress_policy::{FLUSH_SUPPRESSION, PolicyVerdicts, flush_container_conntrack};
 use crate::egress_state::{EgressRecord, EgressState};
 use crate::host_mappings::{
-    HOSTS_MARKER, HostMappingsState, edit_container_hosts, hosts_file_lock,
+    HOSTS_MARKER, HostMappingsState, edit_container_hosts, hosts_file_lock, write_hosts_file,
 };
 use crate::nfqueue::BridgeIpCache;
 use crate::peers::peer::{Peers, VethKey};
@@ -37,14 +39,9 @@ fn fire_event(grpc: &NullnetGrpcInterface, kind: AgentEventKind) {
     });
 }
 
-/// Confirm a completed teardown so the server can return the net id to its
-/// pool. Must be called only once the teardown has actually run — the whole
-/// point of the ack is that the id stays out of circulation until this edge's
-/// kernel state is gone.
-///
-/// `msg_id` is absent when the server predates the ack field; there is then
-/// nothing to confirm and the server falls back to its grace timer.
-async fn ack_teardown(
+/// Confirm a completed control operation. Teardown acknowledgements follow
+/// all kernel cleanup so the server can safely reuse the net id.
+async fn ack_control(
     outbound: &Sender<MsgId>,
     msg_id: Option<MsgId>,
     grpc: &NullnetGrpcInterface,
@@ -89,7 +86,10 @@ pub(crate) async fn control_channel(
         AgentEventKind::ControlChannelEstablished(AgentControlChannelEstablished {}),
     );
 
-    while let Ok(Some(message)) = inbound.message().await {
+    let lifecycle = lifecycle::LifecycleTasks::default();
+    while let Ok(Some(message)) = inbound.message().await.inspect_err(|error| {
+        eprintln!("Control channel from server failed: {error:?}");
+    }) {
         let rtnetlink_handle = rtnetlink_handle.clone();
         let peers = peers.clone();
         let outbound = outbound.clone();
@@ -132,7 +132,7 @@ pub(crate) async fn control_channel(
                 let triggers_state = triggers_state.clone();
                 let egress_state = egress_state.clone();
                 let sets = sets.clone();
-                tokio::spawn(async move {
+                lifecycle.spawn(vxlan_setup.vxlan_id, async move {
                     let _ = handle_vxlan_setup(
                         vxlan_setup,
                         rtnetlink_handle,
@@ -155,7 +155,7 @@ pub(crate) async fn control_channel(
                 let triggers_state = triggers_state.clone();
                 let egress_state = egress_state.clone();
                 let sets = sets.clone();
-                tokio::spawn(async move {
+                lifecycle.spawn(vxlan_teardown.vxlan_id, async move {
                     handle_vxlan_teardown(
                         vxlan_teardown,
                         rtnetlink_handle,
@@ -170,6 +170,47 @@ pub(crate) async fn control_channel(
                         bridge_cache,
                     )
                     .await;
+                });
+            }
+            Some(net_message::Message::NetReady(ready)) => {
+                let triggers_state = triggers_state.clone();
+                lifecycle.spawn(ready.net_id, async move {
+                    let grpc = server.clone();
+                    let published = tokio::task::spawn_blocking(move || {
+                        let mut published = true;
+                        host_mappings_state.with_vxlan(ready.net_id, |mapping, container| {
+                            if add_host_mapping(mapping, container).is_err() {
+                                published = false;
+                                fire_event(
+                                    &grpc,
+                                    AgentEventKind::HostMappingFailed(AgentHostMappingFailed {
+                                        hostname: mapping.name.clone(),
+                                        ip: mapping.ip.clone(),
+                                        docker_container: container.map(String::from),
+                                    }),
+                                );
+                            }
+                        });
+                        published
+                    })
+                    .await
+                    .expect("host mapping publication task panicked");
+                    if !published {
+                        return;
+                    }
+                    if triggers_state.mark_ready(ready.net_id) {
+                        ack_control(&outbound, ready.msg_id, &server, "net_ready").await;
+                    } else {
+                        fire_event(
+                            &server,
+                            AgentEventKind::VxlanSetupFailed(AgentVxlanSetupFailed {
+                                vxlan_id: ready.net_id,
+                                ns_name: format!("ns_{}_c", ready.net_id),
+                                error_code: -1,
+                            }),
+                        );
+                        eprintln!("NetReady for {} has no installed steering", ready.net_id);
+                    }
                 });
             }
             Some(net_message::Message::ContainerSuspend(container_suspend)) => {
@@ -379,7 +420,7 @@ async fn handle_vlan_teardown(
 
     // Acked last: the server frees the net id on this, so everything above must
     // already be undone.
-    ack_teardown(&outbound, ack_id, &grpc, "vlan_teardown").await;
+    ack_control(&outbound, ack_id, &grpc, "vlan_teardown").await;
 
     Ok(())
 }
@@ -520,6 +561,7 @@ async fn handle_vxlan_setup(
         init_t.elapsed().as_millis(),
         message.docker_container.as_deref().unwrap_or("none"),
     );
+    setup_result?;
 
     // Egress edges install steering (initiator) or interception (proxy) instead
     // of the host-mapping + DNAT path used by proxy/backend edges.
@@ -561,25 +603,23 @@ async fn handle_vxlan_setup(
                 } else {
                     egress::install_steer(vxlan_id, &br_name, gw, snat_src, cip)
                 };
+                if local_gateway {
+                    egress_state.record(vxlan_id, EgressRecord::Local);
+                } else {
+                    egress_state.record(
+                        vxlan_id,
+                        EgressRecord::Steer {
+                            br_name: br_name.clone(),
+                            snat_src,
+                            container_ip: cip,
+                        },
+                    );
+                }
                 if installed {
-                    if local_gateway {
-                        egress_state.record(vxlan_id, EgressRecord::Local);
-                    } else {
-                        egress_state.record(
-                            vxlan_id,
-                            EgressRecord::Steer {
-                                br_name: br_name.clone(),
-                                snat_src,
-                                container_ip: cip,
-                            },
-                        );
-                    }
-                    // Steering is live — release any egress SYN the NFQUEUE
-                    // listener is holding for this initiator. Mirrors the
-                    // backend DNAT→mark_active ordering (install first, then
-                    // wake, so the freed packet finds the rule in place).
+                    // Record local steering; NetReady releases packets only
+                    // after the gateway also acknowledges setup.
                     if let Some(container) = message.docker_container.as_deref() {
-                        triggers_state.mark_active(
+                        triggers_state.mark_prepared(
                             container,
                             crate::triggers::EGRESS_TRIGGER_PORT,
                             vxlan_id,
@@ -598,6 +638,7 @@ async fn handle_vxlan_setup(
                             error_message: "steer rules failed to install".to_string(),
                         }),
                     );
+                    return Err("egress steering installation failed").handle_err(location!());
                 }
             }
             _ => {
@@ -615,18 +656,18 @@ async fn handle_vxlan_setup(
                         ),
                     }),
                 );
+                return Err("egress steering has no gateway or source").handle_err(location!());
             }
         }
     } else if egress_intercept && local_ip != remote_ip {
-        if egress::install_gateway_forward(&br_name, &message.br_net) {
-            egress_state.record(
-                vxlan_id,
-                EgressRecord::Gateway {
-                    br_name: br_name.clone(),
-                    br_net: message.br_net.clone(),
-                },
-            );
-        } else {
+        egress_state.record(
+            vxlan_id,
+            EgressRecord::Gateway {
+                br_name: br_name.clone(),
+                br_net: message.br_net.clone(),
+            },
+        );
+        if !egress::install_gateway_forward(&br_name, &message.br_net) {
             fire_event(
                 &grpc,
                 AgentEventKind::GatewayForwardInstallFailed(AgentGatewayForwardInstallFailed {
@@ -634,9 +675,19 @@ async fn handle_vxlan_setup(
                     br_net: message.br_net.clone(),
                 }),
             );
+            return Err("gateway forwarding installation failed").handle_err(location!());
         }
     } else if let Some(host_mapping) = &message.host_mapping {
-        if add_host_mapping(host_mapping, message.docker_container.as_deref()).is_err() {
+        host_mappings_state.record_vxlan(
+            vxlan_id,
+            host_mapping.clone(),
+            message.docker_container.clone(),
+        );
+        // Backend names stay on their trigger address until both endpoints
+        // are ready; publishing early lets container ARP bypass NFQUEUE.
+        if message.dnat_port.is_none()
+            && add_host_mapping(host_mapping, message.docker_container.as_deref()).is_err()
+        {
             fire_event(
                 &grpc,
                 AgentEventKind::HostMappingFailed(AgentHostMappingFailed {
@@ -645,25 +696,11 @@ async fn handle_vxlan_setup(
                     docker_container: message.docker_container.clone(),
                 }),
             );
+            return Err("host mapping installation failed").handle_err(location!());
         }
-        host_mappings_state.record_vxlan(
-            vxlan_id,
-            host_mapping.clone(),
-            message.docker_container.clone(),
-        );
 
-        // backend-entry edge: install DNAT(dnat_port -> overlay_ip) so the
-        // initiator's traffic on that local port is steered into the new
-        // VXLAN.
-        //
-        // Order matters. The NFQUEUE listener is parked on a `Notify` that
-        // `mark_active` fires; once woken it verdicts ACCEPT and the held
-        // packet traverses `nat PREROUTING`. The DNAT rule MUST already be
-        // installed by then, so we:
-        //   1. peek the initiator's bridge IP (stashed at `mark_pending`)
-        //   2. install DNAT with `-s <container_ip>`
-        //   3. mark_active → wakes the waiter, packet released into the new
-        //      rule
+        // Install scoped DNAT before acknowledging local setup. NetReady
+        // releases held packets once the receiving endpoint is also ready.
         if let Some(dnat_port) = message.dnat_port
             && let Ok(dnat_port) = u16::try_from(dnat_port)
             && let Ok(overlay_ip) = host_mapping.ip.parse::<Ipv4Addr>()
@@ -676,12 +713,12 @@ async fn handle_vxlan_setup(
             // untrustworthy first — otherwise a rebuild under open connections
             // reads as 1->0 and decrements the chain out from under them.
             sets.suppress_trigger(container_key, dnat_port, FLUSH_SUPPRESSION);
-            // Only promote to Active if the DNAT rule is actually live. Waking
+            // Only record prepared steering if the DNAT rule is actually live. Waking
             // the held packet without it would release the SYN into a missing
             // rule (→ misroute to the original dest); instead leave it Pending
             // so the listener drops at ACTIVE_TIMEOUT.
             if dnat::install(dnat_port, overlay_ip, container_ip) {
-                triggers_state.mark_active(
+                triggers_state.mark_prepared(
                     container_key,
                     dnat_port,
                     vxlan_id,
@@ -689,6 +726,14 @@ async fn handle_vxlan_setup(
                     container_ip,
                 );
             } else {
+                // Retain partial-rule ownership for the server's rollback.
+                triggers_state.mark_prepared(
+                    container_key,
+                    dnat_port,
+                    vxlan_id,
+                    overlay_ip,
+                    container_ip,
+                );
                 fire_event(
                     &grpc,
                     AgentEventKind::DnatInstallFailed(AgentDnatInstallFailed {
@@ -696,6 +741,7 @@ async fn handle_vxlan_setup(
                         overlay_ip: overlay_ip.to_string(),
                     }),
                 );
+                return Err("backend DNAT installation failed").handle_err(location!());
             }
         } else if message.dnat_port.is_some() {
             // Backend-entry edge with a malformed port or host IP — DNAT
@@ -715,6 +761,7 @@ async fn handle_vxlan_setup(
                     overlay_ip: host_mapping.ip.clone(),
                 }),
             );
+            return Err("invalid backend DNAT mapping").handle_err(location!());
         }
     }
 
@@ -765,9 +812,12 @@ async fn handle_vxlan_teardown(
                 br_name,
                 snat_src,
                 container_ip,
-            } => egress::remove_steer(message.vxlan_id, &br_name, snat_src, container_ip),
+            } => {
+                local_cleanup_ok =
+                    egress::remove_steer(message.vxlan_id, &br_name, snat_src, container_ip);
+            }
             EgressRecord::Gateway { br_name, br_net } => {
-                egress::remove_gateway_forward(&br_name, &br_net)
+                local_cleanup_ok = egress::remove_gateway_forward(&br_name, &br_net);
             }
         }
     }
@@ -796,6 +846,7 @@ async fn handle_vxlan_teardown(
         // issues the flush.
         sets.suppress_trigger(&container, port, FLUSH_SUPPRESSION);
         if !dnat::remove(port, overlay_ip, container_ip) {
+            local_cleanup_ok = false;
             fire_event(
                 &grpc,
                 AgentEventKind::DnatRemovalFailed(AgentDnatRemovalFailed {
@@ -807,10 +858,16 @@ async fn handle_vxlan_teardown(
     }
 
     // remove host mapping if one was installed at setup
-    if let Some((host_mapping, docker_container)) = host_mappings_state.take_vxlan(message.vxlan_id)
-    {
-        let _ = remove_host_mapping(&host_mapping, docker_container.as_deref());
-    }
+    let net_id = message.vxlan_id;
+    local_cleanup_ok &= tokio::task::spawn_blocking(move || {
+        host_mappings_state
+            .take_vxlan(net_id)
+            .is_none_or(|(mapping, container)| {
+                remove_host_mapping(&mapping, container.as_deref()).is_ok()
+            })
+    })
+    .await
+    .expect("host mapping cleanup task panicked");
 
     // teardown VXLAN on this machine
     let init_t = std::time::Instant::now();
@@ -826,7 +883,6 @@ async fn handle_vxlan_teardown(
         // A malformed dstport just means the (already-idempotent) XFRM
         // policy cleanup below is skipped — everything else still tears down.
         dstport: u16::try_from(message.dstport).unwrap_or(crate::DEFAULT_VXLAN_DSTPORT),
-        docker_container: message.docker_container.clone(),
     };
     let teardown_result =
         crate::commands::vxlan::teardown(&rtnetlink_handle, &vxlan_params, &bridge_cache).await;
@@ -857,7 +913,9 @@ async fn handle_vxlan_teardown(
     // Acked last: the server frees the net id on this, so every kernel object
     // named after it — bridge, veth/macsec pair, XFRM SA, DNAT — must already
     // be gone.
-    ack_teardown(&outbound, ack_id, &grpc, "vxlan_teardown").await;
+    if local_cleanup_ok && teardown_result.is_ok() {
+        ack_control(&outbound, ack_id, &grpc, "vxlan_teardown").await;
+    }
 }
 
 /// Pause an idle container. Fire-and-forget: the server marks the replica
@@ -1007,8 +1065,11 @@ fn add_host_mapping(hm: &HostMapping, docker_container: Option<&str>) -> Result<
     } else {
         // host-targeted: upsert into the host's /etc/hosts
         let content = std::fs::read_to_string(path).handle_err(location!())?;
-        std::fs::write(path, upsert_hosts_entry(&content, &hm.name, &entry))
-            .handle_err(location!())?;
+        write_hosts_file(
+            std::path::Path::new(path),
+            &upsert_hosts_entry(&content, &hm.name, &entry),
+        )
+        .handle_err(location!())?;
     }
 
     Ok(())
@@ -1049,8 +1110,11 @@ fn remove_host_mapping(hm: &HostMapping, docker_container: Option<&str>) -> Resu
     } else {
         // host-targeted: drop this net's line from the host file
         let content = std::fs::read_to_string(path).handle_err(location!())?;
-        std::fs::write(path, remove_hosts_entry(&content, &hm.name, &hm.ip))
-            .handle_err(location!())?;
+        write_hosts_file(
+            std::path::Path::new(path),
+            &remove_hosts_entry(&content, &hm.name, &hm.ip),
+        )
+        .handle_err(location!())?;
     }
 
     Ok(())
@@ -1081,4 +1145,95 @@ fn remove_hosts_entry(content: &str, name: &str, ip: &str) -> String {
 /// `ip xfrm` calls it still shells out to for key installation).
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires root, nnreview0 dummy interface, and the lab TLS server"]
+    async fn failed_kernel_teardown_is_not_acknowledged() {
+        let grpc = NullnetGrpcInterface::new(
+            &crate::env::CONTROL_SERVICE_ADDR,
+            *crate::env::CONTROL_SERVICE_PORT,
+            std::path::Path::new(&*crate::env::CONTROL_SERVICE_CA_CERT),
+        )
+        .await
+        .unwrap();
+        let firewall = crate::ebpf::enable(
+            "nnreview0",
+            &crate::ebpf::FirewallConfig {
+                server_ip: crate::env::CONTROL_SERVICE_ADDR.parse().unwrap(),
+                control_port: *crate::env::CONTROL_SERVICE_PORT,
+                egress_gateway: false,
+                ingress_tcp: vec![],
+                ingress_udp: vec![],
+                egress_tcp: vec![],
+                egress_udp: vec![],
+            },
+        )
+        .unwrap();
+        let (outbound, mut acks) = mpsc::channel(2);
+        let setup = handle_vxlan_setup(
+            VxlanSetup {
+                msg_id: Some(MsgId {
+                    id: "review-failed-setup".into(),
+                }),
+                vxlan_id: 2_000_000,
+                ns_name: "ns_2000000_c".into(),
+                br_name: "br_2000000_c".into(),
+                ns_net: "10.250.0.2/29".into(),
+                br_net: "10.250.0.1/29".into(),
+                local_ip: "127.0.0.1".into(),
+                remote_ip: "127.0.0.1".into(),
+                dstport: u32::from(crate::DEFAULT_VXLAN_DSTPORT),
+                docker_container: Some("nullnet-review-deliberately-absent".into()),
+                ..Default::default()
+            },
+            RtNetLinkHandle::disconnected(),
+            outbound.clone(),
+            Arc::default(),
+            Arc::default(),
+            grpc.clone(),
+            firewall.peers.clone(),
+            firewall.vxlan_ports.clone(),
+            Arc::default(),
+            LivenessSets::new(),
+            BridgeIpCache::new(),
+        )
+        .await;
+        assert!(setup.is_err());
+        assert!(
+            acks.try_recv().is_err(),
+            "failed setup was acknowledged as completed"
+        );
+        handle_vxlan_teardown(
+            VxlanTeardown {
+                msg_id: Some(MsgId {
+                    id: "review-failed-teardown".into(),
+                }),
+                vxlan_id: 2_000_000,
+                ns_name: "ns_2000000_c".into(),
+                br_name: "br_2000000_c".into(),
+                dstport: u32::from(crate::DEFAULT_VXLAN_DSTPORT),
+                ..Default::default()
+            },
+            RtNetLinkHandle::disconnected(),
+            Arc::default(),
+            outbound,
+            Arc::default(),
+            grpc,
+            firewall.peers.clone(),
+            firewall.vxlan_ports.clone(),
+            Arc::default(),
+            LivenessSets::new(),
+            BridgeIpCache::new(),
+        )
+        .await;
+        assert!(
+            acks.try_recv().is_err(),
+            "failed kernel cleanup was acknowledged as completed"
+        );
+    }
 }

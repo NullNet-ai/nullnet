@@ -191,16 +191,8 @@ async fn decide_verdict(
     match ctx.triggers_state.claim(container, dst_port, src_ip) {
         TriggerClaim::Active => Verdict::Accept,
         TriggerClaim::Pending(notify) => {
-            // `mark_active` wakes us with `Notify::notify_waiters()`, which
-            // only delivers to currently-registered futures — there is no
-            // stored-permit fallback. So we must `.enable()` the Notified
-            // future BEFORE awaiting, and then re-check state synchronously
-            // to close the window between the `state()` call above and our
-            // registration. Without this, `mark_active` firing in that
-            // window is a silently-lost wake-up and the held packet drops
-            // 5 s later for no reason — the visible symptom is the
-            // "[nfqueue] no VxlanSetup …" / "timeout waiting for active
-            // state …" log line on a chain that demonstrably came up.
+            // Register before checking readiness so a concurrent NetReady
+            // notification cannot be lost between the state check and wait.
             let notified = notify.notified();
             tokio::pin!(notified);
             if notified.as_mut().enable()
@@ -222,12 +214,8 @@ async fn decide_verdict(
             }
         }
         TriggerClaim::Start(notify) => {
-            // Register BEFORE the gRPC round-trip: the server can dispatch
-            // `VxlanSetup` (→ `mark_active` here) faster than its reply to
-            // `backend_trigger` arrives back, especially on multi-edge
-            // chains where `net_chain_setup` returns only after the slowest
-            // edge finishes. Without pre-registration the early
-            // `mark_active`'s wake fires to zero waiters and is lost.
+            // NetReady can precede the unary response. Register first so its
+            // notification remains visible while that response is in flight.
             let notified = notify.notified();
             tokio::pin!(notified);
             if notified.as_mut().enable()
@@ -251,13 +239,13 @@ async fn decide_verdict(
                 Ok(Ok(())) => match timeout(ACTIVE_TIMEOUT, notified).await {
                     Ok(_) => Verdict::Accept,
                     Err(_) => {
-                        // No `forget`: the trigger was accepted, so a VxlanSetup
+                        // No `forget`: the trigger was accepted, so activation
                         // is just slow. Forgetting wipes the stashed container_ip,
                         // making the late setup install an unscoped DNAT. Keeping
                         // Pending lets it peek the real IP; entry ages out at
                         // PENDING_TIMEOUT so re-trigger still works.
                         eprintln!(
-                            "[nfqueue] no VxlanSetup for '{service}' port {dst_port} container {container}"
+                            "[nfqueue] tunnel not ready for '{service}' port {dst_port} container {container}"
                         );
                         Verdict::Drop
                     }

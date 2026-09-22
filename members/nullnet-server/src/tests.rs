@@ -721,7 +721,7 @@ async fn node_disconnected_proxy1() {
 
 const PROXY_TIMEOUT: &str = "proxy_timeout";
 
-async fn proxy_timeout_setup() -> NullnetGrpcImpl {
+pub(crate) async fn proxy_timeout_setup() -> NullnetGrpcImpl {
     let services = load_fixture(PROXY_TIMEOUT).await;
     let server = NullnetGrpcImpl::new_for_test(services);
 
@@ -748,6 +748,38 @@ async fn proxy_timeout_setup() -> NullnetGrpcImpl {
     drop(guard);
 
     server
+}
+
+#[tokio::test]
+async fn mass_expiry_allows_reads_between_client_teardowns() {
+    let server = proxy_timeout_setup().await;
+    let proxy = ip(5, 5, 5, 5);
+    for i in 3..131 {
+        setup_proxy_chain(&server, "A", proxy, &format!("10.0.0.{i}")).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let (log, gate) = server.orchestrator().register_gated_client(proxy).await;
+    let worker = server.clone();
+    let reap = tokio::spawn(async move {
+        crate::timeout::reap_ingress_timeouts(worker.services(), worker.orchestrator()).await;
+    });
+    wait_for_log(&log, |messages| !messages.is_empty()).await;
+    let reader = server.clone();
+    let read = tokio::spawn(async move {
+        let _guard = reader.services().read().await;
+    });
+    tokio::task::yield_now().await;
+    // Unblock one send if the bounded control queue is already full.
+    gate.add_permits(1);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), read).await;
+    gate.add_permits(1000);
+    reap.await.unwrap();
+    assert!(result.is_ok(), "bulk expiry monopolized the services lock");
+    let guard = server.services().read().await;
+    let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] else {
+        unreachable!()
+    };
+    assert_eq!(reg.client_count(), 0);
 }
 
 /// After A's timeout (1s), both proxy clients on A expire. B's proxy client
@@ -1754,6 +1786,71 @@ async fn multi_replica_first_step_container_disconnect() {
 // ===========================================================================
 
 const MAX_NETWORKS: &str = "max_networks";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn max_networks_balances_shared_networks_under_concurrent_requests() {
+    let config: ServicesToml = toml::from_str(
+        r#"[[services]]
+name = "A"
+timeout = 60
+max_networks = 10
+proxy_dependencies = [["B"]]
+"#,
+    )
+    .unwrap();
+    let server = std::sync::Arc::new(NullnetGrpcImpl::new_for_test(into_stack_map(
+        config.services_map().unwrap(),
+    )));
+    let proxy = ip(5, 5, 5, 5);
+    register_services(
+        &server,
+        &HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]),
+        8080,
+    )
+    .await;
+    server.orchestrator().register_fake_client(proxy).await;
+    for i in 1..=10 {
+        setup_proxy_chain(&server, "A", proxy, &format!("10.0.0.{i}")).await;
+    }
+    assert_net_ids_in_use(&server, 11).await;
+
+    let mut requests = tokio::task::JoinSet::new();
+    for i in 11..=200 {
+        let server = server.clone();
+        requests.spawn(async move {
+            setup_proxy_chain(&server, "A", proxy, &format!("10.0.0.{i}")).await;
+        });
+    }
+    while let Some(result) = requests.join_next().await {
+        result.unwrap();
+    }
+    assert_net_ids_in_use(&server, 11).await;
+    let guard = server.services().read().await;
+    let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] else {
+        panic!("A should be registered");
+    };
+    let mut users = HashMap::<u32, usize>::new();
+    for replica in reg.replicas() {
+        for ci in replica.clients().values() {
+            *users.entry(ci.net_id()).or_default() += 1;
+        }
+    }
+    assert_eq!(users.len(), 10);
+    assert!(users.values().all(|count| *count == 20), "{users:?}");
+    let ServiceInfo::Registered(dep) = &stack_view(&guard)["B"] else {
+        panic!("B should be registered");
+    };
+    assert_eq!(dep.client_count(), 1);
+    assert_eq!(
+        dep.replicas()[0]
+            .clients()
+            .values()
+            .next()
+            .unwrap()
+            .active_chains(),
+        200
+    );
+}
 
 /// Full lifecycle:
 ///   1. First client creates network (2 net IDs: proxy→A, A→B)
@@ -3328,6 +3425,130 @@ async fn node_hosting_no_trigger_service_gets_nothing() {
 const BACKEND_LIVENESS: &str = "backend_liveness";
 
 #[tokio::test]
+async fn backend_reap_history_wait_releases_topology() {
+    let server = NullnetGrpcImpl::new_for_test(load_fixture(BACKEND_LIVENESS).await);
+    register_services(
+        &server,
+        &HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]),
+        8080,
+    )
+    .await;
+    let db = attach_session_db(&server).await;
+    server
+        .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None)
+        .await
+        .unwrap();
+    assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 1);
+    let key = ("A".to_string(), ip(1, 1, 1, 1), None, 5555);
+    server
+        .orchestrator()
+        .set_backend_liveness(&key, false)
+        .await;
+    let db_guard = db.hold_connection().await;
+    let reap = reap_idle_backend_chains(
+        server.services(),
+        server.orchestrator(),
+        std::time::Duration::ZERO,
+    );
+    tokio::pin!(reap);
+    assert!(futures::poll!(&mut reap).is_pending());
+    assert!(
+        server.services().try_read().is_ok(),
+        "history close holds the global topology lock"
+    );
+    assert_net_ids_in_use(&server, 0).await;
+    let task_server = server.clone();
+    let replacement = tokio::spawn(async move {
+        task_server
+            .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None)
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !server.orchestrator().holds_backend_session(&key).await {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(db_guard);
+    reap.await;
+    replacement.await.unwrap().unwrap();
+    assert_net_ids_in_use(&server, 1).await;
+    assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 1);
+    report_backend_idle_and_reap(&server, "A", key.1, 5555).await;
+    assert_net_ids_in_use(&server, 0).await;
+    assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn backend_pending_history_allows_teardown_and_replacement() {
+    let server = NullnetGrpcImpl::new_for_test(load_fixture(BACKEND_LIVENESS).await);
+    register_services(
+        &server,
+        &HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]),
+        8080,
+    )
+    .await;
+    let db = attach_session_db(&server).await;
+    let db_guard = db.hold_connection().await;
+    let key = ("A".to_string(), ip(1, 1, 1, 1), None, 5555);
+    let task_server = server.clone();
+    let first = tokio::spawn(async move {
+        task_server
+            .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None)
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !server.orchestrator().holds_backend_session(&key).await {
+            tokio::task::yield_now().await;
+        }
+        server
+            .orchestrator()
+            .set_backend_liveness(&key, false)
+            .await;
+        while server
+            .orchestrator()
+            .nearest_backend_expiry(std::time::Duration::ZERO)
+            .await
+            .is_none()
+        {
+            tokio::task::yield_now().await;
+        }
+        reap_idle_backend_chains(
+            server.services(),
+            server.orchestrator(),
+            std::time::Duration::ZERO,
+        )
+        .await;
+    })
+    .await
+    .expect("history storage blocked topology or teardown");
+    assert!(!first.is_finished());
+    assert_net_ids_in_use(&server, 0).await;
+    let task_server = server.clone();
+    let replacement = tokio::spawn(async move {
+        task_server
+            .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None)
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !server.orchestrator().holds_backend_session(&key).await {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(db_guard);
+    first.await.unwrap().unwrap();
+    replacement.await.unwrap().unwrap();
+    assert_net_ids_in_use(&server, 1).await;
+    assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 1);
+    report_backend_idle_and_reap(&server, "A", key.1, 5555).await;
+    assert_net_ids_in_use(&server, 0).await;
+    assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 0);
+}
+
+#[tokio::test]
 async fn trigger_atomic_concurrent_backend_claims_release_once() {
     let server = NullnetGrpcImpl::new_for_test(load_fixture(BACKEND_LIVENESS).await);
     register_services(
@@ -3378,9 +3599,12 @@ async fn trigger_atomic_backend_idle_during_setup_is_preserved() {
     gate.add_permits(64);
     build.await.unwrap().unwrap();
     {
-        let mut guard = server.services().write().await;
-        reap_idle_backend_chains(&mut guard, server.orchestrator(), std::time::Duration::ZERO)
-            .await;
+        reap_idle_backend_chains(
+            server.services(),
+            server.orchestrator(),
+            std::time::Duration::ZERO,
+        )
+        .await;
     }
     assert_net_ids_in_use(&server, 0).await;
 }
@@ -3484,8 +3708,12 @@ async fn report_backend_idle_and_reap(
         .orchestrator()
         .set_backend_liveness(&(service.to_string(), ip, None, port), false)
         .await;
-    let mut guard = server.services().write().await;
-    reap_idle_backend_chains(&mut guard, server.orchestrator(), std::time::Duration::ZERO).await;
+    reap_idle_backend_chains(
+        server.services(),
+        server.orchestrator(),
+        std::time::Duration::ZERO,
+    )
+    .await;
 }
 
 /// The Step 4 path: once the initiator's connections on the trigger port are
@@ -3557,9 +3785,12 @@ async fn a_second_reap_pass_releases_nothing_more() {
         .set_backend_liveness(&("A".to_string(), ip(1, 1, 1, 1), None, 5555), false)
         .await;
     for _ in 0..3 {
-        let mut guard = server.services().write().await;
-        reap_idle_backend_chains(&mut guard, server.orchestrator(), std::time::Duration::ZERO)
-            .await;
+        reap_idle_backend_chains(
+            server.services(),
+            server.orchestrator(),
+            std::time::Duration::ZERO,
+        )
+        .await;
     }
 
     assert_eq!(
@@ -4004,7 +4235,7 @@ async fn a_failed_edge_rollback_keeps_a_concurrent_holder() {
          teardowns sent: {torn:?})"
     );
     // No assertion on the pool here: host b never acks its teardown either, so
-    // the id is deliberately held until `TEARDOWN_ACK_GRACE` expires. What must
+    // the id is deliberately held until cleanup or disconnect. What must
     // hold immediately is that no entry is left behind for it.
     let _ = in_use;
     assert_eq!(
@@ -4614,9 +4845,12 @@ port = 6666
         .orchestrator()
         .set_backend_liveness(&("source".into(), source_ip, None, 5555), false)
         .await;
-    let mut guard = server.services().write().await;
-    reap_idle_backend_chains(&mut guard, server.orchestrator(), std::time::Duration::ZERO).await;
-    drop(guard);
+    reap_idle_backend_chains(
+        server.services(),
+        server.orchestrator(),
+        std::time::Duration::ZERO,
+    )
+    .await;
     assert_net_ids_in_use(&server, 0).await;
 }
 
@@ -4686,4 +4920,51 @@ port = 5555
     report_backend_idle_and_reap(&server, "source", source_ip, 6666).await;
     assert_net_ids_in_use(&server, 0).await;
     assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn backend_packets_are_released_only_after_both_setup_acks() {
+    let services = load_fixture(BACKEND_LIVENESS).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+    register_services(
+        &server,
+        &HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]),
+        8080,
+    )
+    .await;
+    let initiator = server
+        .orchestrator()
+        .register_recording_client(ip(1, 1, 1, 1))
+        .await;
+    let (receiver, gate) = server
+        .orchestrator()
+        .register_gated_client(ip(2, 2, 2, 2))
+        .await;
+    let task_server = server.clone();
+    let build = tokio::spawn(async move {
+        task_server
+            .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None)
+            .await
+    });
+    wait_for_log(&receiver, |messages| !setup_net_ids(messages).is_empty()).await;
+    assert!(
+        !initiator
+            .lock()
+            .await
+            .iter()
+            .any(|message| matches!(message.message, Some(net_message::Message::NetReady(_))))
+    );
+    gate.add_permits(1);
+    build.await.unwrap().unwrap();
+    let messages = initiator.lock().await;
+    let setup = setup_net_ids(&messages);
+    let ready: Vec<_> = messages
+        .iter()
+        .filter_map(|message| match &message.message {
+            Some(net_message::Message::NetReady(ready)) => Some(ready.net_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ready.len(), 1);
+    assert!(setup.contains(&ready[0]));
 }

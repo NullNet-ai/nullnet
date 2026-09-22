@@ -9,20 +9,20 @@ const PROTOS: [&str; 2] = ["tcp", "udp"];
 /// inherits no stale state from a previous run. Idempotent.
 pub(crate) fn init() {
     // create our chain (no-op if it already exists)
-    let _ = sudo(&["iptables", "-t", "nat", "-N", CHAIN]);
+    let _ = privileged(&["iptables", "-t", "nat", "-N", CHAIN]);
     // flush any rules left over from a previous run
-    let _ = sudo(&["iptables", "-t", "nat", "-F", CHAIN]);
+    let _ = privileged(&["iptables", "-t", "nat", "-F", CHAIN]);
     // hook the chain from PREROUTING (idempotent via -C check). The OUTPUT
     // hook is gone with the NFQUEUE migration — initiators are always
     // containers entering the host stack via PREROUTING.
-    let already = sudo(&["iptables", "-t", "nat", "-C", HOOK_CHAIN, "-j", CHAIN])
+    let already = privileged(&["iptables", "-t", "nat", "-C", HOOK_CHAIN, "-j", CHAIN])
         .map(|s| s.success())
         .unwrap_or(false);
     if !already {
-        let _ = sudo(&["iptables", "-t", "nat", "-A", HOOK_CHAIN, "-j", CHAIN]);
+        let _ = privileged(&["iptables", "-t", "nat", "-A", HOOK_CHAIN, "-j", CHAIN]);
     }
     // drop any conntrack flows that may have been NAT'd through stale rules
-    let _ = sudo(&["conntrack", "-F"]);
+    let _ = privileged(&["conntrack", "-F"]);
     println!("[dnat] init: chain {CHAIN} ready, conntrack flushed");
 }
 
@@ -73,7 +73,13 @@ fn run_iptables(
         "--to-destination",
         &target,
     ]);
-    let status = sudo(&args);
+    let status = privileged(&args);
+    if action == "-D" && !status.as_ref().is_ok_and(std::process::ExitStatus::success) {
+        args[3] = "-C";
+        if privileged(&args).is_ok_and(|s| s.code() == Some(1)) {
+            return true;
+        }
+    }
     let src = if container_ip.is_unspecified() {
         "any".to_string()
     } else {
@@ -113,7 +119,7 @@ fn run_iptables(
 fn flush_conntrack(port: u16, container_ip: Ipv4Addr) {
     for proto in PROTOS {
         let args = flush_conntrack_args(proto, port, container_ip);
-        let _ = sudo(&args.iter().map(String::as_str).collect::<Vec<_>>());
+        let _ = privileged(&args.iter().map(String::as_str).collect::<Vec<_>>());
     }
 }
 
@@ -168,6 +174,10 @@ mod tests {
     }
 }
 
-fn sudo(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
-    Command::new("sudo").args(args).status()
+fn privileged(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
+    let mut command = Command::new(args[0]);
+    if args[0] == "iptables" {
+        command.arg("-w");
+    }
+    command.args(&args[1..]).status()
 }

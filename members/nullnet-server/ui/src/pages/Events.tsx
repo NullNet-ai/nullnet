@@ -13,6 +13,9 @@ const SEVERITY_COLOR: Record<Severity, string> = {
 };
 
 const KIND_LABELS: Record<string, string> = {
+  event_persistence_overflow: 'event_persistence_overflow',
+  event_persistence_failed: 'event_persistence_failed',
+  event_persistence_recovered: 'event_persistence_recovered',
   // Server events
   node_connected: 'node_connected',
   node_disconnected: 'node_disconnected',
@@ -102,6 +105,12 @@ const ALL_KINDS = Object.keys(KIND_LABELS);
 
 function eventDetail(e: EventJson): string {
   switch (e.type) {
+    case 'event_persistence_overflow':
+      return `${e.dropped_events} events dropped because persistence could not keep up`;
+    case 'event_persistence_failed':
+      return `${e.queued_events} queued · ${e.error_message}`;
+    case 'event_persistence_recovered':
+      return `Persistence recovered · ${e.queued_events} events draining`;
     case 'node_connected':
     case 'node_disconnected':
       return e.ip;
@@ -127,7 +136,7 @@ function eventDetail(e: EventJson): string {
     case 'session_torn_down':
       return `net ${e.net_id} · ${e.service} · ${e.client_ip}`;
     case 'net_teardown_unconfirmed':
-      return `net ${e.net_id} · ${e.node_ip} never confirmed teardown`;
+      return `net ${e.net_id} · ${e.node_ip} teardown overdue; ID kept reserved`;
     case 'observation_changed':
       return `${e.stack} · observation #${e.observation_id} ${e.action}`;
     case 'config_reloaded':

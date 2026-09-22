@@ -670,10 +670,8 @@ impl RegisteredServiceInfo {
             .count()
     }
 
-    /// Find the least-used proxy client on the given proxy IP.
-    /// Returns the upstream, network IPs/ID, and replica identity —
-    /// everything the caller needs to create a new Client entry that
-    /// shares the same physical network.
+    /// Find the network with the fewest clients on this proxy.
+    /// Returns its upstream, addresses and replica identity for sharing.
     #[allow(clippy::type_complexity)]
     pub(crate) fn find_reusable_network_on_proxy(
         &self,
@@ -687,28 +685,27 @@ impl RegisteredServiceInfo {
         Option<String>,
         u128,
     )> {
-        let best = self
-            .replicas
-            .iter()
-            .flat_map(|r| {
-                r.clients.clients().iter().filter_map(move |(c, ci)| {
-                    if c.is_proxy() == Some(proxy_ip) && ci.server_net() != Ipv4Addr::UNSPECIFIED {
-                        Some((
-                            ci.active_chains(),
-                            ci.client_net(),
-                            ci.server_net(),
-                            ci.net_id(),
-                            r,
-                            ci.time_ms(),
-                        ))
-                    } else {
-                        None
-                    }
-                })
-            })
-            .min_by_key(|(chains, _, _, _, _, _)| *chains);
-
-        let (_, client_net, server_net, net_id, replica, setup_ms) = best?;
+        let mut networks = HashMap::new();
+        for replica in &self.replicas {
+            for (client, info) in replica.clients.clients() {
+                if client.is_proxy() == Some(proxy_ip) && info.server_net() != Ipv4Addr::UNSPECIFIED
+                {
+                    let entry = networks
+                        .entry(info.net_id())
+                        .or_insert((0usize, info, replica));
+                    entry.0 += 1;
+                }
+            }
+        }
+        let (_, (_, info, replica)) = networks
+            .into_iter()
+            .min_by_key(|(net_id, (users, _, _))| (*users, *net_id))?;
+        let (client_net, server_net, net_id, setup_ms) = (
+            info.client_net(),
+            info.server_net(),
+            info.net_id(),
+            info.time_ms(),
+        );
         Some((
             Upstream {
                 ip: server_net.to_string(),
@@ -826,15 +823,17 @@ impl RegisteredServiceInfo {
                     .clients
                     .clients()
                     .iter()
-                    .filter(|(c, ci)| {
-                        c.is_proxy().is_some()
-                            && !ci.is_pending()
-                            && ci.open_connections() == 0
-                            && now.duration_since(ci.latest()) >= timeout
-                    })
+                    .filter(|(c, ci)| c.is_proxy().is_some() && ci.idle_expired(now, timeout))
                     .map(|(c, _)| c.clone())
             })
             .collect()
+    }
+
+    pub(crate) fn proxy_client_expired(&self, client: &Client, timeout: Duration) -> bool {
+        client.is_proxy().is_some()
+            && self
+                .client_info(client)
+                .is_some_and(|ci| ci.idle_expired(Instant::now(), timeout))
     }
 
     pub(crate) fn nearest_proxy_expiry(&self, timeout: Duration) -> Option<Duration> {

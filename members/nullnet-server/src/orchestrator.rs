@@ -8,7 +8,8 @@ use crate::services::changes::{apply_changes, detect_node_disconnect_changes};
 use crate::services::input::StackMap;
 use crate::sessions::SessionStore;
 use nullnet_grpc_lib::nullnet_grpc::{
-    ContainerResume, ContainerSuspend, EgressPolicyChanged, MsgId, Net, NetMessage, net_message,
+    ContainerResume, ContainerSuspend, EgressPolicyChanged, MsgId, Net, NetMessage, NetReady,
+    net_message,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
@@ -50,15 +51,22 @@ struct BackendSession {
     idle_since: Option<Instant>,
 }
 
+pub(crate) struct PendingBackendHistory {
+    key: BackendKey,
+    generation: Uuid,
+    stack: String,
+    net_id: u32,
+    destination: String,
+    setup_ms: Option<u128>,
+}
+
 /// Cap on distinct external destinations tracked per egress edge. When full, the
 /// least-recently-contacted destination is evicted. Bounds memory for a service
 /// that contacts a very large set of hosts (e.g. a crawler).
 const MAX_DESTS_PER_EDGE: usize = 256;
 
-/// How long to wait for an endpoint to confirm a teardown before returning the
-/// net id to the pool unconfirmed. Matches `send_container_resume`'s 30s ack
-/// window; teardown is a short local operation, so reaching this means the
-/// endpoint is wedged or gone rather than slow.
+/// Warn when cleanup exceeds its deadline; only completion or a closed
+/// connection can release the id. A connected endpoint may still be deleting.
 const TEARDOWN_ACK_GRACE: Duration = Duration::from_secs(30);
 
 /// Per-destination stats on an egress edge, reported by the client (which owns
@@ -215,7 +223,9 @@ impl Orchestrator {
         let mut inbound = request.into_inner();
         let orchestrator = self.clone();
         tokio::spawn(async move {
-            while let Ok(Some(msg_id)) = inbound.message().await {
+            while let Ok(Some(msg_id)) = inbound.message().await.inspect_err(|error| {
+                eprintln!("Control channel from '{client_ip}' failed: {error:?}");
+            }) {
                 if let Some(tx) = orchestrator.pending.lock().await.remove(&msg_id.id) {
                     let _ = tx.send(());
                 }
@@ -396,7 +406,10 @@ impl Orchestrator {
         );
         let (proxy_ok, init_ok) = tokio::join!(proxy_res, init_res);
 
-        if proxy_ok.is_none() || init_ok.is_none() {
+        if proxy_ok.is_none()
+            || init_ok.is_none()
+            || !self.send_net_ready(initiator_ip, net_id).await
+        {
             self.events
                 .emit(Event::setup_timeout(net_id, service.to_string()))
                 .await;
@@ -788,7 +801,7 @@ impl Orchestrator {
         Some(generation)
     }
 
-    /// Preserve liveness received during setup; never promote a replacement.
+    /// Called under the services lock; storage is deferred until that lock drops.
     pub(crate) async fn finish_backend_session(
         &self,
         key: &BackendKey,
@@ -796,29 +809,58 @@ impl Orchestrator {
         net_id: u32,
         destination: &str,
         setup_ms: Option<u128>,
-    ) -> bool {
+    ) -> Option<PendingBackendHistory> {
         let mut sessions = self.backend_sessions.write().await;
-        if let Some(session) = sessions.get_mut(key)
-            && session.generation == generation
+        let session = sessions
+            .get_mut(key)
+            .filter(|s| s.generation == generation)?;
+        session.building = false;
+        Some(PendingBackendHistory {
+            key: key.clone(),
+            generation,
+            stack: session.stack.clone(),
+            net_id,
+            destination: destination.to_string(),
+            setup_ms,
+        })
+    }
+
+    pub(crate) async fn persist_backend_session(&self, pending: PendingBackendHistory) {
+        let history_id = self
+            .sessions
+            .open_backend(
+                &pending.stack,
+                &pending.key,
+                pending.net_id,
+                &pending.destination,
+                pending.setup_ms,
+            )
+            .await;
+        let mut sessions = self.backend_sessions.write().await;
+        if let Some(session) = sessions
+            .get_mut(&pending.key)
+            .filter(|s| s.generation == pending.generation)
         {
-            session.history_id = self
-                .sessions
-                .open_backend(&session.stack, key, net_id, destination, setup_ms)
-                .await;
-            session.building = false;
-            true
+            session.history_id = history_id;
         } else {
-            false
+            drop(sessions);
+            self.sessions.close_backend(history_id).await;
         }
     }
 
     pub(crate) async fn cancel_backend_session(&self, key: &BackendKey, generation: Uuid) {
-        let mut sessions = self.backend_sessions.write().await;
-        if sessions
-            .get(key)
-            .is_some_and(|s| s.generation == generation)
-            && let Some(session) = sessions.remove(key)
-        {
+        let removed = {
+            let mut sessions = self.backend_sessions.write().await;
+            if sessions
+                .get(key)
+                .is_some_and(|s| s.generation == generation)
+            {
+                sessions.remove(key)
+            } else {
+                None
+            }
+        };
+        if let Some(session) = removed {
             self.sessions.close_backend(session.history_id).await;
         }
     }
@@ -853,7 +895,7 @@ impl Orchestrator {
     pub(crate) async fn take_due_backend_sessions(
         &self,
         debounce: Duration,
-    ) -> Vec<(BackendKey, String)> {
+    ) -> Vec<(BackendKey, String, Option<i64>)> {
         let now = Instant::now();
         let mut sessions = self.backend_sessions.write().await;
         let due: Vec<BackendKey> = sessions
@@ -868,11 +910,14 @@ impl Orchestrator {
         let mut expired = Vec::new();
         for key in due {
             if let Some(session) = sessions.remove(&key) {
-                self.sessions.close_backend(session.history_id).await;
-                expired.push((key, session.stack));
+                expired.push((key, session));
             }
         }
+        drop(sessions);
         expired
+            .into_iter()
+            .map(|(key, session)| (key, session.stack, session.history_id))
+            .collect()
     }
 
     /// How long until the nearest trigger chain becomes reapable, if any.
@@ -907,12 +952,17 @@ impl Orchestrator {
         ports: &[u16],
     ) {
         let mut sessions = self.backend_sessions.write().await;
+        let mut removed = Vec::new();
         for port in ports {
             if let Some(session) =
                 sessions.remove(&(service.to_string(), ip, docker.map(String::from), *port))
             {
-                self.sessions.close_backend(session.history_id).await;
+                removed.push(session);
             }
+        }
+        drop(sessions);
+        for session in removed {
+            self.sessions.close_backend(session.history_id).await;
         }
     }
 
@@ -965,14 +1015,9 @@ impl Orchestrator {
         encrypted: bool,
         egress: EgressRole,
     ) -> Option<Ipv4Addr> {
-        let outbound = self.clients.read().await.get(&dest).cloned();
-        if let Some(outbound) = outbound {
-            let (tx, rx) = oneshot::channel();
-            let msg_id = Uuid::new_v4().to_string();
-            self.pending.lock().await.insert(msg_id.clone(), tx);
-
-            let (server_net, message) = NET_TYPE.setup(
-                msg_id.clone(),
+        self.send_control(dest, |msg_id| {
+            NET_TYPE.setup(
+                msg_id.id,
                 dest,
                 remote_server_name,
                 net_id,
@@ -983,22 +1028,48 @@ impl Orchestrator {
                 dstport,
                 encrypted,
                 egress,
-            )?;
+            )
+        })
+        .await
+    }
 
-            if outbound.send(Ok(message)).await.is_err() {
-                self.pending.lock().await.remove(&msg_id);
-                return None;
-            }
-
-            if let Ok(result) = tokio::time::timeout(Duration::from_secs(30), rx).await {
-                result.ok().map(|()| server_net)
-            } else {
-                self.pending.lock().await.remove(&msg_id);
+    async fn send_control<T>(
+        &self,
+        dest: IpAddr,
+        message: impl FnOnce(MsgId) -> Option<(T, NetMessage)>,
+    ) -> Option<T> {
+        let outbound = self.clients.read().await.get(&dest).cloned()?;
+        let id = Uuid::new_v4().to_string();
+        let (value, message) = message(MsgId { id: id.clone() })?;
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().await.insert(id.clone(), tx);
+        if outbound.send(Ok(message)).await.is_err() {
+            self.pending.lock().await.remove(&id);
+            return None;
+        }
+        match tokio::time::timeout(Duration::from_secs(30), rx).await {
+            Ok(Ok(())) => Some(value),
+            _ => {
+                self.pending.lock().await.remove(&id);
                 None
             }
-        } else {
-            None
         }
+    }
+
+    pub(crate) async fn send_net_ready(&self, dest: IpAddr, net_id: u32) -> bool {
+        self.send_control(dest, |msg_id| {
+            Some((
+                (),
+                NetMessage {
+                    message: Some(net_message::Message::NetReady(NetReady {
+                        msg_id: Some(msg_id),
+                        net_id,
+                    })),
+                },
+            ))
+        })
+        .await
+        .is_some()
     }
 
     /// Fire-and-forget: tell the host running `docker_container` to `docker pause` it.
@@ -1047,34 +1118,20 @@ impl Orchestrator {
         dest: IpAddr,
         docker_container: String,
     ) -> bool {
-        let outbound = self.clients.read().await.get(&dest).cloned();
-        let Some(outbound) = outbound else {
-            return false;
-        };
-
-        let (tx, rx) = oneshot::channel();
-        let msg_id = Uuid::new_v4().to_string();
-        self.pending.lock().await.insert(msg_id.clone(), tx);
-
         println!("Resuming container '{docker_container}' on {dest}");
-        let message = NetMessage {
-            message: Some(net_message::Message::ContainerResume(ContainerResume {
-                msg_id: Some(MsgId { id: msg_id.clone() }),
-                docker_container,
-            })),
-        };
-
-        if outbound.send(Ok(message)).await.is_err() {
-            self.pending.lock().await.remove(&msg_id);
-            return false;
-        }
-
-        if let Ok(result) = tokio::time::timeout(Duration::from_secs(30), rx).await {
-            result.is_ok()
-        } else {
-            self.pending.lock().await.remove(&msg_id);
-            false
-        }
+        self.send_control(dest, |msg_id| {
+            Some((
+                (),
+                NetMessage {
+                    message: Some(net_message::Message::ContainerResume(ContainerResume {
+                        msg_id: Some(msg_id),
+                        docker_container,
+                    })),
+                },
+            ))
+        })
+        .await
+        .is_some()
     }
 
     pub(crate) async fn allocate_net_id(&self) -> Option<u32> {
@@ -1150,10 +1207,8 @@ impl Orchestrator {
     /// turn a multi-edge chain teardown into a serial walk of ack timeouts.
     /// Caller-visible latency is unchanged.
     ///
-    /// The id is still freed if an ack never arrives (`TEARDOWN_ACK_GRACE`),
-    /// because the endpoint being gone is the *normal* case on this path —
-    /// `teardown_egress_edges_for_node` runs precisely when a node has
-    /// disconnected — and refusing to free would leak every id that node held.
+    /// A disconnected endpoint purges old state before registering again.
+    /// A connected endpoint must finish cleanup even if its deadline expires.
     pub(crate) async fn send_net_teardown(
         &self,
         client: IpAddr,
@@ -1197,7 +1252,7 @@ impl Orchestrator {
                     // Nothing will ever ack a message that was never sent.
                     self.pending.lock().await.remove(&msg_id);
                 } else {
-                    acks.push((dest, msg_id, rx));
+                    acks.push((dest, msg_id, rx, outbound));
                 }
             }
         }
@@ -1216,26 +1271,22 @@ impl Orchestrator {
 
     /// Return a net id and its VXLAN dstport to their pools.
     async fn free_net_id_and_port(&self, net_id: u32) {
-        self.net_id_pool.lock().await.free(net_id);
         if let Some((pair, port)) = self.net_id_ports.lock().await.remove(&net_id)
             && let Some(pool) = self.udp_port_pools.lock().await.get_mut(&pair)
         {
             pool.free(port);
         }
+        self.net_id_pool.lock().await.free(net_id);
     }
 
-    /// Wait for every endpoint that was actually sent a teardown to ack it,
-    /// then return the net id and its dstport to the pools. See
-    /// `send_net_teardown` for why this is detached and why it frees anyway on
-    /// timeout.
+    /// Keep ids and ports reserved until every sent teardown is complete or
+    /// its connection closes. A deadline only raises an operator warning.
     fn spawn_deferred_net_id_free(
         &self,
         net_id: u32,
-        acks: Vec<(IpAddr, String, oneshot::Receiver<()>)>,
+        acks: Vec<(IpAddr, String, oneshot::Receiver<()>, OutboundStream)>,
     ) {
-        let net_id_pool = self.net_id_pool.clone();
-        let net_id_ports = self.net_id_ports.clone();
-        let udp_port_pools = self.udp_port_pools.clone();
+        let orchestrator = self.clone();
         let pending = self.pending.clone();
         let events = self.events.clone();
         let inflight = self.inflight_teardowns.clone();
@@ -1245,30 +1296,33 @@ impl Orchestrator {
         inflight.fetch_add(1, Ordering::SeqCst);
 
         tokio::spawn(async move {
-            for (dest, msg_id, rx) in acks {
-                match tokio::time::timeout(TEARDOWN_ACK_GRACE, rx).await {
-                    Ok(Ok(())) => {}
-                    // Timed out, or the sender was dropped without acking.
-                    _ => {
-                        pending.lock().await.remove(&msg_id);
-                        println!(
-                            "Network {net_id} teardown was not acked by {dest} within {}s; \
-                             freeing the id anyway",
-                            TEARDOWN_ACK_GRACE.as_secs()
-                        );
-                        events
-                            .emit(Event::net_teardown_unconfirmed(net_id, dest.to_string()))
-                            .await;
+            for (dest, msg_id, rx, outbound) in acks {
+                let completed = async {
+                    tokio::select! {
+                        result = rx => {
+                            if result.is_err() { outbound.closed().await; }
+                        }
+                        () = outbound.closed() => {}
                     }
+                };
+                tokio::pin!(completed);
+                if tokio::time::timeout(TEARDOWN_ACK_GRACE, &mut completed)
+                    .await
+                    .is_err()
+                {
+                    println!(
+                        "Network {net_id} teardown was not acked by {dest} within {}s; keeping the id reserved",
+                        TEARDOWN_ACK_GRACE.as_secs()
+                    );
+                    events
+                        .emit(Event::net_teardown_unconfirmed(net_id, dest.to_string()))
+                        .await;
+                    completed.await;
                 }
+                pending.lock().await.remove(&msg_id);
             }
 
-            net_id_pool.lock().await.free(net_id);
-            if let Some((pair, port)) = net_id_ports.lock().await.remove(&net_id)
-                && let Some(pool) = udp_port_pools.lock().await.get_mut(&pair)
-            {
-                pool.free(port);
-            }
+            orchestrator.free_net_id_and_port(net_id).await;
             inflight.fetch_sub(1, Ordering::SeqCst);
         });
     }
@@ -1294,10 +1348,7 @@ impl Orchestrator {
     /// Production code never needs to observe the deferred free; assertions
     /// about pool state do, and must not race the detached task.
     pub(crate) async fn settle_teardowns(&self) {
-        // Bounded: a teardown whose ack never arrives resolves via
-        // TEARDOWN_ACK_GRACE, which no test should be waiting on. If this cap
-        // is ever hit, the assertion that follows will fail loudly rather than
-        // hang.
+        // Tests must explicitly ack or disconnect every endpoint before settling.
         for _ in 0..10_000 {
             if self.inflight_teardowns.load(Ordering::SeqCst) == 0 {
                 return;
@@ -1342,6 +1393,7 @@ impl Orchestrator {
                     | Some(net_message::Message::VxlanSetup(
                         nullnet_grpc_lib::nullnet_grpc::VxlanSetup { msg_id, .. },
                     ))
+                    | Some(net_message::Message::NetReady(NetReady { msg_id, .. }))
                     | Some(net_message::Message::ContainerResume(ContainerResume {
                         msg_id, ..
                     }))
@@ -1353,9 +1405,10 @@ impl Orchestrator {
                     )) => msg_id.clone(),
                     _ => None,
                 };
+                let activation = matches!(msg.message, Some(net_message::Message::NetReady(_)));
                 log_task.lock().await.push(msg);
                 if let Some(msg_id) = ack_id {
-                    if let Ok(permit) = gate_task.acquire().await {
+                    if !activation && let Ok(permit) = gate_task.acquire().await {
                         permit.forget();
                     }
                     if let Some(tx) = pending.lock().await.remove(&msg_id.id) {
@@ -1393,6 +1446,7 @@ impl Orchestrator {
                     | Some(net_message::Message::VxlanSetup(
                         nullnet_grpc_lib::nullnet_grpc::VxlanSetup { msg_id, .. },
                     ))
+                    | Some(net_message::Message::NetReady(NetReady { msg_id, .. }))
                     | Some(net_message::Message::ContainerResume(ContainerResume {
                         msg_id, ..
                     })) => msg_id.clone(),
@@ -1460,7 +1514,7 @@ mod teardown_ack_tests {
         orch.send_net_teardown(a, None, b, None, id).await;
 
         // Give the detached task every chance to run; it must still be parked
-        // on the ack rather than freeing (it frees only after the grace).
+        // on the ack rather than freeing.
         for _ in 0..256 {
             tokio::task::yield_now().await;
         }
@@ -1472,6 +1526,73 @@ mod teardown_ack_tests {
         );
         // And it must not be handed to the next edge.
         assert_ne!(orch.allocate_net_id().await.unwrap(), id);
+    }
+
+    #[tokio::test]
+    async fn a_late_teardown_ack_keeps_the_id_reserved_until_completion() {
+        let orch = Orchestrator::new();
+        let (a, b) = (ip(10, 0, 0, 1), ip(10, 0, 0, 2));
+        let (tx, mut rx) = mpsc::channel(64);
+        orch.clients.write().await.insert(a, tx);
+        let id = orch.allocate_net_id().await.unwrap();
+        orch.send_net_teardown(a, None, b, None, id).await;
+        let message = rx.recv().await.unwrap().unwrap();
+        let msg_id = match message.message.unwrap() {
+            net_message::Message::VlanTeardown(m) => m.msg_id.unwrap(),
+            net_message::Message::VxlanTeardown(m) => m.msg_id.unwrap(),
+            _ => panic!("expected teardown"),
+        };
+        tokio::time::sleep(TEARDOWN_ACK_GRACE + Duration::from_millis(100)).await;
+        assert_eq!(
+            orch.net_ids_in_use().await,
+            1,
+            "an expired deadline is not completed cleanup"
+        );
+        orch.pending
+            .lock()
+            .await
+            .remove(&msg_id.id)
+            .unwrap()
+            .send(())
+            .unwrap();
+        orch.settle_teardowns().await;
+        assert_eq!(orch.net_ids_in_use().await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_closed_connection_releases_its_pending_teardown() {
+        let orch = Orchestrator::new();
+        let (a, b) = (ip(10, 0, 0, 1), ip(10, 0, 0, 2));
+        let (tx, rx) = mpsc::channel(64);
+        orch.clients.write().await.insert(a, tx);
+        let id = orch.allocate_net_id().await.unwrap();
+        orch.send_net_teardown(a, None, b, None, id).await;
+        drop(rx);
+        orch.settle_teardowns().await;
+        assert_eq!(orch.net_ids_in_use().await, 0);
+        assert!(orch.pending.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn returning_an_id_waits_for_its_old_port_record_to_be_removed() {
+        let orch = Orchestrator::new();
+        let id = orch.allocate_net_id().await.unwrap();
+        let ports = orch.net_id_ports.lock().await;
+        let copy = orch.clone();
+        let cleanup = tokio::spawn(async move {
+            copy.free_net_id_and_port(id).await;
+        });
+        for _ in 0..256 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            orch.net_ids_in_use().await,
+            1,
+            "id must not be reused while its old port record is being removed"
+        );
+        drop(ports);
+        cleanup.await.unwrap();
+        assert_eq!(orch.net_ids_in_use().await, 0);
     }
 
     /// Neither endpoint is connected, so nothing was sent and there is nothing
@@ -1804,6 +1925,125 @@ mod session_history_tests {
         (orch, db)
     }
 
+    async fn finish_backend(
+        orch: &Orchestrator,
+        key: &BackendKey,
+        generation: Uuid,
+        net_id: u32,
+        destination: &str,
+        setup_ms: Option<u128>,
+    ) -> bool {
+        let Some(pending) = orch
+            .finish_backend_session(key, generation, net_id, destination, setup_ms)
+            .await
+        else {
+            return false;
+        };
+        orch.persist_backend_session(pending).await;
+        true
+    }
+
+    #[tokio::test]
+    async fn backend_history_wait_does_not_block_liveness() {
+        let (orch, db) = orch_with_db().await;
+        let key = ("api".to_string(), ip(10, 0, 0, 1), None, 8080);
+        let generation = orch
+            .claim_backend_session(key.clone(), "prod")
+            .await
+            .unwrap();
+        let db_guard = db.hold_connection().await;
+        let finish = finish_backend(&orch, &key, generation, 42, "db", Some(7));
+        tokio::pin!(finish);
+        assert!(futures::poll!(&mut finish).is_pending());
+        let liveness = orch.set_backend_liveness(&key, false);
+        tokio::pin!(liveness);
+        assert!(futures::poll!(&mut liveness).is_ready());
+        drop(db_guard);
+        assert!(finish.await);
+        assert!(
+            orch.backend_sessions.read().await[&key]
+                .idle_since
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn backend_history_late_open_cannot_overwrite_replacement() {
+        let (orch, db) = orch_with_db().await;
+        let key = ("api".to_string(), ip(10, 0, 0, 1), None, 8080);
+        let generation = orch
+            .claim_backend_session(key.clone(), "prod")
+            .await
+            .unwrap();
+        let db_guard = db.hold_connection().await;
+        let finish = finish_backend(&orch, &key, generation, 42, "db", Some(7));
+        tokio::pin!(finish);
+        assert!(futures::poll!(&mut finish).is_pending());
+        orch.cancel_backend_session(&key, generation).await;
+        let replacement = orch
+            .claim_backend_session(key.clone(), "prod")
+            .await
+            .unwrap();
+        drop(db_guard);
+        assert!(finish.await);
+        assert!(orch.backend_sessions.read().await[&key].building);
+        assert_eq!(db.sessions().count_active("prod").await.unwrap(), 0);
+        assert!(finish_backend(&orch, &key, replacement, 43, "db", Some(8)).await);
+        assert_eq!(db.sessions().count_active("prod").await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn backend_history_close_wait_does_not_block_other_generations() {
+        for mode in 0..3 {
+            let (orch, db) = orch_with_db().await;
+            let key = ("api".to_string(), ip(10, 0, 0, 1), None, 8080);
+            let other = (key.0.clone(), key.1, None, 9090);
+            let generation = orch
+                .claim_backend_session(key.clone(), "prod")
+                .await
+                .unwrap();
+            let other_generation = orch
+                .claim_backend_session(other.clone(), "prod")
+                .await
+                .unwrap();
+            assert!(finish_backend(&orch, &key, generation, 42, "db", Some(7)).await);
+            assert!(finish_backend(&orch, &other, other_generation, 42, "db", Some(7)).await);
+            orch.set_backend_liveness(&key, false).await;
+            let db_guard = db.hold_connection().await;
+            let close = async {
+                match mode {
+                    0 => orch.cancel_backend_session(&key, generation).await,
+                    1 => {
+                        let expired = orch.take_due_backend_sessions(Duration::ZERO).await;
+                        assert_eq!(expired.len(), 1);
+                        orch.sessions.close_backend(expired[0].2).await;
+                    }
+                    _ => {
+                        orch.forget_backend_sessions("api", key.1, None, &[8080])
+                            .await
+                    }
+                }
+            };
+            tokio::pin!(close);
+            assert!(futures::poll!(&mut close).is_pending());
+            let liveness = orch.set_backend_liveness(&other, false);
+            tokio::pin!(liveness);
+            assert!(futures::poll!(&mut liveness).is_ready());
+            let replacement = orch
+                .claim_backend_session(key.clone(), "prod")
+                .await
+                .unwrap();
+            drop(db_guard);
+            close.await;
+            assert!(finish_backend(&orch, &key, replacement, 43, "db", Some(8)).await);
+            assert_eq!(db.sessions().count_active("prod").await.unwrap(), 2);
+            assert_eq!(
+                orch.backend_sessions.read().await[&key].generation,
+                replacement
+            );
+        }
+    }
+
     #[tokio::test]
     async fn backend_history_tracks_independent_chains_and_generations() {
         let (orch, db) = orch_with_db().await;
@@ -1823,14 +2063,8 @@ mod session_history_tests {
             .await
             .unwrap();
         assert_eq!(db.sessions().count_active("prod").await.unwrap(), 0);
-        assert!(
-            orch.finish_backend_session(&key, generation, 42, "db", Some(7))
-                .await
-        );
-        assert!(
-            orch.finish_backend_session(&other, other_generation, 42, "db", Some(7))
-                .await
-        );
+        assert!(finish_backend(&orch, &key, generation, 42, "db", Some(7)).await);
+        assert!(finish_backend(&orch, &other, other_generation, 42, "db", Some(7)).await);
         assert_eq!(db.sessions().count_active("prod").await.unwrap(), 2);
         let rows = db
             .sessions()
@@ -1874,19 +2108,15 @@ mod session_history_tests {
             );
         }
         orch.set_backend_liveness(&key, false).await;
-        assert_eq!(
-            orch.take_due_backend_sessions(Duration::ZERO).await.len(),
-            1
-        );
+        let expired = orch.take_due_backend_sessions(Duration::ZERO).await;
+        assert_eq!(expired.len(), 1);
+        orch.sessions.close_backend(expired[0].2).await;
         assert_eq!(db.sessions().count_active("prod").await.unwrap(), 1);
         let replacement = orch
             .claim_backend_session(key.clone(), "prod")
             .await
             .unwrap();
-        assert!(
-            orch.finish_backend_session(&key, replacement, 42, "db", Some(7))
-                .await
-        );
+        assert!(finish_backend(&orch, &key, replacement, 42, "db", Some(7)).await);
         orch.cancel_backend_session(&key, generation).await;
         assert_eq!(db.sessions().count_active("prod").await.unwrap(), 2);
         orch.forget_backend_sessions("api", key.1, key.2.as_deref(), &[8080])
@@ -1921,11 +2151,7 @@ mod session_history_tests {
             .await
             .unwrap();
         assert!(orch.cancel_backend_build(&key).await);
-        assert!(
-            !orch
-                .finish_backend_session(&key, generation, 42, "db", Some(7))
-                .await
-        );
+        assert!(!finish_backend(&orch, &key, generation, 42, "db", Some(7)).await);
         assert!(
             db.sessions()
                 .query("prod", None, None, None, None, None, None, None, 10)

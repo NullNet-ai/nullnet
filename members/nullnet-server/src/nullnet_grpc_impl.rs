@@ -424,12 +424,13 @@ impl NullnetGrpcImpl {
         request: Request<Streaming<MsgId>>,
     ) -> Result<Response<<NullnetGrpcImpl as NullnetGrpc>::ControlChannelStream>, Error> {
         let (outbound, receiver) = mpsc::channel(64);
+        let stream = ReceiverStream::new(receiver);
 
         self.orchestrator
             .add_client(request, outbound, self.services.clone())
             .await?;
 
-        Ok(Response::new(ReceiverStream::new(receiver)))
+        Ok(Response::new(stream))
     }
 
     // Concurrent first-time setup is race-safe for single-hop deps (check-and-
@@ -633,24 +634,46 @@ impl NullnetGrpcImpl {
             registered = reg.clone();
         }
 
-        // Max-networks: if the limit is reached, reuse the least-used existing
-        // network on the same proxy instead of creating a new one.
-        if let Some(max) = registered.max_networks()
-            && registered.proxy_clients_count() >= max as usize
-            && let Some((
-                upstream,
-                client_net,
-                server_net,
-                net_id,
-                replica_ip,
-                replica_docker,
-                setup_ms,
-            )) = registered.find_reusable_network_on_proxy(proxy_ip)
-        {
-            println!(
-                "Max networks ({max}) reached for '{service_name}', \
-                 reusing network on proxy {proxy_ip}"
-            );
+        // Select and attach under one lock so concurrent clients see current usage.
+        let reused = if registered.max_networks().is_some() {
+            let mut services = self.services.write().await;
+            let reuse = services.get_mut(&stack).and_then(|stack_map| {
+                let ServiceInfo::Registered(reg) = stack_map.get_mut(service_name)? else {
+                    return None;
+                };
+                let max = reg.max_networks()?;
+                if reg.proxy_clients_count() < max as usize {
+                    return None;
+                }
+                let network = reg.find_reusable_network_on_proxy(proxy_ip)?;
+                let (_, client_net, server_net, net_id, replica_ip, replica_docker, setup_ms) =
+                    &network;
+                reg.add_client_to_replica(
+                    *replica_ip,
+                    replica_docker.as_deref(),
+                    proxy_client.clone(),
+                    ClientInfo::new(proxy_ip, *client_net, *server_net, *net_id, *setup_ms, None),
+                );
+                reg.add_chain(&proxy_client);
+                let dep_edges = collect_dep_chain_edges(
+                    service_name,
+                    *replica_ip,
+                    replica_docker.as_deref(),
+                    stack_map,
+                );
+                for (dep_client, dep_name) in dep_edges {
+                    if let Some(ServiceInfo::Registered(dep_reg)) = stack_map.get_mut(&dep_name) {
+                        dep_reg.add_chain(&dep_client);
+                    }
+                }
+                Some((max, network))
+            });
+            drop(services);
+            reuse
+        } else {
+            None
+        };
+        if let Some((max, (upstream, client_net, server_net, net_id, _, _, setup_ms))) = reused {
             self.orchestrator
                 .events
                 .emit(Event::max_networks_limit_enforced(
@@ -660,34 +683,6 @@ impl NullnetGrpcImpl {
                     max,
                 ))
                 .await;
-            let mut services_mut = self.services.write().await;
-            if let Some(stack_map) = services_mut.get_mut(&stack) {
-                if let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(service_name) {
-                    // Create a new Client entry sharing the existing network
-                    let new_ci =
-                        ClientInfo::new(proxy_ip, client_net, server_net, net_id, setup_ms, None);
-                    reg.add_client_to_replica(
-                        replica_ip,
-                        replica_docker.as_deref(),
-                        proxy_client.clone(),
-                        new_ci,
-                    );
-                    reg.add_chain(&proxy_client);
-                }
-                // Increment chains on each dependency edge (intra-stack)
-                let dep_edges = collect_dep_chain_edges(
-                    service_name,
-                    replica_ip,
-                    replica_docker.as_deref(),
-                    stack_map,
-                );
-                for (dep_client, dep_name) in dep_edges {
-                    if let Some(ServiceInfo::Registered(dep_reg)) = stack_map.get_mut(&dep_name) {
-                        dep_reg.add_chain(&dep_client);
-                    }
-                }
-            }
-            drop(services_mut);
 
             // Reusing a network still starts a session for *this* client: it
             // gets its own client entry and its own teardown, so it needs its
@@ -2045,9 +2040,9 @@ async fn run_net_chain_setup(
     // built is holding a refcount nobody will ever spend. Hand them back
     // instead of stranding them and their net ids.
     let mut services_mut = services.write().await;
-    let backend_lost = if let Some((key, generation)) = &owner {
+    let backend_history = if let Some((key, generation)) = &owner {
         if any_failure {
-            false
+            None
         } else {
             let source = Client::new_service(key.0.clone(), key.1, key.2.clone());
             let first = successful
@@ -2062,7 +2057,7 @@ async fn run_net_chain_setup(
                     _ => None,
                 })
                 .map(ClientInfo::time_ms);
-            !orchestrator
+            orchestrator
                 .finish_backend_session(
                     key,
                     *generation,
@@ -2073,8 +2068,9 @@ async fn run_net_chain_setup(
                 .await
         }
     } else {
-        false
+        None
     };
+    let backend_lost = owner.is_some() && !any_failure && backend_history.is_none();
     let orphaned = backend_lost || {
         let guard = &services_mut;
         successful
@@ -2110,6 +2106,10 @@ async fn run_net_chain_setup(
     }
 
     drop(services_mut);
+
+    if let Some(history) = backend_history {
+        orchestrator.persist_backend_session(history).await;
+    }
 
     // Past the unwind check, so every branch is up and these sessions are real.
     for edge in &successful {
@@ -2367,7 +2367,13 @@ async fn setup_edge(
 
     let (server_ok, client_ok) = tokio::join!(server_res, client_res);
 
-    if server_ok.is_none() || client_ok.is_none() {
+    // Local steering must not release packets into an unfinished peer.
+    let activate = *NET_TYPE == Net::Vxlan
+        && (backend_entry_port.is_some() || client_egress == EgressRole::Steer);
+    if server_ok.is_none()
+        || client_ok.is_none()
+        || (activate && !orchestrator.send_net_ready(client_ethernet, net_id).await)
+    {
         if client.is_proxy().is_some() {
             orchestrator
                 .events

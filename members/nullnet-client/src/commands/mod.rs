@@ -11,6 +11,7 @@ mod netlink;
 pub(crate) mod nfqueue;
 mod ovs;
 pub(crate) mod vxlan;
+mod vxlan_cleanup;
 
 pub(crate) async fn setup_br0(rtnetlink_handle: &RtNetLinkHandle) {
     // create the bridge
@@ -112,6 +113,13 @@ pub(crate) struct RtNetLinkHandle {
 }
 
 impl RtNetLinkHandle {
+    #[cfg(test)]
+    pub(crate) fn disconnected() -> Self {
+        let (connection, handle, _) = new_connection().unwrap();
+        drop(connection);
+        Self { handle }
+    }
+
     pub(crate) fn new() -> Result<Self, Error> {
         let (rtnetlink_conn, rtnetlink_handle, _) = new_connection().handle_err(location!())?;
         tokio::spawn(rtnetlink_conn);
@@ -160,15 +168,18 @@ const XFRM_SPI_MAX: u32 = 1_000 + 2_097_151;
 /// the *old* key — both ends then disagree and the tunnel black-holes. Scoped
 /// by SPI so unrelated IPsec on the host is left alone.
 fn purge_stale_xfrm() {
-    let states_out = sudo_output(&["ip", "xfrm", "state", "show"]).unwrap_or_default();
-    let policies_out = sudo_output(&["ip", "xfrm", "policy", "show"]).unwrap_or_default();
+    let states_out = privileged_output(&["ip", "xfrm", "state", "show"]).unwrap_or_default();
+    let policies_out = privileged_output(&["ip", "xfrm", "policy", "show"]).unwrap_or_default();
 
     let mut states = 0usize;
     for (src, dst, spi) in parse_xfrm_states(&states_out) {
         let args = [
             "ip", "xfrm", "state", "delete", "src", &src, "dst", &dst, "proto", "esp", "spi", &spi,
         ];
-        if sudo_quiet(&args).map(|s| s.success()).unwrap_or(false) {
+        if privileged_quiet(&args)
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
             states += 1;
         }
     }
@@ -178,7 +189,10 @@ fn purge_stale_xfrm() {
         let mut args: Vec<&str> = vec!["ip", "xfrm", "policy", "delete"];
         args.extend(selector.iter().map(String::as_str));
         args.extend_from_slice(&["dir", &dir]);
-        if sudo_quiet(&args).map(|s| s.success()).unwrap_or(false) {
+        if privileged_quiet(&args)
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
             policies += 1;
         }
     }
@@ -246,9 +260,9 @@ fn parse_our_spi(line: &str) -> Option<String> {
         .then(|| raw.to_string())
 }
 
-fn sudo_output(args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new("sudo")
-        .args(args)
+fn privileged_output(args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new(args[0])
+        .args(&args[1..])
         .output()
         .ok()?;
     out.status
@@ -259,6 +273,16 @@ fn sudo_output(args: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod xfrm_tests {
     use super::{parse_xfrm_policies, parse_xfrm_states};
+
+    #[test]
+    fn orphan_namespace_cleanup_is_scoped_to_nullnet_names() {
+        for name in ["ns_101_s", "ns_101_c"] {
+            assert!(super::is_nullnet_namespace(name));
+        }
+        for name in ["ns_custom", "ns_101_backup", "ns_01_c", "ns_+1_c", "ns__s"] {
+            assert!(!super::is_nullnet_namespace(name), "{name}");
+        }
+    }
 
     /// One of ours (net id 101 → spi 0x0000046d = 1101) and one unrelated SA
     /// whose SPI sits outside the pool range.
@@ -375,12 +399,12 @@ fn install_mss_clamp() -> Option<String> {
     ];
     let mut check = vec!["iptables", "-t", "mangle", "-C", "FORWARD"];
     check.extend_from_slice(&rule);
-    if sudo(&check).map(|s| s.success()).unwrap_or(false) {
+    if privileged(&check).map(|s| s.success()).unwrap_or(false) {
         return None;
     }
     let mut add = vec!["iptables", "-t", "mangle", "-A", "FORWARD"];
     add.extend_from_slice(&rule);
-    match sudo(&add) {
+    match privileged(&add) {
         Ok(s) if s.success() => {
             println!("[mss] clamp installed on mangle/FORWARD: --set-mss {MSS}");
             None
@@ -438,7 +462,7 @@ fn prune_superseded_mss_rules() {
         for _ in 0..8 {
             let mut del = vec!["iptables", "-t", "mangle", "-D", "FORWARD"];
             del.extend_from_slice(spec);
-            match sudo_quiet(&del) {
+            match privileged_quiet(&del) {
                 Ok(s) if s.success() => {
                     println!("[mss] removed superseded clamp: {}", spec.join(" "));
                 }
@@ -448,16 +472,18 @@ fn prune_superseded_mss_rules() {
     }
 }
 
-fn sudo(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
-    std::process::Command::new("sudo").args(args).status()
+fn privileged(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
+    std::process::Command::new(args[0])
+        .args(&args[1..])
+        .status()
 }
 
-/// `sudo` with stdout/stderr captured rather than inherited. For calls whose
+/// Privileged command with stdout/stderr captured rather than inherited. For calls whose
 /// failure is the expected steady state — deleting a rule that isn't there —
 /// so iptables' "Bad rule" complaint doesn't reach the log on every startup.
-fn sudo_quiet(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
-    std::process::Command::new("sudo")
-        .args(args)
+fn privileged_quiet(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
+    std::process::Command::new(args[0])
+        .args(&args[1..])
         .output()
         .map(|o| o.status)
 }
@@ -487,10 +513,10 @@ fn vxlan_cleanup_network() {
                         .map(|mut c| c.wait())
                         .handle_err(location!());
                 }
-            } else if device.name.starts_with("veth-") {
+            } else if netlink::is_nullnet_veth(&device.name) {
                 println!("Cleaning up existing same-host veth pair: {}", device.name);
-                let _ = std::process::Command::new("sudo")
-                    .args(["ip", "link", "del", &device.name])
+                let _ = std::process::Command::new("ip")
+                    .args(["link", "del", &device.name])
                     .spawn()
                     .map(|mut c| c.wait())
                     .handle_err(location!());
@@ -512,6 +538,34 @@ fn vxlan_cleanup_network() {
             }
         }
     }
+
+    // Interrupted setup can leave a namespace with no host-side interface.
+    if let Ok(namespaces) = std::fs::read_dir("/var/run/netns") {
+        for entry in namespaces.flatten() {
+            let name = entry.file_name();
+            if let Some(name) = name.to_str()
+                && is_nullnet_namespace(name)
+            {
+                let _ = std::process::Command::new("ip")
+                    .args(["netns", "del", name])
+                    .status()
+                    .handle_err(location!());
+            }
+        }
+    }
+}
+
+fn is_nullnet_namespace(name: &str) -> bool {
+    let Some(suffix) = name.strip_prefix("ns_") else {
+        return false;
+    };
+    let Some(id) = suffix
+        .strip_suffix("_s")
+        .or_else(|| suffix.strip_suffix("_c"))
+    else {
+        return false;
+    };
+    id.parse::<u32>().is_ok_and(|value| value.to_string() == id)
 }
 
 /// Cleanup existing veth and VLANs

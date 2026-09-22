@@ -1,0 +1,3 @@
+# Nullnet configures these transient links itself. Hotplug helpers such as
+# ifupdown's ifquery otherwise contend with tunnel setup for the RTNL lock.
+SUBSYSTEM=="net", KERNEL=="br_[0-9]*|ns_[0-9]*|vxlan-ns_[0-9]*|veth-[0-9]*-[sc]|macsec-[0-9]*-[sc]", RUN:="/usr/bin/true"
