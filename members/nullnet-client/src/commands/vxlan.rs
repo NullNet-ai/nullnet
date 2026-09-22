@@ -403,7 +403,7 @@ pub(crate) async fn teardown(
     let spi = xfrm_spi(params.vxlan_id);
     if params.dstport != crate::DEFAULT_VXLAN_DSTPORT {
         let dstport = params.dstport.to_string();
-        let _ = privileged_quiet(&[
+        privileged_checked(&[
             "ip",
             "xfrm",
             "policy",
@@ -415,8 +415,8 @@ pub(crate) async fn teardown(
             "dir",
             "out",
         ])
-        .await;
-        let _ = privileged_quiet(&[
+        .await?;
+        privileged_checked(&[
             "ip",
             "xfrm",
             "policy",
@@ -428,9 +428,9 @@ pub(crate) async fn teardown(
             "dir",
             "in",
         ])
-        .await;
+        .await?;
     }
-    let _ = privileged_quiet(&[
+    privileged_checked(&[
         "ip",
         "xfrm",
         "state",
@@ -440,7 +440,7 @@ pub(crate) async fn teardown(
         "spi",
         &spi,
     ])
-    .await;
+    .await?;
 
     // Parent deletion also removes veth peers and their MACsec children.
     // Side-specific groups preserve the other side's bridge until its cleanup.

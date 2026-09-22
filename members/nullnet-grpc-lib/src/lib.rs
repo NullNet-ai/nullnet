@@ -21,6 +21,7 @@ use tonic::transport::{Channel, ClientTlsConfig};
 // Bound concurrent RPC work, including cold tunnel creation. Removing this
 // limit overloads setup during large bursts even with corrected h2 accounting.
 const MAX_IN_FLIGHT_UNARY: usize = 32;
+const MAX_IN_FLIGHT_LIFECYCLE: usize = 8;
 
 /// Why a `proxy` lookup failed.
 #[derive(Debug)]
@@ -36,6 +37,7 @@ pub enum ProxyLookupError {
 pub struct NullnetGrpcInterface {
     client: NullnetGrpcClient<Channel>,
     unary_slots: Arc<Semaphore>,
+    lifecycle_slots: Arc<Semaphore>,
 }
 
 impl NullnetGrpcInterface {
@@ -66,6 +68,7 @@ impl NullnetGrpcInterface {
                 return Ok(Self {
                     client: NullnetGrpcClient::new(channel),
                     unary_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_UNARY)),
+                    lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
                 });
             }
 
@@ -84,6 +87,19 @@ impl NullnetGrpcInterface {
     ) -> Result<tonic::Response<T>, tonic::Status> {
         let _permit = self
             .unary_slots
+            .acquire()
+            .await
+            .expect("RPC limiter stays open");
+        request.await
+    }
+
+    // Renewals and closes must progress while cold setups occupy unary slots.
+    async fn lifecycle<T>(
+        &self,
+        request: impl Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+    ) -> Result<tonic::Response<T>, tonic::Status> {
+        let _permit = self
+            .lifecycle_slots
             .acquire()
             .await
             .expect("RPC limiter stays open");
@@ -135,7 +151,7 @@ impl NullnetGrpcInterface {
     /// pin the edge until the node disconnects.
     #[allow(clippy::missing_errors_doc)]
     pub async fn proxy_connection_closed(&self, message: ProxyConnectionEnd) -> Result<(), String> {
-        self.unary(
+        self.lifecycle(
             self.client
                 .clone()
                 .proxy_connection_closed(Request::new(message)),
@@ -152,7 +168,7 @@ impl NullnetGrpcInterface {
         initiator_container: String,
         active: bool,
     ) -> Result<(), String> {
-        self.unary(
+        self.lifecycle(
             self.client
                 .clone()
                 .egress_liveness(Request::new(EgressLivenessReport {
@@ -177,7 +193,7 @@ impl NullnetGrpcInterface {
         initiator_container: String,
         active: bool,
     ) -> Result<(), String> {
-        self.unary(
+        self.lifecycle(
             self.client
                 .clone()
                 .backend_liveness(Request::new(BackendLivenessReport {
@@ -363,12 +379,42 @@ mod admission_tests {
     use super::*;
 
     #[tokio::test]
+    async fn liveness_progresses_when_setup_admission_is_full() {
+        let interface = NullnetGrpcInterface {
+            client: NullnetGrpcClient::new(
+                Channel::from_static("http://127.0.0.1:1").connect_lazy(),
+            ),
+            unary_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_UNARY)),
+            lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
+        };
+        let _busy = interface
+            .unary_slots
+            .acquire_many(MAX_IN_FLIGHT_UNARY as u32)
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            interface.backend_liveness("backend".into(), 80, "container".into(), true),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "liveness was never admitted while setup occupied the slots"
+        );
+        assert!(
+            result.unwrap().is_err(),
+            "the intentionally absent server should reject the call"
+        );
+    }
+
+    #[tokio::test]
     async fn clones_share_admission_and_cancellation_releases_capacity() {
         let interface = NullnetGrpcInterface {
             client: NullnetGrpcClient::new(
                 Channel::from_static("http://127.0.0.1:1").connect_lazy(),
             ),
             unary_slots: Arc::new(Semaphore::new(2)),
+            lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
         };
         let (entered, mut received) = mpsc::unbounded_channel();
         let mut calls = tokio::task::JoinSet::new();

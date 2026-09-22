@@ -13,6 +13,7 @@ const SEVERITY_COLOR: Record<Severity, string> = {
 };
 
 const KIND_LABELS: Record<string, string> = {
+  event_persistence_overflow: 'event_persistence_overflow',
   event_persistence_failed: 'event_persistence_failed',
   event_persistence_recovered: 'event_persistence_recovered',
   // Server events
@@ -104,6 +105,8 @@ const ALL_KINDS = Object.keys(KIND_LABELS);
 
 function eventDetail(e: EventJson): string {
   switch (e.type) {
+    case 'event_persistence_overflow':
+      return `${e.dropped_events} events dropped because persistence could not keep up`;
     case 'event_persistence_failed':
       return `${e.queued_events} queued · ${e.error_message}`;
     case 'event_persistence_recovered':

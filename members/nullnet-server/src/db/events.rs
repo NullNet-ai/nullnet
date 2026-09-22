@@ -296,6 +296,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unavailable_event_storage_does_not_block_producers() {
+        use super::*;
+        use crate::events::{Event, EventStore};
+        let db = test_db().await;
+        let repo = db.events();
+        diesel::sql_query("CREATE TRIGGER reject_event BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'injected persistent failure'); END;")
+            .execute(&mut *repo.conn.lock().await).await.unwrap();
+        let store = EventStore::new();
+        store.attach_db(db.clone());
+        let mut live = store.subscribe();
+        store.emit(Event::node_connected("sentinel".into())).await;
+        assert!(matches!(
+            live.recv().await.unwrap(),
+            Event::PersistenceFailed { .. }
+        ));
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            for i in 0..6000 {
+                store.emit(Event::node_connected(format!("test-{i}"))).await;
+            }
+        })
+        .await;
+        diesel::sql_query("DROP TRIGGER reject_event")
+            .execute(&mut *repo.conn.lock().await)
+            .await
+            .unwrap();
+        store.shutdown().await;
+        assert!(
+            result.is_ok(),
+            "event persistence failure blocked its producers"
+        );
+        let rows = repo
+            .query(None, None, None, None, None, 10_000)
+            .await
+            .unwrap();
+        let persisted = rows.iter().filter(|r| r.kind == "node_connected").count() as u64;
+        let lost: u64 = rows
+            .iter()
+            .filter(|r| r.kind == "event_persistence_overflow")
+            .map(|r| {
+                serde_json::from_str::<serde_json::Value>(&r.payload).unwrap()["dropped_events"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .sum();
+        assert!(lost > 0);
+        assert_eq!(
+            persisted + lost,
+            6001,
+            "every accepted or dropped event must be accounted for"
+        );
+    }
+
+    #[tokio::test]
+    async fn event_shutdown_is_bounded_during_persistent_failure() {
+        use super::*;
+        use crate::events::{Event, EventStore};
+        let db = test_db().await;
+        let repo = db.events();
+        diesel::sql_query("CREATE TRIGGER reject_event BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'injected persistent failure'); END;")
+            .execute(&mut *repo.conn.lock().await).await.unwrap();
+        let store = EventStore::new();
+        store.attach_db(db);
+        store.emit(Event::node_connected("sentinel".into())).await;
+        tokio::time::timeout(std::time::Duration::from_secs(6), store.shutdown())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn event_writer_retries_without_losing_events_and_reports_recovery() {
         use super::*;
         use crate::events::{Event, EventStore};

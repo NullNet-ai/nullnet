@@ -44,6 +44,11 @@ pub(crate) struct EventEnvelope<'a> {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum Event {
+    #[serde(rename = "event_persistence_overflow")]
+    PersistenceOverflow {
+        dropped_events: u64,
+        timestamp: u64,
+    },
     #[serde(rename = "event_persistence_failed")]
     PersistenceFailed {
         error_message: String,
@@ -525,6 +530,7 @@ pub(crate) enum Event {
 impl Event {
     pub(crate) fn kind(&self) -> &'static str {
         match self {
+            Self::PersistenceOverflow { .. } => "event_persistence_overflow",
             Self::PersistenceFailed { .. } => "event_persistence_failed",
             Self::PersistenceRecovered { .. } => "event_persistence_recovered",
             Self::NodeConnected { .. } => "node_connected",
@@ -657,7 +663,8 @@ impl Event {
             | Self::ProxyClientNotInet { .. }
             | Self::ProxyDisconnected { .. } => Severity::Warning,
 
-            Self::PersistenceFailed { .. }
+            Self::PersistenceOverflow { .. }
+            | Self::PersistenceFailed { .. }
             | Self::SetupTimeout { .. }
             | Self::EdgePromotionLost { .. }
             | Self::ChainOwnerLost { .. }

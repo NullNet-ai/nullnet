@@ -46,8 +46,10 @@ pub fn hosts_file_lock(docker_container: Option<&str>) -> Arc<Mutex<()>> {
 #[derive(Default)]
 pub struct HostMappingsState {
     by_vlan: Mutex<HashMap<u16, HostMapping>>,
-    by_vxlan: Mutex<HashMap<u32, (HostMapping, Option<String>)>>,
+    by_vxlan: Mutex<HashMap<u32, Arc<Mutex<Option<VxlanMapping>>>>>,
 }
+
+type VxlanMapping = (HostMapping, Option<String>);
 
 impl HostMappingsState {
     pub fn record_vlan(&self, vlan_id: u16, hm: HostMapping) {
@@ -62,17 +64,20 @@ impl HostMappingsState {
         self.by_vxlan
             .lock()
             .unwrap()
-            .insert(vxlan_id, (hm, docker_container));
+            .insert(vxlan_id, Arc::new(Mutex::new(Some((hm, docker_container)))));
     }
 
     pub fn take_vxlan(&self, vxlan_id: u32) -> Option<(HostMapping, Option<String>)> {
-        self.by_vxlan.lock().unwrap().remove(&vxlan_id)
+        let entry = self.by_vxlan.lock().unwrap().remove(&vxlan_id)?;
+        entry.lock().unwrap().take()
     }
 
     // Keep publication ordered before teardown takes and removes the mapping.
     pub fn with_vxlan(&self, vxlan_id: u32, apply: impl FnOnce(&HostMapping, Option<&str>)) {
-        let mappings = self.by_vxlan.lock().unwrap();
-        if let Some((mapping, container)) = mappings.get(&vxlan_id) {
+        let entry = self.by_vxlan.lock().unwrap().get(&vxlan_id).cloned();
+        let Some(entry) = entry else { return };
+        let mapping = entry.lock().unwrap();
+        if let Some((mapping, container)) = mapping.as_ref() {
             apply(mapping, container.as_deref());
         }
     }
@@ -273,6 +278,79 @@ mod edit_tests {
 #[cfg(test)]
 mod tests {
     use super::{HOSTS_MARKER, strip_marked};
+
+    #[test]
+    fn slow_publication_does_not_block_unrelated_tunnels() {
+        use super::*;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let state = Arc::new(HostMappingsState::default());
+        let mapping = HostMapping {
+            name: "backend".into(),
+            ip: "10.0.0.1".into(),
+        };
+        state.record_vxlan(101, mapping.clone(), None);
+        let (entered, started) = mpsc::channel();
+        let (release, wait) = mpsc::channel();
+        let publisher = state.clone();
+        let publish = std::thread::spawn(move || {
+            publisher.with_vxlan(101, |_, _| {
+                entered.send(()).unwrap();
+                wait.recv().unwrap();
+            })
+        });
+        started.recv().unwrap();
+        let (done, finished) = mpsc::channel();
+        let unrelated = state.clone();
+        let record = std::thread::spawn(move || {
+            unrelated.record_vxlan(102, mapping, None);
+            done.send(()).unwrap();
+        });
+        let result = finished.recv_timeout(Duration::from_millis(200));
+        release.send(()).unwrap();
+        publish.join().unwrap();
+        record.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "one publication blocked an unrelated tunnel"
+        );
+    }
+
+    #[test]
+    fn teardown_waits_for_publication_and_prevents_late_republication() {
+        use super::*;
+        let state = Arc::new(HostMappingsState::default());
+        state.record_vxlan(
+            101,
+            HostMapping {
+                name: "backend".into(),
+                ip: "10.0.0.1".into(),
+            },
+            None,
+        );
+        let (started, ready) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let publisher = state.clone();
+        let publication = std::thread::spawn(move || {
+            publisher.with_vxlan(101, |_, _| {
+                started.send(()).unwrap();
+                wait.recv().unwrap();
+            })
+        });
+        ready.recv().unwrap();
+        let entry = state.by_vxlan.lock().unwrap().get(&101).cloned().unwrap();
+        assert!(entry.try_lock().is_err());
+        let remover = state.clone();
+        let teardown = std::thread::spawn(move || remover.take_vxlan(101));
+        release.send(()).unwrap();
+        publication.join().unwrap();
+        assert!(teardown.join().unwrap().is_some());
+        assert!(
+            entry.lock().unwrap().is_none(),
+            "an earlier snapshot must be invalidated too"
+        );
+        state.with_vxlan(101, |_, _| panic!("removed mapping was republished"));
+    }
 
     #[test]
     fn strips_only_marked_lines() {

@@ -19,10 +19,17 @@ configure_network_manager() {
   fi
 }
 
+configure_hotplug() {
+  install -D -m 644 members/nullnet-client/nullnet-udev.rules \
+    /etc/udev/rules.d/90-nullnet.rules && \
+  udevadm control --reload
+}
+
 apt-get update && \
-apt-get install -y iptables conntrack ipset openvswitch-switch unzip build-essential kmod procps && \
+apt-get install -y iptables conntrack ipset openvswitch-switch unzip build-essential kmod procps udev && \
 configure_conntrack && \
 configure_network_manager && \
+configure_hotplug && \
 { command -v protoc >/dev/null || { \
   curl -OL https://github.com/google/protobuf/releases/download/v3.20.3/protoc-3.20.3-linux-x86_64.zip && \
   unzip -o protoc-3.20.3-linux-x86_64.zip -d protoc3 && \

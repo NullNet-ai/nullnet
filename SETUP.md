@@ -127,9 +127,10 @@ Run the setup scripts as root. The supplied systemd services also run as root; p
   EVENT_RETENTION_SWEEP_INTERVAL_SECS=3600     # how often the deletion sweep runs (1h)
   ```
   Writes use a bounded queue and batched transactions; normal events appear after commit.
-  Storage failures retain the batch and retry, reporting failure/recovery in Events and
-  stderr. A full queue backpressures producers. Normal shutdown drains accepted events;
-  a forced kill or power loss can lose events still queued in memory.
+  Storage failures retain accepted events and retry, reporting failure/recovery in Events
+  and stderr. A full queue drops new events instead of blocking routing; Events reports
+  the dropped count when storage catches up. Shutdown drains for up to five seconds;
+  a longer outage, forced kill or power loss can lose events still queued in memory.
 
 - sessions (UI: *Sessions* page) are persisted the same way: every ingress session and every
   external destination reached over an egress edge is stored, so the page shows the full
@@ -146,6 +147,9 @@ Run the setup scripts as root. The supplied systemd services also run as root; p
   an acknowledged `NetReady` command after both endpoints finish setup. Nullnet reserves
   Linux interface groups `0x4e000000`–`0x4e400000` for tunnel cleanup; do not assign
   unrelated interfaces to that range.
+  Failed setup is not acknowledged as ready. Failed teardown keeps its ID reserved;
+  after correcting the reported error, restart that client to purge stale state and
+  release the reservation. Application containers do not need restarting.
 
 - the gRPC control channel itself (nullnet-client/nullnet-proxy ↔ nullnet-server) is TLS-only,
   authenticated by a private CA. On first boot the server generates its own CA
@@ -381,7 +385,8 @@ Run the setup scripts as root. The supplied systemd services also run as root; p
   ```
   Setup applies and persists a conntrack limit of at least 1,048,576 entries,
   preserving a higher existing limit. No manual sysctl configuration is needed.
-  It also keeps NetworkManager from managing Nullnet-owned interfaces.
+  It also keeps NetworkManager and udev hotplug helpers from managing Nullnet-owned
+  interfaces, avoiding competing network-configuration work during tunnel bursts.
 
 On upgrades, deploy the server, proxy and all clients from the same revision.
 Client startup cleans stale Nullnet network state while preserving Docker interfaces;

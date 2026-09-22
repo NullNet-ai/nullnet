@@ -74,6 +74,12 @@ fn run_iptables(
         &target,
     ]);
     let status = privileged(&args);
+    if action == "-D" && !status.as_ref().is_ok_and(std::process::ExitStatus::success) {
+        args[3] = "-C";
+        if privileged(&args).is_ok_and(|s| s.code() == Some(1)) {
+            return true;
+        }
+    }
     let src = if container_ip.is_unspecified() {
         "any".to_string()
     } else {
@@ -169,5 +175,9 @@ mod tests {
 }
 
 fn privileged(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
-    Command::new(args[0]).args(&args[1..]).status()
+    let mut command = Command::new(args[0]);
+    if args[0] == "iptables" {
+        command.arg("-w");
+    }
+    command.args(&args[1..]).status()
 }

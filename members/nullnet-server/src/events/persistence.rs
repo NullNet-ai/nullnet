@@ -1,5 +1,9 @@
 use super::{Event, now_secs};
 use crate::db::{Db, EventInsert};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -16,18 +20,40 @@ enum Command {
 pub(super) struct Writer {
     pub(super) db: Db,
     queue: mpsc::Sender<Command>,
+    dropped: Arc<AtomicU64>,
+    live: broadcast::Sender<Event>,
 }
 
 impl Writer {
     pub(super) fn start(db: Db, live: broadcast::Sender<Event>) -> Self {
         let (queue, receiver) = mpsc::channel(QUEUE_CAPACITY);
-        tokio::spawn(run(db.clone(), live, receiver));
-        Self { db, queue }
+        let dropped = Arc::new(AtomicU64::new(0));
+        tokio::spawn(run(db.clone(), live.clone(), receiver, dropped.clone()));
+        Self {
+            db,
+            queue,
+            dropped,
+            live,
+        }
     }
 
     pub(super) async fn emit(&self, event: Event) {
-        if self.queue.send(Command::Event(event)).await.is_err() {
-            eprintln!("Event persistence is closed; event was not accepted");
+        match self.queue.try_send(Command::Event(event)) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                if self.dropped.fetch_add(1, Ordering::Relaxed) == 0 {
+                    eprintln!(
+                        "Event persistence queue is full; dropping new events to keep routing available"
+                    );
+                    let _ = self.live.send(Event::PersistenceOverflow {
+                        dropped_events: 1,
+                        timestamp: now_secs(),
+                    });
+                }
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                eprintln!("Event persistence is closed; event was not accepted");
+            }
         }
     }
 
@@ -40,13 +66,28 @@ impl Writer {
 
     pub(super) async fn shutdown(&self) {
         let (tx, rx) = oneshot::channel();
-        if self.queue.send(Command::Shutdown(tx)).await.is_ok() {
-            let _ = rx.await;
+        let drain = async {
+            if self.queue.send(Command::Shutdown(tx)).await.is_ok() {
+                let _ = rx.await;
+            }
+        };
+        if tokio::time::timeout(Duration::from_secs(5), drain)
+            .await
+            .is_err()
+        {
+            eprintln!(
+                "Event persistence shutdown exceeded 5s; remaining queued events may be lost"
+            );
         }
     }
 }
 
-async fn run(db: Db, live: broadcast::Sender<Event>, mut queue: mpsc::Receiver<Command>) {
+async fn run(
+    db: Db,
+    live: broadcast::Sender<Event>,
+    mut queue: mpsc::Receiver<Command>,
+    dropped: Arc<AtomicU64>,
+) {
     let mut commands = Vec::with_capacity(BATCH_SIZE);
     let mut shutdown = Vec::new();
     while queue.recv_many(&mut commands, BATCH_SIZE).await != 0 {
@@ -63,6 +104,13 @@ async fn run(db: Db, live: broadcast::Sender<Event>, mut queue: mpsc::Receiver<C
                     shutdown.push(ack);
                 }
             }
+        }
+        let lost = dropped.swap(0, Ordering::Relaxed);
+        if lost > 0 {
+            events.push(Event::PersistenceOverflow {
+                dropped_events: lost,
+                timestamp: now_secs(),
+            });
         }
         if !events.is_empty() {
             persist(&db, &live, &events, &queue).await;
