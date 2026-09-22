@@ -13,10 +13,7 @@ All Nullnet releases with the relative changes are documented in this file.
 - Per-service egress/ingress traffic filters: arbitrary AND/OR/group combinations of Country, Organization, Src IP (ingress), and Dst IP (egress) conditions, evaluated via `rpn-predicate-interpreter` — replaces the country-only egress/ingress policy ([#171](https://github.com/NullNet-ai/nullnet/pull/171) — fixes [#143](https://github.com/NullNet-ai/nullnet/issues/143))
 - Persist ingress and egress sessions to SQLite and show the full history on the Sessions page, filterable by status, service, direction, and policy verdict, with its own retention window ([#170](https://github.com/NullNet-ai/nullnet/pull/170) — fixes [#156](https://github.com/NullNet-ai/nullnet/issues/156))
 ### Changed
-- Update HTTP/2 to h2 0.4.19 and remove the control-frame receipt workaround, retaining bounded RPC work ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
-- Remove redundant sudo calls from the root client, startup cleanup and setup scripts ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
-- Avoid redundant sudo in the root client’s VXLAN lifecycle and release the topology lock before persisting idle backend session closures ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
-- Configure persistent conntrack capacity during client setup, preserving higher host limits ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
+- Improve routing performance and capped-network balancing, reduce storage contention, and harden tunnel setup, teardown, and recovery under concurrent load ([#199](https://github.com/NullNet-ai/nullnet/pull/199))
 - Simplify the dashboard to linked session, service, and node count cards ([#194](https://github.com/NullNet-ai/nullnet/pull/194))
 - Unify live and historical session views ([#191](https://github.com/NullNet-ai/nullnet/pull/191))
 - Simplify backend configuration to a `backends` array of service names and derive trigger ports from peer declarations ([#190](https://github.com/NullNet-ai/nullnet/pull/190))
@@ -28,12 +25,6 @@ All Nullnet releases with the relative changes are documented in this file.
 - Install BPF linker as a prebuilt binary rather than compiling it from source ([#158](https://github.com/NullNet-ai/nullnet/pull/158))
 ### Removed
 ### Fixed
-- Keep lifecycle reports responsive, serialize tunnel publication and cleanup, reject failed-operation acknowledgements, prevent hotplug contention, and report event overflow without blocking routing ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
-- Balance capped networks by their total client count and attach clients atomically under concurrent requests ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
-- Prevent mass expiry from monopolizing routing locks, bound deletion batches, preserve Docker interfaces on recovery, and prevent premature tunnel-ID reuse ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
-- Release backend session locks during history writes and save configuration changes atomically in one transaction ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
-- Keep NetworkManager from adopting Nullnet-owned interfaces during tunnel creation ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
-- Batch event persistence, bound RPC bursts, accelerate VXLAN lifecycle operations, and wait for both endpoints before releasing backend/egress traffic ([performance report](docs/nullnet-performance-2026-09-21.md); PR pending).
 - Route same-host egress directly with container-scoped forwarding and NAT ([#197](https://github.com/NullNet-ai/nullnet/pull/197))
 - Track container overlay addresses when deciding whether backend connections are idle ([#196](https://github.com/NullNet-ai/nullnet/pull/196))
 - Make backend and egress trigger claims atomic, preserve liveness during setup, and report setup failures instead of transient packet-wait timeouts ([#186](https://github.com/NullNet-ai/nullnet/pull/186))
