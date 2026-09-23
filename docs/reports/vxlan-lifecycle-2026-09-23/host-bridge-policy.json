@@ -1,0 +1,10 @@
+[
+  {
+    "host": 103,
+    "bridge_sysctls": "net.bridge.bridge-nf-call-iptables = 1\nnet.bridge.bridge-nf-filter-vlan-tagged = 0\nnet.bridge.bridge-nf-pass-vlan-input-dev = 0\n"
+  },
+  {
+    "host": 104,
+    "bridge_sysctls": "net.bridge.bridge-nf-call-iptables = 1\nnet.bridge.bridge-nf-filter-vlan-tagged = 0\nnet.bridge.bridge-nf-pass-vlan-input-dev = 0\n"
+  }
+]

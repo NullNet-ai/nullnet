@@ -1,0 +1,157 @@
+topology,version,host,operation,calls_per_endpoint,mean_elapsed_ms_per_endpoint
+same,before,103,CLI MACsec RX SA,1.0,1.340873126992392
+same,before,104,CLI MACsec RX SA,1.0,1.3476129320056316
+same,before,103,CLI MACsec RX channel,1.0,1.3382889879962931
+same,before,104,CLI MACsec RX channel,1.0,1.3487302739886218
+same,before,103,CLI MACsec TX SA,1.0,1.3976681960061796
+same,before,104,CLI MACsec TX SA,1.0,1.3974323639940849
+same,before,103,CLI MACsec device create,1.0,1.6787570309948023
+same,before,104,CLI MACsec device create,1.0,1.6685529770052199
+same,before,103,CLI docker inspect,1.0,11.227050608013542
+same,before,104,CLI docker inspect,1.0,11.263154118010789
+same,before,103,CLI ip xfrm state deleteall,1.0,1.4714642279977852
+same,before,104,CLI ip xfrm state deleteall,1.0,1.4432141880079143
+same,before,103,CLI iptables -P FORWARD ACCEPT,1.0,186.57544459499968
+same,before,104,CLI iptables -P FORWARD ACCEPT,1.0,188.4633916310122
+same,before,103,CLI namespace address,1.0,2.352060204001191
+same,before,104,CLI namespace address,1.0,2.388486092995663
+same,before,103,CLI namespace link UP,1.0,2.188565974995072
+same,before,104,CLI namespace link UP,1.0,2.2219576959932965
+same,before,103,CLI semaphore queue (all commands),0,352.89197605698473
+same,before,104,CLI semaphore queue (all commands),0,358.832124800017
+same,before,103,CLI sysctl -w net.ipv4.ip_forward=1,1.0,1.904382130994236
+same,before,104,CLI sysctl -w net.ipv4.ip_forward=1,1.0,1.8790627420030432
+same,before,103,MACsec configure,1.0,0.25280919499846277
+same,before,104,MACsec configure,1.0,0.24382638500264875
+same,before,103,MACsec lookup,2.0,0.18247282101219753
+same,before,104,MACsec lookup,2.0,0.1682144120168232
+same,before,103,VXLAN lookup,1.0,0.08299282599182334
+same,before,104,VXLAN lookup,1.0,0.08873982699242333
+same,before,103,endpoint veth configure,1.0,0.20421303801003887
+same,before,104,endpoint veth configure,1.0,0.20211654700597137
+same,before,103,endpoint veth create,1.0,0.6695772459997897
+same,before,104,endpoint veth create,1.0,0.6633375750020605
+same,before,103,endpoint veth lookup,2.0,0.20878756500997042
+same,before,104,endpoint veth lookup,2.0,0.19894384300187085
+same,before,103,gateway address,1.0,0.0811175279895906
+same,before,104,gateway address,1.0,0.07534765700802382
+same,before,103,gateway configure,1.0,0.10904710800559769
+same,before,104,gateway configure,1.0,0.11011516500730067
+same,before,103,gateway create,1.0,0.31766289500592393
+same,before,104,gateway create,1.0,0.30949457899987465
+same,before,103,gateway lookup,2.0,0.1795177770072769
+same,before,104,gateway lookup,2.0,0.1892992349917222
+same,before,103,transport veth configure,1.0,0.09854287698726694
+same,before,104,transport veth configure,1.0,0.09330741499979922
+same,before,103,transport veth create,0.5,0.32213308099608184
+same,before,104,transport veth create,0.5,0.3311195020046398
+same,before,103,transport veth lookup,2.0,0.1937758230073996
+same,before,104,transport veth lookup,2.0,0.1951789399918198
+same,after,103,MACsec RX SA,1.0,2.3507857419990614
+same,after,104,MACsec RX SA,1.0,2.3907772290276625
+same,after,103,MACsec RX channel,1.0,2.4362110550118814
+same,after,104,MACsec RX channel,1.0,2.431727325056272
+same,after,103,MACsec TX SA,1.0,3.3008735129751585
+same,after,104,MACsec TX SA,1.0,3.1539584340025613
+same,after,103,MACsec configure,1.0,1.4109806909800682
+same,after,104,MACsec configure,1.0,1.353379007008698
+same,after,103,MACsec create,1.0,1.2813991119910497
+same,after,104,MACsec create,1.0,1.28886926899213
+same,after,103,MACsec lookup,2.0,2.4390847680060688
+same,after,104,MACsec lookup,2.0,2.450495724042412
+same,after,103,endpoint veth address,1.0,1.3647280280274572
+same,after,104,endpoint veth address,1.0,1.3547898970100505
+same,after,103,endpoint veth configure,2.0,2.8075468180450116
+same,after,104,endpoint veth configure,2.0,2.801166045028367
+same,after,103,endpoint veth create,1.0,2.23257013600778
+same,after,104,endpoint veth create,1.0,2.2423292459316144
+same,after,103,endpoint veth lookup,1.0,1.76768193598582
+same,after,104,endpoint veth lookup,1.0,1.774229491058577
+same,after,103,gateway configure,1.0,1.4192055580133456
+same,after,104,gateway configure,1.0,1.3880999570228596
+same,after,103,transport veth address,1.0,1.0315698080175935
+same,after,104,transport veth address,1.0,1.0907773060062027
+same,after,103,transport veth configure,2.0,2.49714663105442
+same,after,104,transport veth configure,2.0,2.565329966984791
+same,after,103,transport veth create,0.5,0.8220489960403938
+same,after,104,transport veth create,0.5,0.8144428819996392
+same,after,103,transport veth lookup,4.0,4.834575241964558
+same,after,104,transport veth lookup,4.0,4.867265890963608
+cross,before,103,CLI docker inspect,1.0,11.38111483898956
+cross,before,104,CLI docker inspect,1.0,11.418808994991196
+cross,before,103,CLI ip xfrm policy add,2.0,3.0174087990067164
+cross,before,104,CLI ip xfrm policy add,2.0,3.078255624009671
+cross,before,103,CLI ip xfrm state add,2.0,3.1346752519980328
+cross,before,104,CLI ip xfrm state add,2.0,3.226658412002962
+cross,before,103,CLI iptables -P FORWARD ACCEPT,1.0,186.948487045006
+cross,before,104,CLI iptables -P FORWARD ACCEPT,1.0,186.38020825399644
+cross,before,103,CLI namespace address,1.0,2.506113655005265
+cross,before,104,CLI namespace address,1.0,2.542356910010767
+cross,before,103,CLI namespace link UP,1.0,2.2071403910040317
+cross,before,104,CLI namespace link UP,1.0,2.264176533992213
+cross,before,103,CLI semaphore queue (all commands),0,629.8980799650076
+cross,before,104,CLI semaphore queue (all commands),0,630.0150446229936
+cross,before,103,CLI sha256sum,1.0,3.101628668997364
+cross,before,104,CLI sha256sum,1.0,3.1529859609936466
+cross,before,103,CLI sysctl -w net.ipv4.ip_forward=1,1.0,1.7262195239973153
+cross,before,104,CLI sysctl -w net.ipv4.ip_forward=1,1.0,1.7276271929972609
+cross,before,103,MACsec lookup,2.0,0.09790632701378854
+cross,before,104,MACsec lookup,2.0,0.10351953999770558
+cross,before,103,VXLAN configure,1.0,0.3618352949979453
+cross,before,104,VXLAN configure,1.0,0.38404428900048515
+cross,before,103,VXLAN create,1.0,0.2355373699924712
+cross,before,104,VXLAN create,1.0,0.2533629560030022
+cross,before,103,VXLAN lookup,2.0,0.0521753429961791
+cross,before,104,VXLAN lookup,2.0,0.0536024339908181
+cross,before,103,endpoint veth configure,1.0,0.1972000450041378
+cross,before,104,endpoint veth configure,1.0,0.20617519200868628
+cross,before,103,endpoint veth create,1.0,0.7132611719989654
+cross,before,104,endpoint veth create,1.0,0.7031313139964368
+cross,before,103,endpoint veth lookup,2.0,0.20121257199252796
+cross,before,104,endpoint veth lookup,2.0,0.18346026300105223
+cross,before,103,gateway address,1.0,0.0711890350057729
+cross,before,104,gateway address,1.0,0.07319474100995649
+cross,before,103,gateway configure,1.0,0.11033754799200324
+cross,before,104,gateway configure,1.0,0.10788402600428526
+cross,before,103,gateway create,1.0,0.3064022430021396
+cross,before,104,gateway create,1.0,0.30823646200133226
+cross,before,103,gateway lookup,2.0,0.16886992199670203
+cross,before,104,gateway lookup,2.0,0.17830108100133657
+cross,before,103,transport veth lookup,1.0,0.01877836799940269
+cross,before,104,transport veth lookup,1.0,0.022050765995572874
+cross,after,103,IPsec policy outadd,1.0,0.13150850398778857
+cross,after,104,IPsec policy outadd,1.0,0.10135649797302904
+cross,after,103,IPsec state inadd,1.0,0.10254872400219028
+cross,after,104,IPsec state inadd,1.0,0.09463407899966114
+cross,after,103,IPsec state outadd,1.0,0.12653302997205174
+cross,after,104,IPsec state outadd,1.0,0.10693325197098602
+cross,after,103,TC inbound accept create,1.0,2.1513194119834225
+cross,after,104,TC inbound accept create,1.0,2.1533900249614817
+cross,after,103,TC inbound drop create,1.0,2.3804697769883205
+cross,after,104,TC inbound drop create,1.0,2.342733745019359
+cross,after,103,TC outbound mark create,1.0,2.522782659971199
+cross,after,104,TC outbound mark create,1.0,2.4948725489812205
+cross,after,103,TC qdisc create,1.0,2.488339602989072
+cross,after,104,TC qdisc create,1.0,2.318122824985039
+cross,after,103,VXLAN configure,1.0,3.0619522579909244
+cross,after,104,VXLAN configure,1.0,2.93374749198847
+cross,after,103,VXLAN create,1.0,1.9237229530044715
+cross,after,104,VXLAN create,1.0,1.8681557329600764
+cross,after,103,VXLAN lookup,1.0,2.7886719289890607
+cross,after,104,VXLAN lookup,1.0,2.662260001001414
+cross,after,103,endpoint veth address,1.0,2.5024530140308343
+cross,after,104,endpoint veth address,1.0,2.4195368669970776
+cross,after,103,endpoint veth configure,2.0,5.015357241982201
+cross,after,104,endpoint veth configure,2.0,4.721088273965506
+cross,after,103,endpoint veth create,1.0,3.0881128290475317
+cross,after,104,endpoint veth create,1.0,2.877921505005361
+cross,after,103,endpoint veth lookup,1.0,2.4028331380159216
+cross,after,104,endpoint veth lookup,1.0,2.358339618982427
+cross,after,103,gateway configure,1.0,2.614551911025046
+cross,after,104,gateway configure,1.0,2.558088586962185
+cross,after,103,transport veth address,1.0,1.994551038960708
+cross,after,104,transport veth address,1.0,1.868729305017041
+cross,after,103,transport veth configure,1.0,2.0802088099644607
+cross,after,104,transport veth configure,1.0,1.984685937028189
+cross,after,103,transport veth lookup,1.0,2.5567485819938156
+cross,after,104,transport veth lookup,1.0,2.462847222983328
