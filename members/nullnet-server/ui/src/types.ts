@@ -71,6 +71,7 @@ export type SessionDirection = 'ingress' | 'egress' | 'backend';
 
 /// Direction-specific fields, stored as JSON on the row.
 export interface SessionDetail {
+  recording_interrupted?: boolean;
   setup_ms?: number | null;
   // ingress
   client_net?: string;
@@ -128,6 +129,9 @@ export type Severity = 'info' | 'warning' | 'error';
 type WithSeverity = { severity: Severity; timestamp: number };
 
 export type EventJson =
+  | WithSeverity & { type: 'session_persistence_overflow'; dropped_updates: number }
+  | WithSeverity & { type: 'session_persistence_failed'; error_message: string; queued_updates: number }
+  | WithSeverity & { type: 'session_persistence_recovered'; queued_updates: number }
   | WithSeverity & { type: 'event_persistence_overflow'; dropped_events: number }
   | WithSeverity & { type: 'event_persistence_failed'; error_message: string; queued_events: number }
   | WithSeverity & { type: 'event_persistence_recovered'; queued_events: number }

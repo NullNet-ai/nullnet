@@ -19,6 +19,7 @@ export function SessionKind({ kind }: { kind: SessionDirection }) {
 }
 
 export function SessionStatus({ session }: { session: SessionRecordJson }) {
+  if (session.detail.recording_interrupted) return <span style={{ fontSize: 10, color: 'var(--amber)' }} title="History recording was interrupted; the actual session end is unknown">history interrupted</span>;
   const active = session.ended_at == null;
   return <span style={{ fontSize: 10, color: active ? 'var(--green)' : 'var(--t2)' }}>
     <span style={{ width: 6, height: 6, borderRadius: '50%', display: 'inline-block', background: active ? 'var(--green)' : 'var(--t3)', marginRight: 5 }} />

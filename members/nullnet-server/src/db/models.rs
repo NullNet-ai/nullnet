@@ -326,25 +326,27 @@ pub(crate) struct SessionRow {
     pub(crate) started_at: i64,
     pub(crate) last_seen: i64,
     pub(crate) ended_at: Option<i64>,
+    pub(crate) history_token: Option<String>,
 }
 
 #[derive(Insertable, Debug, Clone)]
 #[diesel(table_name = sessions)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-pub(crate) struct NewSessionRow<'a> {
-    pub(crate) direction: &'a str,
-    pub(crate) stack: &'a str,
-    pub(crate) service: &'a str,
+pub(crate) struct NewSessionRow {
+    pub(crate) direction: String,
+    pub(crate) stack: String,
+    pub(crate) service: String,
     pub(crate) net_id: i32,
-    pub(crate) peer_ip: &'a str,
-    pub(crate) country_code: Option<&'a str>,
-    pub(crate) asn: Option<&'a str>,
-    pub(crate) org: Option<&'a str>,
+    pub(crate) peer_ip: String,
+    pub(crate) country_code: Option<String>,
+    pub(crate) asn: Option<String>,
+    pub(crate) org: Option<String>,
     pub(crate) blocked: bool,
-    pub(crate) detail: &'a str,
+    pub(crate) detail: String,
     pub(crate) started_at: i64,
     pub(crate) last_seen: i64,
     /// Set only for rows that are born ended — a denied ingress attempt never
     /// becomes a session, so there is nothing to close later.
     pub(crate) ended_at: Option<i64>,
+    pub(crate) history_token: Option<String>,
 }

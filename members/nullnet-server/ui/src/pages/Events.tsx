@@ -13,6 +13,9 @@ const SEVERITY_COLOR: Record<Severity, string> = {
 };
 
 const KIND_LABELS: Record<string, string> = {
+  session_persistence_overflow: 'session_persistence_overflow',
+  session_persistence_failed: 'session_persistence_failed',
+  session_persistence_recovered: 'session_persistence_recovered',
   event_persistence_overflow: 'event_persistence_overflow',
   event_persistence_failed: 'event_persistence_failed',
   event_persistence_recovered: 'event_persistence_recovered',
@@ -105,6 +108,12 @@ const ALL_KINDS = Object.keys(KIND_LABELS);
 
 function eventDetail(e: EventJson): string {
   switch (e.type) {
+    case 'session_persistence_overflow':
+      return `${e.dropped_updates} session updates lost · history recording interrupted`;
+    case 'session_persistence_failed':
+      return `${e.queued_updates} session updates queued · networking continues · ${e.error_message}`;
+    case 'session_persistence_recovered':
+      return `Session persistence recovered · ${e.queued_updates} updates draining`;
     case 'event_persistence_overflow':
       return `${e.dropped_events} events dropped because persistence could not keep up`;
     case 'event_persistence_failed':

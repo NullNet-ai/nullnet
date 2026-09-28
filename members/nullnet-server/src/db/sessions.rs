@@ -1,5 +1,5 @@
 use crate::db::AsyncSqlite;
-use crate::db::models::{NewSessionRow, SessionRow};
+use crate::db::models::SessionRow;
 use crate::db::schema::{session_policy_counts, sessions};
 use diesel::prelude::*;
 use diesel::sqlite::Sqlite;
@@ -35,12 +35,33 @@ pub(crate) struct SessionGeo {
 }
 
 impl SessionRepository {
+    pub(crate) async fn apply_batch(
+        &self,
+        mutations: Vec<super::SessionMutation>,
+    ) -> Result<(), Error> {
+        self.conn
+            .lock()
+            .await
+            .spawn_blocking(move |conn| {
+                conn.transaction::<_, diesel::result::Error, _>(|conn| {
+                    let mut transaction = super::session_mutations::SessionTransaction { conn };
+                    for mutation in &mutations {
+                        transaction.apply(mutation)?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+            .handle_err(location!())
+    }
+
     pub(super) fn new(conn: Arc<Mutex<AsyncSqlite>>) -> Self {
         Self { conn }
     }
 
     /// Insert a live session row (`ended_at` NULL).
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(crate) async fn open(
         &self,
         direction: &str,
@@ -53,45 +74,36 @@ impl SessionRepository {
         detail: &str,
         timestamp: i64,
     ) -> Result<i64, Error> {
-        let new_row = NewSessionRow {
-            direction,
-            stack,
-            service,
-            net_id: net_id as i32,
-            peer_ip,
-            country_code: geo.country_code.as_deref(),
-            asn: geo.asn.as_deref(),
-            org: geo.org.as_deref(),
-            blocked,
-            detail,
-            started_at: timestamp,
-            last_seen: timestamp,
-            ended_at: None,
-        };
-        let mut conn = self.conn.lock().await;
-        diesel::insert_into(sessions::table)
-            .values(&new_row)
-            .returning(sessions::id)
-            .get_result(&mut *conn)
+        let direction = direction.to_owned();
+        let stack = stack.to_owned();
+        let service = service.to_owned();
+        let peer_ip = peer_ip.to_owned();
+        let geo = geo.clone();
+        let detail = detail.to_owned();
+        self.conn
+            .lock()
+            .await
+            .spawn_blocking(move |conn| {
+                super::session_mutations::SessionTransaction { conn }.open(
+                    &direction, &stack, &service, net_id, &peer_ip, &geo, blocked, &detail,
+                    timestamp,
+                )
+            })
             .await
             .handle_err(location!())
     }
 
     /// Close one backend generation without affecting chains sharing its edge.
+    #[cfg(test)]
     pub(crate) async fn close_backend(&self, id: i64, timestamp: i64) -> Result<usize, Error> {
-        let mut conn = self.conn.lock().await;
-        diesel::update(
-            sessions::table
-                .filter(sessions::id.eq(id))
-                .filter(sessions::ended_at.is_null()),
-        )
-        .set((
-            sessions::ended_at.eq(Some(timestamp)),
-            sessions::last_seen.eq(timestamp),
-        ))
-        .execute(&mut *conn)
-        .await
-        .handle_err(location!())
+        self.conn
+            .lock()
+            .await
+            .spawn_blocking(move |conn| {
+                super::session_mutations::SessionTransaction { conn }.close_backend(id, timestamp)
+            })
+            .await
+            .handle_err(location!())
     }
 
     /// Refresh the mutable fields of the open row for `(direction, net_id,
@@ -102,6 +114,7 @@ impl SessionRepository {
     /// asynchronously, so the row is usually written before its country is
     /// known and a later touch is the first chance to record it.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(crate) async fn touch(
         &self,
         direction: &str,
@@ -111,40 +124,18 @@ impl SessionRepository {
         blocked: bool,
         timestamp: i64,
     ) -> Result<usize, Error> {
-        let mut conn = self.conn.lock().await;
-        let updated = diesel::update(
-            sessions::table
-                .filter(sessions::direction.eq(direction.to_owned()))
-                .filter(sessions::net_id.eq(net_id as i32))
-                .filter(sessions::peer_ip.eq(peer_ip.to_owned()))
-                .filter(sessions::ended_at.is_null()),
-        )
-        .set((
-            sessions::last_seen.eq(timestamp),
-            sessions::blocked.eq(blocked),
-        ))
-        .execute(&mut *conn)
-        .await
-        .handle_err(location!())?;
-        if updated > 0 && geo.country_code.is_some() {
-            diesel::update(
-                sessions::table
-                    .filter(sessions::direction.eq(direction.to_owned()))
-                    .filter(sessions::net_id.eq(net_id as i32))
-                    .filter(sessions::peer_ip.eq(peer_ip.to_owned()))
-                    .filter(sessions::ended_at.is_null())
-                    .filter(sessions::country_code.is_null()),
-            )
-            .set((
-                sessions::country_code.eq(geo.country_code.clone()),
-                sessions::asn.eq(geo.asn.clone()),
-                sessions::org.eq(geo.org.clone()),
-            ))
-            .execute(&mut *conn)
+        let direction = direction.to_owned();
+        let peer_ip = peer_ip.to_owned();
+        let geo = geo.clone();
+        self.conn
+            .lock()
             .await
-            .handle_err(location!())?;
-        }
-        Ok(updated)
+            .spawn_blocking(move |conn| {
+                super::session_mutations::SessionTransaction { conn }
+                    .touch(&direction, net_id, &peer_ip, &geo, blocked, timestamp)
+            })
+            .await
+            .handle_err(location!())
     }
 
     /// Record a burst of denied ingress attempts as a single already-ended row.
@@ -158,6 +149,7 @@ impl SessionRepository {
     /// Returns having inserted the row when the update matched nothing —
     /// a first denial, or one whose row retention has since deleted.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(crate) async fn record_blocked_ingress(
         &self,
         stack: &str,
@@ -168,74 +160,26 @@ impl SessionRepository {
         started_at: i64,
         last_seen: i64,
     ) -> Result<(), Error> {
-        let mut conn = self.conn.lock().await;
-        let updated = diesel::update(
-            sessions::table
-                .filter(sessions::direction.eq("ingress"))
-                .filter(sessions::blocked.eq(true))
-                .filter(sessions::stack.eq(stack.to_owned()))
-                .filter(sessions::service.eq(service.to_owned()))
-                .filter(sessions::peer_ip.eq(peer_ip.to_owned()))
-                .filter(sessions::started_at.eq(started_at)),
-        )
-        .set((
-            sessions::detail.eq(detail.to_owned()),
-            sessions::last_seen.eq(last_seen),
-            sessions::ended_at.eq(Some(last_seen)),
-        ))
-        .execute(&mut *conn)
-        .await
-        .handle_err(location!())?;
-        if updated > 0 {
-            // Geo resolves asynchronously, so the burst's first write usually
-            // predates it. Fill it in, never clear it — same rule as `touch`.
-            if geo.country_code.is_some() {
-                diesel::update(
-                    sessions::table
-                        .filter(sessions::direction.eq("ingress"))
-                        .filter(sessions::blocked.eq(true))
-                        .filter(sessions::stack.eq(stack.to_owned()))
-                        .filter(sessions::service.eq(service.to_owned()))
-                        .filter(sessions::peer_ip.eq(peer_ip.to_owned()))
-                        .filter(sessions::started_at.eq(started_at))
-                        .filter(sessions::country_code.is_null()),
-                )
-                .set((
-                    sessions::country_code.eq(geo.country_code.clone()),
-                    sessions::asn.eq(geo.asn.clone()),
-                    sessions::org.eq(geo.org.clone()),
-                ))
-                .execute(&mut *conn)
-                .await
-                .handle_err(location!())?;
-            }
-            return Ok(());
-        }
-        let new_row = NewSessionRow {
-            direction: "ingress",
-            stack,
-            service,
-            net_id: 0,
-            peer_ip,
-            country_code: geo.country_code.as_deref(),
-            asn: geo.asn.as_deref(),
-            org: geo.org.as_deref(),
-            blocked: true,
-            detail,
-            started_at,
-            last_seen,
-            ended_at: Some(last_seen),
-        };
-        diesel::insert_into(sessions::table)
-            .values(&new_row)
-            .execute(&mut *conn)
+        let stack = stack.to_owned();
+        let service = service.to_owned();
+        let peer_ip = peer_ip.to_owned();
+        let geo = geo.clone();
+        let detail = detail.to_owned();
+        self.conn
+            .lock()
             .await
-            .handle_err(location!())?;
-        Ok(())
+            .spawn_blocking(move |conn| {
+                super::session_mutations::SessionTransaction { conn }.record_blocked_ingress(
+                    &stack, &service, &peer_ip, &geo, &detail, started_at, last_seen,
+                )
+            })
+            .await
+            .handle_err(location!())
     }
 
     /// Close the open row for one ingress session, identified by the same
     /// `(net_id, service, client_ip)` triple the teardown site already holds.
+    #[cfg(test)]
     pub(crate) async fn close_ingress(
         &self,
         net_id: u32,
@@ -243,19 +187,17 @@ impl SessionRepository {
         peer_ip: &str,
         timestamp: i64,
     ) -> Result<usize, Error> {
-        let mut conn = self.conn.lock().await;
-        diesel::update(
-            sessions::table
-                .filter(sessions::direction.eq("ingress"))
-                .filter(sessions::net_id.eq(net_id as i32))
-                .filter(sessions::service.eq(service.to_owned()))
-                .filter(sessions::peer_ip.eq(peer_ip.to_owned()))
-                .filter(sessions::ended_at.is_null()),
-        )
-        .set(sessions::ended_at.eq(Some(timestamp)))
-        .execute(&mut *conn)
-        .await
-        .handle_err(location!())
+        let service = service.to_owned();
+        let peer_ip = peer_ip.to_owned();
+        self.conn
+            .lock()
+            .await
+            .spawn_blocking(move |conn| {
+                super::session_mutations::SessionTransaction { conn }
+                    .close_ingress(net_id, &service, &peer_ip, timestamp)
+            })
+            .await
+            .handle_err(location!())
     }
 
     /// Fold a repeat "closed" report into the destination's most recent ended
@@ -267,6 +209,7 @@ impl SessionRepository {
     /// the destination has no ended row yet, which is the caller's signal to
     /// write one. Real new activity arrives as *active* and never comes here,
     /// so it still opens a row of its own.
+    #[cfg(test)]
     pub(crate) async fn extend_ended_egress_dst(
         &self,
         net_id: u32,
@@ -274,28 +217,14 @@ impl SessionRepository {
         blocked: bool,
         timestamp: i64,
     ) -> Result<usize, Error> {
-        let mut conn = self.conn.lock().await;
-        let Some(id) = sessions::table
-            .filter(sessions::direction.eq("egress"))
-            .filter(sessions::net_id.eq(net_id as i32))
-            .filter(sessions::peer_ip.eq(peer_ip.to_owned()))
-            .filter(sessions::ended_at.is_not_null())
-            .order(sessions::id.desc())
-            .select(sessions::id)
-            .first::<i64>(&mut *conn)
+        let peer_ip = peer_ip.to_owned();
+        self.conn
+            .lock()
             .await
-            .optional()
-            .handle_err(location!())?
-        else {
-            return Ok(0);
-        };
-        diesel::update(sessions::table.filter(sessions::id.eq(id)))
-            .set((
-                sessions::last_seen.eq(timestamp),
-                sessions::ended_at.eq(Some(timestamp)),
-                sessions::blocked.eq(blocked),
-            ))
-            .execute(&mut *conn)
+            .spawn_blocking(move |conn| {
+                super::session_mutations::SessionTransaction { conn }
+                    .extend_ended_egress_dst(net_id, &peer_ip, blocked, timestamp)
+            })
             .await
             .handle_err(location!())
     }
@@ -303,57 +232,58 @@ impl SessionRepository {
     /// Close the open row for one egress destination on the edge holding
     /// `net_id`. The usual way an egress row ends: the client reports the
     /// initiator's last connection to that host gone.
+    #[cfg(test)]
     pub(crate) async fn close_egress_dst(
         &self,
         net_id: u32,
         peer_ip: &str,
         timestamp: i64,
     ) -> Result<usize, Error> {
-        let mut conn = self.conn.lock().await;
-        diesel::update(
-            sessions::table
-                .filter(sessions::direction.eq("egress"))
-                .filter(sessions::net_id.eq(net_id as i32))
-                .filter(sessions::peer_ip.eq(peer_ip.to_owned()))
-                .filter(sessions::ended_at.is_null()),
-        )
-        .set(sessions::ended_at.eq(Some(timestamp)))
-        .execute(&mut *conn)
-        .await
-        .handle_err(location!())
+        let peer_ip = peer_ip.to_owned();
+        self.conn
+            .lock()
+            .await
+            .spawn_blocking(move |conn| {
+                super::session_mutations::SessionTransaction { conn }
+                    .close_egress_dst(net_id, &peer_ip, timestamp)
+            })
+            .await
+            .handle_err(location!())
     }
 
     /// Close every egress destination row still open on the edge holding
     /// `net_id`. The backstop for whatever the per-destination closes did not
     /// reach — a client that died, a `DESTROY` neither the event stream nor a
     /// dump ever delivered.
+    #[cfg(test)]
     pub(crate) async fn close_egress_edge(
         &self,
         net_id: u32,
         timestamp: i64,
     ) -> Result<usize, Error> {
-        let mut conn = self.conn.lock().await;
-        diesel::update(
-            sessions::table
-                .filter(sessions::direction.eq("egress"))
-                .filter(sessions::net_id.eq(net_id as i32))
-                .filter(sessions::ended_at.is_null()),
-        )
-        .set(sessions::ended_at.eq(Some(timestamp)))
-        .execute(&mut *conn)
-        .await
-        .handle_err(location!())
+        self.conn
+            .lock()
+            .await
+            .spawn_blocking(move |conn| {
+                super::session_mutations::SessionTransaction { conn }
+                    .close_egress_edge(net_id, timestamp)
+            })
+            .await
+            .handle_err(location!())
     }
 
     /// Close every row still marked live. Run once at startup: the in-memory
     /// state those rows described died with the previous process, so leaving
     /// them open would both show dead sessions as active and let a recycled
     /// net id collide with them.
+    #[cfg(test)]
     pub(crate) async fn close_all_open(&self, timestamp: i64) -> Result<usize, Error> {
-        let mut conn = self.conn.lock().await;
-        diesel::update(sessions::table.filter(sessions::ended_at.is_null()))
-            .set(sessions::ended_at.eq(Some(timestamp)))
-            .execute(&mut *conn)
+        self.conn
+            .lock()
+            .await
+            .spawn_blocking(move |conn| {
+                super::session_mutations::SessionTransaction { conn }.close_all_open(timestamp)
+            })
             .await
             .handle_err(location!())
     }

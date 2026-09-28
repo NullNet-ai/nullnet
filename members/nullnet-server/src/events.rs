@@ -60,6 +60,19 @@ pub(crate) enum Event {
         queued_events: usize,
         timestamp: u64,
     },
+    SessionPersistenceOverflow {
+        dropped_updates: u64,
+        timestamp: u64,
+    },
+    SessionPersistenceFailed {
+        error_message: String,
+        queued_updates: usize,
+        timestamp: u64,
+    },
+    SessionPersistenceRecovered {
+        queued_updates: usize,
+        timestamp: u64,
+    },
     NodeConnected {
         ip: String,
         timestamp: u64,
@@ -530,6 +543,9 @@ pub(crate) enum Event {
 impl Event {
     pub(crate) fn kind(&self) -> &'static str {
         match self {
+            Self::SessionPersistenceOverflow { .. } => "session_persistence_overflow",
+            Self::SessionPersistenceFailed { .. } => "session_persistence_failed",
+            Self::SessionPersistenceRecovered { .. } => "session_persistence_recovered",
             Self::PersistenceOverflow { .. } => "event_persistence_overflow",
             Self::PersistenceFailed { .. } => "event_persistence_failed",
             Self::PersistenceRecovered { .. } => "event_persistence_recovered",
@@ -626,7 +642,8 @@ impl Event {
                     Severity::Error
                 }
             }
-            Self::PersistenceRecovered { .. }
+            Self::SessionPersistenceRecovered { .. }
+            | Self::PersistenceRecovered { .. }
             | Self::NodeConnected { .. }
             | Self::ServiceRegistered { .. }
             | Self::SetupStarted { .. }
@@ -663,7 +680,9 @@ impl Event {
             | Self::ProxyClientNotInet { .. }
             | Self::ProxyDisconnected { .. } => Severity::Warning,
 
-            Self::PersistenceOverflow { .. }
+            Self::SessionPersistenceOverflow { .. }
+            | Self::SessionPersistenceFailed { .. }
+            | Self::PersistenceOverflow { .. }
             | Self::PersistenceFailed { .. }
             | Self::SetupTimeout { .. }
             | Self::EdgePromotionLost { .. }
@@ -1496,6 +1515,10 @@ impl EventStore {
     pub(crate) fn attach_db(&self, db: Db) {
         self.writer
             .get_or_init(|| persistence::Writer::start(db, self.tx.clone()));
+    }
+
+    pub(crate) fn publish_storage_failure(&self, event: Event) {
+        let _ = self.tx.send(event);
     }
 
     pub(crate) async fn emit(&self, event: Event) {

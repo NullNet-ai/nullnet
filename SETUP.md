@@ -142,6 +142,11 @@ Run the setup scripts as root. The supplied systemd services also run as root; p
   ```
   An active session is never pruned, however old. Sessions still marked active are closed
   at startup, since the state they described died with the previous process.
+  History writes run independently of networking, in ordered batches. Database failures
+  retain accepted updates for retry; Events reports failures and recovery. If the bounded
+  buffer fills, new history updates are dropped until the accepted prefix drains, and
+  affected open rows become **history interrupted** (their actual end time is unknown).
+  Normal shutdown drains for up to five seconds; forced termination can lose queued history.
 
 - Upgrade server, proxy and clients together: VXLAN backend/egress packet release uses
   an acknowledged `NetReady` command after both endpoints finish setup. Nullnet reserves

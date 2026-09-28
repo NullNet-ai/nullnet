@@ -3438,6 +3438,7 @@ async fn backend_reap_history_wait_releases_topology() {
         .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None)
         .await
         .unwrap();
+    server.orchestrator().sessions.flush().await;
     assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 1);
     let key = ("A".to_string(), ip(1, 1, 1, 1), None, 5555);
     server
@@ -3451,7 +3452,7 @@ async fn backend_reap_history_wait_releases_topology() {
         std::time::Duration::ZERO,
     );
     tokio::pin!(reap);
-    assert!(futures::poll!(&mut reap).is_pending());
+    assert!(futures::poll!(&mut reap).is_ready());
     assert!(
         server.services().try_read().is_ok(),
         "history close holds the global topology lock"
@@ -3471,12 +3472,13 @@ async fn backend_reap_history_wait_releases_topology() {
     .await
     .unwrap();
     drop(db_guard);
-    reap.await;
     replacement.await.unwrap().unwrap();
     assert_net_ids_in_use(&server, 1).await;
+    server.orchestrator().sessions.flush().await;
     assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 1);
     report_backend_idle_and_reap(&server, "A", key.1, 5555).await;
     assert_net_ids_in_use(&server, 0).await;
+    server.orchestrator().sessions.flush().await;
     assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 0);
 }
 
@@ -3493,7 +3495,7 @@ async fn backend_pending_history_allows_teardown_and_replacement() {
     let db_guard = db.hold_connection().await;
     let key = ("A".to_string(), ip(1, 1, 1, 1), None, 5555);
     let task_server = server.clone();
-    let first = tokio::spawn(async move {
+    let mut first = tokio::spawn(async move {
         task_server
             .handle_backend_trigger("A", 5555, ip(1, 1, 1, 1), None)
             .await
@@ -3523,7 +3525,11 @@ async fn backend_pending_history_allows_teardown_and_replacement() {
     })
     .await
     .expect("history storage blocked topology or teardown");
-    assert!(!first.is_finished());
+    tokio::time::timeout(std::time::Duration::from_secs(1), &mut first)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     assert_net_ids_in_use(&server, 0).await;
     let task_server = server.clone();
     let replacement = tokio::spawn(async move {
@@ -3539,12 +3545,13 @@ async fn backend_pending_history_allows_teardown_and_replacement() {
     .await
     .unwrap();
     drop(db_guard);
-    first.await.unwrap().unwrap();
     replacement.await.unwrap().unwrap();
     assert_net_ids_in_use(&server, 1).await;
+    server.orchestrator().sessions.flush().await;
     assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 1);
     report_backend_idle_and_reap(&server, "A", key.1, 5555).await;
     assert_net_ids_in_use(&server, 0).await;
+    server.orchestrator().sessions.flush().await;
     assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 0);
 }
 
@@ -4355,7 +4362,8 @@ async fn attach_session_db(server: &NullnetGrpcImpl) -> crate::db::Db {
     db
 }
 
-async fn session_rows(db: &crate::db::Db) -> Vec<crate::db::SessionRow> {
+async fn session_rows(server: &NullnetGrpcImpl, db: &crate::db::Db) -> Vec<crate::db::SessionRow> {
+    server.orchestrator().sessions.flush().await;
     db.sessions()
         .query(TEST_STACK, None, None, None, None, None, None, None, 50)
         .await
@@ -4381,7 +4389,7 @@ async fn an_ingress_session_opens_and_closes_a_row() {
 
     // Exactly one row: the proxy→A edge. A→B is a dependency hop, not a
     // session, and must not produce one.
-    let rows = session_rows(&db).await;
+    let rows = session_rows(&server, &db).await;
     assert_eq!(rows.len(), 1, "expected one ingress row, got {rows:?}");
     let row = &rows[0];
     assert_eq!(row.direction, "ingress");
@@ -4407,7 +4415,7 @@ async fn an_ingress_session_opens_and_closes_a_row() {
     .await;
     drop(guard);
 
-    let rows = session_rows(&db).await;
+    let rows = session_rows(&server, &db).await;
     assert_eq!(rows.len(), 1, "closing must not add a second row");
     assert_eq!(rows[0].net_id, net_id);
     assert!(rows[0].ended_at.is_some(), "should have been closed");
@@ -4435,7 +4443,7 @@ async fn clients_sharing_a_net_id_each_close_their_own_row() {
     tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
     setup_proxy_chain(&server, "A", proxy, "10.0.0.2").await;
 
-    let rows = session_rows(&db).await;
+    let rows = session_rows(&server, &db).await;
     assert_eq!(rows.len(), 2, "one row per client, got {rows:?}");
     let net_ids: HashSet<i32> = rows.iter().map(|r| r.net_id).collect();
     assert_eq!(net_ids.len(), 1, "both clients share one net_id");
@@ -4444,32 +4452,18 @@ async fn clients_sharing_a_net_id_each_close_their_own_row() {
     // First client expires; the network stays up for the second, so the
     // per-net_id teardown is skipped — the row must close regardless.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let mut guard = server.services().write().await;
-    apply_timeouts(
-        stack_view_mut(&mut guard),
-        server.orchestrator(),
-        TEST_STACK,
-    )
-    .await;
-    drop(guard);
+    crate::timeout::reap_ingress_timeouts(server.services(), server.orchestrator()).await;
 
-    let rows = session_rows(&db).await;
+    let rows = session_rows(&server, &db).await;
     let closed: Vec<_> = rows.iter().filter(|r| r.ended_at.is_some()).collect();
     assert_eq!(closed.len(), 1, "only the expired client's row closes");
     assert_eq!(closed[0].peer_ip, "10.0.0.1");
 
     // Second client expires; now everything is closed and nothing lingers.
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-    let mut guard = server.services().write().await;
-    apply_timeouts(
-        stack_view_mut(&mut guard),
-        server.orchestrator(),
-        TEST_STACK,
-    )
-    .await;
-    drop(guard);
+    crate::timeout::reap_ingress_timeouts(server.services(), server.orchestrator()).await;
 
-    let rows = session_rows(&db).await;
+    let rows = session_rows(&server, &db).await;
     assert_eq!(rows.len(), 2, "no extra rows appeared");
     assert!(
         rows.iter().all(|r| r.ended_at.is_some()),
@@ -4879,6 +4873,7 @@ port = 5555
     .await;
     trigger_backend_chain(&server, "source", source_ip, 5555).await;
     assert_net_ids_in_use(&server, 1).await;
+    server.orchestrator().sessions.flush().await;
     assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 1);
     let updated: ServicesToml = toml::from_str(&text.replace("5555", "6666")).unwrap();
     {
@@ -4896,10 +4891,12 @@ port = 5555
         assert!(!stack_view(&guard)["source"].triggers().contains_key(&5555));
     }
     assert_net_ids_in_use(&server, 0).await;
+    server.orchestrator().sessions.flush().await;
     assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 0);
     register_services(&server, &HashMap::from([("peer", ip(2, 2, 2, 2))]), 6666).await;
     trigger_backend_chain(&server, "source", source_ip, 6666).await;
     assert_net_ids_in_use(&server, 1).await;
+    server.orchestrator().sessions.flush().await;
     assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 1);
     let rows = db
         .sessions()
@@ -4919,6 +4916,7 @@ port = 5555
     assert_eq!(rows.len(), 2);
     report_backend_idle_and_reap(&server, "source", source_ip, 6666).await;
     assert_net_ids_in_use(&server, 0).await;
+    server.orchestrator().sessions.flush().await;
     assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 0);
 }
 

@@ -129,6 +129,7 @@ async fn main() -> Result<(), Error> {
     retention::start(app_state.db.clone(), retention::RetentionConfig::from_env());
 
     let events = app_state.events.clone();
+    let sessions = app_state.sessions.clone();
     let result = tokio::select! {
         result = server
             .add_service(
@@ -141,6 +142,7 @@ async fn main() -> Result<(), Error> {
         () = http_server::serve(app_state, certificates) => Ok(()),
         () = shutdown.notified() => Ok(()),
     };
+    sessions.shutdown().await;
     events.shutdown().await;
     result?;
 

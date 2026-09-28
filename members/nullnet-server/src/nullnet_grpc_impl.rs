@@ -668,12 +668,32 @@ impl NullnetGrpcImpl {
                 }
                 Some((max, network))
             });
+            if let Some((_, (_, client_net, server_net, net_id, _, _, setup_ms))) = &reuse {
+                let geo = client_ip.parse::<Ipv4Addr>().ok().and_then(|v4| {
+                    self.orchestrator.ensure_geo(v4);
+                    self.orchestrator.geo_get(v4)
+                });
+                self.orchestrator
+                    .sessions
+                    .open_ingress(
+                        &stack,
+                        service_name,
+                        *net_id,
+                        client_ip,
+                        &client_net.to_string(),
+                        &server_net.to_string(),
+                        proxy_ip,
+                        *setup_ms,
+                        geo,
+                    )
+                    .await;
+            }
             drop(services);
             reuse
         } else {
             None
         };
-        if let Some((max, (upstream, client_net, server_net, net_id, _, _, setup_ms))) = reused {
+        if let Some((max, (upstream, _, _, net_id, _, _, _))) = reused {
             self.orchestrator
                 .events
                 .emit(Event::max_networks_limit_enforced(
@@ -684,28 +704,6 @@ impl NullnetGrpcImpl {
                 ))
                 .await;
 
-            // Reusing a network still starts a session for *this* client: it
-            // gets its own client entry and its own teardown, so it needs its
-            // own history row. `setup_edge` — where a session is normally
-            // recorded — never runs here, because no edge is built.
-            let geo = client_ip.parse::<Ipv4Addr>().ok().and_then(|v4| {
-                self.orchestrator.ensure_geo(v4);
-                self.orchestrator.geo_get(v4)
-            });
-            self.orchestrator
-                .sessions
-                .open_ingress(
-                    &stack,
-                    service_name,
-                    net_id,
-                    client_ip,
-                    &client_net.to_string(),
-                    &server_net.to_string(),
-                    proxy_ip,
-                    setup_ms,
-                    geo,
-                )
-                .await;
             return Ok(upstream);
         }
 
@@ -2105,12 +2103,7 @@ async fn run_net_chain_setup(
         Err("NET chain setup failed").handle_err(location!())?;
     }
 
-    drop(services_mut);
-
-    if let Some(history) = backend_history {
-        orchestrator.persist_backend_session(history).await;
-    }
-
+    // Queue ingress history before a concurrent teardown can publish its close.
     // Past the unwind check, so every branch is up and these sessions are real.
     for edge in &successful {
         let (Some(ingress), Some(proxy_ip)) = (&edge.ingress, edge.client.is_proxy()) else {
@@ -2147,6 +2140,11 @@ async fn run_net_chain_setup(
                 geo,
             )
             .await;
+    }
+
+    drop(services_mut);
+    if let Some(history) = backend_history {
+        orchestrator.persist_backend_session(history).await;
     }
 
     Ok(ChainOutcome::Built(

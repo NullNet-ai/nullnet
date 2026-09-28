@@ -25,6 +25,7 @@ mod models;
 mod observations;
 mod refresh_tokens;
 mod schema;
+mod session_mutations;
 mod sessions;
 mod stacks;
 mod user_scopes;
@@ -33,6 +34,7 @@ mod users;
 pub(crate) use certs::CertRepository;
 pub(crate) use events::{EventInsert, EventRepository};
 pub(crate) use login_attempts::LoginAttemptRepository;
+pub(crate) use models::NewSessionRow;
 /// Only the session-history tests read rows back as a typed struct; production
 /// code goes through `SessionStore`, which hands out `SessionRecordJson`.
 #[cfg(test)]
@@ -40,6 +42,7 @@ pub(crate) use models::SessionRow;
 pub(crate) use models::{RouteRow, ServiceDependencyRow, ServiceRow, ServiceTriggerRow};
 pub(crate) use observations::{ObservationRepository, ObservationRow, ObservedEdge};
 pub(crate) use refresh_tokens::RefreshTokenRepository;
+pub(crate) use session_mutations::SessionMutation;
 pub(crate) use sessions::{SessionGeo, SessionRepository};
 pub(crate) use stacks::{RouteInsert, ServiceInsert, StackRepository};
 pub(crate) use user_scopes::ScopeRepository;
@@ -106,9 +109,8 @@ impl Db {
             .await
             .handle_err(location!())?;
 
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        let conn = Arc::new(Mutex::new(conn));
+        Ok(Self { conn })
     }
 
     pub(crate) fn certs(&self) -> CertRepository {
@@ -145,6 +147,21 @@ impl Db {
 
     pub(crate) fn sessions(&self) -> SessionRepository {
         SessionRepository::new(self.conn.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn set_query_only(&self, enabled: bool) {
+        use diesel_async::SimpleAsyncConnection;
+        self.conn
+            .lock()
+            .await
+            .batch_execute(if enabled {
+                "PRAGMA query_only=ON"
+            } else {
+                "PRAGMA query_only=OFF"
+            })
+            .await
+            .unwrap();
     }
 
     #[cfg(test)]

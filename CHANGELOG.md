@@ -25,6 +25,7 @@ All Nullnet releases with the relative changes are documented in this file.
 - Install BPF linker as a prebuilt binary rather than compiling it from source ([#158](https://github.com/NullNet-ai/nullnet/pull/158))
 ### Removed
 ### Fixed
+- Decouple session history writes from network setup and teardown with bounded asynchronous persistence and visible failure recovery ([#199](https://github.com/NullNet-ai/nullnet/pull/199))
 - Index open session-history lookups to avoid scanning closed sessions ([#199](https://github.com/NullNet-ai/nullnet/pull/199))
 - Route same-host egress directly with container-scoped forwarding and NAT ([#197](https://github.com/NullNet-ai/nullnet/pull/197))
 - Track container overlay addresses when deciding whether backend connections are idle ([#196](https://github.com/NullNet-ai/nullnet/pull/196))

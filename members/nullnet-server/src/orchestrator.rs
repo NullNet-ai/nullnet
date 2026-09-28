@@ -41,7 +41,7 @@ pub(crate) type BackendKey = (String, IpAddr, Option<String>, u16);
 #[derive(Debug, Clone)]
 struct BackendSession {
     generation: Uuid,
-    history_id: Option<i64>,
+    history_id: Option<Uuid>,
     building: bool,
     /// Which stack the chain lives in; the reap walks services per stack.
     stack: String,
@@ -187,6 +187,7 @@ pub struct Orchestrator {
 
 impl Orchestrator {
     pub fn new() -> Self {
+        let events = EventStore::new();
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
             proxies: Arc::new(RwLock::new(HashMap::new())),
@@ -198,8 +199,8 @@ impl Orchestrator {
             backend_sessions: Arc::new(RwLock::new(HashMap::new())),
             geo: GeoCache::from_env(),
             inflight_teardowns: Arc::new(AtomicUsize::new(0)),
-            events: EventStore::new(),
-            sessions: SessionStore::new(),
+            sessions: SessionStore::with_events(events.clone()),
+            events,
         }
     }
 
@@ -516,8 +517,8 @@ impl Orchestrator {
         active: bool,
     ) {
         let key = (initiator_ip, initiator_docker);
+        let mut edges = self.egress_edges.write().await;
         let persist = {
-            let mut edges = self.egress_edges.write().await;
             let Some(edge) = edges.get_mut(&key) else {
                 return;
             };
@@ -594,8 +595,8 @@ impl Orchestrator {
     /// only re-sends a destination whose counts changed — so without this they
     /// stay in the topology map and never reach the history at all.
     async fn persist_edge_destinations(&self, key: &EgressKey) {
+        let edges = self.egress_edges.read().await;
         let pending = {
-            let edges = self.egress_edges.read().await;
             let Some(edge) = edges.get(key).filter(|e| e.net_id != 0) else {
                 return;
             };
@@ -651,8 +652,8 @@ impl Orchestrator {
         &self,
         pred: impl Fn(&EgressKey, &EgressEdge) -> bool,
     ) -> Vec<EgressEdge> {
+        let mut edges = self.egress_edges.write().await;
         let removed: Vec<EgressEdge> = {
-            let mut edges = self.egress_edges.write().await;
             let keys: Vec<EgressKey> = edges
                 .iter()
                 .filter(|(k, e)| pred(k, e))
@@ -895,7 +896,7 @@ impl Orchestrator {
     pub(crate) async fn take_due_backend_sessions(
         &self,
         debounce: Duration,
-    ) -> Vec<(BackendKey, String, Option<i64>)> {
+    ) -> Vec<(BackendKey, String, Option<Uuid>)> {
         let now = Instant::now();
         let mut sessions = self.backend_sessions.write().await;
         let due: Vec<BackendKey> = sessions
