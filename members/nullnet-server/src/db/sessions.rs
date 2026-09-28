@@ -543,6 +543,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn open_session_lookup_does_not_scan_closed_history() {
+        use diesel::sql_types::{BigInt, Integer, Text};
+        use diesel_async::RunQueryDsl;
+
+        #[derive(diesel::QueryableByName)]
+        struct Plan {
+            #[diesel(sql_type = Text)]
+            detail: String,
+        }
+
+        let db = test_db().await;
+        let repo = db.sessions();
+        let mut conn = repo.conn.lock().await;
+        for direction in ["ingress", "egress"] {
+            let plan: Vec<Plan> = diesel::sql_query(
+                "EXPLAIN QUERY PLAN UPDATE sessions SET ended_at = ? \
+                 WHERE direction = ? AND net_id = ? AND service = ? \
+                 AND peer_ip = ? AND ended_at IS NULL",
+            )
+            .bind::<BigInt, _>(1_i64)
+            .bind::<Text, _>(direction)
+            .bind::<Integer, _>(42)
+            .bind::<Text, _>("web")
+            .bind::<Text, _>("192.0.2.1")
+            .load(&mut *conn)
+            .await
+            .unwrap();
+            assert!(plan.iter().any(|step| {
+                step.detail.contains("USING INDEX sessions_open_edge_idx")
+                    && step.detail.contains("net_id=?")
+            }));
+        }
+    }
+
+    #[tokio::test]
     async fn time_range_includes_every_intersection_and_pages_without_duplicates() {
         let db = test_db().await;
         let repo = db.sessions();
