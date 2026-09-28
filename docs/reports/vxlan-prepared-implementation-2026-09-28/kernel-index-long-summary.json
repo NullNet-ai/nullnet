@@ -1,0 +1,1 @@
+{"xfrm_del_sa": {"named_completions": 1528, "summed_duration_s": 0.02144118899999997, "p50_us": 12.043, "p95_us": 31.449, "max_us": 73.227}, "ctnetlink_del_conntrack": {"named_completions": 8927, "summed_duration_s": 29.775569089999937, "p50_us": 3309.115, "p95_us": 9206.863, "max_us": 76332.25}}

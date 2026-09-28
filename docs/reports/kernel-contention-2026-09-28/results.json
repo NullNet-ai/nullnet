@@ -1,0 +1,308 @@
+{
+  "bridge-reuse-before": {
+    "workload": {
+      "label": "bridge-reuse-before",
+      "wall_started": 1790611530.1652637,
+      "wall_finished": 1790611540.1472142,
+      "requests": 1008,
+      "concurrency": 64,
+      "elapsed_s": 9.981490171001496,
+      "requests_per_s": 100.98692507141565,
+      "ok": 1008,
+      "errors": [],
+      "latency_ms": {
+        "p50": 615.7858859987755,
+        "p95": 777.9302429989912,
+        "max": 935.5514050002967
+      }
+    },
+    "timings": {
+      "103": {
+        "setup": {
+          "count": 1008,
+          "last": 1790611540.139452,
+          "median_ms": 292
+        },
+        "teardown": {
+          "count": 1008,
+          "last": 1790611544.183305,
+          "median_ms": 6068
+        }
+      },
+      "104": {
+        "setup": {
+          "count": 1008,
+          "last": 1790611540.031048,
+          "median_ms": 108
+        },
+        "teardown": {
+          "count": 1008,
+          "last": 1790611541.313383,
+          "median_ms": 344
+        }
+      }
+    },
+    "complete_cycles_per_s": 71.9073352138831,
+    "drain": {
+      "time": 1790611548.0140285,
+      "open_sessions": 0,
+      "pool": null,
+      "graph_edges": 0
+    }
+  },
+  "bridge-direct2": {
+    "workload": {
+      "label": "bridge-direct2",
+      "wall_started": 1790611675.3847384,
+      "wall_finished": 1790611712.572115,
+      "requests": 1008,
+      "concurrency": 64,
+      "elapsed_s": 37.18716671600123,
+      "requests_per_s": 27.106125285050787,
+      "ok": 1008,
+      "errors": [],
+      "latency_ms": {
+        "p50": 1047.3330180029734,
+        "p95": 9338.140447001933,
+        "max": 10058.72545300008
+      }
+    },
+    "timings": {
+      "103": {
+        "setup": {
+          "count": 1008,
+          "last": 1790611712.569326,
+          "median_ms": 280
+        },
+        "teardown": {
+          "count": 1008,
+          "last": 1790611716.870558,
+          "median_ms": 7352
+        }
+      },
+      "104": {
+        "setup": {
+          "count": 1008,
+          "last": 1790611712.508887,
+          "median_ms": 99
+        },
+        "teardown": {
+          "count": 1008,
+          "last": 1790611715.632696,
+          "median_ms": 3496
+        }
+      }
+    },
+    "complete_cycles_per_s": 24.297458993202454,
+    "drain": {
+      "time": 1790611721.7535007,
+      "open_sessions": 0,
+      "pool": null,
+      "graph_edges": 0
+    }
+  },
+  "bridge-reuse-after": {
+    "workload": {
+      "label": "bridge-reuse-after",
+      "wall_started": 1790611798.7239878,
+      "wall_finished": 1790611814.5066001,
+      "requests": 1008,
+      "concurrency": 64,
+      "elapsed_s": 15.782298196001648,
+      "requests_per_s": 63.869025124323834,
+      "ok": 1008,
+      "errors": [],
+      "latency_ms": {
+        "p50": 975.6930100011232,
+        "p95": 1300.9699209978862,
+        "max": 1631.0251089998928
+      }
+    },
+    "timings": {
+      "103": {
+        "setup": {
+          "count": 1008,
+          "last": 1790611814.496389,
+          "median_ms": 476
+        },
+        "teardown": {
+          "count": 1008,
+          "last": 1790611820.635645,
+          "median_ms": 10674
+        }
+      },
+      "104": {
+        "setup": {
+          "count": 1008,
+          "last": 1790611814.300046,
+          "median_ms": 119
+        },
+        "teardown": {
+          "count": 1008,
+          "last": 1790611815.718004,
+          "median_ms": 243
+        }
+      }
+    },
+    "complete_cycles_per_s": 46.00291048877651,
+    "drain": {
+      "time": 1790611825.2594972,
+      "open_sessions": 0,
+      "pool": null,
+      "graph_edges": 0
+    }
+  },
+  "bridge-direct1": {
+    "workload": {
+      "label": "bridge-direct1",
+      "wall_started": 1790611619.9782343,
+      "wall_finished": 1790611651.3728428,
+      "requests": 1008,
+      "concurrency": 64,
+      "elapsed_s": 31.39442007999969,
+      "requests_per_s": 32.10761649463187,
+      "ok": 1008,
+      "errors": [],
+      "latency_ms": {
+        "p50": 1027.0604939978512,
+        "p95": 6980.510843000957,
+        "max": 8378.716344002896
+      }
+    },
+    "timings": {
+      "103": {
+        "setup": {
+          "count": 1008,
+          "last": 1790611649.164582,
+          "median_ms": 269
+        },
+        "teardown": {
+          "count": 1008,
+          "last": 1790611660.813196,
+          "median_ms": 9114
+        }
+      },
+      "104": {
+        "setup": {
+          "count": 1008,
+          "last": 1790611651.363647,
+          "median_ms": 97
+        },
+        "teardown": {
+          "count": 1008,
+          "last": 1790611655.699021,
+          "median_ms": 3645
+        }
+      }
+    },
+    "complete_cycles_per_s": 24.684729927546666,
+    "drain": {
+      "time": 1790611665.4802537,
+      "open_sessions": 0,
+      "pool": null,
+      "graph_edges": 0
+    }
+  },
+  "bridge-direct-trace": {
+    "workload": {
+      "label": "bridge-direct-trace",
+      "wall_started": 1790611730.1103754,
+      "wall_finished": 1790611744.684615,
+      "requests": 384,
+      "concurrency": 64,
+      "elapsed_s": 14.574116960000538,
+      "requests_per_s": 26.348080028032506,
+      "ok": 384,
+      "errors": [],
+      "latency_ms": {
+        "p50": 829.8667649978597,
+        "p95": 10388.330294998013,
+        "max": 10405.668641000375
+      }
+    },
+    "timings": {
+      "103": {
+        "setup": {
+          "count": 384,
+          "last": 1790611744.668556,
+          "median_ms": 267
+        },
+        "teardown": {
+          "count": 384,
+          "last": 1790611747.884896,
+          "median_ms": 10130
+        }
+      },
+      "104": {
+        "setup": {
+          "count": 384,
+          "last": 1790611737.358962,
+          "median_ms": 89
+        },
+        "teardown": {
+          "count": 384,
+          "last": 1790611746.727821,
+          "median_ms": 4793
+        }
+      }
+    },
+    "complete_cycles_per_s": 21.603958152930108,
+    "drain": {
+      "time": 1790611752.4122658,
+      "open_sessions": 0,
+      "pool": null,
+      "graph_edges": 0
+    }
+  },
+  "bridge-reuse-after2": {
+    "workload": {
+      "label": "bridge-reuse-after2",
+      "wall_started": 1790611867.5893147,
+      "wall_finished": 1790611877.4537766,
+      "requests": 1008,
+      "concurrency": 64,
+      "elapsed_s": 9.86424404599893,
+      "requests_per_s": 102.18725279904832,
+      "ok": 1008,
+      "errors": [],
+      "latency_ms": {
+        "p50": 606.2443510018056,
+        "p95": 766.1230810008419,
+        "max": 1007.632585002284
+      }
+    },
+    "timings": {
+      "103": {
+        "setup": {
+          "count": 1008,
+          "last": 1790611877.447762,
+          "median_ms": 298
+        },
+        "teardown": {
+          "count": 1008,
+          "last": 1790611881.850958,
+          "median_ms": 6651
+        }
+      },
+      "104": {
+        "setup": {
+          "count": 1008,
+          "last": 1790611877.376251,
+          "median_ms": 109
+        },
+        "teardown": {
+          "count": 1008,
+          "last": 1790611878.664972,
+          "median_ms": 395
+        }
+      }
+    },
+    "complete_cycles_per_s": 70.67909153529689,
+    "drain": {
+      "time": 1790611885.640736,
+      "open_sessions": 0,
+      "pool": null,
+      "graph_edges": 0
+    }
+  }
+}

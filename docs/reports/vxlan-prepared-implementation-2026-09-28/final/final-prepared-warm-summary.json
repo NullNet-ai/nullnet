@@ -1,0 +1,1 @@
+{"label": "final-prepared-warm", "wall_started": 1790607481.0390568, "wall_finished": 1790607481.311313, "requests": 1008, "concurrency": 64, "elapsed_s": 0.27205037599924253, "requests_per_s": 3705.1961288331636, "ok": 1008, "errors": [], "latency_ms": {"p50": 16.152186999534024, "p95": 23.07088900124654, "max": 31.530338997981744}}

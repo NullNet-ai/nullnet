@@ -1,0 +1,90 @@
+{
+  "environment_before": {
+    "103": {
+      "root_conntrack_count": 5365
+    },
+    "104": {
+      "root_conntrack_count": 5434
+    }
+  },
+  "workload": {
+    "label": "pooled-phase2",
+    "wall_started": 1790609547.5202985,
+    "wall_finished": 1790609560.047249,
+    "requests": 1008,
+    "concurrency": 64,
+    "elapsed_s": 12.5266918419984,
+    "requests_per_s": 80.46817250029777,
+    "ok": 1008,
+    "errors": [],
+    "latency_ms": {
+      "p50": 90.45289200003026,
+      "p95": 8028.733603998262,
+      "max": 10839.67747099814
+    }
+  },
+  "timing": {
+    "103": {
+      "setup": {
+        "count": 1008,
+        "last": 1790609560.04045,
+        "median_ms": 17
+      },
+      "teardown": {
+        "count": 1008,
+        "last": 1790609563.201124,
+        "median_ms": 4459
+      }
+    },
+    "104": {
+      "setup": {
+        "count": 1008,
+        "last": 1790609560.016689,
+        "median_ms": 14
+      },
+      "teardown": {
+        "count": 1008,
+        "last": 1790609561.712178,
+        "median_ms": 1544
+      }
+    }
+  },
+  "before": {
+    "rows": 18801,
+    "open": 0,
+    "interrupted": 0
+  },
+  "after": {
+    "rows": 19809,
+    "open": 0,
+    "interrupted": 0
+  },
+  "pool_before": {
+    "active": 0,
+    "capacity": 2713,
+    "destroying": 0,
+    "idle": 2713,
+    "preparing": 0,
+    "reserve": 2713,
+    "reserved": 2713,
+    "resetting": 0,
+    "unavailable": 0
+  },
+  "drain": {
+    "time": 1790609567.8216982,
+    "open_sessions": 0,
+    "pool": {
+      "active": 0,
+      "capacity": 2713,
+      "destroying": 0,
+      "idle": 2713,
+      "preparing": 0,
+      "reserve": 2713,
+      "reserved": 2713,
+      "resetting": 0,
+      "unavailable": 0
+    },
+    "graph_edges": 0
+  },
+  "cycles_per_s": 64.28233014950293
+}

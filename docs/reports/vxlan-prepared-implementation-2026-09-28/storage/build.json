@@ -1,0 +1,9 @@
+{
+  "status": "full CI passed; E2E pending",
+  "server_sha256": "c3d6289b114a899cdecc1058ca91feba3dae9ced6ebc7417cf51606a739b720e",
+  "client_sha256": "54e64e2d9f72e4d559cceed6e12473fa2c3264f9f8fed9b5c2ee44cb775cf916",
+  "prepared_source_sha256": "70c466c31791ef1abaf75097faf9d5f372c7d80926eb78a6cc5c7d99d426f436",
+  "on_demand_source_sha256": "b1bc2db1d112a390ef8b445a4c491c2e370845a5b5bc3bb47ac3f151847368e3",
+  "snapshot_sessions": 34108,
+  "snapshot_open_sessions": 0
+}

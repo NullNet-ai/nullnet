@@ -1,0 +1,24 @@
+strace: Process 350604 attached with 12 threads
+strace: Process 361835 attached
+strace: Process 361932 attached
+strace: Process 350620 detached
+strace: Process 361932 detached
+strace: Process 350619 detached
+strace: Process 361835 detached
+strace: Process 350618 detached
+strace: Process 350617 detached
+strace: Process 350615 detached
+strace: Process 350614 detached
+strace: Process 350613 detached
+strace: Process 350612 detached
+strace: Process 350611 detached
+strace: Process 350604 detached
+strace: Process 350623 detached
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 94.41    9.476274        7949      1192           fsync
+  3.91    0.392166          20     19225           pwrite64
+  1.57    0.158027          22      7062           fcntl
+  0.11    0.011157          13       832           pread64
+------ ----------- ----------- --------- --------- ----------------
+100.00   10.037623         354     28311           total

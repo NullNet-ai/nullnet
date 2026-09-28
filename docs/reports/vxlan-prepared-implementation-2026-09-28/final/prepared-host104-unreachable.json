@@ -1,0 +1,17 @@
+{
+  "prepared_workload_started": false,
+  "last_verified_pool": {
+    "idle": 2713,
+    "reserved": 2713,
+    "capacity": 2713,
+    "active": 0,
+    "unavailable": 0
+  },
+  "ingress_slots_per_service": 64,
+  "ssh_104_from_mac": "connection timed out",
+  "ping_104_from_103": "Destination Host Unreachable",
+  "arp_104_on_103": "INCOMPLETE",
+  "host103_reachable": true,
+  "cause": "unconfirmed; console access required",
+  "prepared_comparison": "not measured"
+}

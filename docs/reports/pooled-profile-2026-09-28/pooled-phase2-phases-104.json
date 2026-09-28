@@ -1,0 +1,166 @@
+{
+  "malformed_lines": 0,
+  "stages": {
+    "setup_admission.id_lock": {
+      "count": 994,
+      "sum_s": 0.003425,
+      "mean_ms": 0.003445674044265594,
+      "p50_ms": 0.0,
+      "p95_ms": 0.002,
+      "max_ms": 1.346
+    },
+    "setup_admission.lifecycle_slot": {
+      "count": 994,
+      "sum_s": 82.032096,
+      "mean_ms": 82.52725955734407,
+      "p50_ms": 0.0,
+      "p95_ms": 720.193,
+      "max_ms": 3159.029
+    },
+    "teardown_admission.id_lock": {
+      "count": 1008,
+      "sum_s": 0.000868,
+      "mean_ms": 0.0008611111111111112,
+      "p50_ms": 0.0,
+      "p95_ms": 0.002,
+      "max_ms": 0.122
+    },
+    "teardown_admission.lifecycle_slot": {
+      "count": 1008,
+      "sum_s": 1433.966116,
+      "mean_ms": 1422.5854325396826,
+      "p50_ms": 1388.834,
+      "p95_ms": 3151.879,
+      "max_ms": 3270.573
+    },
+    "reset_links.blocking_wait": {
+      "count": 1008,
+      "sum_s": 0.884262,
+      "mean_ms": 0.8772440476190476,
+      "p50_ms": 0.054,
+      "p95_ms": 4.755,
+      "max_ms": 26.494
+    },
+    "reset_links.io_lock": {
+      "count": 1008,
+      "sum_s": 1.7e-05,
+      "mean_ms": 1.6865079365079364e-05,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "max_ms": 0.004
+    },
+    "reset_links.transport_down": {
+      "count": 1008,
+      "sum_s": 24.605666,
+      "mean_ms": 24.410382936507936,
+      "p50_ms": 28.889,
+      "p95_ms": 57.878,
+      "max_ms": 96.293
+    },
+    "reset_links.bridge_down": {
+      "count": 1008,
+      "sum_s": 23.176265,
+      "mean_ms": 22.99232638888889,
+      "p50_ms": 23.165,
+      "p95_ms": 57.871,
+      "max_ms": 94.629
+    },
+    "reset_links.forwarding_detach": {
+      "count": 1008,
+      "sum_s": 22.936227,
+      "mean_ms": 22.754193452380953,
+      "p50_ms": 23.538,
+      "p95_ms": 57.053,
+      "max_ms": 96.804
+    },
+    "conntrack.dump": {
+      "count": 1008,
+      "sum_s": 27.458303,
+      "mean_ms": 27.24037996031746,
+      "p50_ms": 25.51,
+      "p95_ms": 40.868,
+      "max_ms": 66.121
+    },
+    "conntrack.filter_delete": {
+      "count": 1008,
+      "sum_s": 1.998257,
+      "mean_ms": 1.9823978174603174,
+      "p50_ms": 1.691,
+      "p95_ms": 4.609,
+      "max_ms": 14.675
+    },
+    "reset_tail.blocking_wait": {
+      "count": 1008,
+      "sum_s": 0.662353,
+      "mean_ms": 0.6570962301587301,
+      "p50_ms": 0.017,
+      "p95_ms": 4.212,
+      "max_ms": 24.59
+    },
+    "reset_tail.io_lock": {
+      "count": 1008,
+      "sum_s": 4e-06,
+      "mean_ms": 3.968253968253968e-06,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "max_ms": 0.002
+    },
+    "reset_tail.root_conntrack": {
+      "count": 1008,
+      "sum_s": 29.501128,
+      "mean_ms": 29.266992063492065,
+      "p50_ms": 27.6,
+      "p95_ms": 43.591,
+      "max_ms": 67.677
+    },
+    "reset_tail.root_neighbors": {
+      "count": 1008,
+      "sum_s": 0.073782,
+      "mean_ms": 0.07319642857142857,
+      "p50_ms": 0.052,
+      "p95_ms": 0.134,
+      "max_ms": 3.118
+    },
+    "reset_tail.root_addresses": {
+      "count": 1008,
+      "sum_s": 40.933743,
+      "mean_ms": 40.608872023809525,
+      "p50_ms": 38.372,
+      "p95_ms": 101.057,
+      "max_ms": 169.991
+    },
+    "reset_tail.root_verify": {
+      "count": 1008,
+      "sum_s": 27.663073,
+      "mean_ms": 27.4435248015873,
+      "p50_ms": 23.967,
+      "p95_ms": 87.325,
+      "max_ms": 124.286
+    },
+    "reset.links_phase": {
+      "count": 1008,
+      "sum_s": 71.959008,
+      "mean_ms": 71.38790476190476,
+      "p50_ms": 75.195,
+      "p95_ms": 128.783,
+      "max_ms": 180.299
+    },
+    "reset.keys": {
+      "count": 1008,
+      "sum_s": 1.111076,
+      "mean_ms": 1.1022579365079366,
+      "p50_ms": 0.194,
+      "p95_ms": 5.142,
+      "max_ms": 25.723
+    },
+    "reset.tail_phase": {
+      "count": 1008,
+      "sum_s": 99.37345,
+      "mean_ms": 98.58477182539681,
+      "p50_ms": 98.664,
+      "p95_ms": 190.567,
+      "max_ms": 268.07
+    }
+  },
+  "batches": {}
+}

@@ -1,0 +1,571 @@
+   Compiling nullnet-grpc-lib v0.1.0 (/root/nullnet-prepared-20260928/members/nullnet-grpc-lib)
+    Finished `dev` profile [unoptimized] target(s) in 0.81s
+   Compiling nullnet-grpc-lib v0.1.0 (/root/nullnet-prepared-20260928/members/nullnet-grpc-lib)
+    Finished `dev` profile [unoptimized] target(s) in 0.93s
+   Compiling nullnet-grpc-lib v0.1.0 (/root/nullnet-prepared-20260928/members/nullnet-grpc-lib)
+    Finished `test` profile [unoptimized] target(s) in 0.87s
+     Running unittests src/lib.rs (target/debug/deps/nullnet_grpc_lib-65b9c0a3b039d94b)
+
+running 2 tests
+test admission_tests::clones_share_admission_and_cancellation_releases_capacity ... ok
+test admission_tests::liveness_progresses_when_setup_admission_is_full ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests nullnet_grpc_lib
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling nullnet-server v0.1.0 (/root/nullnet-prepared-20260928/members/nullnet-server)
+    Finished `dev` profile [unoptimized] target(s) in 17.37s
+   Compiling nullnet-server v0.1.0 (/root/nullnet-prepared-20260928/members/nullnet-server)
+    Finished `dev` profile [unoptimized] target(s) in 10.87s
+   Compiling nullnet-server v0.1.0 (/root/nullnet-prepared-20260928/members/nullnet-server)
+warning: unused `axum::Json` that must be used
+   --> members/nullnet-server/src/http_server/observation.rs:538:9
+    |
+538 | /         stop_handler(
+539 | |             admin(),
+540 | |             Path(("mesh".into(), started.id)),
+541 | |             State(state.clone()),
+542 | |         )
+543 | |         .await
+544 | |         .unwrap();
+    | |_________________^
+    |
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+538 |         let _ = stop_handler(
+    |         +++++++
+
+warning: unused `axum::Json` that must be used
+   --> members/nullnet-server/src/http_server/observation.rs:665:9
+    |
+665 | /         start_handler(admin(), Path("mesh".into()), State(state.clone()))
+666 | |             .await
+667 | |             .unwrap();
+    | |_____________________^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+665 |         let _ = start_handler(admin(), Path("mesh".into()), State(state.clone()))
+    |         +++++++
+
+warning: `nullnet-server` (bin "nullnet-server" test) generated 2 warnings
+    Finished `test` profile [unoptimized] target(s) in 16.64s
+     Running unittests src/main.rs (target/debug/deps/nullnet_server-04fa542d21a4ec29)
+
+running 276 tests
+test auth::jwt::tests::garbage_token_is_rejected ... ok
+test auth::jwt::tests::access_token_rejected_as_mfa_pending_token ... ok
+test auth::jwt::tests::access_token_round_trip ... ok
+test auth::jwt::tests::mfa_pending_token_rejected_as_access_token ... ok
+test auth::jwt::tests::mfa_pending_token_round_trip ... ok
+test auth::mfa_crypto::tests::round_trip ... ok
+test auth::session::tests::hash_is_deterministic_and_not_the_raw_value ... ok
+test auth::session::tests::different_tokens_hash_differently ... ok
+test auth::session::tests::tokens_are_unique ... ok
+test auth::tests::role_round_trips ... ok
+test auth::tests::scope_round_trips ... ok
+test auth::totp::tests::generated_secret_is_usable ... ok
+test auth::totp::tests::provisioning_uri_contains_issuer_and_account ... ok
+test cert::authority::tests::record_name_exact_and_wildcard ... ok
+test auth::totp::tests::wrong_code_is_rejected ... ok
+test auth::totp::tests::current_code_verifies ... ok
+test cert::tests::renamed_provider_tags_match ... ok
+test cert::tests::optional_fields_may_be_omitted ... ok
+test cert::tests::unknown_provider_is_rejected ... ok
+test cert::tests::serialize_round_trips_for_storage ... ok
+test crypto::tests::nonce_randomizes_ciphertext ... ok
+test crypto::tests::round_trip ... ok
+test crypto::tests::wrong_key_fails ... ok
+test cert::tests::cloudflare_round_trip ... ok
+test auth::bootstrap::tests::is_idempotent_once_a_user_exists ... ok
+test auth::bootstrap::tests::does_nothing_if_bootstrap_args_absent ... ok
+test db::events::tests::a_failed_batch_rolls_back_every_row ... ok
+test db::certs::tests::dns_credentials_round_trip ... ok
+test db::certs::tests::put_get_list_delete_round_trip ... ok
+test db::events::tests::delete_older_than_prunes_only_stale_rows ... ok
+test db::events::tests::event_enqueue_does_not_wait_for_storage_and_shutdown_drains ... ok
+test db::events::tests::pagination_cursor_walks_backwards_through_pages ... ok
+test db::events::tests::insert_and_query_round_trip ... ok
+test db::login_attempts::tests::clear_resets_counter ... ok
+test db::login_attempts::tests::locks_out_after_threshold ... ok
+test db::refresh_tokens::tests::deleting_user_cascades_tokens ... ok
+test db::refresh_tokens::tests::expired_token_is_not_active ... ok
+test db::refresh_tokens::tests::insert_find_revoke ... ok
+test db::refresh_tokens::tests::revoke_all_for_user ... ok
+test db::refresh_tokens::tests::rotate_revokes_old_and_creates_new ... ok
+test db::sessions::tests::a_recycled_net_id_starts_a_new_row_beside_the_closed_one ... ok
+test db::sessions::tests::a_second_open_row_for_the_same_session_is_rejected ... ok
+test db::sessions::tests::active_counts_group_directions_and_exclude_other_stacks_and_closed_rows ... ok
+test db::sessions::tests::blocked_filter_splits_denied_from_allowed ... ok
+test db::sessions::tests::blocked_ingress_folds_into_its_burst_row ... ok
+test db::sessions::tests::clients_sharing_a_net_id_are_separate_sessions ... ok
+test db::sessions::tests::busiest_services_rank_only_active_rows_in_the_stack ... ok
+test db::sessions::tests::close_all_open_leaves_already_closed_rows_alone ... ok
+test db::sessions::tests::close_egress_edge_closes_every_destination_of_that_edge ... ok
+test db::sessions::tests::open_close_and_filter_round_trip ... ok
+test db::sessions::tests::open_session_lookup_does_not_scan_closed_history ... ok
+test db::sessions::tests::pagination_cursor_walks_backwards_through_pages ... ok
+test db::sessions::tests::open_ingress_keys_sees_past_a_page_of_newer_history ... ok
+test db::sessions::tests::policy_counts_follow_backfill_policy_changes_rollback_and_retention ... ok
+test db::sessions::tests::retention_prunes_ended_rows_only ... ok
+test db::sessions::tests::policy_counts_include_closed_rows_but_exclude_backends_and_other_stacks ... ok
+test db::sessions::tests::touch_updates_open_row_and_fills_geo_once ... ok
+test db::sessions::tests::time_range_includes_every_intersection_and_pages_without_duplicates ... ok
+test db::stacks::tests::delete_cascades_services_triggers_dependencies_and_routes ... ok
+test db::stacks::tests::failed_import_rolls_back_services_and_routes_together ... ok
+test db::stacks::tests::failed_service_replace_preserves_previous_configuration ... ok
+test db::stacks::tests::put_routes_round_trips_and_replaces ... ok
+test auth::bootstrap::tests::creates_admin_when_bootstrap_args_set ... ok
+test db::stacks::tests::put_services_creates_the_stack_row_for_a_new_name ... ok
+test db::stacks::tests::put_services_replaces_the_full_list ... ok
+test db::stacks::tests::put_services_round_trips_service_triggers_and_dependencies ... ok
+test db::tests::open_runs_migrations_and_is_reusable ... ok
+test db::user_scopes::tests::deleting_user_cascades_scopes ... ok
+test db::user_scopes::tests::set_and_read_scopes ... ok
+test db::users::tests::create_get_list_delete_round_trip ... ok
+test http_server::certificates::tests::accepts_exact_and_wildcard ... ok
+test http_server::certificates::tests::rejects_traversal_and_junk ... ok
+test db::users::tests::mfa_lifecycle ... ok
+test db::users::tests::partial_update_only_touches_given_fields ... ok
+test http_server::observation::tests::concurrent_starts_are_serialized_and_stale_results_cannot_overwrite_edits ... ok
+test http_server::observation::tests::active_observation_rejects_every_config_write_path_and_unauthorized_start ... ok
+test http_server::observation::tests::conflicting_destinations_cannot_activate_and_leave_no_observation ... ok
+test http_server::tls::tests::bootstrap_renewal_failure_retention_and_recovery ... ok
+test http_server::tls::tests::selection_prefers_exact_and_limits_wildcard_to_one_label ... ok
+test http_server::tls::tests::validates_actual_san_and_dates_not_store_label ... ok
+test net::tests::vlan_setup_client_and_server_addresses_differ ... ok
+test net::tests::vxlan_setup_client_and_server_addresses_differ ... ok
+test net_id_pool::tests::test_allocate_sequential_net_ids ... ok
+test net_id_pool::tests::test_double_free_does_not_duplicate_net_id ... ok
+test net_id_pool::tests::test_free_ignores_out_of_range_net_ids ... ok
+test net_id_pool::tests::test_freed_id_is_not_immediately_reallocated ... ok
+test net_id_pool::tests::test_generate_key_is_random_and_full_length ... ok
+test net_id_pool::tests::test_net_ids_exhaustion ... ok
+test net_id_pool::tests::test_reuse_freed_net_ids_oldest_first ... ok
+test nullnet_grpc_impl::host_pin_tests::listen_ports_are_allowed_only_on_proxy_and_keep_explicit_ports ... ok
+test nullnet_grpc_impl::host_pin_tests::pausable_report_recovers_paused_container_after_restart ... ok
+test http_server::observation::tests::counters_seed_open_sessions_survive_retention_and_freeze_on_stop ... ok
+test nullnet_grpc_impl::http_route_bundle_tests::backend_only_and_non_http_services_get_no_implicit_route ... ok
+test nullnet_grpc_impl::http_route_bundle_tests::declares_no_routes_falls_back_to_implicit_host_route ... ok
+test nullnet_grpc_impl::http_route_bundle_tests::explicit_route_for_a_host_suppresses_its_implicit_fallback ... ok
+test nullnet_grpc_impl::http_route_bundle_tests::old_config_with_no_route_blocks_is_unaffected ... ok
+test nullnet_grpc_impl::http_route_bundle_tests::redirect_route_converts_to_wire_redirect ... ok
+test nullnet_grpc_impl::host_pin_tests::ssh_host_pins_separate_identical_listeners ... ok
+test orchestrator::egress_liveness_tests::a_built_idle_edge_is_due_and_gets_reaped ... ok
+test orchestrator::egress_liveness_tests::a_half_built_edge_does_not_drive_the_sleep_to_zero ... ok
+test orchestrator::egress_liveness_tests::a_stale_egress_reservation_is_reclaimed_but_a_fresh_one_is_not ... ok
+test nullnet_grpc_impl::proxy_presence_tests::idle_proxy_presence_survives_overlapping_streams ... ok
+test http_server::observation::tests::lifecycle_keeps_saved_config_and_proxy_deps_and_applies_only_observed_backends ... ok
+test orchestrator::prepared_pool::tests::disconnected_or_stale_retirement_never_releases_a_slot ... ok
+test orchestrator::prepared_pool::tests::queued_cleanup_cannot_claim_a_reused_id_or_a_new_lease ... ok
+test auth::password::tests::same_password_hashes_differently ... ok
+test orchestrator::prepared_pool::tests::status_excludes_idle_slots_from_disconnected_or_replaced_channels ... ok
+test orchestrator::egress_liveness_tests::trigger_atomic_failed_egress_build_cannot_remove_replacement ... ok
+test orchestrator::egress_liveness_tests::trigger_atomic_old_egress_build_cannot_promote_replacement ... ok
+test orchestrator::prepared_pool::tests::restart_reserves_catalog_ids_without_advertising_them_as_idle ... ok
+test orchestrator::session_history_tests::a_denied_destination_folds_into_one_already_ended_row ... ok
+test orchestrator::session_history_tests::a_dead_container_closes_its_destination_rows ... ok
+test orchestrator::session_history_tests::a_destination_ends_while_the_edge_keeps_carrying_the_others ... ok
+test orchestrator::session_history_tests::a_node_teardown_closes_that_nodes_destination_rows ... ok
+test orchestrator::session_history_tests::backend_history_late_open_cannot_overwrite_replacement ... ok
+test orchestrator::session_history_tests::backend_history_tracks_independent_chains_and_generations ... ok
+test orchestrator::session_history_tests::backend_history_wait_does_not_block_liveness ... ok
+test orchestrator::session_history_tests::cancelled_backend_build_never_opens_history ... ok
+test orchestrator::session_history_tests::destinations_get_one_row_each_and_close_together_on_reap ... ok
+test orchestrator::session_history_tests::destinations_seen_during_a_reservation_are_written_at_promotion ... ok
+test orchestrator::session_history_tests::backend_history_close_wait_does_not_block_other_generations ... ok
+test orchestrator::teardown_ack_tests::teardown_to_absent_endpoints_frees_immediately ... ok
+test orchestrator::teardown_ack_tests::a_closed_connection_releases_its_pending_teardown ... ok
+test services::firewall::tests::allow_requires_all_conditions_in_a_group ... ok
+test services::firewall::tests::block_matches_any_group_denies ... ok
+test services::firewall::tests::dst_ip_cidr_containment ... ok
+test services::firewall::tests::validate_rejects_wrong_direction_field ... ok
+test services::firewall::tests::validate_uppercases_country_values ... ok
+test services::input::tests::backends_resolve_declared_peer_ports_and_reject_ambiguity ... ok
+test services::input::tests::declared_service_without_timeout_is_unreachable_but_keeps_triggers ... ok
+test services::input::tests::detect_name_conflicts_allows_distinct_names ... ok
+test services::input::tests::detect_name_conflicts_flags_cross_stack_collision ... ok
+test services::input::tests::detect_name_conflicts_flags_dependency_placeholder ... ok
+test services::input::tests::detect_port_conflicts_allows_same_port_different_protocol ... ok
+test services::input::tests::detect_port_conflicts_flags_cross_stack_collision ... ok
+test services::input::tests::detect_route_conflicts_allows_same_host_different_paths ... ok
+test services::input::tests::detect_route_conflicts_flags_cross_stack_collision ... ok
+test services::input::tests::export_toml_is_none_for_a_stack_that_does_not_exist ... ok
+test auth::password::tests::round_trip ... ok
+test services::input::tests::http_protocol_with_listen_port_is_rejected ... ok
+test services::input::tests::http_service_defaults_with_no_listen_port ... ok
+test services::input::tests::loads_each_toml_as_its_own_stack ... ok
+test services::input::tests::export_toml_round_trips_through_validate_stack_toml ... ok
+test orchestrator::teardown_ack_tests::acked_teardown_returns_the_net_id ... ok
+test services::input::tests::parses_explicit_and_implicit_services ... ok
+test services::input::tests::parses_parallel_proxy_branches ... ok
+test services::input::tests::pausable_defaults_off_and_requires_docker ... ok
+test services::input::tests::preserve_path_on_a_service_route_is_rejected ... ok
+test services::input::tests::preserve_query_on_a_service_route_is_rejected ... ok
+test services::input::tests::redirect_route_defaults_status_to_301 ... ok
+test services::input::tests::redirect_route_with_preserve_flags_parses ... ok
+test services::input::tests::route_entry_row_conversion_round_trips_both_target_kinds ... ok
+test services::input::tests::redirect_route_with_unsupported_status_is_rejected ... ok
+test services::input::tests::route_path_defaults_to_slash ... ok
+test services::input::tests::route_targeting_a_declared_http_service_parses ... ok
+test services::input::tests::route_targeting_non_entry_point_service_is_rejected ... ok
+test services::input::tests::route_targeting_tcp_service_is_rejected ... ok
+test services::input::tests::route_targeting_undeclared_service_is_rejected ... ok
+test services::input::tests::route_with_both_service_and_redirect_is_rejected ... ok
+test services::input::tests::route_with_neither_service_nor_redirect_is_rejected ... ok
+test services::input::tests::service_row_conversion_round_trips_every_field ... ok
+test services::input::tests::stack_with_no_route_blocks_parses_with_empty_routes ... ok
+test services::input::tests::strip_prefix_on_a_redirect_route_is_rejected ... ok
+test services::input::tests::strip_prefix_route_parses_and_forwards_correctly ... ok
+test services::input::tests::tcp_protocol_without_listen_port_is_rejected ... ok
+test services::input::tests::tcp_udp_services_parse_with_listen_port ... ok
+test services::input::tests::multi_group_filter_round_trips_through_toml_export_import ... ok
+test orchestrator::teardown_ack_tests::unacked_teardown_withholds_the_net_id ... ok
+test sessions::persistence::tests::blocked_storage_never_blocks_lifecycle_and_preserves_reuse_order ... ok
+test sessions::persistence::tests::delayed_backend_close_cannot_close_a_replacement_generation ... ok
+test services::service_info::resume_tests::resume_survives_a_dropped_waiter_and_preserves_replacement_state ... ok
+test services::service_info::resume_tests::failed_resume_stays_paused_and_can_retry ... ok
+test sessions::tests::denials_from_one_peer_fold_into_a_single_ended_row ... ok
+test sessions::tests::ingress_history_keeps_proxy_after_session_ends ... ok
+test tests::a_bailed_setup_records_no_hold ... ok
+test tests::a_close_without_a_held_refcount_decrements_nothing ... ok
+test db::events::tests::event_writer_retries_without_losing_events_and_reports_recovery ... ok
+test tests::a_replica_lost_mid_setup_does_not_strand_its_tunnel ... ok
+test tests::a_second_reap_pass_releases_nothing_more ... ok
+test db::events::tests::unavailable_event_storage_does_not_block_producers ... ok
+test sessions::persistence::tests::overflow_is_bounded_and_cannot_leave_stale_rows_for_reused_ids ... ok
+test tests::an_edge_torn_down_mid_setup_is_not_stranded ... ok
+test tests::backend_multi_replica_disconnect_standalone_dep ... ok
+test tests::backend_multi_replica_disconnect_swarm_host ... ok
+test tests::backend_node_disconnected_backend_dep_host ... ok
+test tests::backend_node_disconnected_initiator_host ... ok
+test tests::backend_node_disconnected_proxy_host ... ok
+test tests::backend_packets_are_released_only_after_both_setup_acks ... ok
+test tests::backend_peer_does_not_expand_its_dependencies ... ok
+test tests::backend_pending_history_allows_teardown_and_replacement ... ok
+test tests::backend_reachability_changed_lose_entry_point_A ... ok
+test tests::backend_reap_history_wait_releases_topology ... ok
+test tests::backend_service_unregistered_drop_B ... ok
+test tests::backend_service_unregistered_drop_C ... ok
+test tests::backend_service_unregistered_drop_a2 ... ok
+test tests::backend_services_follow_pause_checkbox ... ok
+test sessions::persistence::tests::failed_storage_retries_without_blocking_networking ... ok
+test tests::backend_trigger_unknown_container_errors_without_ip_fallback ... ok
+test tests::backend_trigger_disambiguates_colocated_replica_by_container ... ok
+test tests::bare_process_service_ships_no_trigger ... ok
+test tests::backend_trigger_without_container_falls_back_to_ip_only ... ok
+test tests::chains_sharing_a_hop_agree_on_the_replica_after_it ... ok
+test tests::changing_backend_peer_port_releases_and_rebuilds_the_session ... ok
+test tests::an_ingress_session_opens_and_closes_a_row ... ok
+test tests::dep_changed_add_E_to_A ... ok
+test tests::dep_changed_drop_C_from_A ... ok
+test tests::dep_changed_drop_all_from_D ... ok
+test tests::dep_changed_swap_C_for_E ... ok
+test tests::docker_replica_suspended_on_registration ... ok
+test tests::concurrent_requests_same_client_tear_down_cleanly ... ok
+test tests::max_networks_balances_shared_networks_under_concurrent_requests ... ok
+test tests::max_networks_different_proxy_bypasses ... ok
+test tests::max_networks_proxy_disconnect ... ok
+test tests::mass_expiry_allows_reads_between_client_teardowns ... ok
+test tests::multi_replica_b_different_ip_disconnect ... ok
+test tests::multi_replica_b_same_ip_container_disconnect ... ok
+test tests::multi_replica_comprehensive_register ... ok
+test tests::multi_replica_first_step_container_disconnect ... ok
+test tests::multi_replica_full_disconnect ... ok
+test tests::multi_replica_least_clients ... ok
+test tests::multi_replica_partial_disconnect ... ok
+test tests::multi_replica_register ... ok
+test tests::multi_replica_single_container_removed ... ok
+test tests::multi_replica_sticky_session ... ok
+test tests::multi_replica_via_services_list ... ok
+test tests::node_disconnected_A_B ... ok
+test tests::node_disconnected_C ... ok
+test tests::node_disconnected_D ... ok
+test tests::node_disconnected_proxy1 ... ok
+test tests::node_hosting_no_trigger_service_gets_nothing ... ok
+test tests::autonomous_trigger_chain_is_never_reaped_on_idle ... ok
+test tests::pausable_backend_source_resumes_and_stays_running_while_held ... ok
+test tests::pausable_defaults_off_and_live_toggle_resumes ... ok
+test tests::pausable_shared_container_does_not_pause_during_alias_resume ... ok
+test tests::pausable_shared_container_requires_all_declarations_to_opt_in ... ok
+test tests::pausable_survives_last_replica_disappearing ... ok
+test tests::pausable_unacknowledged_policy_resume_does_not_lock_services ... ok
+test tests::pausable_unacknowledged_trigger_resume_does_not_lock_services ... ok
+test tests::proxy_branches_remove_A_tears_down_both ... ok
+test tests::proxy_branches_setup_fans_out ... ok
+test tests::proxy_request_resumes_suspended_replica ... ok
+test db::events::tests::event_shutdown_is_bounded_during_persistent_failure ... ok
+test tests::clients_sharing_a_net_id_each_close_their_own_row ... ok
+test tests::proxy_timeout_A ... ok
+test tests::open_connection_pins_client_past_timeout ... ok
+test tests::max_networks_reuse_lifecycle ... ok
+test tests::reachability_changed_unreachable_B ... ok
+test tests::reachability_changed_unreachable_D ... ok
+test tests::service_removed_remove_A ... ok
+test tests::service_removed_remove_B ... ok
+test tests::service_unregistered_drop_A ... ok
+test tests::service_unregistered_drop_B ... ok
+test tests::service_unregistered_drop_C ... ok
+test tests::service_unregistered_drop_D ... ok
+test tests::stale_session_broken_chain_is_evicted_and_rebuilt ... ok
+test tests::stale_session_intact_chain_is_reused ... ok
+test tests::teardown_must_not_fire_for_an_unallocated_net_id ... ok
+test tests::trigger_atomic_backend_idle_during_setup_is_preserved ... ok
+test tests::trigger_atomic_backend_owner_removed_during_setup_unwinds ... ok
+test tests::trigger_atomic_concurrent_backend_claims_release_once ... ok
+test tests::trigger_carries_the_containers_that_own_it ... ok
+test tests::proxy_timeout_config_remove_timeout_A ... ok
+test tests::trigger_lists_every_colocated_replica ... ok
+test tests::trigger_chain_is_released_once_its_connections_close ... ok
+test tests::triggers_changed_add_A_trigger ... ok
+test tests::triggers_changed_drop_D_trigger ... ok
+test tests::triggers_changed_remove_A_trigger ... ok
+test tests::triggers_changed_swap_A_trigger ... ok
+test tests::proxy_timeout_config_tighten_B ... ok
+test tests::unmatched_close_does_not_underflow ... ok
+test timeout::tests::stale_expiry_candidates_preserve_renewed_connections_and_grace ... ok
+test tests::proxy_timeout_A_then_B ... ok
+test tests::proxy_timeout_all_at_once ... ok
+test orchestrator::teardown_ack_tests::a_late_teardown_ack_keeps_the_id_reserved_until_completion ... ok
+test tests::a_failed_edge_rollback_keeps_a_concurrent_holder has been running for over 60 seconds
+test tests::an_abandoned_reservation_is_not_reused_by_the_next_chain has been running for over 60 seconds
+test tests::an_abandoned_reservation_is_not_reused_by_the_next_chain ... ok
+test tests::a_failed_edge_rollback_keeps_a_concurrent_holder ... ok
+
+test result: ok. 276 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 61.19s
+
+    Finished `dev` profile [unoptimized] target(s) in 0.26s
+    Finished `dev` profile [unoptimized] target(s) in 0.21s
+    Finished `test` profile [unoptimized] target(s) in 0.17s
+     Running unittests src/main.rs (target/debug/deps/nullnet_proxy-2dee3d431bbc7bd6)
+
+running 38 tests
+test hsts::tests::removes_backend_policy_on_http_or_when_disabled ... ok
+test routes::tests::no_catch_all_yields_not_found ... ok
+test routes::tests::preserving_redirect_carries_suffix_and_flags ... ok
+test routes::tests::longest_prefix_wins ... ok
+test routes::tests::strip_prefix_on_exact_match_forwards_root ... ok
+test hsts::tests::replaces_backend_policy_on_https_success_redirect_and_error ... ok
+test routes::tests::strip_prefix_on_catch_all_keeps_leading_slash ... ok
+test routes::tests::strip_prefix_removes_matched_prefix_from_forward_path ... ok
+test routes::tests::unknown_host_falls_back ... ok
+test tests::forwarded_host_absent_when_ingress_host_unknown ... ok
+test tests::forwarded_proto_is_http_when_not_tls ... ok
+test tests::redirect_includes_non_default_https_port ... ok
+test tests::forwarded_headers_are_set_from_ingress_connection ... ok
+test tests::forwarded_headers_overwrite_client_supplied_values ... ok
+test routes::tests::redirect_target_resolves ... ok
+test tests::redirect_preserves_path_and_query ... ok
+test tests::redirect_strips_port_and_targets_443 ... ok
+test tests::redirect_target_preserve_path_appends_matched_suffix ... ok
+test tests::redirect_target_preserve_path_and_query_together ... ok
+test tests::redirect_target_preserve_path_no_op_on_exact_match ... ok
+test tests::redirect_target_preserve_query_merges_with_configured_query ... ok
+test tests::redirect_target_relative_path_uses_request_host_and_scheme ... ok
+test tests::redirect_target_absolute_url_used_verbatim_by_default ... ok
+test tests::redirect_with_missing_host_yields_empty_authority ... ok
+test tests::rewrite_uri_path_preserves_query_string ... ok
+test tests::redirect_target_preserve_query_absent_when_request_has_none ... ok
+test tests::rewrite_uri_path_without_query ... ok
+test tests::redirect_target_preserve_query_appends_request_query ... ok
+test tls::tests::name_matches_exact_and_case_insensitive ... ok
+test tls::tests::name_matches_wildcard_single_label_only ... ok
+test tls::tests::wildcard_cert_covers_subdomain_but_not_apex ... ok
+test tls::tests::store_get_resolves_wildcard ... ok
+test tls::tests::rejects_not_yet_valid_cert ... ok
+test tls::tests::accepts_valid_exact_cert ... ok
+test tls::tests::rejects_domain_mismatch ... ok
+test tls::tests::rejects_expired_cert ... ok
+test tls::tests::from_bundle_splits_valid_and_invalid ... ok
+test tls::tests::rejects_key_mismatch ... ok
+
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+
+> ui@0.0.0 test
+> node --test tests/*.test.mjs
+
+TAP version 13
+# (node:415098) ExperimentalWarning: The MockTimers API is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: slow requests complete before another poll starts
+ok 1 - slow requests complete before another poll starts
+  ---
+  duration_ms: 2.260087
+  ...
+# Subtest: stopping cancels an in-flight request and prevents another poll
+ok 2 - stopping cancels an in-flight request and prevents another poll
+  ---
+  duration_ms: 0.33496
+  ...
+# Subtest: stopping cancels a scheduled poll
+ok 3 - stopping cancels a scheduled poll
+  ---
+  duration_ms: 0.233733
+  ...
+# Subtest: without an interval the request runs once
+ok 4 - without an interval the request runs once
+  ---
+  duration_ms: 0.320083
+  ...
+# Subtest: manual refresh cancels the old request and remains awaitable
+ok 5 - manual refresh cancels the old request and remains awaitable
+  ---
+  duration_ms: 0.57765
+  ...
+# Subtest: an empty historical range retains configured services without live edges
+ok 6 - an empty historical range retains configured services without live edges
+  ---
+  duration_ms: 1.563177
+  ...
+# Subtest: historical sessions add removed services without dropping idle current services
+ok 7 - historical sessions add removed services without dropping idle current services
+  ---
+  duration_ms: 0.275471
+  ...
+1..7
+# tests 7
+# suites 0
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 505.536885
+    Finished `dev` profile [unoptimized] target(s) in 0.08s
+     Running `target/debug/xtask build`
+    Finished `dev` profile [optimized] target(s) in 0.18s
+   Compiling nullnet-grpc-lib v0.1.0 (/root/nullnet-prepared-20260928/members/nullnet-grpc-lib)
+   Compiling nullnet-client v0.1.0 (/root/nullnet-prepared-20260928/members/nullnet-client)
+    Finished `dev` profile [unoptimized] target(s) in 3.59s
+    Finished `dev` profile [unoptimized] target(s) in 0.08s
+     Running `target/debug/xtask lint`
+    Checking nullnet-grpc-lib v0.1.0 (/root/nullnet-prepared-20260928/members/nullnet-grpc-lib)
+    Checking nullnet-client v0.1.0 (/root/nullnet-prepared-20260928/members/nullnet-client)
+    Finished `dev` profile [unoptimized] target(s) in 1.98s
+    Finished `dev` profile [optimized] target(s) in 0.09s
+   Compiling nullnet-client v0.1.0 (/root/nullnet-prepared-20260928/members/nullnet-client)
+    Finished `test` profile [unoptimized] target(s) in 2.46s
+     Running unittests src/main.rs (target/debug/deps/nullnet_client-a2e384ee784d42a2)
+
+running 110 tests
+test commands::dnat::tests::scoped_by_source_like_the_rule ... ok
+test commands::dnat::tests::unspecified_source_stays_unscoped ... ok
+test commands::egress::purge_tests::cross_host_forwarding_rules_preserve_existing_scope ... ok
+test commands::egress::purge_tests::local_forwarding_excludes_internal_traffic_and_unsolicited_replies ... ok
+test commands::egress::purge_tests::net_ids_come_from_our_table_range_only ... ok
+test commands::egress::purge_tests::local_cleanup_is_scoped_to_tagged_edge_and_preserves_other_rules ... ok
+test commands::native_netlink::tests::attributes_preserve_alignment_and_nested_flags ... ok
+test commands::egress::purge_tests::empty_output_yields_nothing ... ok
+test commands::egress::tests::public_addresses_are_external ... ok
+test commands::egress::purge_tests::snat_rules_scoped_to_overlay_bridges ... ok
+test commands::native_xfrm::tests::both_hosts_derive_the_same_directional_identity ... ok
+test commands::vxlan::kernel_tests::concurrent_retirement ... ignored, requires root in an isolated network and mount namespace
+test commands::vxlan::kernel_tests::cross_transport_preparation ... ignored, requires root in an isolated network and mount namespace
+test commands::vxlan::kernel_tests::kernel_lifecycle ... ignored, requires root in an isolated network and mount namespace
+test commands::egress::tests::private_and_special_ranges_are_internal ... ok
+test commands::netlink::ownership_tests::startup_preserves_docker_and_unrelated_veths ... ok
+test commands::vxlan::kernel_tests::startup_recovery_preserves_foreign_links ... ignored, requires root in an isolated network and mount namespace
+test commands::prepared_io::tests::flow_cleanup_matches_both_tuples_and_preserves_zone_and_identity ... ok
+test commands::vxlan::tests::veth_mac_is_locally_administered_and_side_scoped ... ok
+test commands::vxlan::tests::veth_mac_matches_vxlan_setup_shs_printf_derivation ... ok
+test commands::xfrm_tests::orphan_namespace_cleanup_is_scoped_to_nullnet_names ... ok
+test commands::xfrm_tests::empty_output_yields_nothing ... ok
+test commands::xfrm_tests::states_scoped_to_our_spi_range ... ok
+test conntrack::tests::a_dnat_flush_does_not_report_a_trigger_chain_idle ... ok
+test commands::xfrm_tests::policies_carry_their_selector_and_direction ... ok
+test conntrack::tests::concurrent_flows_to_one_destination_finish_it_only_once ... ok
+test conntrack::tests::live_destroy_event_parses_to_the_real_tuple ... ignored, needs root, network, and up to ~30s of conntrack timeout
+test conntrack::tests::live_dump_flows_sees_a_real_connection ... ignored, needs root and network
+test conntrack::tests::duplicate_insert_is_idempotent ... ok
+test conntrack::tests::empty_dump_during_suppression_is_not_idle ... ok
+test commands::egress::purge_tests::steerable_matches_what_install_steer_accepts ... ok
+test conntrack::tests::concurrent_flows_to_one_host_do_not_collapse ... ok
+test conntrack::tests::new_flow_clears_suppression ... ok
+test conntrack::tests::conntrack_line_parses_udp_and_skips_other_protocols ... ok
+test conntrack::tests::owners_are_independent ... ok
+test conntrack::tests::reconcile_on_an_untracked_owner_reports_nothing ... ok
+test conntrack::tests::one_destination_finishes_while_the_owner_stays_active ... ok
+test conntrack::tests::reconcile_from_a_dump_restores_the_exact_flow_set ... ok
+test conntrack::tests::reconcile_repairs_destinations_in_both_directions ... ok
+test conntrack::tests::reconcile_to_empty_reports_idle ... ok
+test conntrack::tests::suppressed_owner_never_reports_idle ... ok
+test conntrack::tests::conntrack_line_parses_the_original_tuple_not_the_reply ... ok
+test conntrack::tests::suppression_expires_and_idle_is_reported_again ... ok
+test conntrack::tests::unknown_flow_destroy_is_ignored ... ok
+test conntrack::tests::trigger_ports_on_one_container_are_independent ... ok
+test control_channel::failure_tests::failed_kernel_teardown_is_not_acknowledged ... ignored, requires root, nnreview0 dummy interface, and the lab TLS server
+test container_report_tests::reports_pause_state_for_standalone_and_swarm ... ok
+test control_channel::leases::reuse_tests::destruction_retains_the_watermark_across_endpoint_role_changes ... ok
+test control_channel::leases::tests::delayed_commands_cannot_mutate_a_reused_or_retired_lease ... ok
+test crypto::tests::open_vlan_id_rejects_short_datagrams ... ok
+test crypto::tests::seal_plain_then_open_round_trips_vlan_id_and_frame_untransformed ... ok
+test crypto::tests::nonce_randomizes_ciphertext ... ok
+test crypto::tests::seal_then_open_round_trips_vlan_id_and_plaintext ... ok
+test crypto::tests::round_trip ... ok
+test crypto::tests::truncated_data_fails_without_panicking ... ok
+test control_channel::lifecycle::tests::orders_one_tunnel_without_blocking_another_and_releases_state ... ok
+test crypto::tests::wrong_key_fails ... ok
+test host_mappings::tests::leaves_unmarked_content_untouched ... ok
+test host_mappings::edit_tests::a_failed_read_writes_nothing ... ok
+test host_mappings::edit_tests::reports_no_change_and_leaves_the_file_alone ... ok
+test host_mappings::tests::strips_only_marked_lines ... ok
+test host_mappings::edit_tests::writes_in_place_and_reports_the_change ... ok
+test nfqueue::cache::tests::container_index_skips_short_sandbox ... ok
+test nfqueue::cache::tests::container_index_extracts_name_and_sandbox_prefix ... ok
+test nfqueue::cache::tests::container_index_skips_empty_name ... ok
+test nfqueue::cache::tests::container_index_skips_malformed_lines ... ok
+test nfqueue::cache::tests::network_endpoints_parses_basic ... ok
+test nfqueue::cache::tests::container_index_handles_multiple_lines ... ok
+test host_mappings::tests::slow_publication_does_not_block_unrelated_tunnels ... ok
+test nfqueue::cache::tests::rebuild_tracks_the_new_address_without_retaining_the_old_one ... ok
+test nfqueue::cache::tests::docker_refresh_preserves_overlay_liveness_addresses ... ok
+test nfqueue::cache::tests::resolve_direct_match_wins ... ok
+test nfqueue::cache::tests::resolve_direct_match_wins_even_when_name_looks_like_gateway ... ok
+test nfqueue::cache::tests::replace_and_get_round_trip ... ok
+test nfqueue::cache::tests::resolve_gateway_ingress_sbox_skipped ... ok
+test host_mappings::tests::teardown_waits_for_publication_and_prevents_late_republication ... ok
+test nfqueue::cache::tests::network_endpoints_skips_blanks_and_empty_fields ... ok
+test nfqueue::cache::tests::resolve_gateway_unknown_sandbox_skipped ... ok
+test nfqueue::cache::tests::resolve_gateway_prefix_with_sandbox_match ... ok
+test nfqueue::cache::tests::resolve_unknown_name_skipped ... ok
+test nfqueue::cache::tests::same_host_teardown_keeps_the_other_endpoint_and_docker_address ... ok
+test nfqueue::cache::tests::strip_cidr_with_mask ... ok
+test nfqueue::cache::tests::strip_cidr_without_mask ... ok
+test nfqueue::cache::tests::strip_cidr_garbage_returns_none ... ok
+test nfqueue::cache::tests::resolve_lb_endpoint_skipped ... ok
+test nfqueue::listener::tests::container_less_owner_matches_anything ... ok
+test nfqueue::listener::tests::every_replica_of_the_declaring_service_owns_it ... ok
+test nfqueue::listener::tests::foreign_container_on_a_watched_port_is_not_attributed ... ok
+test nfqueue::listener::tests::two_services_can_share_a_port ... ok
+test nfqueue::listener::tests::unwatched_port_is_a_miss ... ok
+test nfqueue::listener::tests::scoped_owner_wins_over_legacy_catch_all ... ok
+test nfqueue::parse::tests::extracts_tcp ... ok
+test nfqueue::parse::tests::extracts_udp ... ok
+test triggers::tests::atomic_claim_elects_one_sender_and_preserves_active ... ok
+test nfqueue::parse::tests::rejects_too_short ... ok
+test nfqueue::parse::tests::rejects_unknown_protocol ... ok
+test nfqueue::parse::tests::rejects_non_ipv4 ... ok
+test triggers::tests::concurrent_pending_share_notify ... ok
+test triggers::tests::enabled_notified_wakes_on_subsequent_mark_active ... ok
+test triggers::tests::distinct_containers_are_independent ... ok
+test triggers::tests::forget_pending_keeps_an_active_entry ... ok
+test triggers::tests::old_failure_cannot_forget_replacement ... ok
+test triggers::tests::forget_pending_drops_pending_entry ... ok
+test triggers::tests::installed_trigger_waits_for_both_endpoints ... ok
+test triggers::tests::prepared_steering_survives_rpc_failure_and_is_cleaned_before_activation ... ok
+test triggers::tests::peek_returns_unspecified_when_absent ... ok
+test triggers::tests::remove_by_vxlan_returns_container_port_and_ip ... ok
+test commands::vxlan::tests::command_wait_yields_and_preserves_output_and_status ... ok
+test triggers::tests::pending_then_active_wakes_waiter ... ok
+test triggers::tests::state_recheck_catches_mark_active_that_fired_before_enable ... ok
+
+test result: ok. 103 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+FULL_CI_PASSED

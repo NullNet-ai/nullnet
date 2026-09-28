@@ -1,0 +1,22 @@
+ contended   total wait     max wait     avg wait          pid   comm
+
+     18215      8.05 s     463.96 ms    441.92 us          972   ovs-vswitchd
+      2858      3.37 s     464.03 ms      1.18 ms          820   avahi-daemon
+      1820      2.62 s      88.94 ms      1.44 ms       576072   (udev-worker)
+      1536      2.39 s     141.12 ms      1.56 ms       576045   (udev-worker)
+      1728      2.38 s      88.33 ms      1.38 ms       576068   (udev-worker)
+      1380      2.13 s      89.14 ms      1.54 ms       576052   (udev-worker)
+      1092      1.83 s      60.44 ms      1.68 ms       576062   (udev-worker)
+       896      1.50 s      58.33 ms      1.67 ms       576049   (udev-worker)
+      1584      1.24 s      41.88 ms    784.51 us       540177   tokio-rt-worker
+       687      1.21 s      41.66 ms      1.76 ms       576053   (udev-worker)
+      1448      1.20 s      29.37 ms    831.45 us       540172   tokio-rt-worker
+      1557      1.09 s      33.68 ms    701.02 us       540175   tokio-rt-worker
+      1456      1.08 s      28.02 ms    741.65 us       540173   tokio-rt-worker
+       601      1.07 s     294.54 ms      1.78 ms           12   kworker/u32:0-i
+      1218    987.18 ms     27.83 ms    810.49 us       540176   tokio-rt-worker
+      1411    981.51 ms     39.89 ms    695.61 us       540174   tokio-rt-worker
+      1141    968.54 ms     42.21 ms    848.85 us       540171   tokio-rt-worker
+       562    963.17 ms     58.37 ms      1.71 ms       576254   (udev-worker)
+       450    863.78 ms     59.42 ms      1.92 ms       576117   (udev-worker)
+      1232    856.45 ms     25.10 ms    695.17 us       540170   tokio-rt-worker

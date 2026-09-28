@@ -1,0 +1,93 @@
+{
+  "before": {
+    "rows": 17268,
+    "open": 0,
+    "interrupted": 0
+  },
+  "lock_ready": "DATABASE_WRITES_BLOCKED 1790606125.8313415",
+  "workload": {
+    "label": "final-on-demand-db-blocked",
+    "wall_started": 1790606126.0294433,
+    "wall_finished": 1790606129.4915535,
+    "requests": 384,
+    "concurrency": 64,
+    "elapsed_s": 3.4620346080009767,
+    "requests_per_s": 110.91743540418463,
+    "ok": 384,
+    "errors": [],
+    "latency_ms": {
+      "p50": 569.1448489997128,
+      "p95": 707.0048549976491,
+      "max": 954.8227180021058
+    }
+  },
+  "endpoint_timings": {
+    "103": {
+      "setup": {
+        "count": 384,
+        "last": 1790606129.480889,
+        "median_ms": 260
+      },
+      "teardown": {
+        "count": 384,
+        "last": 1790606131.053243,
+        "median_ms": 1548
+      }
+    },
+    "104": {
+      "setup": {
+        "count": 384,
+        "last": 1790606129.284449,
+        "median_ms": 111
+      },
+      "teardown": {
+        "count": 384,
+        "last": 1790606130.74924,
+        "median_ms": 313
+      }
+    }
+  },
+  "while_blocked": {
+    "rows": 17268,
+    "open": 0,
+    "interrupted": 0
+  },
+  "lock_end": "DATABASE_WRITES_RELEASED 1790606132.25499",
+  "drain": {
+    "time": 1790606133.5814903,
+    "open_sessions": 0,
+    "pool": null,
+    "graph_edges": 0
+  },
+  "after": {
+    "rows": 17652,
+    "open": 0,
+    "interrupted": 0
+  },
+  "diagnostics": {
+    "events": [
+      {
+        "kind": "session_persistence_failed",
+        "payload": {
+          "error_message": "database is locked",
+          "queued_updates": 1,
+          "timestamp": 1790606126,
+          "type": "session_persistence_failed"
+        }
+      },
+      {
+        "kind": "session_persistence_recovered",
+        "payload": {
+          "queued_updates": 768,
+          "timestamp": 1790606132,
+          "type": "session_persistence_recovered"
+        }
+      }
+    ],
+    "storage_logs": [
+      "Event persistence failed; retaining the batch and retrying: Error { message: \"database is locked\" }",
+      "Session persistence failed; retaining ordered history for retry: Error { message: \"database is locked\" }",
+      "Event persistence recovered; committed 2 queued events"
+    ]
+  }
+}

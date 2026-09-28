@@ -1,0 +1,1 @@
+{"label": "final-prepared-cross-1", "wall_started": 1790607401.3710873, "wall_finished": 1790607411.922303, "requests": 1008, "concurrency": 64, "elapsed_s": 10.550956929000677, "requests_per_s": 95.5363581505466, "ok": 1008, "errors": [], "latency_ms": {"p50": 104.61713400218287, "p95": 7107.038326998008, "max": 8598.725304000254}}

@@ -1,0 +1,147 @@
+--- a/members/nullnet-client/src/commands/bridge_pool.rs
++++ b/members/nullnet-client/src/commands/bridge_pool.rs
+@@ -54,13 +54,13 @@
+             }))
+ }
+ 
+-async fn create(handle: &Handle, name: &str) -> Result<u32, String> {
++async fn create(handle: &Handle, name: &str, group: u32) -> Result<u32, String> {
+     let mut mac: [u8; 6] = Generate::generate();
+     mac[0] = (mac[0] & 0xfc) | 2;
+     let mut message = LinkBridge::new(name)
+         .down()
+         .address(mac.to_vec())
+-        .link_group(GROUP)
++        .link_group(group)
+         .build();
+     message
+         .attributes
+@@ -69,6 +69,18 @@
+         .await
+         .map_err(|e| e.to_string())?;
+     Ok(link.header.index)
++}
++
++pub(super) fn retains_bridges() -> bool {
++    *LIMIT != 0
++}
++
++pub(super) async fn endpoint(handle: &Handle, name: &str, group: u32) -> Result<u32, String> {
++    if retains_bridges() {
++        lease(handle, name).await
++    } else {
++        create(handle, name, group).await
++    }
+ }
+ 
+ pub(super) async fn lease(handle: &Handle, name: &str) -> Result<u32, String> {
+@@ -88,7 +100,7 @@
+         }
+         index
+     } else {
+-        create(handle, name).await?
++        create(handle, name, GROUP).await?
+     };
+     POOL.lock().unwrap().leased.insert(name.into(), index);
+     Ok(index)
+@@ -238,10 +250,10 @@
+         .push(LinkAttribute::Group(RETIRING));
+     let mut found = false;
+     for link in &links {
+-        if owned(link) {
++        if owned(link) && retains_bridges() {
+             continue;
+         }
+-        if name(link).is_some_and(super::owned_vxlan_link) {
++        if owned(link) || name(link).is_some_and(super::owned_vxlan_link) {
+             handle
+                 .link()
+                 .set(
+@@ -258,6 +270,9 @@
+     if found {
+         request.execute().await.map_err(|e| e.to_string())?;
+     }
++    if !retains_bridges() {
++        return Ok(());
++    }
+     let names: Vec<_> = bridges
+         .iter()
+         .filter_map(|link| name(link).map(String::from))
+@@ -278,7 +293,7 @@
+     let available = POOL.lock().unwrap().idle.len();
+     let created: Vec<_> = stream::iter(
+         (available..*LIMIT)
+-            .map(|slot| async move { create(handle, &format!("nnb_init{slot}")).await }),
++            .map(|slot| async move { create(handle, &format!("nnb_init{slot}"), GROUP).await }),
+     )
+     .buffer_unordered(32)
+     .try_collect()
+--- a/members/nullnet-client/src/commands/vxlan.rs
++++ b/members/nullnet-client/src/commands/vxlan.rs
+@@ -213,9 +213,13 @@
+         None
+     };
+ 
+-    let bridge_index = super::bridge_pool::lease(handle, &params.br_name)
+-        .await
+-        .handle_err(location!())?;
++    let bridge_index = super::bridge_pool::endpoint(
++        handle,
++        &params.br_name,
++        link_group(params.vxlan_id, params.br_name.ends_with("_c")),
++    )
++    .await
++    .handle_err(location!())?;
+     let br_link = LinkUnspec::new_with_index(bridge_index).build();
+     handle
+         .address()
+--- a/members/nullnet-client/src/commands/vxlan_cleanup.rs
++++ b/members/nullnet-client/src/commands/vxlan_cleanup.rs
+@@ -36,9 +36,12 @@
+     handle: &Handle,
+     group: u32,
+     bridge: String,
+-    names: Vec<String>,
++    mut names: Vec<String>,
+     guard: Arc<OwnedMutexGuard<()>>,
+ ) -> Result<(), String> {
++    if !super::bridge_pool::retains_bridges() {
++        names.push(bridge.clone());
++    }
+     let sender = CLEANUP.get_or_init(|| {
+         let (sender, mut receiver) = mpsc::channel::<Request>(QUEUE_CAPACITY);
+         let handle = handle.clone();
+--- a/members/nullnet-client/src/commands/vxlan_kernel_tests.rs
++++ b/members/nullnet-client/src/commands/vxlan_kernel_tests.rs
+@@ -193,7 +193,14 @@
+             .filter(|link| super::super::bridge_pool::owned(link))
+             .map(|link| link.header.index)
+             .collect();
+-        assert_eq!(bridges.len(), 2, "retirement must reuse dedicated bridges");
++        assert_eq!(
++            bridges.len(),
++            if super::super::bridge_pool::retains_bridges() {
++                2
++            } else {
++                0
++            }
++        );
+         let addresses: Vec<_> = handle
+             .handle
+             .address()
+@@ -359,7 +366,14 @@
+         .filter(|link| super::super::bridge_pool::owned(link))
+         .map(|link| link.header.index)
+         .collect();
+-    assert_eq!(bridges.len(), 3);
++    assert_eq!(
++        bridges.len(),
++        if super::super::bridge_pool::retains_bridges() {
++            3
++        } else {
++            0
++        }
++    );
+     let addresses: Vec<_> = handle
+         .handle
+         .address()

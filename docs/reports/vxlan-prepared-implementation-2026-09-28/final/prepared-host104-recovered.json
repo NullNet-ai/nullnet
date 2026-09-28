@@ -1,0 +1,38 @@
+{
+  "checked_at": "2026-09-28T14:53:41.502308+00:00",
+  "ssh_103": "reachable",
+  "ssh_104": "reachable",
+  "guest_root_disk": {
+    "103": {
+      "size": "93G",
+      "used": "60G",
+      "available": "29G",
+      "used_percent": 68
+    },
+    "104": {
+      "size": "93G",
+      "used": "78G",
+      "available": "11G",
+      "used_percent": 88
+    }
+  },
+  "104_services": {
+    "server": "running",
+    "client": "running",
+    "proxy": "running"
+  },
+  "pool": {
+    "active": 1,
+    "capacity": 2713,
+    "destroying": 0,
+    "idle": 2712,
+    "preparing": 0,
+    "reserve": 2713,
+    "reserved": 2713,
+    "resetting": 0,
+    "unavailable": 0
+  },
+  "user_report": "Proxmox disk space exhausted",
+  "hypervisor_storage": "not yet checked; management address required",
+  "outage_cause": "unconfirmed"
+}

@@ -1,0 +1,26 @@
+{
+  "103": {
+    "started": 1790607348.6304884,
+    "finished": 1790607690.78762,
+    "before_count": 14281,
+    "after_count": 14281,
+    "identities_unchanged": true,
+    "new_observed": 0,
+    "deleted_observed": 0,
+    "overruns": 0,
+    "events": 70954,
+    "up_after": 3
+  },
+  "104": {
+    "started": 1790607349.5000057,
+    "finished": 1790607690.8770947,
+    "before_count": 3272,
+    "after_count": 3272,
+    "identities_unchanged": true,
+    "new_observed": 0,
+    "deleted_observed": 0,
+    "overruns": 0,
+    "events": 45268,
+    "up_after": 3
+  }
+}

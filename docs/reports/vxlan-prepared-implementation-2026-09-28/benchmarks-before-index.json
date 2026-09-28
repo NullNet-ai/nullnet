@@ -1,0 +1,234 @@
+{
+  "baseline-cross": {
+    "label": "baseline-cross",
+    "requests": 384,
+    "concurrency": 24,
+    "elapsed_s": 31.37120467999921,
+    "requests_per_s": 12.240524516574276,
+    "ok": 384,
+    "errors": [],
+    "latency_ms": {
+      "p50": 1866.4372189996357,
+      "p95": 3944.275519999792,
+      "max": 4518.834684000467
+    }
+  },
+  "baseline-mixed": {
+    "label": "baseline-mixed",
+    "requests": 1008,
+    "concurrency": 24,
+    "elapsed_s": 97.78403627800071,
+    "requests_per_s": 10.308431093335612,
+    "ok": 1008,
+    "errors": [],
+    "latency_ms": {
+      "p50": 2103.331722999428,
+      "p95": 4041.0109189997456,
+      "max": 5630.66561999949
+    }
+  },
+  "baseline-same": {
+    "label": "baseline-same",
+    "requests": 384,
+    "concurrency": 24,
+    "elapsed_s": 47.96975562700027,
+    "requests_per_s": 8.00504390695419,
+    "ok": 384,
+    "errors": [],
+    "latency_ms": {
+      "p50": 2980.7288350002636,
+      "p95": 3837.161429000844,
+      "max": 4596.711109999887
+    }
+  },
+  "baseline-warm": {
+    "label": "baseline-warm",
+    "requests": 1008,
+    "concurrency": 24,
+    "elapsed_s": 1.0110669679997955,
+    "requests_per_s": 996.9666025131224,
+    "ok": 1008,
+    "errors": [],
+    "latency_ms": {
+      "p50": 22.627522999755456,
+      "p95": 30.762577000132296,
+      "max": 46.422522000284516
+    }
+  },
+  "full-bounded-c128": {
+    "label": "full-bounded-c128",
+    "wall_started": 1790598653.524108,
+    "wall_finished": 1790598656.1252935,
+    "requests": 384,
+    "concurrency": 128,
+    "elapsed_s": 2.6011118489986984,
+    "requests_per_s": 147.62917640309138,
+    "ok": 384,
+    "errors": [],
+    "latency_ms": {
+      "p50": 655.6393460014078,
+      "p95": 1116.4080039998225,
+      "max": 1286.515876001431
+    }
+  },
+  "full-bounded-c24": {
+    "label": "full-bounded-c24",
+    "wall_started": 1790598687.0944312,
+    "wall_finished": 1790598690.0609658,
+    "requests": 384,
+    "concurrency": 24,
+    "elapsed_s": 2.9664342239993857,
+    "requests_per_s": 129.448344714108,
+    "ok": 384,
+    "errors": [],
+    "latency_ms": {
+      "p50": 143.6382859992591,
+      "p95": 268.06915999986813,
+      "max": 312.87215599877527
+    }
+  },
+  "full-bounded-c64": {
+    "label": "full-bounded-c64",
+    "wall_started": 1790598632.706752,
+    "wall_finished": 1790598635.3006635,
+    "requests": 384,
+    "concurrency": 64,
+    "elapsed_s": 2.593820460000643,
+    "requests_per_s": 148.0441711065479,
+    "ok": 384,
+    "errors": [],
+    "latency_ms": {
+      "p50": 324.577909999789,
+      "p95": 586.0068780002621,
+      "max": 659.8850160007714
+    }
+  },
+  "full-cross-c128": {
+    "label": "full-cross-c128",
+    "wall_started": 1790598409.2696006,
+    "wall_finished": 1790598422.9514236,
+    "requests": 1008,
+    "concurrency": 128,
+    "elapsed_s": 13.681607430999065,
+    "requests_per_s": 73.67555348183187,
+    "ok": 1008,
+    "errors": [],
+    "latency_ms": {
+      "p50": 1094.1792360008549,
+      "p95": 5030.743127999813,
+      "max": 7716.694467999332
+    }
+  },
+  "full-cross-c24-long": {
+    "label": "full-cross-c24-long",
+    "wall_started": 1790598444.618178,
+    "wall_finished": 1790598467.5822833,
+    "requests": 1008,
+    "concurrency": 24,
+    "elapsed_s": 22.963919663001434,
+    "requests_per_s": 43.89494540969197,
+    "ok": 1008,
+    "errors": [],
+    "latency_ms": {
+      "p50": 250.77650700040977,
+      "p95": 312.23821000094176,
+      "max": 12750.855423000758
+    }
+  },
+  "full-cross-c24": {
+    "label": "full-cross-c24",
+    "wall_started": 1790598350.0714195,
+    "wall_finished": 1790598352.9892411,
+    "requests": 384,
+    "concurrency": 24,
+    "elapsed_s": 2.917691571999967,
+    "requests_per_s": 131.61089529993828,
+    "ok": 384,
+    "errors": [],
+    "latency_ms": {
+      "p50": 144.44861999982095,
+      "p95": 256.6924619986821,
+      "max": 298.78007499974046
+    }
+  },
+  "full-cross-c64": {
+    "label": "full-cross-c64",
+    "wall_started": 1790598366.7826285,
+    "wall_finished": 1790598382.3010144,
+    "requests": 1008,
+    "concurrency": 64,
+    "elapsed_s": 15.518128011999579,
+    "requests_per_s": 64.95628849179178,
+    "ok": 1008,
+    "errors": [],
+    "latency_ms": {
+      "p50": 538.5220809985185,
+      "p95": 2759.2865279984835,
+      "max": 8655.688523998833
+    }
+  },
+  "prepared2-cross": {
+    "label": "prepared2-cross",
+    "wall_started": 1790598065.6984112,
+    "wall_finished": 1790598069.1349053,
+    "requests": 384,
+    "concurrency": 24,
+    "elapsed_s": 3.4363727379986813,
+    "requests_per_s": 111.74573577359912,
+    "ok": 384,
+    "errors": [],
+    "latency_ms": {
+      "p50": 221.74299000107567,
+      "p95": 290.0405699983821,
+      "max": 351.13213600016024
+    }
+  },
+  "prepared2-mixed-repeat": {
+    "label": "prepared2-mixed-repeat",
+    "wall_started": 1790597639.263243,
+    "wall_finished": 1790597682.3078575,
+    "requests": 1008,
+    "concurrency": 24,
+    "elapsed_s": 43.04438256100002,
+    "requests_per_s": 23.41768983610162,
+    "ok": 1008,
+    "errors": [],
+    "latency_ms": {
+      "p50": 1032.6770229985414,
+      "p95": 1585.0968899994768,
+      "max": 1684.860473000299
+    }
+  },
+  "prepared2-mixed": {
+    "label": "prepared2-mixed",
+    "wall_started": 1790597548.0802581,
+    "wall_finished": 1790597566.8897426,
+    "requests": 1008,
+    "concurrency": 24,
+    "elapsed_s": 18.80922627899963,
+    "requests_per_s": 53.5907211199551,
+    "ok": 1008,
+    "errors": [],
+    "latency_ms": {
+      "p50": 403.61067400044703,
+      "p95": 724.6164860007411,
+      "max": 938.4227789996658
+    }
+  },
+  "prepared2-warm": {
+    "label": "prepared2-warm",
+    "wall_started": 1790597620.1770475,
+    "wall_finished": 1790597621.3134816,
+    "requests": 1008,
+    "concurrency": 24,
+    "elapsed_s": 1.136221179000131,
+    "requests_per_s": 887.1512154764048,
+    "ok": 1008,
+    "errors": [],
+    "latency_ms": {
+      "p50": 26.004859000750002,
+      "p95": 33.85654300109309,
+      "max": 40.445766999255284
+    }
+  }
+}

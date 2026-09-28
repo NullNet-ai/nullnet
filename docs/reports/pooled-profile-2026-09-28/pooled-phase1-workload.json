@@ -1,0 +1,1 @@
+{"label": "pooled-phase1", "wall_started": 1790609527.7571518, "wall_finished": 1790609538.7891788, "requests": 1008, "concurrency": 64, "elapsed_s": 11.03182421100064, "requests_per_s": 91.3720143396456, "ok": 1008, "errors": [], "latency_ms": {"p50": 87.70240599915269, "p95": 7577.4856969983375, "max": 9430.963433002034}}

@@ -1,0 +1,297 @@
+
+running 1 test
+
+[nnprofile] bridge_release 1 [("disable_rename", 177), ("addresses", 52), ("neighbors", 36)]
+
+[nnprofile] bridge_release 1 [("disable_rename", 152), ("addresses", 97), ("neighbors", 86), ("port_verify", 255)]
+
+[nnprofile] setup_admission 1900000 [("id_lock", 5), ("worker_slot", 0)]
+
+[nnprofile] setup 1900000 [("namespace", 23), ("veth_create", 450), ("veth_config", 172), ("bridge_lease", 139), ("bridge_config", 242), ("transport", 1295), ("validate", 0)]
+
+[nnprofile] setup_admission 1900000 [("id_lock", 4), ("worker_slot", 0)]
+
+[nnprofile] setup 1900000 [("namespace", 3), ("veth_create", 388), ("veth_config", 148), ("bridge_lease", 478), ("bridge_config", 232), ("transport", 933), ("validate", 0)]
+
+[nnprofile] setup_admission 1900000 [("id_lock", 2), ("worker_slot", 0)]
+
+[nnprofile] teardown_admission 1900000 [("id_lock", 15), ("worker_slot", 0)]
+
+[nnprofile] cleanup_delete 1 21000
+
+[nnprofile] bridge_release 1 [("disable_rename", 383), ("addresses", 278), ("neighbors", 86), ("port_verify", 269)]
+
+[nnprofile] cleanup_bridge 1 1053
+
+[nnprofile] cleanup_wait [61]
+
+[nnprofile] retire 1900000 [("xfrm_remove", 18), ("cleanup_worker", 22206), ("namespace_remove", 278)]
+
+[nnprofile] teardown_admission 1900000 [("id_lock", 9), ("worker_slot", 0)]
+
+[nnprofile] cleanup_delete 1 18585
+
+[nnprofile] bridge_release 1 [("disable_rename", 673), ("addresses", 324), ("neighbors", 70), ("port_verify", 170)]
+
+[nnprofile] cleanup_bridge 1 1264
+
+[nnprofile] cleanup_wait [8]
+
+[nnprofile] retire 1900000 [("xfrm_remove", 1), ("cleanup_worker", 19896), ("namespace_remove", 155)]
+
+[nnprofile] setup_admission 1900000 [("id_lock", 2), ("worker_slot", 0)]
+
+[nnprofile] setup 1900000 [("namespace", 7), ("veth_create", 511), ("veth_config", 158), ("bridge_lease", 140), ("bridge_config", 208), ("transport", 1383), ("validate", 0)]
+
+[nnprofile] setup_admission 1900000 [("id_lock", 3), ("worker_slot", 0)]
+
+[nnprofile] setup 1900000 [("namespace", 3), ("veth_create", 448), ("veth_config", 135), ("bridge_lease", 134), ("bridge_config", 196), ("transport", 935), ("validate", 0)]
+
+[nnprofile] setup_admission 1900000 [("id_lock", 2), ("worker_slot", 0)]
+
+[nnprofile] teardown_admission 1900000 [("id_lock", 15), ("worker_slot", 0)]
+
+[nnprofile] cleanup_delete 1 20385
+
+[nnprofile] bridge_release 1 [("disable_rename", 954), ("addresses", 243), ("neighbors", 49), ("port_verify", 162)]
+
+[nnprofile] cleanup_bridge 1 1442
+
+[nnprofile] cleanup_wait [63]
+
+[nnprofile] retire 1900000 [("xfrm_remove", 16), ("cleanup_worker", 21942), ("namespace_remove", 159)]
+
+[nnprofile] teardown_admission 1900000 [("id_lock", 3), ("worker_slot", 0)]
+
+[nnprofile] cleanup_delete 1 14171
+
+[nnprofile] bridge_release 1 [("disable_rename", 651), ("addresses", 113), ("neighbors", 28), ("port_verify", 144)]
+
+[nnprofile] cleanup_bridge 1 967
+
+[nnprofile] cleanup_wait [8]
+
+[nnprofile] retire 1900000 [("xfrm_remove", 0), ("cleanup_worker", 15191), ("namespace_remove", 174)]
+
+[nnprofile] setup_admission 1900000 [("id_lock", 7), ("worker_slot", 1)]
+
+[nnprofile] setup 1900000 [("namespace", 15), ("veth_create", 1027), ("veth_config", 135), ("bridge_lease", 180), ("bridge_config", 223), ("transport", 1363), ("validate", 0)]
+
+[nnprofile] setup_admission 1900000 [("id_lock", 3), ("worker_slot", 0)]
+
+[nnprofile] setup 1900000 [("namespace", 3), ("veth_create", 583), ("veth_config", 178), ("bridge_lease", 103), ("bridge_config", 215), ("transport", 805), ("validate", 0)]
+
+[nnprofile] setup_admission 1900000 [("id_lock", 2), ("worker_slot", 0)]
+
+[nnprofile] teardown_admission 1900000 [("id_lock", 15), ("worker_slot", 0)]
+
+[nnprofile] cleanup_delete 1 28730
+
+[nnprofile] bridge_release 1 [("disable_rename", 379), ("addresses", 156), ("neighbors", 49), ("port_verify", 233)]
+
+[nnprofile] cleanup_bridge 1 844
+
+[nnprofile] cleanup_wait [71]
+
+[nnprofile] retire 1900000 [("xfrm_remove", 15), ("cleanup_worker", 29679), ("namespace_remove", 288)]
+
+[nnprofile] teardown_admission 1900000 [("id_lock", 3), ("worker_slot", 0)]
+
+[nnprofile] cleanup_delete 1 22701
+
+[nnprofile] bridge_release 1 [("disable_rename", 805), ("addresses", 201), ("neighbors", 32), ("port_verify", 136)]
+
+[nnprofile] cleanup_bridge 1 1218
+
+[nnprofile] cleanup_wait [9]
+
+[nnprofile] retire 1900000 [("xfrm_remove", 1), ("cleanup_worker", 23981), ("namespace_remove", 81)]
+
+[nnprofile] setup_admission 1900000 [("id_lock", 5), ("worker_slot", 0)]
+
+[nnprofile] setup 1900000 [("namespace", 9), ("veth_create", 460), ("veth_config", 193), ("bridge_lease", 130), ("bridge_config", 240), ("transport", 756), ("validate", 0)]
+
+[nnprofile] setup_admission 1900000 [("id_lock", 7), ("worker_slot", 0)]
+
+[nnprofile] setup 1900000 [("namespace", 8), ("veth_create", 679), ("veth_config", 135), ("bridge_lease", 146), ("bridge_config", 206), ("transport", 390), ("validate", 0)]
+
+[nnprofile] teardown_admission 1900000 [("id_lock", 22), ("worker_slot", 1)]
+
+[nnprofile] cleanup_delete 1 15011
+
+[nnprofile] bridge_release 1 [("disable_rename", 503), ("addresses", 236), ("neighbors", 87), ("port_verify", 304)]
+
+[nnprofile] cleanup_bridge 1 1171
+
+[nnprofile] cleanup_wait [38]
+
+[nnprofile] retire 1900000 [("xfrm_remove", 9), ("cleanup_worker", 16302), ("namespace_remove", 218)]
+
+[nnprofile] teardown_admission 1900000 [("id_lock", 2), ("worker_slot", 0)]
+
+[nnprofile] cleanup_delete 1 34400
+
+[nnprofile] bridge_release 1 [("disable_rename", 387), ("addresses", 204), ("neighbors", 52), ("port_verify", 201)]
+
+[nnprofile] cleanup_bridge 1 888
+
+[nnprofile] cleanup_wait [7]
+
+[nnprofile] retire 1900000 [("xfrm_remove", 0), ("cleanup_worker", 35342), ("namespace_remove", 198)]
+
+[nnprofile] setup_admission 1900000 [("id_lock", 3), ("worker_slot", 0)]
+
+[nnprofile] setup 1900000 [("namespace", 8), ("veth_create", 534), ("veth_config", 148), ("bridge_lease", 137), ("bridge_config", 239), ("transport", 1395), ("validate", 0)]
+
+[nnprofile] setup_admission 1900000 [("id_lock", 2), ("worker_slot", 0)]
+
+[nnprofile] setup 1900000 [("namespace", 3), ("veth_create", 498), ("veth_config", 148), ("bridge_lease", 141), ("bridge_config", 205), ("transport", 648), ("validate", 0)]
+
+[nnprofile] teardown_admission 1900000 [("id_lock", 33), ("worker_slot", 1)]
+
+[nnprofile] cleanup_delete 1 30965
+
+[nnprofile] bridge_release 1 [("disable_rename", 601), ("addresses", 232), ("neighbors", 48), ("port_verify", 155)]
+
+[nnprofile] cleanup_bridge 1 1068
+
+[nnprofile] cleanup_wait [50]
+
+[nnprofile] retire 1900000 [("xfrm_remove", 11), ("cleanup_worker", 32143), ("namespace_remove", 194)]
+
+[nnprofile] teardown_admission 1900000 [("id_lock", 3), ("worker_slot", 0)]
+
+[nnprofile] cleanup_delete 1 30374
+
+[nnprofile] bridge_release 1 [("disable_rename", 583), ("addresses", 279), ("neighbors", 60), ("port_verify", 239)]
+
+[nnprofile] cleanup_bridge 1 1202
+
+[nnprofile] cleanup_wait [8]
+
+[nnprofile] retire 1900000 [("xfrm_remove", 0), ("cleanup_worker", 31621), ("namespace_remove", 233)]
+
+[nnprofile] setup_admission 1900001 [("id_lock", 3), ("worker_slot", 0)]
+[ERROR] [members/nullnet-client/src/commands/vxlan.rs:370] Encrypted VXLAN requires the reserved shared port
+
+[nnprofile] setup 1900001 [("namespace", 8), ("veth_create", 629), ("veth_config", 166), ("bridge_lease", 113), ("bridge_config", 231)]
+
+[nnprofile] cleanup_delete 1 32220
+
+[nnprofile] bridge_release 1 [("disable_rename", 654), ("addresses", 211), ("neighbors", 55), ("port_verify", 226)]
+
+[nnprofile] cleanup_bridge 1 1183
+
+[nnprofile] cleanup_wait [32]
+
+[nnprofile] retire 1900001 [("xfrm_remove", 1), ("cleanup_worker", 33474), ("namespace_remove", 230)]
+
+[nnprofile] setup_admission 1900001 [("id_lock", 3), ("worker_slot", 0)]
+
+[nnprofile] setup 1900001 [("namespace", 3), ("veth_create", 560), ("veth_config", 171), ("bridge_lease", 93), ("bridge_config", 199), ("transport", 1309), ("validate", 0)]
+
+[nnprofile] setup_admission 1900002 [("id_lock", 3), ("worker_slot", 0)]
+
+[nnprofile] setup 1900002 [("namespace", 3), ("veth_create", 419), ("veth_config", 158), ("bridge_lease", 103), ("bridge_config", 202), ("transport", 755), ("validate", 0)]
+
+[nnprofile] teardown_admission 1900001 [("id_lock", 2), ("worker_slot", 0)]
+
+[nnprofile] cleanup_delete 1 52666
+
+[nnprofile] bridge_release 1 [("disable_rename", 615), ("addresses", 365), ("neighbors", 137), ("port_verify", 311)]
+
+[nnprofile] cleanup_bridge 1 1471
+
+[nnprofile] cleanup_wait [8]
+
+[nnprofile] retire 1900001 [("xfrm_remove", 130), ("cleanup_worker", 54194), ("namespace_remove", 220)]
+
+[nnprofile] teardown_admission 1900002 [("id_lock", 11), ("worker_slot", 0)]
+
+[nnprofile] cleanup_delete 1 51207
+
+[nnprofile] bridge_release 1 [("disable_rename", 436), ("addresses", 209), ("neighbors", 54), ("port_verify", 201)]
+
+[nnprofile] cleanup_bridge 1 961
+
+[nnprofile] cleanup_wait [42]
+
+[nnprofile] retire 1900002 [("xfrm_remove", 511), ("cleanup_worker", 52271), ("namespace_remove", 188)]
+
+[nnprofile] setup_admission 1900000 [("id_lock", 3), ("worker_slot", 0)]
+
+[nnprofile] setup 1900000 [("namespace", 8), ("veth_create", 472), ("veth_config", 151), ("bridge_lease", 93), ("bridge_config", 230), ("transport", 1314), ("validate", 0)]
+
+[nnprofile] teardown_admission 1900000 [("id_lock", 1896), ("worker_slot", 0)]
+
+[nnprofile] cleanup_delete 1 52861
+
+[nnprofile] bridge_release 1 [("disable_rename", 384), ("addresses", 214), ("neighbors", 54), ("port_verify", 234)]
+
+[nnprofile] cleanup_bridge 1 913
+
+[nnprofile] cleanup_wait [18]
+
+[nnprofile] retire 1900000 [("xfrm_remove", 2), ("cleanup_worker", 53830), ("namespace_remove", 146)]
+test commands::vxlan::kernel_tests::kernel_lifecycle ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 108 filtered out; finished in 6.68s
+
+
+running 1 test
+
+[nnprofile] setup_admission 1900000 [("id_lock", 8), ("worker_slot", 0)]
+
+[nnprofile] setup 1900000 [("namespace", 25), ("veth_create", 677), ("veth_config", 174), ("bridge_lease", 549), ("bridge_config", 261), ("transport", 1168), ("validate", 0)]
+
+[nnprofile] setup_admission 1900000 [("id_lock", 6), ("worker_slot", 0)]
+
+[nnprofile] setup 1900000 [("namespace", 38), ("veth_create", 990), ("veth_config", 351), ("bridge_lease", 505), ("bridge_config", 239), ("transport", 639), ("validate", 0)]
+
+[nnprofile] setup_admission 1900001 [("id_lock", 3), ("worker_slot", 0)]
+
+[nnprofile] setup 1900001 [("namespace", 3), ("veth_create", 482), ("veth_config", 161), ("bridge_lease", 474), ("bridge_config", 230), ("transport", 899), ("validate", 0)]
+test commands::vxlan::kernel_tests::kernel_recovery_seed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 108 filtered out; finished in 0.03s
+
+
+running 1 test
+
+[nnprofile] bridge_release 3 [("disable_rename", 29368), ("addresses", 205), ("neighbors", 50), ("port_verify", 490)]
+
+[nnprofile] setup_admission 1900000 [("id_lock", 12), ("worker_slot", 0)]
+
+[nnprofile] setup 1900000 [("namespace", 18), ("veth_create", 1001), ("veth_config", 260), ("bridge_lease", 145), ("bridge_config", 211), ("transport", 2159), ("validate", 0)]
+
+[nnprofile] setup_admission 1900000 [("id_lock", 3), ("worker_slot", 0)]
+
+[nnprofile] setup 1900000 [("namespace", 4), ("veth_create", 433), ("veth_config", 140), ("bridge_lease", 130), ("bridge_config", 199), ("transport", 842), ("validate", 0)]
+
+[nnprofile] teardown_admission 1900000 [("id_lock", 21), ("worker_slot", 1)]
+
+[nnprofile] cleanup_delete 1 15332
+
+[nnprofile] bridge_release 1 [("disable_rename", 538), ("addresses", 256), ("neighbors", 107), ("port_verify", 172)]
+
+[nnprofile] cleanup_bridge 1 1110
+
+[nnprofile] cleanup_wait [34]
+
+[nnprofile] retire 1900000 [("xfrm_remove", 11), ("cleanup_worker", 16553), ("namespace_remove", 195)]
+
+[nnprofile] teardown_admission 1900000 [("id_lock", 5), ("worker_slot", 0)]
+
+[nnprofile] cleanup_delete 1 14459
+
+[nnprofile] bridge_release 1 [("disable_rename", 486), ("addresses", 190), ("neighbors", 115), ("port_verify", 93)]
+
+[nnprofile] cleanup_bridge 1 912
+
+[nnprofile] cleanup_wait [15]
+
+[nnprofile] retire 1900000 [("xfrm_remove", 1), ("cleanup_worker", 15413), ("namespace_remove", 122)]
+test commands::vxlan::kernel_tests::kernel_recovery_verify ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 108 filtered out; finished in 1.15s
+

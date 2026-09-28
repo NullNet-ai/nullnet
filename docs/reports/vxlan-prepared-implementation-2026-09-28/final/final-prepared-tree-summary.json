@@ -1,0 +1,1 @@
+{"label": "final-prepared-tree", "wall_started": 1790607499.2403126, "wall_finished": 1790607502.2649183, "requests": 120, "concurrency": 24, "elapsed_s": 3.0245544999997946, "requests_per_s": 39.67526457202479, "ok": 120, "errors": [], "latency_ms": {"p50": 219.94282900050166, "p95": 2226.232439999876, "max": 3006.803978001699}}

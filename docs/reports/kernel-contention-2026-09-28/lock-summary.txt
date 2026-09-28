@@ -1,0 +1,3 @@
+ contended   total wait     max wait     avg wait            address   symbol
+
+     54290     50.00 s     464.03 ms    921.04 us   ffffffffbaa02080   rtnl_mutex (mutex)

@@ -1,0 +1,31 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 15K of event 'cycles:P'
+# Event count (approx.): 373688665422
+#
+# Overhead  Command        
+# ........  ...............
+#
+    29.75%  (udev-worker)  
+     7.84%  modprobe       
+     7.81%  systemd        
+     7.55%  NetworkManager 
+     7.29%  tokio-rt-worker
+     4.13%  fwupd          
+     3.77%  (spawn)        
+     3.62%  kthreadd       
+     3.27%  avahi-daemon   
+     3.02%  ovs-vswitchd   
+     3.02%  true           
+     2.60%  dbus-daemon    
+     2.28%  swapper        
+     2.21%  systemd-udevd  
+     1.34%  ModemManager   
+
+
+#
+# (Tip: Limit to show entries above 5% only: perf report --percent-limit 5)
+#

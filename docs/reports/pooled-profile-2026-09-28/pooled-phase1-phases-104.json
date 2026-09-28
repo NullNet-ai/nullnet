@@ -1,0 +1,166 @@
+{
+  "malformed_lines": 0,
+  "stages": {
+    "setup_admission.id_lock": {
+      "count": 1008,
+      "sum_s": 0.002296,
+      "mean_ms": 0.002277777777777778,
+      "p50_ms": 0.001,
+      "p95_ms": 0.002,
+      "max_ms": 0.848
+    },
+    "setup_admission.lifecycle_slot": {
+      "count": 1008,
+      "sum_s": 66.3188,
+      "mean_ms": 65.79246031746031,
+      "p50_ms": 0.0,
+      "p95_ms": 332.918,
+      "max_ms": 2342.155
+    },
+    "teardown_admission.id_lock": {
+      "count": 1008,
+      "sum_s": 0.000561,
+      "mean_ms": 0.0005565476190476191,
+      "p50_ms": 0.0,
+      "p95_ms": 0.002,
+      "max_ms": 0.006
+    },
+    "teardown_admission.lifecycle_slot": {
+      "count": 1008,
+      "sum_s": 1121.212901,
+      "mean_ms": 1112.3143859126985,
+      "p50_ms": 1071.767,
+      "p95_ms": 2347.228,
+      "max_ms": 2441.256
+    },
+    "reset_links.blocking_wait": {
+      "count": 1008,
+      "sum_s": 0.798249,
+      "mean_ms": 0.7919136904761905,
+      "p50_ms": 0.066,
+      "p95_ms": 4.576,
+      "max_ms": 23.788
+    },
+    "reset_links.io_lock": {
+      "count": 1008,
+      "sum_s": 1.3e-05,
+      "mean_ms": 1.2896825396825396e-05,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "max_ms": 0.007
+    },
+    "reset_links.transport_down": {
+      "count": 1008,
+      "sum_s": 20.139195,
+      "mean_ms": 19.97936011904762,
+      "p50_ms": 23.805,
+      "p95_ms": 46.1,
+      "max_ms": 61.384
+    },
+    "reset_links.bridge_down": {
+      "count": 1008,
+      "sum_s": 17.990489,
+      "mean_ms": 17.847707341269842,
+      "p50_ms": 13.013,
+      "p95_ms": 46.396,
+      "max_ms": 61.602
+    },
+    "reset_links.forwarding_detach": {
+      "count": 1008,
+      "sum_s": 19.359681,
+      "mean_ms": 19.206032738095235,
+      "p50_ms": 22.663,
+      "p95_ms": 46.382,
+      "max_ms": 66.493
+    },
+    "conntrack.dump": {
+      "count": 1008,
+      "sum_s": 21.460386,
+      "mean_ms": 21.290065476190478,
+      "p50_ms": 19.919,
+      "p95_ms": 34.134,
+      "max_ms": 51.841
+    },
+    "conntrack.filter_delete": {
+      "count": 1008,
+      "sum_s": 1.38706,
+      "mean_ms": 1.3760515873015873,
+      "p50_ms": 1.179,
+      "p95_ms": 3.146,
+      "max_ms": 17.31
+    },
+    "reset_tail.blocking_wait": {
+      "count": 1008,
+      "sum_s": 0.723744,
+      "mean_ms": 0.718,
+      "p50_ms": 0.02,
+      "p95_ms": 4.306,
+      "max_ms": 20.044
+    },
+    "reset_tail.io_lock": {
+      "count": 1008,
+      "sum_s": 1.6e-05,
+      "mean_ms": 1.5873015873015872e-05,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "max_ms": 0.006
+    },
+    "reset_tail.root_conntrack": {
+      "count": 1008,
+      "sum_s": 22.885316,
+      "mean_ms": 22.70368650793651,
+      "p50_ms": 21.473,
+      "p95_ms": 35.452,
+      "max_ms": 57.967
+    },
+    "reset_tail.root_neighbors": {
+      "count": 1008,
+      "sum_s": 0.070334,
+      "mean_ms": 0.06977579365079364,
+      "p50_ms": 0.045,
+      "p95_ms": 0.126,
+      "max_ms": 3.322
+    },
+    "reset_tail.root_addresses": {
+      "count": 1008,
+      "sum_s": 34.821098,
+      "mean_ms": 34.544740079365084,
+      "p50_ms": 32.776,
+      "p95_ms": 89.424,
+      "max_ms": 137.301
+    },
+    "reset_tail.root_verify": {
+      "count": 1008,
+      "sum_s": 22.054453,
+      "mean_ms": 21.87941765873016,
+      "p50_ms": 20.4,
+      "p95_ms": 66.304,
+      "max_ms": 96.678
+    },
+    "reset.links_phase": {
+      "count": 1008,
+      "sum_s": 58.564024,
+      "mean_ms": 58.09923015873016,
+      "p50_ms": 60.108,
+      "p95_ms": 107.387,
+      "max_ms": 152.137
+    },
+    "reset.keys": {
+      "count": 1008,
+      "sum_s": 1.151494,
+      "mean_ms": 1.1423551587301588,
+      "p50_ms": 0.187,
+      "p95_ms": 5.24,
+      "max_ms": 28.118
+    },
+    "reset.tail_phase": {
+      "count": 1008,
+      "sum_s": 80.946294,
+      "mean_ms": 80.30386309523809,
+      "p50_ms": 79.781,
+      "p95_ms": 147.356,
+      "max_ms": 198.16
+    }
+  },
+  "batches": {}
+}

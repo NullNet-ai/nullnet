@@ -1,0 +1,689 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 1K of event 'cycles:P'
+# Event count (approx.): 36169196475
+#
+# Overhead  Command          Shared Object                    Symbol                                                        IPC   [IPC Coverage]
+# ........  ...............  ...............................  ............................................................  ....................
+#
+     5.83%  tokio-rt-worker  [kernel.kallsyms]                [k] mutex_spin_on_owner                                       -      -            
+            |
+            ---mutex_spin_on_owner
+               __mutex_lock.constprop.0
+               |          
+                --5.46%--rtnetlink_rcv_msg
+                          netlink_rcv_skb
+                          netlink_unicast
+                          netlink_sendmsg
+                          __sys_sendto
+                          __x64_sys_sendto
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x7faee146b9ee
+
+     4.64%  tokio-rt-worker  [kernel.kallsyms]                [k] osq_lock                                                  -      -            
+            |
+            ---osq_lock
+               __mutex_lock.constprop.0
+               |          
+               |--3.57%--rtnetlink_rcv_msg
+               |          netlink_rcv_skb
+               |          netlink_unicast
+               |          netlink_sendmsg
+               |          __sys_sendto
+               |          __x64_sys_sendto
+               |          do_syscall_64
+               |          entry_SYSCALL_64_after_hwframe
+               |          0x7faee146b9ee
+               |          
+                --1.06%--tc_new_tfilter
+                          rtnetlink_rcv_msg
+                          netlink_rcv_skb
+                          netlink_unicast
+                          netlink_sendmsg
+                          __sys_sendto
+                          __x64_sys_sendto
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x7faee146b9ee
+
+     3.04%  tokio-rt-worker  [kernel.kallsyms]                [k] rwsem_down_write_slowpath                                 -      -            
+            |
+            ---rwsem_down_write_slowpath
+               down_write
+               |          
+               |--1.20%--kernfs_add_one
+               |          |          
+               |           --1.16%--__kernfs_create_file
+               |                     sysfs_add_file_mode_ns
+               |                     internal_create_group
+               |                     internal_create_groups
+               |                     |          
+               |                      --0.88%--device_add
+               |                                netdev_register_kobject
+               |                                register_netdevice
+               |                                |          
+               |                                 --0.57%--veth_newlink
+               |                                           __rtnl_newlink
+               |                                           rtnl_newlink
+               |                                           rtnetlink_rcv_msg
+               |                                           netlink_rcv_skb
+               |                                           netlink_unicast
+               |                                           netlink_sendmsg
+               |                                           __sys_sendto
+               |                                           __x64_sys_sendto
+               |                                           do_syscall_64
+               |                                           entry_SYSCALL_64_after_hwframe
+               |                                           0x7faee146b9ee
+               |          
+               |--0.99%--kernfs_activate
+               |          kernfs_add_one
+               |          |          
+               |           --0.67%--__kernfs_create_file
+               |                     sysfs_add_file_mode_ns
+               |                     |          
+               |                      --0.53%--internal_create_group
+               |                                internal_create_groups
+               |                                device_add
+               |                                netdev_register_kobject
+               |                                register_netdevice
+               |                                veth_newlink
+               |                                __rtnl_newlink
+               |                                rtnl_newlink
+               |                                rtnetlink_rcv_msg
+               |                                netlink_rcv_skb
+               |                                netlink_unicast
+               |                                netlink_sendmsg
+               |                                __sys_sendto
+               |                                __x64_sys_sendto
+               |                                do_syscall_64
+               |                                entry_SYSCALL_64_after_hwframe
+               |                                0x7faee146b9ee
+               |          
+                --0.85%--kernfs_remove_by_name_ns
+                          |          
+                           --0.73%--remove_files
+                                     sysfs_remove_group
+                                     sysfs_remove_groups
+
+     1.98%  tokio-rt-worker  [kernel.kallsyms]                [k] __pv_queued_spin_lock_slowpath                            -      -            
+            |
+            ---__pv_queued_spin_lock_slowpath
+               _raw_spin_lock
+               |          
+                --1.80%--__task_rq_lock
+                          try_to_wake_up
+                          |          
+                           --1.80%--wake_up_q
+                                     |          
+                                      --1.80%--rwsem_wake.isra.0
+                                                up_write
+                                                |          
+                                                 --1.71%--kernfs_add_one
+                                                           |          
+                                                            --1.65%--__kernfs_create_file
+                                                                      sysfs_add_file_mode_ns
+                                                                      internal_create_group
+                                                                      internal_create_groups
+                                                                      |          
+                                                                       --1.27%--kobject_add_internal
+                                                                                 kobject_init_and_add
+                                                                                 netdev_queue_update_kobjects
+                                                                                 netdev_register_kobject
+                                                                                 register_netdevice
+                                                                                 veth_newlink
+                                                                                 __rtnl_newlink
+                                                                                 rtnl_newlink
+                                                                                 rtnetlink_rcv_msg
+                                                                                 netlink_rcv_skb
+                                                                                 netlink_unicast
+                                                                                 netlink_sendmsg
+                                                                                 __sys_sendto
+                                                                                 __x64_sys_sendto
+                                                                                 do_syscall_64
+                                                                                 entry_SYSCALL_64_after_hwframe
+                                                                                 0x7faee146b9ee
+
+     1.77%  tokio-rt-worker  [kernel.kallsyms]                [k] ___slab_alloc                                             -      -            
+            |
+            ---___slab_alloc
+               |          
+                --1.65%--__kmalloc_node_track_caller_noprof
+                          kmalloc_reserve
+                          __alloc_skb
+                          |          
+                           --1.61%--rtmsg_ifinfo_build_skb
+                                     rtmsg_ifinfo
+                                     __dev_notify_flags
+                                     dev_change_flags
+                                     do_setlink
+                                     rtnl_setlink
+                                     rtnetlink_rcv_msg
+                                     netlink_rcv_skb
+                                     netlink_unicast
+                                     netlink_sendmsg
+                                     __sys_sendto
+                                     __x64_sys_sendto
+                                     do_syscall_64
+                                     entry_SYSCALL_64_after_hwframe
+                                     0x7faee146b9ee
+
+     1.69%  tokio-rt-worker  [kernel.kallsyms]                [k] tcp_current_mss                                           -      -            
+            |
+            ---tcp_current_mss
+               tcp_send_mss
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               sock_write_iter
+               do_iter_readv_writev
+               vfs_writev
+               do_writev
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7faee146b9ee
+
+     1.59%  tokio-rt-worker  [kernel.kallsyms]                [k] srso_alias_safe_ret                                       -      -            
+            |
+            ---srso_alias_safe_ret
+               |          
+                --0.72%--srso_alias_return_thunk
+
+     1.52%  tokio-rt-worker  [kernel.kallsyms]                [k] sock_write_iter                                           -      -            
+            |
+            ---sock_write_iter
+               vfs_write
+               ksys_write
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7faee146b9ee
+               0x55f9d4e4f425
+               |          
+                --1.36%--0x55f9d4a5c697
+                          0x55f9d4c4dfe3
+                          0x9
+                          0x72635f6874657665
+
+     1.51%  tokio-rt-worker  [kernel.kallsyms]                [k] skb_set_owner_w                                           -      -            
+            |
+            ---skb_set_owner_w
+               sock_alloc_send_pskb
+               unix_stream_sendmsg
+               sock_write_iter
+               vfs_write
+               ksys_write
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7faee146b9ee
+               |          
+                --1.41%--0x55f9d4e4f598
+                          0x55f9d4a5e78d
+                          0x55f9d4c4dfbc
+                          0xb
+                          0x6f70646e45746f6c
+
+     1.39%  tokio-rt-worker  [kernel.kallsyms]                [k] xas_find                                                  -      -            
+            |
+            ---xas_find
+               xa_find
+               rtnl_dump_ifinfo
+               rtnl_dumpit
+               netlink_dump
+               __netlink_dump_start
+               rtnetlink_rcv_msg
+               netlink_rcv_skb
+               netlink_unicast
+               netlink_sendmsg
+               __sys_sendto
+               __x64_sys_sendto
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7faee146b9ee
+
+     1.37%  tokio-rt-worker  [kernel.kallsyms]                [k] dev_fetch_sw_netstats                                     -      -            
+            |
+            ---dev_fetch_sw_netstats
+               |          
+                --1.25%--dev_get_stats
+                          rtnl_fill_stats
+                          rtnl_fill_ifinfo.isra.0
+                          rtmsg_ifinfo_build_skb
+                          rtnetlink_event
+                          notifier_call_chain
+                          |          
+                           --1.20%--netdev_update_features
+                                     br_add_if
+                                     do_setlink
+                                     rtnl_setlink
+                                     rtnetlink_rcv_msg
+                                     netlink_rcv_skb
+                                     netlink_unicast
+                                     netlink_sendmsg
+                                     __sys_sendto
+                                     __x64_sys_sendto
+                                     do_syscall_64
+                                     entry_SYSCALL_64_after_hwframe
+                                     0x7faee146b9ee
+
+     1.35%  tokio-rt-worker  [kernel.kallsyms]                [k] memcmp                                                    -      -            
+            |
+            ---memcmp
+               namecmp
+               find_entry.isra.0
+               __register_sysctl_table
+               neigh_sysctl_register
+               devinet_sysctl_register
+               inetdev_init
+               inetdev_event
+               notifier_call_chain
+               register_netdevice
+               veth_newlink
+               __rtnl_newlink
+               rtnl_newlink
+               rtnetlink_rcv_msg
+               netlink_rcv_skb
+               netlink_unicast
+               netlink_sendmsg
+               __sys_sendto
+               __x64_sys_sendto
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7faee146b9ee
+
+     1.34%  tokio-rt-worker  [kernel.kallsyms]                [k] flow_indr_dev_setup_offload                               -      -            
+            |
+            ---flow_indr_dev_setup_offload
+               tcf_block_offload_cmd.isra.0
+               |          
+               |--0.72%--tcf_block_get_ext
+               |          |          
+               |           --0.50%--qdisc_create
+               |                     tc_modify_qdisc
+               |                     rtnetlink_rcv_msg
+               |                     netlink_rcv_skb
+               |                     netlink_unicast
+               |                     netlink_sendmsg
+               |                     __sys_sendto
+               |                     __x64_sys_sendto
+               |                     do_syscall_64
+               |                     entry_SYSCALL_64_after_hwframe
+               |                     0x7faee146b9ee
+               |          
+                --0.62%--tcf_block_offload_unbind
+                          __tcf_block_put
+                          clsact_destroy
+                          __qdisc_destroy
+                          dev_shutdown
+                          unregister_netdevice_many_notify
+                          rtnl_dellink
+                          rtnetlink_rcv_msg
+                          netlink_rcv_skb
+                          netlink_unicast
+                          netlink_sendmsg
+                          __sys_sendto
+                          __x64_sys_sendto
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x7faee146b9ee
+
+     1.33%  tokio-rt-worker  [kernel.kallsyms]                [k] vsnprintf                                                 -      -            
+            |
+            ---vsnprintf
+               |          
+                --1.26%--sprintf
+                          |          
+                           --1.25%--__netdev_adjacent_dev_insert
+                                     __netdev_upper_dev_link
+                                     netdev_master_upper_dev_link
+                                     br_add_if
+                                     do_setlink
+                                     rtnl_setlink
+                                     rtnetlink_rcv_msg
+                                     netlink_rcv_skb
+                                     netlink_unicast
+                                     netlink_sendmsg
+                                     __sys_sendto
+                                     __x64_sys_sendto
+                                     do_syscall_64
+                                     entry_SYSCALL_64_after_hwframe
+                                     0x7faee146b9ee
+
+     1.33%  nullnet-client   [kernel.kallsyms]                [k] timerqueue_add                                            -      -            
+            |
+            ---timerqueue_add
+               hrtimer_start_range_ns
+               |          
+                --1.33%--do_nanosleep
+                          hrtimer_nanosleep
+                          common_nsleep_timens
+                          __x64_sys_clock_nanosleep
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x7faee146b9ee
+                          |          
+                          |--0.77%--0x55f9d4d259ac
+                          |          0x48066f48fee16237
+                          |          
+                           --0.56%--0x55f9d4d2879c
+                                     0x48066f48fee16237
+
+     1.32%  tokio-rt-worker  [kernel.kallsyms]                [k] dev_activate                                              -      -            
+            |
+            ---dev_activate
+               __dev_open
+               __dev_change_flags
+               dev_change_flags
+               do_setlink
+               rtnl_setlink
+               rtnetlink_rcv_msg
+               netlink_rcv_skb
+               netlink_unicast
+               netlink_sendmsg
+               __sys_sendto
+               __x64_sys_sendto
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7faee146b9ee
+
+     1.30%  tokio-rt-worker  [kernel.kallsyms]                [k] sock_recvmsg                                              -      -            
+            |
+            ---sock_recvmsg
+               __sys_recvfrom
+               __x64_sys_recvfrom
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7faee146b9ee
+
+     1.26%  tokio-rt-worker  [kernel.kallsyms]                [k] xas_load                                                  -      -            
+            |
+            ---xas_load
+               xas_find
+               xa_find
+               rtnl_dump_ifinfo
+               rtnl_dumpit
+               netlink_dump
+               __netlink_dump_start
+               rtnetlink_rcv_msg
+               netlink_rcv_skb
+               netlink_unicast
+               netlink_sendmsg
+               __sys_sendto
+               __x64_sys_sendto
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7faee146b9ee
+
+     1.21%  tokio-rt-worker  nullnet-client                   [.] 0x00000000006df122                                        -      -            
+            |
+            ---0x55f9d4e12122
+               |          
+                --1.11%--0x55f9d49ac86a
+                          0x55f9d4b23bce
+
+     1.20%  tokio-rt-worker  [kernel.kallsyms]                [k] ip_finish_output2                                         -      -            
+            |
+            ---ip_finish_output2
+               ip_output
+               __ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               sock_write_iter
+               do_iter_readv_writev
+               vfs_writev
+               do_writev
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7faee146b9ee
+
+     1.13%  tokio-rt-worker  [kernel.kallsyms]                [k] fib_table_flush                                           -      -            
+            |
+            ---fib_table_flush
+               fib_flush
+               fib_netdev_event
+               notifier_call_chain
+               |          
+                --0.96%--__dev_notify_flags
+                          dev_change_flags
+                          do_setlink
+                          rtnl_setlink
+                          rtnetlink_rcv_msg
+                          netlink_rcv_skb
+                          netlink_unicast
+                          netlink_sendmsg
+                          __sys_sendto
+                          __x64_sys_sendto
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x7faee146b9ee
+
+     1.07%  tokio-rt-worker  [kernel.kallsyms]                [k] vxlan_vni_in_use                                          -      -            
+            |
+            ---vxlan_vni_in_use
+               vxlan_config_validate
+               __vxlan_dev_create
+               vxlan_newlink
+               __rtnl_newlink
+               rtnl_newlink
+               rtnetlink_rcv_msg
+               netlink_rcv_skb
+               netlink_unicast
+               netlink_sendmsg
+               __sys_sendto
+               __x64_sys_sendto
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7faee146b9ee
+
+     1.03%  tokio-rt-worker  [kernel.kallsyms]                [k] __raw_callee_save___pv_queued_spin_unlock                 -      -            
+            |
+            ---__raw_callee_save___pv_queued_spin_unlock
+
+     0.99%  tokio-rt-worker  [kernel.kallsyms]                [k] kvasprintf_const                                          -      -            
+            |
+            ---kvasprintf_const
+               kobject_set_name_vargs
+               kobject_init_and_add
+               net_rx_queue_update_kobjects
+               netdev_register_kobject
+               register_netdevice
+               veth_newlink
+               __rtnl_newlink
+               rtnl_newlink
+               rtnetlink_rcv_msg
+               netlink_rcv_skb
+               netlink_unicast
+               netlink_sendmsg
+               __sys_sendto
+               __x64_sys_sendto
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7faee146b9ee
+
+     0.97%  tokio-rt-worker  [kernel.kallsyms]                [k] vxlan_netdevice_event                                     -      -            
+            |
+            ---vxlan_netdevice_event
+               notifier_call_chain
+               unregister_netdevice_many_notify
+               rtnl_dellink
+               rtnetlink_rcv_msg
+               netlink_rcv_skb
+               netlink_unicast
+               netlink_sendmsg
+               __sys_sendto
+               __x64_sys_sendto
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7faee146b9ee
+
+     0.97%  tokio-rt-worker  [kernel.kallsyms]                [k] down_write                                                -      -            
+            |
+            ---down_write
+               |          
+                --0.54%--kernfs_activate
+                          kernfs_add_one
+                          kernfs_create_dir_ns
+                          sysfs_create_dir_ns
+                          kobject_add_internal
+                          kobject_init_and_add
+                          netdev_queue_update_kobjects
+                          netdev_register_kobject
+                          register_netdevice
+                          veth_newlink
+                          __rtnl_newlink
+                          rtnl_newlink
+                          rtnetlink_rcv_msg
+                          netlink_rcv_skb
+                          netlink_unicast
+                          netlink_sendmsg
+                          __sys_sendto
+                          __x64_sys_sendto
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x7faee146b9ee
+
+     0.94%  tokio-rt-worker  [kernel.kallsyms]                [k] rtnl_dump_ifinfo                                          -      -            
+            |
+            ---rtnl_dump_ifinfo
+               rtnl_dumpit
+               netlink_dump
+               __netlink_dump_start
+               rtnetlink_rcv_msg
+               netlink_rcv_skb
+               netlink_unicast
+               netlink_sendmsg
+               __sys_sendto
+               __x64_sys_sendto
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7faee146b9ee
+
+     0.92%  tokio-rt-worker  [kernel.kallsyms]                [k] memset_orig                                               -      -            
+            |
+            ---memset_orig
+
+     0.89%  tokio-rt-worker  [kernel.kallsyms]                [k] netlink_broadcast_filtered                                -      -            
+            |
+            ---netlink_broadcast_filtered
+               |          
+                --0.53%--nlmsg_notify
+
+     0.87%  tokio-rt-worker  [kernel.kallsyms]                [k] neigh_flush_dev.isra.0                                    -      -            
+            |
+            ---neigh_flush_dev.isra.0
+               __neigh_ifdown.isra.0
+               neigh_ifdown
+
+     0.86%  tokio-rt-worker  [kernel.kallsyms]                [k] __wake_up_common                                          -      -            
+            |
+            ---__wake_up_common
+               __wake_up
+               netlink_recvmsg
+               sock_recvmsg
+               __sys_recvfrom
+               __x64_sys_recvfrom
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7faee146b9ee
+
+     0.85%  tokio-rt-worker  libc.so.6                        [.] 0x000000000009edc3                                        -      -            
+            |
+            ---0x7faee146fdc3
+               0
+
+     0.72%  tokio-rt-worker  [kernel.kallsyms]                [k] _raw_spin_lock_irqsave                                    -      -            
+            |
+            ---_raw_spin_lock_irqsave
+
+     0.69%  tokio-rt-worker  nullnet-client                   [.] 0x000000000042a000                                        -      -            
+            |
+            ---0x55f9d4b5d000
+               0x55f9d49ac86a
+               0x55f9d4c11d70
+               0x2bf8b485aa4895c1
+
+     0.65%  tokio-rt-worker  [kernel.kallsyms]                [k] __rcu_read_lock                                           -      -            
+            |
+            ---__rcu_read_lock
+               fdget_pos
+               ksys_write
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7faee146b9ee
+               0x55f9d4e4f425
+               0x55f9d4c60bf2
+
+     0.64%  tokio-rt-worker  [kernel.kallsyms]                [k] pcpu_next_fit_region.constprop.0                          -      -            
+            |
+            ---pcpu_next_fit_region.constprop.0
+               pcpu_find_block_fit
+               pcpu_alloc_noprof
+               br_multicast_add_port
+               br_add_if
+               do_setlink
+               rtnl_setlink
+               rtnetlink_rcv_msg
+               netlink_rcv_skb
+               netlink_unicast
+               netlink_sendmsg
+               __sys_sendto
+               __x64_sys_sendto
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7faee146b9ee
+
+     0.63%  tokio-rt-worker  [kernel.kallsyms]                [k] strlen                                                    -      -            
+            |
+            ---strlen
+
+     0.62%  tokio-rt-worker  [kernel.kallsyms]                [k] __nla_put                                                 -      -            
+            |
+            ---__nla_put
+               nla_put
+
+     0.61%  tokio-rt-worker  [kernel.kallsyms]                [k] security_file_permission                                  -      -            
+            |
+            ---security_file_permission
+               rw_verify_area
+               vfs_write
+               ksys_write
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x7faee146b9ee
+               0x55f9d4e4f425
+               0x55f9d4a5ea76
+               0x55f9d4c4dfbc
+               0xb
+               0x6764697262676966
+
+     0.57%  tokio-rt-worker  [kernel.kallsyms]                [k] obj_cgroup_charge                                         -      -            
+            |
+            ---obj_cgroup_charge
+               __memcg_slab_post_alloc_hook
+
+     0.54%  tokio-rt-worker  [kernel.kallsyms]                [k] do_futex                                                  -      -            
+            |
+            ---do_futex
+               __x64_sys_futex
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+
+     0.52%  tokio-rt-worker  libc.so.6                        [.] 0x00000000000a15b9                                        -      -            
+            |
+            ---0x7faee14725b9
+               0
+
+     0.50%  tokio-rt-worker  [kernel.kallsyms]                [k] __register_sysctl_table                                   -      -            
+            |
+            ---__register_sysctl_table
+
+
+
+#
+# (Tip: To only collect call graph on one event use perf record -e cpu/cpu-cycles,callgraph=1/,branches ; perf report --show-ref-call-graph)
+#

@@ -1,0 +1,103 @@
+{
+  "before": {
+    "rows": 17258,
+    "open": 0,
+    "interrupted": 0
+  },
+  "lock_ready": "DATABASE_WRITES_BLOCKED 1790607463.652765",
+  "workload": {
+    "label": "final-prepared-db-blocked",
+    "wall_started": 1790607463.9177508,
+    "wall_finished": 1790607464.43279,
+    "requests": 384,
+    "concurrency": 64,
+    "elapsed_s": 0.5149608299980173,
+    "requests_per_s": 745.6877836737184,
+    "ok": 384,
+    "errors": [],
+    "latency_ms": {
+      "p50": 80.0341499998467,
+      "p95": 116.05656100073247,
+      "max": 147.02462799687055
+    }
+  },
+  "endpoint_timings": {
+    "103": {
+      "setup": {
+        "count": 384,
+        "last": 1790607464.427537,
+        "median_ms": 20
+      },
+      "teardown": {
+        "count": 384,
+        "last": 1790607470.296172,
+        "median_ms": 2831
+      }
+    },
+    "104": {
+      "setup": {
+        "count": 384,
+        "last": 1790607464.421463,
+        "median_ms": 4
+      },
+      "teardown": {
+        "count": 384,
+        "last": 1790607467.349861,
+        "median_ms": 1004
+      }
+    }
+  },
+  "while_blocked": {
+    "rows": 17258,
+    "open": 0,
+    "interrupted": 0
+  },
+  "lock_end": "DATABASE_WRITES_RELEASED 1790607471.1653116",
+  "drain": {
+    "time": 1790607473.6442578,
+    "open_sessions": 0,
+    "pool": {
+      "active": 1,
+      "capacity": 2713,
+      "destroying": 0,
+      "idle": 2712,
+      "preparing": 0,
+      "reserve": 2713,
+      "reserved": 2713,
+      "resetting": 0,
+      "unavailable": 0
+    },
+    "graph_edges": 0
+  },
+  "after": {
+    "rows": 17642,
+    "open": 0,
+    "interrupted": 0
+  },
+  "diagnostics": {
+    "events": [
+      {
+        "kind": "session_persistence_failed",
+        "payload": {
+          "error_message": "database is locked",
+          "queued_updates": 1,
+          "timestamp": 1790607463,
+          "type": "session_persistence_failed"
+        }
+      },
+      {
+        "kind": "session_persistence_recovered",
+        "payload": {
+          "queued_updates": 768,
+          "timestamp": 1790607471,
+          "type": "session_persistence_recovered"
+        }
+      }
+    ],
+    "storage_logs": [
+      "Event persistence failed; retaining the batch and retrying: Error { message: \"database is locked\" }",
+      "Session persistence failed; retaining ordered history for retry: Error { message: \"database is locked\" }",
+      "Event persistence recovered; committed 2 queued events"
+    ]
+  }
+}
