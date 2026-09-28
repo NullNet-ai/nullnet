@@ -1244,17 +1244,7 @@ impl Orchestrator {
                 let message =
                     NET_TYPE.teardown(net_id, side, docker, dest, remote, dstport, msg_id.clone());
 
-                if outbound
-                    .send(Ok(message))
-                    .await
-                    .handle_err(location!())
-                    .is_err()
-                {
-                    // Nothing will ever ack a message that was never sent.
-                    self.pending.lock().await.remove(&msg_id);
-                } else {
-                    acks.push((dest, msg_id, rx, outbound));
-                }
+                acks.push((dest, msg_id, rx, outbound, message));
             }
         }
 
@@ -1285,7 +1275,13 @@ impl Orchestrator {
     fn spawn_deferred_net_id_free(
         &self,
         net_id: u32,
-        acks: Vec<(IpAddr, String, oneshot::Receiver<()>, OutboundStream)>,
+        acks: Vec<(
+            IpAddr,
+            String,
+            oneshot::Receiver<()>,
+            OutboundStream,
+            NetMessage,
+        )>,
     ) {
         let orchestrator = self.clone();
         let pending = self.pending.clone();
@@ -1297,7 +1293,21 @@ impl Orchestrator {
         inflight.fetch_add(1, Ordering::SeqCst);
 
         tokio::spawn(async move {
-            for (dest, msg_id, rx, outbound) in acks {
+            let mut sent = Vec::with_capacity(acks.len());
+            for (dest, msg_id, rx, outbound, message) in acks {
+                // Queue backpressure must not hold the caller's topology lock.
+                if outbound
+                    .send(Ok(message))
+                    .await
+                    .handle_err(location!())
+                    .is_err()
+                {
+                    pending.lock().await.remove(&msg_id);
+                } else {
+                    sent.push((dest, msg_id, rx, outbound));
+                }
+            }
+            for (dest, msg_id, rx, outbound) in sent {
                 let completed = async {
                     tokio::select! {
                         result = rx => {
