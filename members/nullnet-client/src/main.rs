@@ -35,6 +35,7 @@ mod commands;
 mod conntrack;
 mod control_channel;
 mod crypto;
+mod device_events;
 mod ebpf;
 mod egress_policy;
 mod egress_state;
@@ -73,22 +74,47 @@ async fn main() -> Result<(), Error> {
     }));
 
     // read CLI arguments
-    let Args { num_tasks, .. } = Args::parse();
+    let Args {
+        num_tasks,
+        device_event_bypass_only,
+        ..
+    } = Args::parse();
+    let bypass_status = device_events::start().await;
+    if device_event_bypass_only {
+        println!(
+            "Device-event bypass diagnostic: {:?}",
+            *bypass_status.borrow()
+        );
+        std::future::pending::<()>().await;
+    }
 
     // create a handle to execute netlink commands
     let rtnetlink_handle = RtNetLinkHandle::new()?;
 
-    // cleanup existing VLANs and VXLANs material
-    let mss_error = cleanup_network(&rtnetlink_handle).await;
+    let grpc_server = grpc_init().await?;
+    let mss_error = match cleanup_network(&rtnetlink_handle).await {
+        Ok(error) => error,
+        Err(error) => {
+            let _ = grpc_server
+                .report_event(AgentEvent {
+                    event: Some(AgentEventKind::VxlanEnvironmentFailed(
+                        nullnet_grpc_lib::nullnet_grpc::AgentVxlanEnvironmentFailed {
+                            error_message: error.to_str().to_string(),
+                        },
+                    )),
+                })
+                .await;
+            return Err(error);
+        }
+    };
 
     // maps of all the peers
     let peers = Arc::new(RwLock::new(Peers::default()));
     let peers_2 = peers.clone();
 
-    // initialize gRPC connection
-    let grpc_server = grpc_init().await?;
     let grpc_server2 = grpc_server.clone();
     let grpc_server3 = grpc_server.clone();
+    tokio::spawn(device_events::report(bypass_status, grpc_server.clone()));
 
     // Deferred from `cleanup_network`, which runs before this connection exists.
     // Without the clamp, oversized segments are silently black-holed once they
@@ -146,7 +172,6 @@ async fn main() -> Result<(), Error> {
         }
     };
     let firewall_peers = ebpf_firewall.peers.clone();
-    let firewall_vxlan_ports = ebpf_firewall.vxlan_ports.clone();
 
     // shared dedup + waiter state, keyed by (initiator_container, port).
     // The NFQUEUE listener marks Pending and awaits the Notify; the control
@@ -183,7 +208,6 @@ async fn main() -> Result<(), Error> {
             triggers_state_cc,
             host_mappings_state,
             firewall_peers,
-            firewall_vxlan_ports,
             egress_state,
             bridge_cache_cc,
             policy_verdicts_cc,

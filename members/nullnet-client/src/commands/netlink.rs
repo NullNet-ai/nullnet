@@ -287,3 +287,46 @@ mod ownership_tests {
         }
     }
 }
+
+pub(super) async fn add_link_echo(
+    handle: &Handle,
+    link: LinkMessage,
+) -> Result<LinkMessage, rtnetlink::Error> {
+    use rtnetlink::packet_core::{
+        NLM_F_ACK, NLM_F_CREATE, NLM_F_ECHO, NLM_F_EXCL, NLM_F_REQUEST, NetlinkMessage,
+        NetlinkPayload,
+    };
+    use rtnetlink::packet_route::RouteNetlinkMessage;
+    let name = link
+        .attributes
+        .iter()
+        .find_map(|attribute| match attribute {
+            LinkAttribute::IfName(name) => Some(name.clone()),
+            _ => None,
+        });
+    let mut request = NetlinkMessage::from(RouteNetlinkMessage::NewLink(link));
+    request.header.flags = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_ECHO;
+    let mut replies = handle.clone().request(request)?;
+    let mut created = None;
+    while let Some(reply) = replies.next().await {
+        match reply.payload {
+            NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewLink(link)) => {
+                created = Some(link)
+            }
+            NetlinkPayload::Error(error) if error.code.is_some() => {
+                return Err(rtnetlink::Error::NetlinkError(error));
+            }
+            _ => {}
+        }
+    }
+    if let Some(link) = created.filter(|link| link.header.index != 0) {
+        return Ok(link);
+    }
+    // VXLAN creation can ACK without echoing its interface record.
+    let mut lookup = handle
+        .link()
+        .get()
+        .match_name(name.ok_or(rtnetlink::Error::RequestFailed)?)
+        .execute();
+    lookup.next().await.ok_or(rtnetlink::Error::RequestFailed)?
+}

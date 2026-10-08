@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+mod device_events;
+
 use aya_ebpf::{
     bindings::{TC_ACT_OK, TC_ACT_SHOT},
     macros::{classifier, map},
@@ -25,13 +27,6 @@ use network_types::{
 //   - ARP                          (next-hop resolution)
 //   - TCP to/from SERVER_IP:PORT   (nullnet control plane / gRPC)
 //   - UDP 4789/9999 to/from a peer (nullnet data plane: VXLAN / forward)
-//   - UDP on a live tunnel's per-tunnel VXLAN dstport, to/from the SPECIFIC
-//     peer that port was allocated to (each VXLAN tunnel gets its own
-//     dynamically-allocated dstport instead of the shared 4789 default;
-//     VXLAN_PORTS maps port -> peer IP, populated/depopulated by the control
-//     channel alongside PEERS as tunnels come and go). Paired rather than two
-//     independent sets, so one tunnel's port can't be satisfied by a
-//     different concurrent tunnel's peer IP.
 //   - ESP (proto 50) to/from a peer: cross-host VXLAN tunnels are wrapped in
 //     kernel IPsec/ESP (see nullnet-client's commands/vxlan.rs); ESP is
 //     portless like ICMP, so it's scoped to known peers instead of a port check
@@ -60,16 +55,6 @@ const PROTO_ESP: u8 = 50;
 // Allowlist of peer underlay IPs (host-order `u32::from(Ipv4Addr)` keys).
 #[map]
 static PEERS: HashMap<u32, u8> = HashMap::with_max_entries(4096, 0);
-
-// Per-tunnel VXLAN dstport -> the specific peer underlay IP it was allocated
-// to (host-order `u32::from(Ipv4Addr)`, same encoding as PEERS). Each live
-// tunnel gets its own dynamically-allocated dstport (see nullnet-server's
-// `UdpPortPool`) instead of the shared 4789 default, so this is what lets
-// `data_plane()` recognize that traffic without widening the static
-// ALLOW_PORTS operator policy — keyed by port -> peer (not two independent
-// sets) so a packet must match the port its OWN tunnel was assigned.
-#[map]
-static VXLAN_PORTS: HashMap<u16, u32> = HashMap::with_max_entries(4096, 0);
 
 // Per-direction, per-proto destination-port allowlist. Key packs direction and
 // protocol alongside the port (see `allow_key`) so ingress/egress and TCP/UDP of
@@ -221,34 +206,19 @@ fn control_plane(src: u32, dst: u32, src_port: u16, dst_port: u16) -> bool {
     (dst == server && dst_port == ctrl_port) || (src == server && src_port == ctrl_port)
 }
 
-// Data plane: UDP on the VXLAN (4789) or forward (9999) shared ports with any
-// known peer, OR on a live tunnel's own per-tunnel dstport with the SPECIFIC
-// peer that port was allocated to. The shared ports aren't tunnel-exclusive
-// (FORWARD_PORT is one listening socket for every VLAN tunnel on this host),
-// so "any known peer" is correct there; a per-tunnel dstport is exclusive to
-// one tunnel, so it's paired with that tunnel's own peer instead of checked
-// against the flat peer set — otherwise a packet spoofing a *different*
-// concurrent tunnel's peer IP would satisfy this tunnel's port.
+// Shared data-plane ports are admitted only for known peers.
 #[inline]
 fn data_plane(src: u32, dst: u32, src_port: u16, dst_port: u16) -> bool {
     let on_fixed_port = dst_port == VXLAN_PORT
         || src_port == VXLAN_PORT
         || dst_port == FORWARD_PORT
         || src_port == FORWARD_PORT;
-    if on_fixed_port && (is_peer(src) || is_peer(dst)) {
-        return true;
-    }
-    vxlan_port_peer(dst_port) == Some(src) || vxlan_port_peer(src_port) == Some(dst)
+    on_fixed_port && (is_peer(src) || is_peer(dst))
 }
 
 #[inline]
 fn is_peer(ip: u32) -> bool {
     unsafe { PEERS.get(ip) }.is_some()
-}
-
-#[inline]
-fn vxlan_port_peer(port: u16) -> Option<u32> {
-    unsafe { VXLAN_PORTS.get(port) }.copied()
 }
 
 // Is `port` allowed as a destination in this direction/proto? (ALLOW_PORTS key

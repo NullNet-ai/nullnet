@@ -7,11 +7,18 @@ use std::net::Ipv4Addr;
 
 pub(crate) mod dnat;
 pub(crate) mod egress;
+mod endpoint_io;
+pub(crate) mod endpoint_namespace;
+mod endpoint_tc;
+mod native_macsec;
+mod native_netlink;
+mod native_xfrm;
 mod netlink;
 pub(crate) mod nfqueue;
 mod ovs;
 pub(crate) mod vxlan;
 mod vxlan_cleanup;
+mod vxlan_recovery;
 
 pub(crate) async fn setup_br0(rtnetlink_handle: &RtNetLinkHandle) {
     // create the bridge
@@ -136,22 +143,61 @@ impl RtNetLinkHandle {
 /// Returns the MSS-clamp install error, if there was one. It can't be reported
 /// from here — this runs before the control connection exists — so the caller
 /// emits the event once it does.
-pub(crate) async fn cleanup_network(rtnetlink_handle: &RtNetLinkHandle) -> Option<String> {
+pub(crate) async fn cleanup_network(
+    rtnetlink_handle: &RtNetLinkHandle,
+) -> Result<Option<String>, Error> {
     dnat::init();
     nfqueue::init();
     egress::init();
+    install_overlay_forwarding().handle_err(location!())?;
     let mss_error = install_mss_clamp();
-    vxlan_cleanup_network();
+    vxlan_recovery::recover(&rtnetlink_handle.handle)
+        .await
+        .handle_err(location!())?;
+    vxlan_cleanup_namespaces().await?;
     vlan_cleanup_network(rtnetlink_handle).await;
     // State a killed process never got to tear down, and that no `VxlanTeardown`
     // will ever arrive for: the in-memory maps pairing each resource with its
     // tunnel died with it. Strictly after the link teardown above — dropping an
     // XFRM policy while its VXLAN is still up would briefly let that tunnel's
     // packets onto the wire unencrypted.
+    native_xfrm::purge().await.handle_err(location!())?;
     purge_stale_xfrm();
     crate::host_mappings::purge_stale_mappings();
     egress::purge_stale_steers();
-    mss_error
+    Ok(mss_error)
+}
+
+// Preserve routed overlay traffic without changing the host's FORWARD policy.
+fn install_overlay_forwarding() -> std::io::Result<()> {
+    for direction in ["--src-group", "--dst-group"] {
+        let rule = [
+            "FORWARD",
+            "-m",
+            "devgroup",
+            direction,
+            "0x4e000000/0xffc00000",
+            "-j",
+            "ACCEPT",
+        ];
+        let check = std::process::Command::new("iptables")
+            .args(["-w", "-C"])
+            .args(rule)
+            .output()?;
+        if check.status.success() {
+            continue;
+        }
+        let installed = std::process::Command::new("iptables")
+            .args(["-w", "-I"])
+            .args(rule)
+            .output()?;
+        if !installed.status.success() {
+            return Err(std::io::Error::other(
+                String::from_utf8_lossy(&installed.stderr).into_owned(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// SPI range `vxlan::xfrm_spi` can install: it offsets the net id by 1000 to
@@ -489,83 +535,71 @@ fn privileged_quiet(args: &[&str]) -> std::io::Result<std::process::ExitStatus> 
 }
 
 /// Cleanup existing namespaces, VXLANs and bridges
-fn vxlan_cleanup_network() {
-    // TODO: do this using rtnetlink
-    use network_interface::{NetworkInterface, NetworkInterfaceConfig};
-
-    // first clean up existing namespaces, VXLAN interfaces, and same-host veth pairs
-    if let Ok(devices) = NetworkInterface::show() {
-        for device in devices {
-            if let Some(ns_name) = device.name.strip_prefix("vxlan-") {
-                println!("Cleaning up existing namespace: {ns_name}");
-                let _ = std::process::Command::new("./vxlan_scripts/ns-teardown.sh")
-                    .arg(ns_name)
-                    .spawn()
-                    .map(|mut c| c.wait())
-                    .handle_err(location!());
-            } else if device.name.starts_with("ns_") {
-                if let Some(ns_name) = device.name.strip_suffix("-out") {
-                    // same-host case: no vxlan- interface, discover namespaces via their veth-out
-                    println!("Cleaning up existing namespace: {ns_name}");
-                    let _ = std::process::Command::new("./vxlan_scripts/ns-teardown.sh")
-                        .arg(ns_name)
-                        .spawn()
-                        .map(|mut c| c.wait())
-                        .handle_err(location!());
-                }
-            } else if netlink::is_nullnet_veth(&device.name) {
-                println!("Cleaning up existing same-host veth pair: {}", device.name);
-                let _ = std::process::Command::new("ip")
-                    .args(["link", "del", &device.name])
-                    .spawn()
-                    .map(|mut c| c.wait())
-                    .handle_err(location!());
-            }
-        }
-    }
-
-    // then clean up existing bridges
-    if let Ok(devices) = NetworkInterface::show() {
-        for device in devices {
-            if device.name.starts_with("br_") {
-                let br_name = device.name;
-                println!("Cleaning up existing bridge: {br_name}");
-                let _ = std::process::Command::new("./vxlan_scripts/br-teardown.sh")
-                    .arg(br_name)
-                    .spawn()
-                    .map(|mut c| c.wait())
-                    .handle_err(location!());
-            }
-        }
-    }
-
-    // Interrupted setup can leave a namespace with no host-side interface.
-    if let Ok(namespaces) = std::fs::read_dir("/var/run/netns") {
-        for entry in namespaces.flatten() {
-            let name = entry.file_name();
-            if let Some(name) = name.to_str()
+async fn vxlan_cleanup_namespaces() -> Result<(), Error> {
+    if let Ok(entries) = std::fs::read_dir("/run/netns") {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str()
                 && is_nullnet_namespace(name)
             {
-                let _ = std::process::Command::new("ip")
-                    .args(["netns", "del", name])
-                    .status()
-                    .handle_err(location!());
+                endpoint_namespace::remove(name)
+                    .await
+                    .handle_err(location!())?;
             }
         }
     }
+    Ok(())
 }
 
 fn is_nullnet_namespace(name: &str) -> bool {
-    let Some(suffix) = name.strip_prefix("ns_") else {
-        return false;
-    };
+    name.strip_prefix("ns_").is_some_and(owned_endpoint_suffix)
+}
+
+fn owned_endpoint_suffix(suffix: &str) -> bool {
     let Some(id) = suffix
         .strip_suffix("_s")
         .or_else(|| suffix.strip_suffix("_c"))
     else {
         return false;
     };
-    id.parse::<u32>().is_ok_and(|value| value.to_string() == id)
+    id.parse::<u32>()
+        .is_ok_and(|value| value <= 0x1f_ffff && value.to_string() == id)
+}
+
+fn owned_vxlan_link(name: &str) -> bool {
+    if let Some(suffix) = name.strip_prefix("nnv_") {
+        return owned_endpoint_suffix(suffix);
+    }
+    if let Some(id) = name.strip_prefix("macsec-").and_then(|suffix| {
+        suffix
+            .strip_suffix('s')
+            .or_else(|| suffix.strip_suffix('c'))
+    }) {
+        let id = id.strip_suffix('-').unwrap_or(id);
+        return id
+            .parse::<u32>()
+            .is_ok_and(|value| value <= 0x1f_ffff && value.to_string() == id);
+    }
+    if let Some(ns) = name.strip_prefix("vxlan-") {
+        return is_nullnet_namespace(ns);
+    }
+    if let Some(ns) = name
+        .strip_suffix("-out")
+        .or_else(|| name.strip_suffix("-o"))
+    {
+        return is_nullnet_namespace(ns);
+    }
+    for prefix in ["veth-", "macsec-"] {
+        if let Some(suffix) = name.strip_prefix(prefix)
+            && let Some(id) = suffix
+                .strip_suffix("-s")
+                .or_else(|| suffix.strip_suffix("-c"))
+        {
+            return id
+                .parse::<u32>()
+                .is_ok_and(|value| value <= 0x1f_ffff && value.to_string() == id);
+        }
+    }
+    false
 }
 
 /// Cleanup existing veth and VLANs

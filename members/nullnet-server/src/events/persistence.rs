@@ -7,7 +7,7 @@ use std::sync::{
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-const QUEUE_CAPACITY: usize = 4096;
+pub(super) const QUEUE_CAPACITY: usize = 32_768;
 const BATCH_SIZE: usize = 512;
 
 enum Command {

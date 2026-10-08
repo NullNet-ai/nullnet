@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
-const CAPACITY: usize = 4096;
+const CAPACITY: usize = 16_384;
 const BATCH_SIZE: usize = 512;
 
 enum Command {
@@ -254,11 +254,14 @@ mod tests {
         let (store, db, events) = store().await;
         let mut receiver = events.subscribe();
         let held = db.hold_connection().await;
-        for id in 1..6000 {
+        for id in 1..(CAPACITY + BATCH_SIZE + 2) as u32 {
             open(&store, id).await;
         }
         assert!(matches!(
-            receiver.recv().await.unwrap(),
+            tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap(),
             Event::SessionPersistenceOverflow { .. }
         ));
         drop(held);

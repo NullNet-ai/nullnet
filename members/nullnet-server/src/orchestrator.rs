@@ -2,13 +2,13 @@ use crate::env::{ENCRYPTION_ENABLED, NET_TYPE};
 use crate::events::{Event, EventStore};
 use crate::geo::{GeoCache, GeoInfo};
 use crate::net::{EgressRole, NetExt};
-use crate::net_id_pool::{NetIdPool, UdpPortPool, generate_key};
+use crate::net_id_pool::{NetIdPool, generate_key};
 use crate::nullnet_grpc_impl::EDGE_CLAIM_TIMEOUT;
 use crate::services::changes::{apply_changes, detect_node_disconnect_changes};
 use crate::services::input::StackMap;
 use crate::sessions::SessionStore;
 use nullnet_grpc_lib::nullnet_grpc::{
-    ContainerResume, ContainerSuspend, EgressPolicyChanged, MsgId, Net, NetMessage, NetReady,
+    ContainerResume, ContainerSuspend, EgressPolicyChanged, MsgId, NetMessage, NetReady,
     net_message,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
@@ -138,15 +138,6 @@ pub(crate) struct EgressEdgeInfo {
     pub(crate) destinations: Vec<EgressDestination>,
 }
 
-/// An order-independent pair of underlay host IPs, used to scope per-tunnel
-/// VXLAN dstport allocation (see `Orchestrator::udp_port_pools`) — always
-/// produced via `host_pair()` so both call orders land on the same key.
-type HostPair = (IpAddr, IpAddr);
-
-/// An allocated VXLAN dstport, tagged with which host pair's pool it came
-/// from, so `send_net_teardown` can free it back into the right pool.
-type AllocatedPort = (HostPair, u16);
-
 #[derive(Debug, Clone)]
 pub struct Orchestrator {
     clients: Arc<RwLock<HashMap<IpAddr, OutboundStream>>>,
@@ -154,16 +145,6 @@ pub struct Orchestrator {
     proxies: Arc<RwLock<HashMap<IpAddr, usize>>>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
     net_id_pool: Arc<Mutex<NetIdPool>>,
-    /// Per-tunnel VXLAN UDP dstport pools, one per host pair rather than one
-    /// global pool — XFRM policies already select by the full (src, dst,
-    /// proto, dport) tuple, so two different host pairs can safely reuse the
-    /// same port number; only concurrent tunnels *between the same two hosts*
-    /// need distinct ports. Unused in VLAN mode.
-    udp_port_pools: Arc<Mutex<HashMap<HostPair, UdpPortPool>>>,
-    /// net_id -> allocated dstport (with its host pair), for VXLAN tunnels
-    /// only. Lets `send_net_teardown` free the port back into the right
-    /// pair's pool without every call site having to carry it around.
-    net_id_ports: Arc<Mutex<HashMap<u32, AllocatedPort>>>,
     /// Live egress edges, keyed by initiator replica. Separate from the service
     /// StackMap because the proxy end is infrastructure, not a registered service.
     ///
@@ -193,8 +174,6 @@ impl Orchestrator {
             proxies: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
             net_id_pool: Arc::new(Mutex::new(NetIdPool::new())),
-            udp_port_pools: Arc::new(Mutex::new(HashMap::new())),
-            net_id_ports: Arc::new(Mutex::new(HashMap::new())),
             egress_edges: Arc::new(RwLock::new(HashMap::new())),
             backend_sessions: Arc::new(RwLock::new(HashMap::new())),
             geo: GeoCache::from_env(),
@@ -351,32 +330,9 @@ impl Orchestrator {
             return Err("NET ID pool exhausted").handle_err(location!());
         };
 
-        // One AES-256 key per tunnel, shared by both ends, same as any other
-        // chain edge (skipped when encryption is globally disabled). A
-        // dedicated per-tunnel UDP dstport is only needed for XFRM
-        // disambiguation between concurrent *encrypted* tunnels sharing a
-        // host pair; same-host and unencrypted edges fall back to the shared
-        // default port instead (mirrors net_chain_setup's gating in
-        // nullnet_grpc_impl.rs — see DEFAULT_VXLAN_DSTPORT's doc comment).
         let encrypted = *ENCRYPTION_ENABLED;
         let encryption_key = if encrypted { generate_key() } else { [0u8; 32] };
-        let needs_dedicated_port = *NET_TYPE == Net::Vxlan && encrypted && proxy_ip != initiator_ip;
-        let dstport = if needs_dedicated_port {
-            match self
-                .allocate_vxlan_port(net_id, proxy_ip, initiator_ip)
-                .await
-            {
-                Some(port) => Some(u32::from(port)),
-                None => {
-                    self.free_net_id(net_id).await;
-                    self.remove_egress_edges(|k, e| k == &key && e.generation == generation)
-                        .await;
-                    return Err("UDP port pool exhausted").handle_err(location!());
-                }
-            }
-        } else {
-            None
-        };
+        let dstport = None;
 
         // Gateway is the server side (Intercept -> forward/MASQUERADE); initiator
         // is the client side (Steer -> policy-route + SNAT). docker tuple is (client, server).
@@ -1146,30 +1102,6 @@ impl Orchestrator {
         self.net_id_pool.lock().await.free(net_id);
     }
 
-    /// Allocate a per-tunnel VXLAN dstport from the pool scoped to this
-    /// specific host pair (`host_a`/`host_b`, order-independent — not a
-    /// global pool, see the field doc on `udp_port_pools`), and remember it
-    /// against `net_id` so `send_net_teardown` can free it later without the
-    /// caller having to carry it around. Only meaningful when
-    /// `NET_TYPE == Net::Vxlan`.
-    pub(crate) async fn allocate_vxlan_port(
-        &self,
-        net_id: u32,
-        host_a: IpAddr,
-        host_b: IpAddr,
-    ) -> Option<u16> {
-        let pair = host_pair(host_a, host_b);
-        let port = self
-            .udp_port_pools
-            .lock()
-            .await
-            .entry(pair)
-            .or_insert_with(UdpPortPool::new)
-            .allocate()?;
-        self.net_id_ports.lock().await.insert(net_id, (pair, port));
-        Some(port)
-    }
-
     pub(crate) async fn connected_node_ips(&self) -> Vec<IpAddr> {
         self.clients.read().await.keys().copied().collect()
     }
@@ -1193,8 +1125,7 @@ impl Orchestrator {
         ips
     }
 
-    /// Tear an edge down on both endpoints and return the net id (and its
-    /// dstport) to their pools — but only **after** the endpoints confirm the
+    /// Tear an edge down on both endpoints and return the net id to its pool — but only **after** the endpoints confirm the
     /// teardown actually ran.
     ///
     /// Freeing on enqueue, as this used to do, is the root of the net-id reuse
@@ -1218,16 +1149,6 @@ impl Orchestrator {
         server_docker: Option<String>,
         net_id: u32,
     ) {
-        // Peeked (not removed yet) so both teardown messages can carry the
-        // same dstport that was used to install this tunnel's XFRM state;
-        // the pool slot itself is freed by the task below.
-        let dstport = self
-            .net_id_ports
-            .lock()
-            .await
-            .get(&net_id)
-            .map(|(_pair, port)| *port);
-
         let mut acks = Vec::new();
         for (dest, remote, side, docker) in [
             (client, server, "c", client_docker),
@@ -1242,7 +1163,7 @@ impl Orchestrator {
                 self.pending.lock().await.insert(msg_id.clone(), tx);
 
                 let message =
-                    NET_TYPE.teardown(net_id, side, docker, dest, remote, dstport, msg_id.clone());
+                    NET_TYPE.teardown(net_id, side, docker, dest, remote, None, msg_id.clone());
 
                 acks.push((dest, msg_id, rx, outbound, message));
             }
@@ -1254,23 +1175,13 @@ impl Orchestrator {
             // learning anything. Same behaviour as before this change; the
             // edge's kernel state, if any survives, is reconciled by the
             // client's startup purge when that node comes back.
-            self.free_net_id_and_port(net_id).await;
+            self.free_net_id(net_id).await;
         } else {
             self.spawn_deferred_net_id_free(net_id, acks);
         }
     }
 
-    /// Return a net id and its VXLAN dstport to their pools.
-    async fn free_net_id_and_port(&self, net_id: u32) {
-        if let Some((pair, port)) = self.net_id_ports.lock().await.remove(&net_id)
-            && let Some(pool) = self.udp_port_pools.lock().await.get_mut(&pair)
-        {
-            pool.free(port);
-        }
-        self.net_id_pool.lock().await.free(net_id);
-    }
-
-    /// Keep ids and ports reserved until every sent teardown is complete or
+    /// Keep ids reserved until every sent teardown is complete or
     /// its connection closes. A deadline only raises an operator warning.
     fn spawn_deferred_net_id_free(
         &self,
@@ -1333,16 +1244,11 @@ impl Orchestrator {
                 pending.lock().await.remove(&msg_id);
             }
 
-            orchestrator.free_net_id_and_port(net_id).await;
+            orchestrator.free_net_id(net_id).await;
+            println!("Network {net_id} teardown complete; ID released");
             inflight.fetch_sub(1, Ordering::SeqCst);
         });
     }
-}
-
-/// Normalize a host pair so both call orders (A, B) and (B, A) land on the
-/// same per-pair port pool.
-fn host_pair(a: IpAddr, b: IpAddr) -> HostPair {
-    if a <= b { (a, b) } else { (b, a) }
 }
 
 #[cfg(test)]
@@ -1584,28 +1490,6 @@ mod teardown_ack_tests {
         assert!(orch.pending.lock().await.is_empty());
     }
 
-    #[tokio::test]
-    async fn returning_an_id_waits_for_its_old_port_record_to_be_removed() {
-        let orch = Orchestrator::new();
-        let id = orch.allocate_net_id().await.unwrap();
-        let ports = orch.net_id_ports.lock().await;
-        let copy = orch.clone();
-        let cleanup = tokio::spawn(async move {
-            copy.free_net_id_and_port(id).await;
-        });
-        for _ in 0..256 {
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(
-            orch.net_ids_in_use().await,
-            1,
-            "id must not be reused while its old port record is being removed"
-        );
-        drop(ports);
-        cleanup.await.unwrap();
-        assert_eq!(orch.net_ids_in_use().await, 0);
-    }
-
     /// Neither endpoint is connected, so nothing was sent and there is nothing
     /// to wait for — the id comes back immediately, as before this change.
     /// `teardown_egress_edges_for_node` runs in exactly this state.
@@ -1618,76 +1502,6 @@ mod teardown_ack_tests {
         orch.send_net_teardown(a, None, b, None, id).await;
 
         assert_eq!(orch.net_ids_in_use().await, 0);
-    }
-}
-
-#[cfg(test)]
-mod udp_port_pool_tests {
-    use super::*;
-
-    fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
-        IpAddr::V4(Ipv4Addr::new(a, b, c, d))
-    }
-
-    #[tokio::test]
-    async fn allocations_within_one_pair_stay_distinct() {
-        let orch = Orchestrator::new();
-        let (host_a, host_b) = (ip(10, 0, 0, 1), ip(10, 0, 0, 2));
-
-        let p1 = orch.allocate_vxlan_port(101, host_a, host_b).await.unwrap();
-        let p2 = orch.allocate_vxlan_port(102, host_a, host_b).await.unwrap();
-
-        assert_ne!(p1, p2);
-    }
-
-    #[tokio::test]
-    async fn different_pairs_can_reuse_the_same_port_number() {
-        let orch = Orchestrator::new();
-
-        // Two entirely separate host pairs, each allocating for the first
-        // time, should each get their own pool's first port - proving the
-        // pools are actually scoped per pair rather than drawn from one
-        // global pool (which would force the second call to skip ahead).
-        let p1 = orch
-            .allocate_vxlan_port(101, ip(10, 0, 0, 1), ip(10, 0, 0, 2))
-            .await
-            .unwrap();
-        let p2 = orch
-            .allocate_vxlan_port(102, ip(10, 0, 0, 3), ip(10, 0, 0, 4))
-            .await
-            .unwrap();
-
-        assert_eq!(p1, p2);
-    }
-
-    #[tokio::test]
-    async fn pair_lookup_is_order_independent() {
-        let orch = Orchestrator::new();
-        let (host_a, host_b) = (ip(10, 0, 0, 1), ip(10, 0, 0, 2));
-
-        // Same two hosts, opposite argument order (as happens naturally: one
-        // edge's setup calls with (server, client), the other with
-        // (proxy, initiator) - either could be first) - must land on the
-        // same pool, not two independent ones.
-        let p1 = orch.allocate_vxlan_port(101, host_a, host_b).await.unwrap();
-        let p2 = orch.allocate_vxlan_port(102, host_b, host_a).await.unwrap();
-
-        assert_ne!(p1, p2);
-    }
-
-    #[tokio::test]
-    async fn teardown_frees_the_port_back_to_its_own_pair_pool() {
-        let orch = Orchestrator::new();
-        let (host_a, host_b) = (ip(10, 0, 0, 1), ip(10, 0, 0, 2));
-
-        let port = orch.allocate_vxlan_port(101, host_a, host_b).await.unwrap();
-        orch.send_net_teardown(host_a, None, host_b, None, 101)
-            .await;
-
-        // The freed port is the lowest available again, so the next
-        // allocation for the same pair reuses it rather than advancing.
-        let reused = orch.allocate_vxlan_port(102, host_a, host_b).await.unwrap();
-        assert_eq!(port, reused);
     }
 }
 
@@ -1965,12 +1779,15 @@ mod session_history_tests {
         let db_guard = db.hold_connection().await;
         let finish = finish_backend(&orch, &key, generation, 42, "db", Some(7));
         tokio::pin!(finish);
-        assert!(futures::poll!(&mut finish).is_pending());
+        assert!(matches!(
+            futures::poll!(&mut finish),
+            std::task::Poll::Ready(true)
+        ));
         let liveness = orch.set_backend_liveness(&key, false);
         tokio::pin!(liveness);
         assert!(futures::poll!(&mut liveness).is_ready());
         drop(db_guard);
-        assert!(finish.await);
+        orch.sessions.flush().await;
         assert!(
             orch.backend_sessions.read().await[&key]
                 .idle_since
@@ -1989,17 +1806,21 @@ mod session_history_tests {
         let db_guard = db.hold_connection().await;
         let finish = finish_backend(&orch, &key, generation, 42, "db", Some(7));
         tokio::pin!(finish);
-        assert!(futures::poll!(&mut finish).is_pending());
+        assert!(matches!(
+            futures::poll!(&mut finish),
+            std::task::Poll::Ready(true)
+        ));
         orch.cancel_backend_session(&key, generation).await;
         let replacement = orch
             .claim_backend_session(key.clone(), "prod")
             .await
             .unwrap();
         drop(db_guard);
-        assert!(finish.await);
+        orch.sessions.flush().await;
         assert!(orch.backend_sessions.read().await[&key].building);
         assert_eq!(db.sessions().count_active("prod").await.unwrap(), 0);
         assert!(finish_backend(&orch, &key, replacement, 43, "db", Some(8)).await);
+        orch.sessions.flush().await;
         assert_eq!(db.sessions().count_active("prod").await.unwrap(), 1);
     }
 
@@ -2036,7 +1857,7 @@ mod session_history_tests {
                 }
             };
             tokio::pin!(close);
-            assert!(futures::poll!(&mut close).is_pending());
+            assert!(futures::poll!(&mut close).is_ready());
             let liveness = orch.set_backend_liveness(&other, false);
             tokio::pin!(liveness);
             assert!(futures::poll!(&mut liveness).is_ready());
@@ -2045,8 +1866,9 @@ mod session_history_tests {
                 .await
                 .unwrap();
             drop(db_guard);
-            close.await;
+            orch.sessions.flush().await;
             assert!(finish_backend(&orch, &key, replacement, 43, "db", Some(8)).await);
+            orch.sessions.flush().await;
             assert_eq!(db.sessions().count_active("prod").await.unwrap(), 2);
             assert_eq!(
                 orch.backend_sessions.read().await[&key].generation,
@@ -2073,9 +1895,11 @@ mod session_history_tests {
             .claim_backend_session(other.clone(), "prod")
             .await
             .unwrap();
+        orch.sessions.flush().await;
         assert_eq!(db.sessions().count_active("prod").await.unwrap(), 0);
         assert!(finish_backend(&orch, &key, generation, 42, "db", Some(7)).await);
         assert!(finish_backend(&orch, &other, other_generation, 42, "db", Some(7)).await);
+        orch.sessions.flush().await;
         assert_eq!(db.sessions().count_active("prod").await.unwrap(), 2);
         let rows = db
             .sessions()
@@ -2122,6 +1946,7 @@ mod session_history_tests {
         let expired = orch.take_due_backend_sessions(Duration::ZERO).await;
         assert_eq!(expired.len(), 1);
         orch.sessions.close_backend(expired[0].2).await;
+        orch.sessions.flush().await;
         assert_eq!(db.sessions().count_active("prod").await.unwrap(), 1);
         let replacement = orch
             .claim_backend_session(key.clone(), "prod")
@@ -2129,11 +1954,14 @@ mod session_history_tests {
             .unwrap();
         assert!(finish_backend(&orch, &key, replacement, 42, "db", Some(7)).await);
         orch.cancel_backend_session(&key, generation).await;
+        orch.sessions.flush().await;
         assert_eq!(db.sessions().count_active("prod").await.unwrap(), 2);
         orch.forget_backend_sessions("api", key.1, key.2.as_deref(), &[8080])
             .await;
+        orch.sessions.flush().await;
         assert_eq!(db.sessions().count_active("prod").await.unwrap(), 1);
         orch.sessions.close_stale_on_startup().await;
+        orch.sessions.flush().await;
         assert_eq!(db.sessions().count_active("prod").await.unwrap(), 0);
         let rows = db
             .sessions()
@@ -2229,6 +2057,8 @@ mod session_history_tests {
             .net_id = 5;
         orch.persist_edge_destinations(&key).await;
 
+        orch.sessions.flush().await;
+
         let rows = db
             .sessions()
             .query("prod", None, None, None, None, None, None, None, 10)
@@ -2257,6 +2087,7 @@ mod session_history_tests {
             true,
         )
         .await;
+        orch.sessions.flush().await;
         let rows = db
             .sessions()
             .query("prod", None, None, None, None, None, None, None, 10)
@@ -2284,6 +2115,8 @@ mod session_history_tests {
         orch.record_egress_destination(key.0, key.1.clone(), done, 1, 150, false, false)
             .await;
 
+        orch.sessions.flush().await;
+
         let open = db
             .sessions()
             .query("prod", None, None, Some(true), None, None, None, None, 10)
@@ -2291,6 +2124,7 @@ mod session_history_tests {
             .unwrap();
         assert_eq!(open.len(), 1, "only the still-busy destination is live");
         assert_eq!(open[0].peer_ip, "1.1.1.1");
+        orch.sessions.flush().await;
         let closed = db
             .sessions()
             .query("prod", None, None, Some(false), None, None, None, None, 10)
@@ -2304,6 +2138,7 @@ mod session_history_tests {
         // Contacted again later: a new period, so a new row, not a revival.
         orch.record_egress_destination(key.0, key.1.clone(), done, 2, 200, false, true)
             .await;
+        orch.sessions.flush().await;
         let rows = db
             .sessions()
             .query("prod", None, None, None, None, None, None, None, 10)
@@ -2337,6 +2172,8 @@ mod session_history_tests {
             .await;
         }
 
+        orch.sessions.flush().await;
+
         let rows = db
             .sessions()
             .query("prod", None, None, None, None, None, None, None, 10)
@@ -2350,6 +2187,7 @@ mod session_history_tests {
         // Traffic that actually connects is a new period, so it opens a row.
         orch.record_egress_destination(key.0, key.1.clone(), dst, 21, 120, false, true)
             .await;
+        orch.sessions.flush().await;
         let open = db
             .sessions()
             .query("prod", None, None, Some(true), None, None, None, None, 10)
@@ -2376,6 +2214,8 @@ mod session_history_tests {
                 .await;
         }
 
+        orch.sessions.flush().await;
+
         let rows = db
             .sessions()
             .query("prod", None, None, None, None, None, None, None, 10)
@@ -2387,6 +2227,7 @@ mod session_history_tests {
         assert!(rows.iter().all(|r| r.ended_at.is_none()));
 
         orch.reap_idle_egress_edges(Duration::from_secs(1)).await;
+        orch.sessions.flush().await;
         let rows = db
             .sessions()
             .query("prod", None, None, None, None, None, None, None, 10)
@@ -2407,6 +2248,7 @@ mod session_history_tests {
             true,
         )
         .await;
+        orch.sessions.flush().await;
         let open = db
             .sessions()
             .query("prod", None, None, Some(true), None, None, None, None, 10)
@@ -2438,6 +2280,8 @@ mod session_history_tests {
             ["still-here".to_string()].into_iter().collect();
         orch.teardown_egress_edges_for_missing_containers(ip(10, 0, 0, 1), &live)
             .await;
+
+        orch.sessions.flush().await;
 
         let open = db
             .sessions()
@@ -2478,6 +2322,8 @@ mod session_history_tests {
         .await;
 
         orch.teardown_egress_edges_for_node(gone.0).await;
+
+        orch.sessions.flush().await;
 
         let open = db
             .sessions()

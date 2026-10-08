@@ -2289,48 +2289,9 @@ async fn setup_edge(
             .await;
     }
 
-    // One AES-256 key per tunnel, handed identically to both
-    // endpoints below (skipped when encryption is globally
-    // disabled). A dedicated per-tunnel UDP dstport is only
-    // needed so the two hosts' XFRM policies can tell this
-    // tunnel apart from other concurrent *encrypted* tunnels
-    // between the same host pair — same-host tunnels (MACsec on
-    // a veth, no XFRM) and unencrypted ones (no XFRM either) fall
-    // back to the shared default port instead. The 40k-entry pool
-    // is also scoped per host pair (see `Orchestrator::allocate_vxlan_port`),
-    // not global, so it only actually caps concurrent encrypted
-    // tunnels between the same two hosts.
     let encrypted = *ENCRYPTION_ENABLED;
     let encryption_key = if encrypted { generate_key() } else { [0u8; 32] };
-    let needs_dedicated_port =
-        *NET_TYPE == Net::Vxlan && encrypted && server_ethernet != client_ethernet;
-    let dstport = if needs_dedicated_port {
-        match orchestrator
-            .allocate_vxlan_port(net_id, server_ethernet, client_ethernet)
-            .await
-        {
-            Some(port) => Some(u32::from(port)),
-            None => {
-                eprintln!("UDP port pool exhausted");
-                orchestrator
-                    .events
-                    .emit(Event::udp_port_pool_exhausted(
-                        server_name.clone(),
-                        client_ethernet.to_string(),
-                    ))
-                    .await;
-                orchestrator.free_net_id(net_id).await;
-                if let Some(stack_map) = services.write().await.get_mut(stack)
-                    && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
-                {
-                    reg.remove_pending_client_if(&client, &reservation);
-                }
-                return EdgeOutcome::Failed;
-            }
-        }
-    } else {
-        None
-    };
+    let dstport = None;
 
     let orch = orchestrator.clone();
     let cd = client_docker.clone();
@@ -2825,6 +2786,12 @@ impl NullnetGrpc for NullnetGrpcImpl {
                 e.dst_port,
                 e.error_message,
             ),
+            AgentEventKind::VxlanEnvironmentFailed(e) => {
+                Event::vxlan_environment_failed(e.error_message)
+            }
+            AgentEventKind::DeviceEventBypassChanged(e) => {
+                Event::device_event_bypass_changed(e.available, e.detail)
+            }
             AgentEventKind::GatewayForwardInstallFailed(e) => {
                 Event::gateway_forward_install_failed(e.vxlan_id, e.br_net)
             }

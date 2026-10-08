@@ -12,3 +12,5 @@ members/nullnet-server/ui/node_modules/
 members/nullnet-server/ui/dist/
 members/nullnet-server/certs
 members/nullnet-server/grpc-tls
+__pycache__/
+*.pyc

@@ -1,10 +1,12 @@
+use crate::commands::endpoint_namespace::EndpointNamespace;
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::sync::Notify;
+use tokio::sync::{Mutex, Notify};
 
 /// First 12 hex chars of `NetworkSettings.SandboxID` are what Docker uses
 /// in `gateway_<id>` endpoint names on docker_gwbridge — that's the join
@@ -24,6 +26,9 @@ const DOCKER_SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone, Default)]
 pub struct BridgeIpCache {
     inner: Arc<RwLock<AddressOwners>>,
+    namespaces: Arc<RwLock<HashMap<String, Arc<EndpointNamespace>>>>,
+    refresh_lock: Arc<Mutex<()>>,
+    watching: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -35,6 +40,53 @@ struct AddressOwners {
 impl BridgeIpCache {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_namespace(&self, name: String, namespace: Arc<EndpointNamespace>) {
+        self.namespaces.write().unwrap().insert(name, namespace);
+        self.watching.store(true, Ordering::Release);
+    }
+
+    pub(crate) async fn namespace(
+        &self,
+        container: &str,
+    ) -> Result<Arc<EndpointNamespace>, String> {
+        if self.watching.load(Ordering::Acquire)
+            && let Some(namespace) = self.cached_namespace(container)
+        {
+            return Ok(namespace);
+        }
+        let _refresh = self.refresh_lock.lock().await;
+        if self.watching.load(Ordering::Acquire)
+            && let Some(namespace) = self.cached_namespace(container)
+        {
+            return Ok(namespace);
+        }
+        self.refresh_unlocked().await;
+        self.cached_namespace(container)
+            .ok_or_else(|| format!("No live namespace for container {container}"))
+    }
+
+    fn cached_namespace(&self, container: &str) -> Option<Arc<EndpointNamespace>> {
+        let namespaces = self.namespaces.read().unwrap();
+        let identifier = container.strip_prefix('/').unwrap_or(container);
+        let namespace = if let Some(namespace) = namespaces.get(identifier) {
+            namespace.clone()
+        } else {
+            let mut matches = namespaces.iter().filter(|(id, _)| {
+                id.len() == 64
+                    && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && id.starts_with(identifier)
+            });
+            let (_, namespace) = matches.next()?;
+            if matches.next().is_some() {
+                return None;
+            }
+            namespace.clone()
+        };
+        namespace.validate().ok()?;
+        Some(namespace)
     }
 
     pub fn get(&self, ip: Ipv4Addr) -> Option<String> {
@@ -52,17 +104,17 @@ impl BridgeIpCache {
         self.inner.read().unwrap().docker.keys().copied().collect()
     }
 
-    /// Liveness also needs interfaces installed outside Docker's inventory.
-    pub fn all_ips(&self) -> Vec<Ipv4Addr> {
+    /// Snapshot all address owners, including direct overlay interfaces.
+    pub fn owned_ips(&self) -> HashMap<Ipv4Addr, String> {
         let owners = self.inner.read().unwrap();
-        owners
-            .docker
-            .keys()
-            .chain(owners.overlays.keys())
-            .copied()
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect()
+        let mut addresses = owners.docker.clone();
+        addresses.extend(
+            owners
+                .overlays
+                .iter()
+                .map(|(ip, (_, container))| (*ip, container.clone())),
+        );
+        addresses
     }
 
     pub(crate) fn add_overlay(&self, namespace: &str, ip: Ipv4Addr, container: &str) {
@@ -89,13 +141,20 @@ impl BridgeIpCache {
     /// Atomic swap; readers either see the old map or the new map, never a
     /// half-built one.
     pub async fn refresh(&self) {
+        let _refresh = self.refresh_lock.lock().await;
+        self.refresh_unlocked().await;
+    }
+
+    async fn refresh_unlocked(&self) {
         match query_docker().await {
-            Ok(map) => {
+            Ok((map, namespaces)) => {
+                *self.namespaces.write().unwrap() = namespaces;
                 let size = map.len();
                 self.replace(map);
                 println!("[nfqueue/cache] refresh: {size} container IP(s) loaded");
             }
             Err(e) => {
+                self.namespaces.write().unwrap().clear();
                 eprintln!("[nfqueue/cache] refresh failed: {e}");
             }
         }
@@ -109,6 +168,7 @@ struct ContainerIndex {
     /// Container names (leading `/` stripped). An endpoint whose `Name`
     /// matches one of these resolves directly to that container.
     names: HashSet<String>,
+    identities: Vec<(String, String, u32, String)>,
     /// `SandboxID[..12]` → container name. Resolves the `gateway_<id>`
     /// endpoints docker_gwbridge uses for Swarm task sandboxes — those
     /// sandboxes are attached at the libnetwork level and never appear in
@@ -142,13 +202,28 @@ struct ContainerIndex {
 /// Stale `gateway_<id>` endpoints (left behind by a reaped task whose
 /// sandbox ID no longer matches any running container) fall through to
 /// `None` and get dropped, so the cache never holds dead IPs.
-async fn query_docker() -> Result<HashMap<Ipv4Addr, String>, String> {
+type Discovery = (
+    HashMap<Ipv4Addr, String>,
+    HashMap<String, Arc<EndpointNamespace>>,
+);
+
+async fn query_docker() -> Result<Discovery, String> {
     let ids = list_container_ids().await?;
     if ids.is_empty() {
-        return Ok(HashMap::new());
+        return Ok((HashMap::new(), HashMap::new()));
     }
     let index = inspect_container_index(&ids).await?;
 
+    let mut namespaces = HashMap::new();
+    for (name, id, pid, sandbox) in &index.identities {
+        match EndpointNamespace::container(*pid, sandbox.clone()).await {
+            Ok(namespace) => {
+                namespaces.insert(name.clone(), namespace.clone());
+                namespaces.insert(id.clone(), namespace);
+            }
+            Err(error) => eprintln!("[nfqueue/cache] namespace {name}: {error}"),
+        }
+    }
     let network_ids = list_network_ids().await?;
 
     let mut map = HashMap::new();
@@ -171,7 +246,7 @@ async fn query_docker() -> Result<HashMap<Ipv4Addr, String>, String> {
         }
     }
 
-    Ok(map)
+    Ok((map, namespaces))
 }
 
 async fn list_container_ids() -> Result<Vec<String>, String> {
@@ -188,7 +263,7 @@ async fn inspect_container_index(ids: &[String]) -> Result<ContainerIndex, Strin
     let mut args: Vec<&str> = vec![
         "inspect",
         "--format",
-        "{{.Name}}|{{.NetworkSettings.SandboxID}}",
+        "{{.Name}}|{{.NetworkSettings.SandboxID}}|{{.Id}}|{{.State.Pid}}|{{.NetworkSettings.SandboxKey}}",
     ];
     args.extend(ids.iter().map(String::as_str));
     let out = run_docker(&args, "docker inspect").await?;
@@ -197,6 +272,7 @@ async fn inspect_container_index(ids: &[String]) -> Result<ContainerIndex, Strin
 
 fn parse_container_index(s: &str) -> ContainerIndex {
     let mut names = HashSet::new();
+    let mut identities = Vec::new();
     let mut sandbox12_to_name = HashMap::new();
     for line in s.lines() {
         let Some((name_part, sandbox_part)) = line.split_once('|') else {
@@ -207,13 +283,22 @@ fn parse_container_index(s: &str) -> ContainerIndex {
             continue;
         }
         names.insert(name.clone());
-        let sandbox = sandbox_part.trim();
+        let mut fields = sandbox_part.split('|');
+        let sandbox = fields.next().unwrap_or_default().trim();
+        if let (Some(id), Some(pid), Some(path)) = (fields.next(), fields.next(), fields.next())
+            && let Ok(pid) = pid.parse::<u32>()
+            && pid > 0
+            && !path.is_empty()
+        {
+            identities.push((name.clone(), id.into(), pid, path.into()));
+        }
         if sandbox.len() >= SANDBOX_PREFIX_LEN {
             sandbox12_to_name.insert(sandbox[..SANDBOX_PREFIX_LEN].to_string(), name);
         }
     }
     ContainerIndex {
         names,
+        identities,
         sandbox12_to_name,
     }
 }
@@ -327,6 +412,7 @@ pub fn spawn_events_watcher(cache: BridgeIpCache, docker_changed: Arc<Notify>) {
     tokio::spawn(async move {
         loop {
             if let Err(e) = run_events_loop(&cache, &docker_changed).await {
+                cache.namespaces.write().unwrap().clear();
                 eprintln!("[nfqueue/cache] events watcher: {e}; restarting in 5s");
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
@@ -335,15 +421,26 @@ pub fn spawn_events_watcher(cache: BridgeIpCache, docker_changed: Arc<Notify>) {
 }
 
 async fn run_events_loop(cache: &BridgeIpCache, docker_changed: &Notify) -> Result<(), String> {
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs()
+        .to_string();
     let mut child = tokio::process::Command::new("docker")
         .args([
             "events",
+            "--since",
+            &since,
             "--filter",
             "type=container",
             "--filter",
             "event=start",
             "--filter",
             "event=die",
+            "--filter",
+            "event=rename",
+            "--filter",
+            "event=destroy",
             // `.Action` (start/die) is the modern field; the legacy
             // `.Status` was removed in newer daemons (template eval errors
             // "can't evaluate field Status in type *events.Message").
@@ -374,6 +471,15 @@ async fn run_events_loop(cache: &BridgeIpCache, docker_changed: &Notify) -> Resu
         String::from_utf8_lossy(&buf).into_owned()
     });
 
+    struct Watching(Arc<AtomicBool>);
+    impl Drop for Watching {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    let _watching = Watching(cache.watching.clone());
+    cache.refresh().await;
+    cache.watching.store(true, Ordering::Release);
     let mut lines = BufReader::new(stdout).lines();
     while let Some(line) = lines
         .next_line()
@@ -382,13 +488,17 @@ async fn run_events_loop(cache: &BridgeIpCache, docker_changed: &Notify) -> Resu
     {
         // We don't parse the line — any container start/die warrants a
         // full refresh. Cheap enough: a few processes per event.
+        cache.watching.store(false, Ordering::Release);
+        cache.namespaces.write().unwrap().clear();
         println!("[nfqueue/cache] docker event: {line} — refreshing");
         cache.refresh().await;
+        cache.watching.store(true, Ordering::Release);
         // Cache now reflects the new task; kick the declare-services
         // loop so the ipset catches up before the new task dials.
         docker_changed.notify_one();
     }
 
+    cache.watching.store(false, Ordering::Release);
     // stdout closed — wait for the child to exit cleanly so we get an
     // exit status, then collect whatever stderr came through.
     let status = child.wait().await.map_err(|e| format!("wait: {e}"))?;
@@ -415,7 +525,7 @@ mod tests {
         cache.replace(HashMap::from([(bridge, "source".into())]));
 
         assert_eq!(cache.get(overlay).as_deref(), Some("source"));
-        let addresses: HashSet<_> = cache.all_ips().into_iter().collect();
+        let addresses: HashSet<_> = cache.owned_ips().into_keys().collect();
         assert_eq!(addresses, HashSet::from([bridge, overlay]));
         assert_eq!(cache.ips(), vec![bridge]);
     }
@@ -451,7 +561,7 @@ mod tests {
 
         assert_eq!(cache.get(old), None);
         assert_eq!(cache.get(new).as_deref(), Some("source"));
-        assert_eq!(cache.all_ips(), vec![new]);
+        assert_eq!(cache.owned_ips().into_keys().collect::<Vec<_>>(), vec![new]);
     }
 
     fn idx_with(name: &str, sandbox_prefix: &str) -> ContainerIndex {
@@ -461,6 +571,7 @@ mod tests {
         s.insert(sandbox_prefix.to_string(), name.to_string());
         ContainerIndex {
             names,
+            identities: Vec::new(),
             sandbox12_to_name: s,
         }
     }

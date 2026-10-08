@@ -2,7 +2,7 @@ mod lifecycle;
 
 use crate::commands::{RtNetLinkHandle, configure_access_port, dnat, egress, remove_vlan};
 use crate::conntrack::LivenessSets;
-use crate::ebpf::{FirewallPeers, FirewallVxlanPorts, NetId};
+use crate::ebpf::{FirewallPeers, NetId};
 use crate::egress_policy::{FLUSH_SUPPRESSION, PolicyVerdicts, flush_container_conntrack};
 use crate::egress_state::{EgressRecord, EgressState};
 use crate::host_mappings::{
@@ -69,7 +69,6 @@ pub(crate) async fn control_channel(
     triggers_state: Arc<TriggersState>,
     host_mappings_state: Arc<HostMappingsState>,
     firewall_peers: Arc<FirewallPeers>,
-    firewall_vxlan_ports: Arc<FirewallVxlanPorts>,
     egress_state: Arc<EgressState>,
     bridge_cache: BridgeIpCache,
     policy_verdicts: Arc<PolicyVerdicts>,
@@ -96,7 +95,6 @@ pub(crate) async fn control_channel(
         let host_mappings_state = host_mappings_state.clone();
         let server = server.clone();
         let firewall_peers = firewall_peers.clone();
-        let firewall_vxlan_ports = firewall_vxlan_ports.clone();
         match message.message {
             Some(net_message::Message::VlanSetup(vlan_setup)) => {
                 tokio::spawn(async move {
@@ -141,7 +139,6 @@ pub(crate) async fn control_channel(
                         host_mappings_state,
                         server,
                         firewall_peers,
-                        firewall_vxlan_ports,
                         egress_state,
                         sets,
                         bridge_cache,
@@ -164,7 +161,6 @@ pub(crate) async fn control_channel(
                         host_mappings_state,
                         server,
                         firewall_peers,
-                        firewall_vxlan_ports,
                         egress_state,
                         sets,
                         bridge_cache,
@@ -175,6 +171,18 @@ pub(crate) async fn control_channel(
             Some(net_message::Message::NetReady(ready)) => {
                 let triggers_state = triggers_state.clone();
                 lifecycle.spawn(ready.net_id, async move {
+                    if let Err(error) = crate::commands::vxlan::ready(ready.net_id).await {
+                        eprintln!("Endpoint readiness for {} failed: {error:?}", ready.net_id);
+                        fire_event(
+                            &server,
+                            AgentEventKind::VxlanSetupFailed(AgentVxlanSetupFailed {
+                                vxlan_id: ready.net_id,
+                                ns_name: format!("ns_{}_c", ready.net_id),
+                                error_code: -1,
+                            }),
+                        );
+                        return;
+                    }
                     let grpc = server.clone();
                     let published = tokio::task::spawn_blocking(move || {
                         let mut published = true;
@@ -434,7 +442,6 @@ async fn handle_vxlan_setup(
     host_mappings_state: Arc<HostMappingsState>,
     grpc: NullnetGrpcInterface,
     firewall_peers: Arc<FirewallPeers>,
-    firewall_vxlan_ports: Arc<FirewallVxlanPorts>,
     egress_state: Arc<EgressState>,
     sets: LivenessSets,
     bridge_cache: BridgeIpCache,
@@ -447,11 +454,11 @@ async fn handle_vxlan_setup(
         .handle_err(location!())?;
     let vxlan_id = message.vxlan_id;
     let ns_name = message.ns_name;
+    let br_name = message.br_name;
     let ns_net = message
         .ns_net
         .parse::<Ipv4Network>()
         .handle_err(location!())?;
-    let br_name = message.br_name;
     let br_net = message
         .br_net
         .parse::<Ipv4Network>()
@@ -495,24 +502,6 @@ async fn handle_vxlan_setup(
     // allow this peer's data-plane (VXLAN underlay) traffic through the host
     // firewall before the tunnel comes up, so the first packets aren't dropped.
     firewall_peers.add(NetId::Vxlan(vxlan_id), remote_ip);
-
-    // also allow this tunnel's own per-tunnel dstport: the eBPF firewall's
-    // static data-plane check only knows the fixed 4789/9999 ports, not the
-    // dynamically-allocated dstport each VXLAN tunnel gets (see
-    // nullnet-server's `UdpPortPool`), so without this every packet on a real
-    // tunnel — cross-host VXLAN encapsulation, including the overlay ARP that
-    // has to succeed before any TCP connection can be routed — is silently
-    // dropped at this host's NIC. Paired with `remote_ip` specifically, so a
-    // different concurrent tunnel's peer can't satisfy this port.
-    //
-    // Skipped for the shared default port (same-host or unencrypted edges —
-    // see nullnet-server's DEFAULT_VXLAN_DSTPORT doc comment): that port is
-    // legitimately reused by many concurrent tunnels at once, so it can't be
-    // paired to one specific peer here — it's already allowed via the eBPF
-    // firewall's own VXLAN_PORT constant check instead (any known peer).
-    if dstport != crate::DEFAULT_VXLAN_DSTPORT {
-        firewall_vxlan_ports.add(vxlan_id, dstport, remote_ip);
-    }
 
     // setup VXLAN on this machine (optionally attaching a Docker container)
     let init_t = std::time::Instant::now();
@@ -795,7 +784,6 @@ async fn handle_vxlan_teardown(
     host_mappings_state: Arc<HostMappingsState>,
     grpc: NullnetGrpcInterface,
     firewall_peers: Arc<FirewallPeers>,
-    firewall_vxlan_ports: Arc<FirewallVxlanPorts>,
     egress_state: Arc<EgressState>,
     sets: LivenessSets,
     bridge_cache: BridgeIpCache,
@@ -824,9 +812,6 @@ async fn handle_vxlan_teardown(
 
     // drop this peer's firewall allowance (refcounted; only removed if unused)
     firewall_peers.remove(NetId::Vxlan(message.vxlan_id));
-
-    // drop this tunnel's per-tunnel dstport allowance
-    firewall_vxlan_ports.remove(message.vxlan_id);
 
     // remove DNAT before tearing the tunnel down so existing flows reset
     // cleanly. The `container_ip` matches the `-s` we used at install time.
@@ -874,15 +859,10 @@ async fn handle_vxlan_teardown(
 
     let vxlan_id = message.vxlan_id;
     let ns_name = message.ns_name.clone();
-    let br_name = message.br_name;
 
     let vxlan_params = crate::commands::vxlan::VxlanTeardownParams {
         vxlan_id,
         ns_name: ns_name.clone(),
-        br_name,
-        // A malformed dstport just means the (already-idempotent) XFRM
-        // policy cleanup below is skipped — everything else still tears down.
-        dstport: u16::try_from(message.dstport).unwrap_or(crate::DEFAULT_VXLAN_DSTPORT),
     };
     let teardown_result =
         crate::commands::vxlan::teardown(&rtnetlink_handle, &vxlan_params, &bridge_cache).await;
@@ -901,7 +881,7 @@ async fn handle_vxlan_teardown(
     }
 
     println!(
-        "VXLAN {} in {} ms",
+        "VXLAN {vxlan_id} {} in {} ms",
         if local_cleanup_ok && teardown_result.is_ok() {
             "teardown completed"
         } else {
@@ -1141,8 +1121,7 @@ fn remove_hosts_entry(content: &str, name: &str, ip: &str) -> String {
 }
 
 /// Lowercase hex encoding, used to pass the tunnel's AES key to
-/// `commands::vxlan::setup` (which in turn feeds it to the `ip macsec`/
-/// `ip xfrm` calls it still shells out to for key installation).
+/// `commands::vxlan::setup`, which installs the key through native Netlink.
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -1197,7 +1176,6 @@ mod failure_tests {
             Arc::default(),
             grpc.clone(),
             firewall.peers.clone(),
-            firewall.vxlan_ports.clone(),
             Arc::default(),
             LivenessSets::new(),
             BridgeIpCache::new(),
@@ -1225,7 +1203,6 @@ mod failure_tests {
             Arc::default(),
             grpc,
             firewall.peers.clone(),
-            firewall.vxlan_ports.clone(),
             Arc::default(),
             LivenessSets::new(),
             BridgeIpCache::new(),

@@ -1,30 +1,18 @@
-//! VXLAN overlay creation/teardown, following the same rtnetlink-first
-//! strategy as `netlink.rs` (VLAN access ports): every operation that stays
-//! in the host's root network namespace — veth pairs, the bridge, the VXLAN
-//! tunnel itself — goes through `rtnetlink` in-process instead of spawning
-//! `ip`. What's left on the CLI is what genuinely has no rtnetlink equivalent
-//! (namespace creation, MACsec SA/key installation, XFRM state/policy), what
-//! rtnetlink encodes wrongly (the MACsec device itself — see `setup_same_host`)
-//! or that needs a netlink socket bound
-//! inside the target namespace, which rtnetlink has no way to reach from
-//! here (address/mtu/route on the namespace's own veth end).
-//!
-//! Mirrors `vxlan_scripts/vxlan-setup.sh`/`vxlan-teardown.sh`, which this
-//! replaces as the setup/teardown path (see issue #141).
+//! VXLAN endpoint lifecycle, with native namespace and encryption configuration.
 
 use super::RtNetLinkHandle;
-use super::netlink::{delete_link, get_link_by_name, set_link_mtu_up};
+use super::endpoint_io::{self, EndpointIo};
+use super::netlink::{add_link_echo, get_link_by_name};
 use crate::nfqueue::BridgeIpCache;
-use futures::StreamExt;
 use ipnetwork::Ipv4Network;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
-use rtnetlink::packet_route::link::{InfoData, InfoVeth, LinkMessage};
-use rtnetlink::{Handle, LinkBridge, LinkUnspec, LinkVeth, LinkVxlan};
+use rtnetlink::packet_route::link::{InfoData, InfoVeth};
+use rtnetlink::{Handle, LinkUnspec, LinkVeth, LinkVxlan};
 use std::collections::HashMap;
-use std::fs::File;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 use std::os::fd::AsRawFd;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex, PoisonError};
+#[cfg(test)]
 use tokio::process::Command;
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard, Semaphore};
 
@@ -43,6 +31,7 @@ fn link_group(vxlan_id: u32, client_side: bool) -> u32 {
     0x4e00_0000 | (vxlan_id << 1) | u32::from(client_side)
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct VxlanSetupParams {
     pub(crate) vxlan_id: u32,
     pub(crate) ns_name: String,
@@ -57,419 +46,518 @@ pub(crate) struct VxlanSetupParams {
     pub(crate) docker_container: Option<String>,
 }
 
+#[derive(Clone)]
 pub(crate) struct VxlanTeardownParams {
     pub(crate) vxlan_id: u32,
     pub(crate) ns_name: String,
-    pub(crate) br_name: String,
-    pub(crate) dstport: u16,
 }
 
-/// Per-net-id serialization: setup runs once per side (`_s`/`_c`) of the same
-/// edge, and a teardown can land between them — unserialized, those passes
-/// interleave and leave the two halves built on different veth incarnations.
-/// `vxlan-setup.sh`/`vxlan-teardown.sh` used `flock` on
-/// `/var/lock/nullnet-net-<id>.lock` for this; now that setup/teardown run
-/// in-process instead of as separate spawned scripts, an in-memory lock is
-/// equivalent and simpler.
+#[derive(Clone)]
+struct EndpointNames {
+    transport_s: String,
+    transport_c: String,
+    vxlan: String,
+    macsec: String,
+}
+
+impl EndpointNames {
+    fn new(id: u32, client_side: bool) -> Self {
+        let side = if client_side { "c" } else { "s" };
+        Self {
+            transport_s: format!("veth-{id}-s"),
+            transport_c: format!("veth-{id}-c"),
+            vxlan: format!("nnv_{id}_{side}"),
+            macsec: format!("macsec-{id}{side}"),
+        }
+    }
+}
+
+// Both endpoint halves share a lifecycle lock until teardown is acknowledged.
 static VXLAN_LOCKS: LazyLock<StdMutex<HashMap<u32, Arc<AsyncMutex<()>>>>> =
     LazyLock::new(|| StdMutex::new(HashMap::new()));
-
+static SETUP_SLOTS: Semaphore = Semaphore::const_new(32);
+static TEARDOWN_SLOTS: Semaphore = Semaphore::const_new(256);
+#[cfg(test)]
 static COMMAND_SLOTS: Semaphore = Semaphore::const_new(8);
+static ENDPOINTS: LazyLock<StdMutex<HashMap<String, Arc<Endpoint>>>> =
+    LazyLock::new(|| StdMutex::new(HashMap::new()));
 
-async fn lock(vxlan_id: u32) -> OwnedMutexGuard<()> {
+struct Endpoint {
+    params: VxlanSetupParams,
+    namespace: Option<Arc<super::endpoint_namespace::EndpointNamespace>>,
+    gateway: u32,
+    forwarding_name: String,
+    transport_name: String,
+    outer: Option<u32>,
+    inner: Option<u32>,
+    transport: u32,
+    forwarding: u32,
+    io: endpoint_io::EndpointSockets,
+}
+
+async fn lock(id: u32) -> OwnedMutexGuard<()> {
     let entry = VXLAN_LOCKS
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .entry(vxlan_id)
+        .entry(id)
         .or_insert_with(|| Arc::new(AsyncMutex::new(())))
         .clone();
     entry.lock_owned().await
 }
 
-pub(crate) async fn setup(
-    rtnetlink_handle: &RtNetLinkHandle,
+async fn create_endpoint(
+    handle: &Handle,
     params: &VxlanSetupParams,
     cache: &BridgeIpCache,
-) -> Result<(), Error> {
-    let _guard = lock(params.vxlan_id).await;
-    let _setup = super::vxlan_cleanup::track_setup();
-    // Publish ownership before the interface can carry its first packet.
-    if let Some(container) = &params.docker_container {
-        cache.add_overlay(&params.ns_name, params.ns_net.ip(), container);
-    }
-    let result = setup_locked(rtnetlink_handle, params).await;
-    if result.is_err() {
-        cache.remove_overlay(&params.ns_name);
-    }
-    result
-}
-
-async fn setup_locked(
-    rtnetlink_handle: &RtNetLinkHandle,
-    params: &VxlanSetupParams,
-) -> Result<(), Error> {
-    let handle = &rtnetlink_handle.handle;
-    let group = link_group(params.vxlan_id, params.br_name.ends_with("_c"));
-
-    // Namespace: join the docker container's, or create a fresh standalone
-    // one. Creating/joining a namespace isn't an rtnetlink (RTM_*) operation
-    // at all — it's `unshare(CLONE_NEWNET)` plus a bind mount — so this stays
-    // a CLI call.
-    let ns_pid = match &params.docker_container {
-        Some(container) => Some(docker_pid(container).await?),
-        None => {
-            // Idempotent, like the script: a leftover namespace from a
-            // previous run is reused rather than treated as fatal.
-            let _ =
-                command_status(Command::new("ip").args(["netns", "add", &params.ns_name])).await;
-            None
-        }
+) -> Result<Endpoint, Error> {
+    let client = params.br_name.ends_with("_c");
+    let group = link_group(params.vxlan_id, client);
+    let names = EndpointNames::new(params.vxlan_id, client);
+    let namespace = match &params.docker_container {
+        Some(container) => Some(cache.namespace(container).await.handle_err(location!())?),
+        None => None,
     };
-
-    // Create the peer in its final namespace to avoid a second registration
-    // and the kernel synchronization required by moving an existing device.
-    let veth_in = format!("{}-in", params.ns_name);
-    let veth_out = format!("{}-out", params.ns_name);
-    delete_if_exists(handle, &veth_out).await?;
-    let peer = LinkUnspec::new_with_name(&veth_in).mtu(OVERLAY_MTU);
-    let (peer, netns_file) = match ns_pid {
-        Some(pid) => (peer.setns_by_pid(pid).build(), None),
-        None => {
-            let file =
-                File::open(format!("/var/run/netns/{}", params.ns_name)).handle_err(location!())?;
-            (peer.setns_by_fd(file.as_raw_fd()).build(), Some(file))
-        }
-    };
-    handle
-        .link()
-        .add(
-            LinkVeth::new(&veth_out, &veth_in)
+    let (outer, inner) = if let Some(namespace) = &namespace {
+        namespace.validate().handle_err(location!())?;
+        let inner_name = format!("{}-in", params.ns_name);
+        let peer = LinkUnspec::new_with_name(&inner_name)
+            .mtu(OVERLAY_MTU)
+            .link_group(group)
+            .setns_by_fd(namespace.file.as_raw_fd())
+            .build();
+        let outer = add_link_echo(
+            handle,
+            LinkVeth::new(&params.br_name, &inner_name)
                 .mtu(OVERLAY_MTU)
                 .link_group(group)
                 .set_info_data(InfoData::Veth(InfoVeth::Peer(peer)))
                 .build(),
         )
-        .execute()
         .await
-        .handle_err(location!())?;
-    drop(netns_file);
-
-    configure_ns_in(params, ns_pid).await?;
-
-    // Bridge, with its own address, carrying the namespace's traffic.
-    delete_if_exists(handle, &params.br_name).await?;
-    handle
-        .link()
-        .add(LinkBridge::new(&params.br_name).link_group(group).build())
-        .execute()
-        .await
-        .handle_err(location!())?;
-    let br_link = get_link_by_name(handle, &params.br_name).await?;
-    handle
-        .address()
-        .add(
-            br_link.header.index,
-            IpAddr::V4(params.br_net.ip()),
-            params.br_net.prefix(),
-        )
-        .execute()
-        .await
-        .handle_err(location!())?;
-    set_link_mtu_up(handle, &br_link, OVERLAY_MTU).await?;
-
-    // Attach the root-namespace end of the namespace veth to the bridge.
-    let out_link = get_link_by_name(handle, &veth_out).await?;
-    attach_and_size(handle, &out_link, br_link.header.index, OVERLAY_MTU).await?;
-
-    if params.local_ip == params.remote_ip {
-        setup_same_host(handle, params, br_link.header.index).await?;
+        .handle_err(location!())?
+        .header
+        .index;
+        let inner = get_link_by_name(&namespace.handle, &inner_name)
+            .await?
+            .header
+            .index;
+        (Some(outer), Some(inner))
     } else {
-        setup_cross_host(handle, params, br_link.header.index).await?;
-    }
-
-    // Enable forwarding (Docker sets FORWARD policy to DROP).
-    let _ = command_status(Command::new("sysctl").args(["-w", "net.ipv4.ip_forward=1"])).await;
-    let _ = command_status(Command::new("iptables").args(["-P", "FORWARD", "ACCEPT"])).await;
-
-    Ok(())
-}
-
-/// Same host: connect the two bridges with a veth pair instead of a VXLAN
-/// tunnel — this traffic never leaves the host — optionally wrapped in
-/// MACsec (802.1AE, AES-256-GCM) for defense-in-depth against another,
-/// differently-privileged process on the same host reading the plaintext
-/// veth/bridge traffic directly.
-async fn setup_same_host(
-    handle: &Handle,
-    params: &VxlanSetupParams,
-    br_index: u32,
-) -> Result<(), Error> {
-    // Drop artifacts left by a previous cross-host incarnation of this net
-    // id — an edge switches branch when its peer relocates onto this host.
-    delete_if_exists(handle, &format!("vxlan-{}", params.ns_name)).await?;
-    purge_xfrm_spi(params.vxlan_id).await;
-
-    let veth_s = format!("veth-{}-s", params.vxlan_id);
-    let veth_c = format!("veth-{}-c", params.vxlan_id);
-    // A macsec interface inherits its parent veth's MAC, so derive both ends
-    // from the net id: each side's SCI — and the peer address the other side
-    // keys its RX SA to — becomes a pure function of `vxlan_id`.
-    let mac_s = veth_mac(params.vxlan_id, 1);
-    let mac_c = veth_mac(params.vxlan_id, 2);
-
-    // Unlike every other interface here, this pair is created by *two*
-    // sequential calls into this function — the `_s` and `_c` sides of the
-    // same edge, both on this host. Deleting-then-recreating (like every
-    // other interface below) would destroy whichever side ran first, so —
-    // same as the script's `2>/dev/null` on this exact command — the loser
-    // of the create race just reuses what the winner built; both derive the
-    // identical deterministic MAC either way.
-    let create = handle
-        .link()
-        .add(
-            LinkVeth::new(&veth_s, &veth_c)
-                .address(mac_s.clone())
-                .link_group(link_group(params.vxlan_id, false))
-                // Set both MACs at creation so udev never sees a random peer
-                // address and races us with MACAddressPolicy=persistent.
-                .set_info_data(InfoData::Veth(InfoVeth::Peer(
-                    LinkUnspec::new_with_name(&veth_c)
-                        .address(mac_c.clone())
-                        .link_group(link_group(params.vxlan_id, true))
-                        .build(),
-                )))
-                .build(),
-        )
-        .execute()
-        .await;
-    if let Err(e) = create
-        && !is_eexist(&e)
-    {
-        return Err(e).handle_err(location!());
-    }
-    let link_s = get_link_by_name(handle, &veth_s).await?;
-    let link_c = get_link_by_name(handle, &veth_c).await?;
-    let (local_link, local_veth, peer_mac, macsec_suffix) = if params.br_name.ends_with("_s") {
-        (link_s, veth_s.as_str(), mac_c, "s")
-    } else {
-        (link_c, veth_c.as_str(), mac_s, "c")
+        (None, None)
     };
-
-    if params.encrypted {
-        set_link_mtu_up(handle, &local_link, MACSEC_VETH_MTU).await?;
-
-        let macsec_if = format!("macsec-{}-{macsec_suffix}", params.vxlan_id);
-        delete_if_exists(handle, &macsec_if).await?;
-        // Stays on iproute2: netlink-packet-route emits IFLA_MACSEC_PORT with
-        // `emit_u16` (little-endian) where the kernel reads it big-endian, so
-        // rtnetlink's `.port(1)` builds an SCI on port 256 while the `ip macsec
-        // rx port 1` calls below key on port 1 — no frame ever matches.
-        // `port` must precede `cipher`: iproute2's parser is positional here.
-        privileged_checked(&[
-            "ip",
-            "link",
-            "add",
-            "link",
-            local_veth,
-            &macsec_if,
-            "type",
-            "macsec",
-            "port",
-            "1",
-            "cipher",
-            "gcm-aes-256",
-            "encrypt",
-            "on",
-        ])
-        .await?;
-
-        // SA/key installation is a separate genl family ("macsec"), not
-        // covered by rtnetlink — stays the same `ip macsec` calls the script
-        // used. Left unsuppressed (a real failure here should be loud).
-        let key_id = format!("{:032x}", params.vxlan_id);
-        let peer_mac_str = format_mac(&peer_mac);
-        privileged_checked(&[
-            "ip",
-            "macsec",
-            "add",
-            &macsec_if,
-            "tx",
-            "sa",
-            "0",
-            "pn",
-            "1",
-            "on",
-            "key",
-            &key_id,
-            &params.key_hex,
-        ])
-        .await?;
-        privileged_checked(&[
-            "ip",
-            "macsec",
-            "add",
-            &macsec_if,
-            "rx",
-            "port",
-            "1",
-            "address",
-            &peer_mac_str,
-            "on",
-        ])
-        .await?;
-        privileged_checked(&[
-            "ip",
-            "macsec",
-            "add",
-            &macsec_if,
-            "rx",
-            "port",
-            "1",
-            "address",
-            &peer_mac_str,
-            "sa",
-            "0",
-            "pn",
-            "1",
-            "on",
-            "key",
-            &key_id,
-            &params.key_hex,
-        ])
-        .await?;
-
-        let macsec_link = get_link_by_name(handle, &macsec_if).await?;
-        attach_and_size(handle, &macsec_link, br_index, OVERLAY_MTU).await?;
+    let (transport, forwarding) = if params.local_ip == params.remote_ip {
+        let result = handle
+            .link()
+            .add(
+                LinkVeth::new(&names.transport_s, &names.transport_c)
+                    .mtu(MACSEC_VETH_MTU)
+                    .address(veth_mac(params.vxlan_id, 1))
+                    .link_group(link_group(params.vxlan_id, false))
+                    .set_info_data(InfoData::Veth(InfoVeth::Peer(
+                        LinkUnspec::new_with_name(&names.transport_c)
+                            .mtu(MACSEC_VETH_MTU)
+                            .address(veth_mac(params.vxlan_id, 2))
+                            .link_group(link_group(params.vxlan_id, true))
+                            .build(),
+                    )))
+                    .build(),
+            )
+            .execute()
+            .await;
+        if let Err(error) = result {
+            if !is_eexist(&error) {
+                return Err(error).handle_err(location!());
+            }
+            let known = ENDPOINTS.lock().unwrap().values().any(|e| {
+                e.params.vxlan_id == params.vxlan_id && e.params.local_ip == e.params.remote_ip
+            });
+            if !known {
+                return Err("Refusing an unowned existing transport pair").handle_err(location!());
+            }
+        }
+        let name = if client {
+            &names.transport_c
+        } else {
+            &names.transport_s
+        };
+        let transport = get_link_by_name(handle, name).await?.header.index;
+        let forwarding = if params.encrypted {
+            super::native_macsec::prepare(
+                names.macsec.clone(),
+                transport,
+                veth_mac(params.vxlan_id, if client { 1 } else { 2 }),
+                group,
+            )
+            .await
+            .handle_err(location!())?
+        } else {
+            transport
+        };
+        (transport, forwarding)
     } else {
-        // Encryption disabled: attach the veth straight to the bridge.
-        attach_and_size(handle, &local_link, br_index, OVERLAY_MTU).await?;
-    }
-
-    Ok(())
-}
-
-/// Cross host: a real VXLAN tunnel between the two hosts' physical IPs, each
-/// tunnel on its own dstport (instead of the IANA-standard 4789) so the XFRM
-/// policies below can tell concurrent tunnels between the same host pair
-/// apart.
-async fn setup_cross_host(
-    handle: &Handle,
-    params: &VxlanSetupParams,
-    br_index: u32,
-) -> Result<(), Error> {
-    // Drop same-host artifacts left by a previous incarnation of this net id.
-    delete_if_exists(handle, &format!("macsec-{}-s", params.vxlan_id)).await?;
-    delete_if_exists(handle, &format!("macsec-{}-c", params.vxlan_id)).await?;
-    delete_if_exists(handle, &format!("veth-{}-s", params.vxlan_id)).await?;
-
-    let vxlan_name = format!("vxlan-{}", params.ns_name);
-    delete_if_exists(handle, &vxlan_name).await?;
-    handle
-        .link()
-        .add(
-            LinkVxlan::new(&vxlan_name, params.vxlan_id)
-                .link_group(link_group(params.vxlan_id, params.br_name.ends_with("_c")))
+        let transport = add_link_echo(
+            handle,
+            LinkVxlan::new(&names.vxlan, params.vxlan_id)
+                .mtu(OVERLAY_MTU)
+                .link_group(group)
                 .local(params.local_ip)
                 .remote(params.remote_ip)
                 .port(params.dstport)
                 .build(),
         )
-        .execute()
         .await
-        .handle_err(location!())?;
-    let vxlan_link = get_link_by_name(handle, &vxlan_name).await?;
-    attach_and_size(handle, &vxlan_link, br_index, OVERLAY_MTU).await?;
-
-    if params.encrypted {
-        install_xfrm(params).await?;
+        .handle_err(location!())?
+        .header
+        .index;
+        (transport, transport)
+    };
+    let mut forwarding_name = if params.local_ip == params.remote_ip {
+        if params.encrypted {
+            names.macsec.clone()
+        } else if client {
+            names.transport_c.clone()
+        } else {
+            names.transport_s.clone()
+        }
+    } else {
+        names.vxlan.clone()
+    };
+    let mut transport_name = if params.local_ip == params.remote_ip {
+        if client {
+            names.transport_c.clone()
+        } else {
+            names.transport_s.clone()
+        }
+    } else {
+        names.vxlan.clone()
+    };
+    let gateway = outer.unwrap_or(forwarding);
+    if outer.is_none() {
+        handle
+            .link()
+            .set(
+                LinkUnspec::new_with_index(forwarding)
+                    .name(&params.br_name)
+                    .build(),
+            )
+            .execute()
+            .await
+            .handle_err(location!())?;
+        forwarding_name = params.br_name.clone();
+        if forwarding == transport {
+            transport_name = params.br_name.clone();
+        }
     }
-
-    Ok(())
-}
-
-pub(crate) async fn teardown(
-    rtnetlink_handle: &RtNetLinkHandle,
-    params: &VxlanTeardownParams,
-    cache: &BridgeIpCache,
-) -> Result<(), Error> {
-    let guard = Arc::new(lock(params.vxlan_id).await);
-    let handle = &rtnetlink_handle.handle;
-
-    // This tunnel's XFRM state/policy pair, if any was installed. Matched on
-    // SPI and dstport alone (both unique to this net id), same as
-    // `vxlan-teardown.sh`. Only tunnels on a dedicated dstport ever get a
-    // policy — the rest share DEFAULT_VXLAN_DSTPORT, so matching on that
-    // would reach across unrelated tunnels.
-    let spi = xfrm_spi(params.vxlan_id);
-    if params.dstport != crate::DEFAULT_VXLAN_DSTPORT {
-        let dstport = params.dstport.to_string();
-        privileged_checked(&[
-            "ip",
-            "xfrm",
-            "policy",
-            "deleteall",
-            "proto",
-            "udp",
-            "dport",
-            &dstport,
-            "dir",
-            "out",
-        ])
-        .await?;
-        privileged_checked(&[
-            "ip",
-            "xfrm",
-            "policy",
-            "deleteall",
-            "proto",
-            "udp",
-            "dport",
-            &dstport,
-            "dir",
-            "in",
-        ])
-        .await?;
-    }
-    privileged_checked(&[
-        "ip",
-        "xfrm",
-        "state",
-        "deleteall",
-        "proto",
-        "esp",
-        "spi",
-        &spi,
-    ])
-    .await?;
-
-    // Parent deletion also removes veth peers and their MACsec children.
-    // Side-specific groups preserve the other side's bridge until its cleanup.
-    super::vxlan_cleanup::remove(
-        handle,
-        link_group(params.vxlan_id, params.br_name.ends_with("_c")),
-        guard.clone(),
+    let encrypted = params.encrypted && params.local_ip != params.remote_ip;
+    super::endpoint_tc::install(
+        forwarding,
+        outer,
+        params.br_net.ip(),
+        encrypted.then_some(params.vxlan_id),
     )
     .await
     .handle_err(location!())?;
+    let target = namespace.clone();
+    let io = super::native_netlink::blocking(move || {
+        let mut root = EndpointIo::open(None)?;
+        let inner_io = target
+            .as_ref()
+            .map(|ns| EndpointIo::open(Some(&ns.file)))
+            .transpose()?;
+        root.route.request(
+            19,
+            super::native_netlink::REQUEST,
+            &[
+                endpoint_io::info(forwarding, false),
+                super::native_netlink::attr(4, &OVERLAY_MTU.to_ne_bytes()),
+            ]
+            .concat(),
+        )?;
+        Ok((root, inner_io))
+    })
+    .await
+    .handle_err(location!())?;
+    let mut params = params.clone();
+    params.key_hex.clear();
+    Ok(Endpoint {
+        params,
+        namespace,
+        gateway,
+        forwarding_name,
+        transport_name,
+        outer,
+        inner,
+        transport,
+        forwarding,
+        io: Arc::new(StdMutex::new(io)),
+    })
+}
 
-    cache.remove_overlay(&params.ns_name);
+pub(crate) async fn setup(
+    rtnetlink: &RtNetLinkHandle,
+    params: &VxlanSetupParams,
+    cache: &BridgeIpCache,
+) -> Result<(), Error> {
+    let guard = lock(params.vxlan_id).await;
+    let permit = SETUP_SLOTS.acquire().await.unwrap();
+    let handle = rtnetlink.handle.clone();
+    let params = params.clone();
+    let cache = cache.clone();
+    tokio::spawn(async move {
+        let (_guard, _permit) = (Arc::new(guard), permit);
+        let _setup = super::vxlan_cleanup::track_setup();
+        if ENDPOINTS.lock().unwrap().contains_key(&params.ns_name) {
+            return Err("VXLAN endpoint already exists").handle_err(location!());
+        }
+        let endpoint = match create_endpoint(&handle, &params, &cache).await {
+            Ok(endpoint) => Arc::new(endpoint),
+            Err(error) => {
+                destroy_links(&handle, &params).await?;
+                return Err(error);
+            }
+        };
+        ENDPOINTS
+            .lock()
+            .unwrap()
+            .insert(params.ns_name.clone(), endpoint.clone());
+        let activation = async {
+            activate(endpoint.clone(), &params).await?;
+            synchronize(vec![endpoint.clone()]).await
+        }
+        .await;
+        if let Err(error) = activation {
+            destroy_endpoint(&handle, endpoint, _guard.clone()).await?;
+            return Err(error);
+        }
+        if let Some(container) = &params.docker_container {
+            cache.add_overlay(&params.ns_name, params.ns_net.ip(), container);
+        }
+        Ok(())
+    })
+    .await
+    .handle_err(location!())?
+}
 
-    // Egress steering creates a named namespace even for a Docker initiator.
-    // Delete the namespace we actually own, independent of the message's owner.
-    if std::path::Path::new("/var/run/netns")
-        .join(&params.ns_name)
-        .exists()
-    {
-        privileged_checked(&["ip", "netns", "del", &params.ns_name]).await?;
+async fn activate(endpoint: Arc<Endpoint>, params: &VxlanSetupParams) -> Result<(), Error> {
+    if params.encrypted {
+        let key = decode_key(&params.key_hex)?;
+        if params.local_ip == params.remote_ip {
+            super::native_macsec::associations(
+                endpoint.forwarding,
+                veth_mac(
+                    params.vxlan_id,
+                    if params.br_name.ends_with("_c") { 1 } else { 2 },
+                ),
+                key,
+            )
+            .await
+            .handle_err(location!())?;
+        } else {
+            super::native_xfrm::install_port(
+                params.vxlan_id,
+                params.local_ip,
+                params.remote_ip,
+                key,
+                params.dstport,
+            )
+            .await
+            .handle_err(location!())?;
+        }
     }
+    super::native_netlink::blocking(move || {
+        let (root, target) = &mut *endpoint.io.lock().unwrap();
+        let p = &endpoint.params;
+        if let (Some(index), Some(target)) = (endpoint.inner, target) {
+            endpoint_io::add_address(&mut target.route, index, p.ns_net.ip(), p.ns_net.prefix())?;
+            endpoint_io::set_up(&mut target.route, index)?;
+        }
+        endpoint_io::add_address(
+            &mut root.route,
+            endpoint.gateway,
+            p.br_net.ip(),
+            p.br_net.prefix(),
+        )?;
+        if let Some(index) = endpoint.outer {
+            endpoint_io::set_up(&mut root.route, index)?;
+        }
+        endpoint_io::set_up(&mut root.route, endpoint.forwarding)?;
 
+        endpoint_io::set_up(&mut root.route, endpoint.transport)?;
+        let octets = p.ns_net.ip().octets();
+        let base = u32::from_be_bytes(octets) & !7;
+        let offsets = if p.br_name.ends_with("_c") {
+            [1, 2]
+        } else {
+            [3, 4]
+        };
+        for offset in offsets {
+            endpoint_io::peer_route(
+                &mut root.route,
+                Ipv4Addr::from(base + offset),
+                endpoint.forwarding,
+                p.br_net.ip(),
+            )?;
+        }
+        Ok(())
+    })
+    .await
+    .handle_err(location!())
+}
+
+// Called after BOTH endpoint setups, before publishing any application readiness.
+pub(crate) async fn ready(id: u32) -> Result<(), Error> {
+    let _guard = lock(id).await;
+    let endpoints: Vec<_> = ENDPOINTS
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|e| e.params.vxlan_id == id)
+        .cloned()
+        .collect();
+    if endpoints.is_empty() {
+        return Err("Fresh endpoint is missing").handle_err(location!());
+    }
+    synchronize(endpoints).await
+}
+
+async fn synchronize(endpoints: Vec<Arc<Endpoint>>) -> Result<(), Error> {
+    super::native_netlink::blocking(move || {
+        for endpoint in &endpoints {
+            if let Some(namespace) = &endpoint.namespace {
+                namespace.validate()?;
+            }
+            let (root, _) = &mut *endpoint.io.lock().unwrap();
+            endpoint_io::synchronize(
+                &mut root.route,
+                &endpoint.transport_name,
+                endpoint.transport,
+            )?;
+        }
+        for endpoint in &endpoints {
+            let (root, target) = &mut *endpoint.io.lock().unwrap();
+            if endpoint.forwarding != endpoint.transport {
+                endpoint_io::synchronize(
+                    &mut root.route,
+                    &endpoint.forwarding_name,
+                    endpoint.forwarding,
+                )?;
+            }
+            if let Some(index) = endpoint.outer {
+                endpoint_io::synchronize(&mut root.route, &endpoint.params.br_name, index)?;
+            }
+
+            if let (Some(index), Some(target)) = (endpoint.inner, target) {
+                endpoint_io::synchronize(
+                    &mut target.route,
+                    &format!("{}-in", endpoint.params.ns_name),
+                    index,
+                )?;
+            }
+        }
+        Ok(())
+    })
+    .await
+    .handle_err(location!())
+}
+
+pub(crate) async fn teardown(
+    rtnetlink: &RtNetLinkHandle,
+    params: &VxlanTeardownParams,
+    cache: &BridgeIpCache,
+) -> Result<(), Error> {
+    let guard = lock(params.vxlan_id).await;
+    let permit = TEARDOWN_SLOTS.acquire().await.unwrap();
+    let endpoint = ENDPOINTS.lock().unwrap().get(&params.ns_name).cloned();
+    let handle = rtnetlink.handle.clone();
+    let cache = cache.clone();
+    let ns_name = params.ns_name.clone();
+    let id = params.vxlan_id;
+    tokio::spawn(async move {
+        let (_guard, _permit) = (Arc::new(guard), permit);
+        if let Some(endpoint) = endpoint {
+            destroy_endpoint(&handle, endpoint, _guard.clone()).await?;
+        } else {
+            // A failed creation can leave a group before endpoint ownership was recorded.
+            super::vxlan_cleanup::remove(
+                &handle,
+                link_group(id, ns_name.ends_with("_c")),
+                _guard.clone(),
+            )
+            .await
+            .handle_err(location!())?;
+            super::native_xfrm::remove(id)
+                .await
+                .handle_err(location!())?;
+        }
+        cache.remove_overlay(&ns_name);
+        Ok(())
+    })
+    .await
+    .handle_err(location!())?
+}
+
+async fn destroy_endpoint(
+    handle: &Handle,
+    endpoint: Arc<Endpoint>,
+    guard: Arc<OwnedMutexGuard<()>>,
+) -> Result<(), Error> {
+    // Deletion closes forwarding even when a partially prepared device vanished.
+    super::vxlan_cleanup::remove_with_cleanup(
+        handle,
+        link_group(
+            endpoint.params.vxlan_id,
+            endpoint.params.br_name.ends_with("_c"),
+        ),
+        guard,
+        Some(endpoint_io::Cleanup {
+            root_names: [
+                Some(endpoint.transport_name.clone()),
+                Some(endpoint.forwarding_name.clone()),
+                endpoint.outer.map(|_| endpoint.params.br_name.clone()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+            io: endpoint.io.clone(),
+            namespace: endpoint.namespace.clone(),
+            root_ips: [endpoint.params.ns_net.ip(), endpoint.params.br_net.ip()],
+            container_ip: endpoint.params.ns_net.ip(),
+            crypto_id: (endpoint.params.local_ip != endpoint.params.remote_ip)
+                .then_some(endpoint.params.vxlan_id),
+        }),
+    )
+    .await
+    .handle_err(location!())?;
+    ENDPOINTS.lock().unwrap().remove(&endpoint.params.ns_name);
     Ok(())
+}
+
+async fn destroy_links(handle: &Handle, params: &VxlanSetupParams) -> Result<(), Error> {
+    use rtnetlink::packet_route::link::LinkAttribute;
+    let mut request = handle.link().del(0);
+    request
+        .message_mut()
+        .attributes
+        .push(LinkAttribute::Group(link_group(
+            params.vxlan_id,
+            params.br_name.ends_with("_c"),
+        )));
+    match request.execute().await {
+        Ok(()) => Ok(()),
+        Err(rtnetlink::Error::NetlinkError(e))
+            if e.code.map(std::num::NonZeroI32::get) == Some(-libc::ENODEV) =>
+        {
+            Ok(())
+        }
+        Err(e) => Err(e).handle_err(location!()),
+    }
 }
 
 // helpers -----------------------------------------------------------------------------------------
 
 // Commands may wait on Docker or the kernel; keep that work off runtime
 // workers and cap child processes independently of the number of tunnel tasks.
+#[cfg(test)]
 async fn command_status(command: &mut Command) -> std::io::Result<std::process::ExitStatus> {
     let _permit = COMMAND_SLOTS
         .acquire()
@@ -478,27 +566,13 @@ async fn command_status(command: &mut Command) -> std::io::Result<std::process::
     command.kill_on_drop(true).status().await
 }
 
-async fn command_output(command: &mut Command) -> std::io::Result<std::process::Output> {
+#[cfg(test)]
+pub(super) async fn command_output(command: &mut Command) -> std::io::Result<std::process::Output> {
     let _permit = COMMAND_SLOTS
         .acquire()
         .await
         .expect("command admission stays open");
     command.kill_on_drop(true).output().await
-}
-
-/// Deletes `name` if it exists; a no-op otherwise. Called on essentially
-/// every setup — "doesn't exist yet" is the routine, expected case (this is
-/// a purge-before-create, not a lookup of something that's supposed to be
-/// there), so this checks existence directly rather than through
-/// `get_link_by_name`: that goes through `handle_err()`, which prints
-/// immediately on construction, and would log an `[ERROR]` for the normal
-/// case on every single call.
-async fn delete_if_exists(handle: &Handle, name: &str) -> Result<(), Error> {
-    let mut links = handle.link().get().match_name(name.to_string()).execute();
-    if let Some(Ok(link)) = links.next().await {
-        delete_link(handle, link).await?;
-    }
-    Ok(())
 }
 
 /// Whether `err` is the netlink `EEXIST` NACK — the raw rtnetlink error, not
@@ -511,298 +585,15 @@ fn is_eexist(err: &rtnetlink::Error) -> bool {
     )
 }
 
-/// Attach `link` to bridge `controller` and shrink/bring it up, in one
-/// message.
-async fn attach_and_size(
-    handle: &Handle,
-    link: &LinkMessage,
-    controller: u32,
-    mtu: u32,
-) -> Result<(), Error> {
-    handle
-        .link()
-        .set(
-            LinkUnspec::new_with_index(link.header.index)
-                .controller(controller)
-                .mtu(mtu)
-                .up()
-                .build(),
-        )
-        .execute()
-        .await
-        .handle_err(location!())?;
-    Ok(())
-}
-
-async fn docker_pid(container: &str) -> Result<u32, Error> {
-    let out =
-        command_output(Command::new("docker").args(["inspect", "-f", "{{.State.Pid}}", container]))
-            .await
-            .handle_err(location!())?;
-    String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .parse::<u32>()
-        .handle_err(location!())
-}
-
-/// Configure the peer address, bring it up, and add a standalone default route.
-async fn configure_ns_in(params: &VxlanSetupParams, ns_pid: Option<u32>) -> Result<(), Error> {
-    let veth_in = format!("{}-in", params.ns_name);
-    let prefix: Vec<String> = match ns_pid {
-        Some(pid) => vec!["nsenter".into(), "-t".into(), pid.to_string(), "-n".into()],
-        // Only network state changes here; avoid cloning the mount namespace.
-        None => vec![
-            "nsenter".into(),
-            format!("--net=/var/run/netns/{}", params.ns_name),
-            "--".into(),
-        ],
-    };
-
-    ns_exec(
-        &prefix,
-        &[
-            "ip",
-            "addr",
-            "add",
-            &params.ns_net.to_string(),
-            "dev",
-            &veth_in,
-        ],
-    )
-    .await?;
-    ns_exec(&prefix, &["ip", "link", "set", &veth_in, "up"]).await?;
-    if ns_pid.is_none() {
-        // Standalone mode only: docker mode leaves routing to the container.
-        ns_exec(
-            &prefix,
-            &[
-                "ip",
-                "route",
-                "add",
-                "default",
-                "via",
-                &params.br_net.ip().to_string(),
-            ],
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-async fn ns_exec(prefix: &[String], extra: &[&str]) -> Result<(), Error> {
-    let status = command_status(Command::new(&prefix[0]).args(&prefix[1..]).args(extra))
-        .await
-        .handle_err(location!())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "`{} {}` failed: {status}",
-            prefix.join(" "),
-            extra.join(" ")
-        ))
-        .handle_err(location!())
-    }
-}
-
-async fn privileged_checked(args: &[&str]) -> Result<(), Error> {
-    let status = command_status(Command::new(args[0]).args(&args[1..]))
-        .await
-        .handle_err(location!())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("`{}` failed: {status}", args.join(" "))).handle_err(location!())
-    }
-}
-
-/// Privileged command with captured output, for calls whose failure
-/// is the expected steady state (deleting state that isn't there).
-async fn privileged_quiet(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
-    command_output(Command::new(args[0]).args(&args[1..]))
-        .await
-        .map(|o| o.status)
-}
-
-/// SPI values 1-255 are IANA-reserved (RFC 4301) and the kernel's XFRM code
-/// rejects them outright; net ids start at 101 (see `net_id_pool.rs`), which
-/// falls straight into that range, so it's offset well clear of it.
-fn xfrm_spi(vxlan_id: u32) -> String {
-    format!("0x{:08x}", vxlan_id + 1_000)
-}
-
-async fn purge_xfrm_spi(vxlan_id: u32) {
-    let spi = xfrm_spi(vxlan_id);
-    let _ = privileged_quiet(&[
-        "ip",
-        "xfrm",
-        "state",
-        "deleteall",
-        "proto",
-        "esp",
-        "spi",
-        &spi,
-    ])
-    .await;
-}
-
-/// Installs this tunnel's IPsec/ESP state+policy (AES-256-GCM, transport
-/// mode) between the two hosts' physical IPs, scoped to this tunnel's
-/// dstport. A separate netlink protocol family (`NETLINK_XFRM`), not covered
-/// by rtnetlink — stays CLI, ported 1:1 from `vxlan-setup.sh`.
-async fn install_xfrm(params: &VxlanSetupParams) -> Result<(), Error> {
-    // RFC4106 GCM keys are "AES key || 4-byte salt". The server only hands
-    // out a 32-byte AES key, so the salt is derived here, identically on
-    // both ends, from that same key.
-    let salt = sha256sum_prefix(&params.key_hex).await?;
-    let aead_key = format!("0x{}{salt}", params.key_hex);
-    let spi = xfrm_spi(params.vxlan_id);
-    let dstport = params.dstport.to_string();
-    let local = params.local_ip.to_string();
-    let remote = params.remote_ip.to_string();
-
-    // Outbound: this host -> remote. Inbound: remote -> this host. Argument
-    // order matters to `ip xfrm`'s positional parser — see the script this
-    // was ported from for the (extensively tested) details.
-    privileged_checked(&[
-        "ip",
-        "xfrm",
-        "state",
-        "add",
-        "src",
-        &local,
-        "dst",
-        &remote,
-        "proto",
-        "esp",
-        "spi",
-        &spi,
-        "aead",
-        "rfc4106(gcm(aes))",
-        &aead_key,
-        "128",
-        "mode",
-        "transport",
-    ])
-    .await?;
-    privileged_checked(&[
-        "ip",
-        "xfrm",
-        "policy",
-        "add",
-        "src",
-        &local,
-        "dst",
-        &remote,
-        "proto",
-        "udp",
-        "dport",
-        &dstport,
-        "dir",
-        "out",
-        "tmpl",
-        "src",
-        &local,
-        "dst",
-        &remote,
-        "proto",
-        "esp",
-        "spi",
-        &spi,
-        "mode",
-        "transport",
-    ])
-    .await?;
-    privileged_checked(&[
-        "ip",
-        "xfrm",
-        "state",
-        "add",
-        "src",
-        &remote,
-        "dst",
-        &local,
-        "proto",
-        "esp",
-        "spi",
-        &spi,
-        "aead",
-        "rfc4106(gcm(aes))",
-        &aead_key,
-        "128",
-        "mode",
-        "transport",
-    ])
-    .await?;
-    privileged_checked(&[
-        "ip",
-        "xfrm",
-        "policy",
-        "add",
-        "src",
-        &remote,
-        "dst",
-        &local,
-        "proto",
-        "udp",
-        "dport",
-        &dstport,
-        "dir",
-        "in",
-        "tmpl",
-        "src",
-        &remote,
-        "dst",
-        &local,
-        "proto",
-        "esp",
-        "spi",
-        &spi,
-        "mode",
-        "transport",
-    ])
-    .await?;
-    Ok(())
-}
-
-async fn sha256sum_prefix(key_hex: &str) -> Result<String, Error> {
-    use tokio::io::AsyncWriteExt;
-    let _permit = COMMAND_SLOTS
-        .acquire()
-        .await
-        .expect("command admission stays open");
-    let mut child = Command::new("sha256sum")
-        .kill_on_drop(true)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .handle_err(location!())?;
-    child
-        .stdin
-        .take()
-        .ok_or("sha256sum stdin unavailable")
-        .handle_err(location!())?
-        .write_all(key_hex.as_bytes())
-        .await
-        .handle_err(location!())?;
-    let out = child.wait_with_output().await.handle_err(location!())?;
-    let digest = String::from_utf8_lossy(&out.stdout);
-    let hex = digest
-        .split_whitespace()
-        .next()
-        .ok_or("sha256sum produced no output")
-        .handle_err(location!())?;
-    Ok(hex[..8].to_string())
-}
-
 /// Derives a locally-administered MAC from the net id and side (1 = `_s`, 2 =
 /// `_c`), so each side's SCI is a pure function of `vxlan_id`. Mirrors
 /// `veth_mac()` in `vxlan-setup.sh`. 0x02 = locally administered.
-fn veth_mac(vxlan_id: u32, side: u8) -> Vec<u8> {
+pub(super) fn veth_mac(vxlan_id: u32, side: u8) -> Vec<u8> {
     let id = vxlan_id.to_be_bytes();
     vec![0x02, side, id[0], id[1], id[2], id[3]]
 }
 
+#[cfg(test)]
 fn format_mac(mac: &[u8]) -> String {
     mac.iter()
         .map(|b| format!("{b:02x}"))
@@ -831,13 +622,7 @@ mod tests {
         assert_eq!(out.status.code(), Some(7));
     }
 
-    use super::{format_mac, veth_mac, xfrm_spi};
-
-    /// Net id 101 -> spi 1101 = 0x44d, clear of the 1-255 IANA-reserved band.
-    #[test]
-    fn xfrm_spi_offsets_clear_of_the_iana_reserved_range() {
-        assert_eq!(xfrm_spi(101), "0x0000044d");
-    }
+    use super::{format_mac, veth_mac};
 
     #[test]
     fn veth_mac_matches_vxlan_setup_shs_printf_derivation() {
@@ -855,5 +640,362 @@ mod tests {
         assert_eq!(s[1], 1);
         assert_eq!(c[1], 2);
         assert_eq!(&s[2..], &c[2..], "both sides derive from the same net id");
+    }
+}
+
+fn decode_key(hex: &str) -> Result<[u8; 32], Error> {
+    if hex.len() != 64 {
+        return Err("Invalid VXLAN encryption key length").handle_err(location!());
+    }
+    let mut key = [0; 32];
+    for (index, byte) in key.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).handle_err(location!())?;
+    }
+    Ok(key)
+}
+
+#[cfg(test)]
+mod endpoint_packet_tests {
+    use super::*;
+
+    async fn cross_ping(params: &VxlanSetupParams, side: &str) -> Result<(), Error> {
+        let destination = Ipv4Addr::new(
+            10,
+            251,
+            params.ns_net.ip().octets()[2],
+            if side == "s" { 3 } else { 1 },
+        );
+        let status = Command::new("ip")
+            .args([
+                "netns",
+                "exec",
+                &params.ns_name,
+                "ping",
+                "-c",
+                "3",
+                "-W",
+                "2",
+                "-s",
+                "1000",
+                &destination.to_string(),
+            ])
+            .status()
+            .await
+            .handle_err(location!())?;
+        if !status.success() {
+            return Err("encrypted cross-host packet proof failed").handle_err(location!());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires coordinated execution on both lab hosts"]
+    async fn cross_host_fresh_endpoint_packet_proof() {
+        let side = std::env::var("NN_PHASE1_TEST_SIDE").unwrap();
+        let local_ip = std::env::var("NN_PHASE1_TEST_LOCAL")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let remote_ip = std::env::var("NN_PHASE1_TEST_REMOTE")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let cache = BridgeIpCache::new();
+        let handle = RtNetLinkHandle::new().unwrap();
+        let offset = if side == "s" { 1 } else { 3 };
+        let mut endpoints = Vec::new();
+        for (id, subnet, key) in [(1_959_199, 250, "42"), (1_959_200, 251, "43")] {
+            let name = format!("ns_{id}_{side}");
+            let namespace = super::super::endpoint_namespace::create(&name)
+                .await
+                .unwrap();
+            cache.test_namespace(name.clone(), namespace);
+            endpoints.push(VxlanSetupParams {
+                vxlan_id: id,
+                ns_name: name.clone(),
+                ns_net: Ipv4Network::new(Ipv4Addr::new(10, 251, subnet, offset), 29).unwrap(),
+                br_name: format!("br_{id}_{side}"),
+                br_net: Ipv4Network::new(Ipv4Addr::new(10, 251, subnet, offset + 1), 29).unwrap(),
+                local_ip,
+                remote_ip,
+                key_hex: key.repeat(32),
+                dstport: crate::DEFAULT_VXLAN_DSTPORT,
+                encrypted: true,
+                docker_container: Some(name),
+            });
+        }
+        let setup_result = async {
+            for params in &endpoints {
+                setup(&handle, params, &cache).await?;
+            }
+            Ok::<(), Error>(())
+        }
+        .await;
+        std::fs::write("/tmp/nn-layer1-cross-ready", format!("{setup_result:?}")).unwrap();
+        let result = async {
+            setup_result?;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(45);
+            while !std::path::Path::new("/tmp/nn-layer1-cross-go").exists() {
+                if tokio::time::Instant::now() > deadline {
+                    return Err("coordinator timeout").handle_err(location!());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            for params in &endpoints {
+                ready(params.vxlan_id).await?;
+                cross_ping(params, &side).await?;
+            }
+            teardown(
+                &handle,
+                &VxlanTeardownParams {
+                    vxlan_id: endpoints[0].vxlan_id,
+                    ns_name: endpoints[0].ns_name.clone(),
+                },
+                &cache,
+            )
+            .await?;
+            std::fs::write("/tmp/nn-layer1-cross-retired", "ok").handle_err(location!())?;
+            while !std::path::Path::new("/tmp/nn-layer1-cross-survivor-go").exists() {
+                if tokio::time::Instant::now() > deadline {
+                    return Err("survivor coordinator timeout").handle_err(location!());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            cross_ping(&endpoints[1], &side).await?;
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            Ok(())
+        }
+        .await;
+        for params in endpoints {
+            teardown(
+                &handle,
+                &VxlanTeardownParams {
+                    vxlan_id: params.vxlan_id,
+                    ns_name: params.ns_name.clone(),
+                },
+                &cache,
+            )
+            .await
+            .unwrap();
+            super::super::endpoint_namespace::remove(&params.ns_name)
+                .await
+                .unwrap();
+        }
+        result.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires root and an isolated root network namespace"]
+    async fn fresh_endpoints_deliver_packets_and_release_owned_resources() {
+        let handle = RtNetLinkHandle::new().unwrap();
+        let cache = BridgeIpCache::new();
+        for (case, (encrypted, host_side)) in [(false, false), (true, false), (true, true)]
+            .into_iter()
+            .enumerate()
+        {
+            let id = 1_959_100 + case as u32;
+            let mut endpoints = Vec::new();
+            for (side, host, endpoint_offset, gateway_offset) in
+                [("s", false, 1, 2), ("c", host_side, 3, 4)]
+            {
+                let name = format!("ns_{id}_{side}");
+                if !host {
+                    let namespace = super::super::endpoint_namespace::create(&name)
+                        .await
+                        .unwrap();
+                    cache.test_namespace(name.clone(), namespace);
+                }
+                let params = VxlanSetupParams {
+                    vxlan_id: id,
+                    ns_name: name.clone(),
+                    ns_net: Ipv4Network::new(
+                        Ipv4Addr::new(10, 250, case as u8, endpoint_offset),
+                        29,
+                    )
+                    .unwrap(),
+                    br_name: format!("br_{id}_{side}"),
+                    br_net: Ipv4Network::new(
+                        Ipv4Addr::new(10, 250, case as u8, gateway_offset),
+                        29,
+                    )
+                    .unwrap(),
+                    local_ip: Ipv4Addr::new(192, 0, 2, 1),
+                    remote_ip: Ipv4Addr::new(192, 0, 2, 1),
+                    key_hex: "42".repeat(32),
+                    dstport: 4790,
+                    encrypted,
+                    docker_container: (!host).then_some(name),
+                };
+                setup(&handle, &params, &cache).await.unwrap();
+                endpoints.push(params);
+            }
+            ready(id).await.unwrap();
+            let destination = if host_side {
+                endpoints[1].br_net.ip()
+            } else {
+                endpoints[1].ns_net.ip()
+            };
+            let status = Command::new("ip")
+                .args([
+                    "netns",
+                    "exec",
+                    &endpoints[0].ns_name,
+                    "ping",
+                    "-c",
+                    "1",
+                    "-W",
+                    "2",
+                    &destination.to_string(),
+                ])
+                .status()
+                .await
+                .unwrap();
+            assert!(
+                status.success(),
+                "packet delivery failed for encrypted={encrypted}, host_side={host_side}"
+            );
+            if case == 1 {
+                let source = &endpoints[0].ns_name;
+                let destination = endpoints[1].ns_net.ip().to_string();
+                for args in [
+                    vec![
+                        "link", "add", "nn-dkr0", "type", "veth", "peer", "name", "eth0", "netns",
+                        source,
+                    ],
+                    vec!["addr", "add", "172.31.250.1/24", "dev", "nn-dkr0"],
+                    vec!["link", "set", "nn-dkr0", "up"],
+                    vec![
+                        "-n",
+                        source,
+                        "addr",
+                        "add",
+                        "172.31.250.2/24",
+                        "dev",
+                        "eth0",
+                    ],
+                    vec!["-n", source, "link", "set", "eth0", "up"],
+                    vec![
+                        "-n",
+                        source,
+                        "route",
+                        "add",
+                        &destination,
+                        "via",
+                        "172.31.250.1",
+                    ],
+                ] {
+                    assert!(
+                        Command::new("ip")
+                            .args(args)
+                            .status()
+                            .await
+                            .unwrap()
+                            .success()
+                    );
+                }
+                assert!(
+                    Command::new("sysctl")
+                        .args(["-w", "net.ipv4.ip_forward=1"])
+                        .status()
+                        .await
+                        .unwrap()
+                        .success()
+                );
+                assert!(
+                    Command::new("iptables")
+                        .args(["-P", "FORWARD", "DROP"])
+                        .status()
+                        .await
+                        .unwrap()
+                        .success()
+                );
+                assert!(
+                    Command::new("iptables")
+                        .args([
+                            "-t",
+                            "nat",
+                            "-A",
+                            "POSTROUTING",
+                            "-s",
+                            "172.31.250.2/32",
+                            "-j",
+                            "MASQUERADE"
+                        ])
+                        .status()
+                        .await
+                        .unwrap()
+                        .success()
+                );
+                let ping = [
+                    "netns",
+                    "exec",
+                    source,
+                    "ping",
+                    "-c",
+                    "1",
+                    "-W",
+                    "1",
+                    &destination,
+                ];
+                assert!(
+                    !Command::new("ip")
+                        .args(ping)
+                        .status()
+                        .await
+                        .unwrap()
+                        .success()
+                );
+                super::super::install_overlay_forwarding().unwrap();
+                assert!(
+                    Command::new("ip")
+                        .args(ping)
+                        .status()
+                        .await
+                        .unwrap()
+                        .success()
+                );
+                assert!(
+                    Command::new("ip")
+                        .args(["link", "del", "nn-dkr0"])
+                        .status()
+                        .await
+                        .unwrap()
+                        .success()
+                );
+            }
+            for endpoint in &endpoints {
+                let params = VxlanTeardownParams {
+                    vxlan_id: id,
+                    ns_name: endpoint.ns_name.clone(),
+                };
+                teardown(&handle, &params, &cache).await.unwrap();
+                teardown(&handle, &params, &cache).await.unwrap();
+                assert!(
+                    get_link_by_name(&handle.handle, &endpoint.br_name)
+                        .await
+                        .is_err()
+                );
+                if endpoint.docker_container.is_some() {
+                    assert!(
+                        get_link_by_name(
+                            &cache.namespace(&endpoint.ns_name).await.unwrap().handle,
+                            &format!("{}-in", endpoint.ns_name)
+                        )
+                        .await
+                        .is_err()
+                    );
+                    super::super::endpoint_namespace::remove(&endpoint.ns_name)
+                        .await
+                        .unwrap();
+                }
+            }
+            assert!(
+                !ENDPOINTS
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .any(|endpoint| endpoint.params.vxlan_id == id)
+            );
+        }
     }
 }

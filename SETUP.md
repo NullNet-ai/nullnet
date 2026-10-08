@@ -393,6 +393,20 @@ Run the setup scripts as root. The supplied systemd services also run as root; p
   It also keeps NetworkManager and udev hotplug helpers from managing Nullnet-owned
   interfaces, avoiding competing network-configuration work during tunnel bursts.
 
+The client also filters owned-device kernel uevents and link/address/route/neighbor
+notifications before delivery to udev, NetworkManager, OVS, Avahi and the desktop
+portal. Docker/foreign devices, netlink replies and dumps pass. This early socket
+filtering is separate from udev rules, which run after event queueing. Root needs
+`CAP_SYS_PTRACE` to duplicate consumer sockets, alongside its existing BPF privileges.
+The client mounts bpffs if needed and pins its filters under
+`/sys/fs/bpf/nullnet-device-events-v1`. It reconciles new consumer sockets every
+second; existing foreign filters are preserved and reduced coverage appears in
+Events. A three-second lease makes filters pass all notifications after client
+exit; pinned filters resume on client restart. Inactive filters remain attached
+until their consumer closes its socket, so shutdown never removes a replacement
+filter installed by that consumer. Set `NULLNET_DEVICE_EVENT_BYPASS=false` in the
+client `.env` to disable filtering. Other subscribers and namespaces are untouched.
+
 On upgrades, deploy the server, proxy and all clients from the same revision.
 Client startup cleans stale Nullnet network state while preserving Docker interfaces;
 routine container restarts are unnecessary. Containers already damaged by an older
@@ -411,3 +425,10 @@ restarts and session retention; `SESSION_RETENTION_DAYS` still controls session
 details. Stop observation to restore the saved config and review added/unused
 backends. Applying updates only backend lists. Completed observations remain
 available; results cannot overwrite a configuration edited since activation.
+
+VXLAN edges create fresh dedicated interfaces and use fixed TC redirects;
+`br_<id>_<side>` is the gateway interface name, not a Linux bridge. Startup
+keeps routed overlay traffic allowed by owned interface groups while preserving
+the host's existing FORWARD policy. Pooling and policy multiplexing are deferred.
+
+The client and proxy services set `LimitNOFILE=524288`: fresh endpoints retain netlink sockets, and each proxied connection needs downstream and upstream sockets. Update both installed units and run `systemctl daemon-reload` when upgrading.

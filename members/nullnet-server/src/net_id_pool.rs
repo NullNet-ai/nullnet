@@ -75,69 +75,8 @@ impl NetIdPool {
     }
 }
 
-/// Shared VXLAN dstport for a tunnel that doesn't need a dedicated one from
-/// `UdpPortPool` below — same-host tunnels (MACsec on a veth pair, no XFRM at
-/// all) and unencrypted cross-host tunnels (no XFRM either). A dedicated port
-/// only exists to let an XFRM policy — which selects by IP + port, not VNI —
-/// tell concurrent *encrypted* tunnels between the same host pair apart; the
-/// VNI alone already disambiguates tunnels sharing this port otherwise, so
-/// falling back to it keeps `UdpPortPool`'s 40k entries scoped to only the
-/// tunnels that actually need one, instead of capping total concurrent VXLAN
-/// tunnels at 40k regardless of encryption. Matches the IANA default and the
-/// eBPF firewall's own `VXLAN_PORT` constant (`ebpf/src/main.rs`), which
-/// structurally allows this exact port for any known peer.
+/// Shared VXLAN UDP socket; edge marks select independent encryption keys.
 pub(crate) const DEFAULT_VXLAN_DSTPORT: u16 = 4789;
-
-/// Minimum/maximum allocatable UDP port for per-tunnel VXLAN dstports.
-/// Kept out of the IANA ephemeral range (32768-60999) and away from 4789
-/// (the VXLAN default) to avoid colliding with unrelated local sockets.
-const MIN_VXLAN_PORT: u16 = 20000;
-const MAX_VXLAN_PORT: u16 = 60000;
-
-/// Pool of per-tunnel UDP destination ports, used so concurrent VXLAN
-/// tunnels between the same physical host pair each get a distinct dstport.
-/// This is what lets an XFRM policy (which selects by IP + port, not VNI)
-/// tell those tunnels apart. Same allocate/free-with-reuse shape as `NetIdPool`.
-/// Same allocate/free-with-reuse shape as `NetIdPool`, including its FIFO reuse
-/// order — a reused dstport is half of what an XFRM policy selects on, so
-/// recycling one promptly reintroduces the same cross-generation ambiguity.
-#[derive(Debug)]
-pub(crate) struct UdpPortPool {
-    next_fresh: u16,
-    freed: VecDeque<u16>,
-    freed_set: HashSet<u16>,
-}
-
-impl UdpPortPool {
-    pub(crate) fn new() -> Self {
-        Self {
-            next_fresh: MIN_VXLAN_PORT,
-            freed: VecDeque::new(),
-            freed_set: HashSet::new(),
-        }
-    }
-
-    pub(crate) fn allocate(&mut self) -> Option<u16> {
-        if let Some(port) = self.freed.pop_front() {
-            self.freed_set.remove(&port);
-            return Some(port);
-        }
-
-        if self.next_fresh <= MAX_VXLAN_PORT {
-            let port = self.next_fresh;
-            self.next_fresh += 1;
-            Some(port)
-        } else {
-            None
-        }
-    }
-
-    pub(crate) fn free(&mut self, port: u16) {
-        if (MIN_VXLAN_PORT..=MAX_VXLAN_PORT).contains(&port) && self.freed_set.insert(port) {
-            self.freed.push_back(port);
-        }
-    }
-}
 
 /// Generate a fresh random 32-byte AES-256 key for one tunnel. Called once
 /// per net_id allocation; the same bytes are sent to both endpoints so they
@@ -241,63 +180,6 @@ mod tests {
         pool.free(0);
         pool.free(100); // below MIN_NET_ID
         pool.free(*MAX_NET_ID + 1); // above MAX_NET_ID
-        assert!(pool.freed.is_empty());
-    }
-
-    #[test]
-    fn test_udp_port_pool_allocate_sequential() {
-        let mut pool = UdpPortPool::new();
-        assert_eq!(pool.allocate(), Some(MIN_VXLAN_PORT));
-        assert_eq!(pool.allocate(), Some(MIN_VXLAN_PORT + 1));
-        assert_eq!(pool.allocate(), Some(MIN_VXLAN_PORT + 2));
-    }
-
-    #[test]
-    fn test_udp_port_pool_reuse_freed_oldest_first() {
-        let mut pool = UdpPortPool::new();
-        let p1 = pool.allocate().unwrap();
-        let p2 = pool.allocate().unwrap();
-        pool.allocate();
-
-        pool.free(p2); // freed first
-        pool.free(p1); // freed second
-
-        // FIFO, so p2 comes back before the numerically lower p1
-        assert_eq!(pool.allocate(), Some(p2));
-        assert_eq!(pool.allocate(), Some(p1));
-    }
-
-    #[test]
-    fn test_udp_port_pool_double_free_does_not_duplicate() {
-        let mut pool = UdpPortPool::new();
-        let p = pool.allocate().unwrap();
-        pool.free(p);
-        pool.free(p);
-
-        assert_eq!(pool.allocate(), Some(p));
-        assert_eq!(pool.allocate(), Some(MIN_VXLAN_PORT + 1));
-        assert!(pool.freed.is_empty());
-    }
-
-    #[test]
-    fn test_udp_port_pool_exhaustion() {
-        let mut pool = UdpPortPool::new();
-        pool.next_fresh = MAX_VXLAN_PORT;
-
-        assert_eq!(pool.allocate(), Some(MAX_VXLAN_PORT));
-        assert_eq!(pool.allocate(), None);
-
-        pool.free(MAX_VXLAN_PORT);
-        assert_eq!(pool.allocate(), Some(MAX_VXLAN_PORT));
-        assert_eq!(pool.allocate(), None);
-    }
-
-    #[test]
-    fn test_udp_port_pool_free_ignores_out_of_range() {
-        let mut pool = UdpPortPool::new();
-        pool.free(0);
-        pool.free(MIN_VXLAN_PORT - 1);
-        pool.free(MAX_VXLAN_PORT + 1);
         assert!(pool.freed.is_empty());
     }
 

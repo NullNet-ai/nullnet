@@ -8,6 +8,7 @@ WorkingDirectory=/root/nullnet/members/nullnet-proxy
 EnvironmentFile=/root/nullnet/members/nullnet-proxy/.env
 ExecStart=/root/nullnet/target/release/nullnet-proxy
 Restart=always
+LimitNOFILE=524288
 
 [Install]
 WantedBy=multi-user.target

@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+sha2 = "0.10.9"
 tun-rs = { version = "2.8.8", features = ["async_tokio"] }
 etherparse = "0.21.0"
 clap = { workspace = true, features = ["derive"] }
