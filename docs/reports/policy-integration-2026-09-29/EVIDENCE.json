@@ -1,0 +1,12 @@
+{
+  "archive": "~/.codex/backups/nullnet-layer1-20261008/research-evidence",
+  "purpose": "Large raw captures are preserved outside Git; reports, scripts and compact results remain in this directory.",
+  "files": [
+    {
+      "file": "evidence/results.json.gz",
+      "sha256": "23179647fb8d4a5f97e8b218738693f8e9685f23bf2aa9267bed472fbc842fda",
+      "bytes": 1504590,
+      "archive_file": "docs/reports/policy-integration-2026-09-29/evidence/results.json.gz"
+    }
+  ]
+}

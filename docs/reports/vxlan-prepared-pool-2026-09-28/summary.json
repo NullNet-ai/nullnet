@@ -1,0 +1,277 @@
+{
+  "host": "192.168.1.104",
+  "kernel": "6.12.95+deb13-amd64",
+  "slots": 64,
+  "devices": 640,
+  "workers": 32,
+  "application_namespaces": 2,
+  "container_bound": {
+    "source_sha256": "823f2f26d6f895dae4de4343ec411a43fb02ec2c17d377e31d93cefb643d8996",
+    "preparation_seconds": 4.758787113999915,
+    "destruction_seconds": 11.599127555999985,
+    "completed": true,
+    "cleanup_errors": [],
+    "negative_checks": [
+      "idle-before-first-lease",
+      "same-key-replay-outside-128-packet-window-20-frames",
+      "missing-receive-crypto",
+      "wrong-receive-key",
+      "idle-after-lease",
+      "previous-lease-key-replay-20-frames"
+    ],
+    "inventories": [
+      {
+        "label": "prepared",
+        "links": 640,
+        "addresses": 0,
+        "neighbors": 0,
+        "dynamic_fdb": 0,
+        "sas": 0
+      },
+      {
+        "label": "after-smoke-reset",
+        "links": 640,
+        "addresses": 0,
+        "neighbors": 0,
+        "dynamic_fdb": 0,
+        "sas": 0
+      },
+      {
+        "label": "after-replay-reset",
+        "links": 640,
+        "addresses": 0,
+        "neighbors": 0,
+        "dynamic_fdb": 0,
+        "sas": 0
+      },
+      {
+        "label": "after-trial-0",
+        "links": 640,
+        "addresses": 0,
+        "neighbors": 0,
+        "dynamic_fdb": 0,
+        "sas": 0
+      },
+      {
+        "label": "after-trial-1",
+        "links": 640,
+        "addresses": 0,
+        "neighbors": 0,
+        "dynamic_fdb": 0,
+        "sas": 0
+      },
+      {
+        "label": "after-trial-2",
+        "links": 640,
+        "addresses": 0,
+        "neighbors": 0,
+        "dynamic_fdb": 0,
+        "sas": 0
+      }
+    ],
+    "trials": [
+      {
+        "trial": 0,
+        "seconds": 60.33497339199994,
+        "waves": 546,
+        "setups": 17472,
+        "retirements": 17472,
+        "setup_per_second": 289.58328839367124,
+        "retire_per_second": 289.58328839367124
+      },
+      {
+        "trial": 1,
+        "seconds": 60.0239992679999,
+        "waves": 606,
+        "setups": 19392,
+        "retirements": 19392,
+        "setup_per_second": 323.0707756312115,
+        "retire_per_second": 323.0707756312115
+      },
+      {
+        "trial": 2,
+        "seconds": 60.00241793700002,
+        "waves": 601,
+        "setups": 19232,
+        "retirements": 19232,
+        "setup_per_second": 320.5204166970868,
+        "retire_per_second": 320.5204166970868
+      }
+    ],
+    "latency_ms": {
+      "setup": {
+        "p50": 34.167481999929805,
+        "p95": 59.51436999998805,
+        "p99": 66.80339200011076,
+        "stage_means": {
+          "attachment_addresses": 10.590938815886945,
+          "fresh_sas": 20.674551932776115,
+          "attach_enable": 3.755477356406812
+        }
+      },
+      "retire": {
+        "p50": 52.82945399994787,
+        "p95": 88.1408499999452,
+        "p99": 96.52273599999717,
+        "stage_means": {
+          "revoke_detach": 16.63531405806116,
+          "delete_sas": 33.270162052178186,
+          "conntrack": 0.8457576402060504,
+          "reclaim_addresses": 2.936655223884441
+        }
+      }
+    }
+  },
+  "move_screen": {
+    "preparation_seconds": 1.6622114540000439,
+    "destruction_seconds": 11.885153507000041,
+    "completed": true,
+    "cleanup_errors": [],
+    "trials": [
+      {
+        "trial": 0,
+        "seconds": 151.8216856229999,
+        "waves": 40,
+        "setups": 1280,
+        "retirements": 1280,
+        "setup_per_second": 8.430943147202742,
+        "retire_per_second": 8.430943147202742
+      }
+    ],
+    "latency_ms": {
+      "setup": {
+        "p50": 1239.2469749997872,
+        "p95": 1917.4240710001413,
+        "p99": 2222.451636999949,
+        "stage_means": {
+          "attachment_addresses": 524.3507890132835,
+          "fresh_sas": 631.9837531679709,
+          "attach_enable": 104.11489506953231
+        }
+      },
+      "retire": {
+        "p50": 1932.055943000023,
+        "p95": 3007.5512060000165,
+        "p99": 3285.8682329999738,
+        "stage_means": {
+          "revoke_detach": 517.313015317187,
+          "delete_sas": 1231.6859726804742,
+          "conntrack": 0.38979020937226494,
+          "reclaim_addresses": 218.892440128125
+        }
+      }
+    }
+  },
+  "packet_proof": {
+    "kind": "same-host-retained-devices",
+    "slots": 2,
+    "workers": 2,
+    "attachment": "container",
+    "source_sha256": "823f2f26d6f895dae4de4343ec411a43fb02ec2c17d377e31d93cefb643d8996",
+    "kernel": "6.12.95+deb13-amd64",
+    "trials": [],
+    "proof_sha256": "a0524e254c34708f76f311f3407791a936322f14bc03487f0c51c78b67848d86",
+    "preparation_seconds": 0.16593158000000585,
+    "inventories": [
+      {
+        "label": "prepared",
+        "links": 20,
+        "addresses": 0,
+        "neighbors": 0,
+        "dynamic_fdb": 0,
+        "sas": 0
+      },
+      {
+        "label": "reset-0",
+        "links": 20,
+        "addresses": 0,
+        "neighbors": 0,
+        "dynamic_fdb": 0,
+        "sas": 0
+      },
+      {
+        "label": "reset-1",
+        "links": 20,
+        "addresses": 0,
+        "neighbors": 0,
+        "dynamic_fdb": 0,
+        "sas": 0
+      },
+      {
+        "label": "reset-2",
+        "links": 20,
+        "addresses": 0,
+        "neighbors": 0,
+        "dynamic_fdb": 0,
+        "sas": 0
+      }
+    ],
+    "frame_checks": [
+      {
+        "label": "prepared-idle",
+        "sent": 0,
+        "received": 0,
+        "expected": 0
+      },
+      {
+        "label": "active-0",
+        "sent": 12,
+        "received": 12,
+        "expected": 12
+      },
+      {
+        "label": "reset-idle-0",
+        "sent": 0,
+        "received": 0,
+        "expected": 0
+      },
+      {
+        "label": "active-1",
+        "sent": 12,
+        "received": 12,
+        "expected": 12
+      },
+      {
+        "label": "reset-idle-1",
+        "sent": 0,
+        "received": 0,
+        "expected": 0
+      },
+      {
+        "label": "active-2",
+        "sent": 12,
+        "received": 12,
+        "expected": 12
+      },
+      {
+        "label": "reset-idle-2",
+        "sent": 0,
+        "received": 0,
+        "expected": 0
+      }
+    ],
+    "completed": true,
+    "destruction_seconds": 0.3300365090001378,
+    "cleanup_errors": []
+  },
+  "preservation": {
+    "move": {
+      "original_containers_unchanged": true,
+      "services_unchanged": true,
+      "link_identity_unchanged": true,
+      "routes_unchanged": true
+    },
+    "container": {
+      "original_containers_unchanged": true,
+      "services_unchanged": true,
+      "link_identity_unchanged": true,
+      "routes_unchanged": true
+    },
+    "proof": {
+      "original_containers_unchanged": true,
+      "services_unchanged": true,
+      "link_identity_unchanged": true,
+      "routes_unchanged": true
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "archive": "~/.codex/backups/nullnet-layer1-20261008/research-evidence",
+  "purpose": "Large raw captures are preserved outside Git; reports, scripts and compact results remain in this directory.",
+  "files": [
+    {
+      "file": "fix-evidence.tar.gz",
+      "sha256": "b9dadcc305e5fc80923a9946e09b2d98d1755fab10bb1fdd50154e5392ee9a80",
+      "bytes": 24269170,
+      "archive_file": "docs/reports/vxlan-prepared-cross-host-2026-09-28/fix-evidence.tar.gz"
+    },
+    {
+      "file": "evidence.tar.gz",
+      "sha256": "8581f6ab09a4960061a0569600ab96fd9be818dd193147aba1e4eda01d35bc61",
+      "bytes": 23959502,
+      "archive_file": "docs/reports/vxlan-prepared-cross-host-2026-09-28/evidence.tar.gz"
+    }
+  ]
+}

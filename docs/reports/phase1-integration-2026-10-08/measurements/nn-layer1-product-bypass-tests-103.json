@@ -1,0 +1,306 @@
+[
+  {
+    "case": "uevent-add-br_1960000_s",
+    "dropped": true
+  },
+  {
+    "case": "uevent-remove-br_1960000_s",
+    "dropped": true
+  },
+  {
+    "case": "uevent-change-br_1960000_s",
+    "dropped": true
+  },
+  {
+    "case": "uevent-move-br_1960000_s",
+    "dropped": true
+  },
+  {
+    "case": "link-br_1960000_s",
+    "dropped": true
+  },
+  {
+    "case": "uevent-add-ns_1960000_s-o",
+    "dropped": true
+  },
+  {
+    "case": "uevent-remove-ns_1960000_s-o",
+    "dropped": true
+  },
+  {
+    "case": "uevent-change-ns_1960000_s-o",
+    "dropped": true
+  },
+  {
+    "case": "uevent-move-ns_1960000_s-o",
+    "dropped": true
+  },
+  {
+    "case": "link-ns_1960000_s-o",
+    "dropped": true
+  },
+  {
+    "case": "uevent-add-nnv_1960000_s",
+    "dropped": true
+  },
+  {
+    "case": "uevent-remove-nnv_1960000_s",
+    "dropped": true
+  },
+  {
+    "case": "uevent-change-nnv_1960000_s",
+    "dropped": true
+  },
+  {
+    "case": "uevent-move-nnv_1960000_s",
+    "dropped": true
+  },
+  {
+    "case": "link-nnv_1960000_s",
+    "dropped": true
+  },
+  {
+    "case": "uevent-add-nnb_3",
+    "dropped": true
+  },
+  {
+    "case": "uevent-remove-nnb_3",
+    "dropped": true
+  },
+  {
+    "case": "uevent-change-nnb_3",
+    "dropped": true
+  },
+  {
+    "case": "uevent-move-nnb_3",
+    "dropped": true
+  },
+  {
+    "case": "link-nnb_3",
+    "dropped": true
+  },
+  {
+    "case": "uevent-add-nnp_app",
+    "dropped": true
+  },
+  {
+    "case": "uevent-remove-nnp_app",
+    "dropped": true
+  },
+  {
+    "case": "uevent-change-nnp_app",
+    "dropped": true
+  },
+  {
+    "case": "uevent-move-nnp_app",
+    "dropped": true
+  },
+  {
+    "case": "link-nnp_app",
+    "dropped": true
+  },
+  {
+    "case": "uevent-add-veth-1960000-s",
+    "dropped": true
+  },
+  {
+    "case": "uevent-remove-veth-1960000-s",
+    "dropped": true
+  },
+  {
+    "case": "uevent-change-veth-1960000-s",
+    "dropped": true
+  },
+  {
+    "case": "uevent-move-veth-1960000-s",
+    "dropped": true
+  },
+  {
+    "case": "link-veth-1960000-s",
+    "dropped": true
+  },
+  {
+    "case": "uevent-add-macsec-1960000s",
+    "dropped": true
+  },
+  {
+    "case": "uevent-remove-macsec-1960000s",
+    "dropped": true
+  },
+  {
+    "case": "uevent-change-macsec-1960000s",
+    "dropped": true
+  },
+  {
+    "case": "uevent-move-macsec-1960000s",
+    "dropped": true
+  },
+  {
+    "case": "link-macsec-1960000s",
+    "dropped": true
+  },
+  {
+    "case": "uevent-preserve-ens18",
+    "dropped": false
+  },
+  {
+    "case": "link-preserve-ens18",
+    "dropped": false
+  },
+  {
+    "case": "uevent-preserve-docker0",
+    "dropped": false
+  },
+  {
+    "case": "link-preserve-docker0",
+    "dropped": false
+  },
+  {
+    "case": "uevent-preserve-veth123abc",
+    "dropped": false
+  },
+  {
+    "case": "link-preserve-veth123abc",
+    "dropped": false
+  },
+  {
+    "case": "uevent-preserve-veth-42p",
+    "dropped": false
+  },
+  {
+    "case": "link-preserve-veth-42p",
+    "dropped": false
+  },
+  {
+    "case": "uevent-preserve-veth-42",
+    "dropped": false
+  },
+  {
+    "case": "link-preserve-veth-42",
+    "dropped": false
+  },
+  {
+    "case": "uevent-preserve-br_other",
+    "dropped": false
+  },
+  {
+    "case": "link-preserve-br_other",
+    "dropped": false
+  },
+  {
+    "case": "uevent-preserve-ns_other",
+    "dropped": false
+  },
+  {
+    "case": "link-preserve-ns_other",
+    "dropped": false
+  },
+  {
+    "case": "uevent-preserve-macsec-42wrong",
+    "dropped": false
+  },
+  {
+    "case": "link-preserve-macsec-42wrong",
+    "dropped": false
+  },
+  {
+    "case": "queue-add-veth-1960000-s",
+    "dropped": true
+  },
+  {
+    "case": "queue-remove-veth-1960000-s",
+    "dropped": true
+  },
+  {
+    "case": "queue-add-macsec-1960000s",
+    "dropped": true
+  },
+  {
+    "case": "queue-remove-macsec-1960000s",
+    "dropped": true
+  },
+  {
+    "case": "queue-add-nnv_1960000_s",
+    "dropped": true
+  },
+  {
+    "case": "queue-remove-nnv_1960000_s",
+    "dropped": true
+  },
+  {
+    "case": "queue-add-veth123abc",
+    "dropped": false
+  },
+  {
+    "case": "queue-remove-veth123abc",
+    "dropped": false
+  },
+  {
+    "case": "queue-add-veth-42p",
+    "dropped": false
+  },
+  {
+    "case": "queue-remove-veth-42p",
+    "dropped": false
+  },
+  {
+    "case": "queue-add-macsec-42wrong",
+    "dropped": false
+  },
+  {
+    "case": "queue-remove-macsec-42wrong",
+    "dropped": false
+  },
+  {
+    "case": "unicast-request-reply",
+    "dropped": false
+  },
+  {
+    "case": "multipart-dump",
+    "dropped": false
+  },
+  {
+    "case": "own-unicast-reply",
+    "dropped": false
+  },
+  {
+    "case": "other-socket-multicast-echo",
+    "dropped": true
+  },
+  {
+    "case": "mixed-datagram",
+    "dropped": false
+  },
+  {
+    "case": "track-owned-index",
+    "dropped": true
+  },
+  {
+    "case": "address-owned",
+    "dropped": true
+  },
+  {
+    "case": "route-owned",
+    "dropped": true
+  },
+  {
+    "case": "neighbor-owned",
+    "dropped": true
+  },
+  {
+    "case": "reuse-index-foreign",
+    "dropped": false
+  },
+  {
+    "case": "address-after-index-reuse",
+    "dropped": false
+  },
+  {
+    "case": "route-after-index-reuse",
+    "dropped": false
+  },
+  {
+    "case": "neighbor-after-index-reuse",
+    "dropped": false
+  }
+]

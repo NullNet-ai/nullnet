@@ -1,0 +1,18 @@
+{
+  "archive": "~/.codex/backups/nullnet-layer1-20261008/research-evidence",
+  "purpose": "Large raw captures are preserved outside Git; reports, scripts and compact results remain in this directory.",
+  "files": [
+    {
+      "file": "evidence-104.tar.gz",
+      "sha256": "e686f023039f92933b536665d956519f31e2e73a0f0097fe35a9cae721d07cec",
+      "bytes": 100972028,
+      "archive_file": "docs/reports/bridgefree-lifecycle-2026-10-08/evidence-104.tar.gz"
+    },
+    {
+      "file": "evidence-103.tar.gz",
+      "sha256": "d22ceb376d5970ca1d530b88c60a3c2f19c6367961ee04b65a78efc5e3b34956",
+      "bytes": 98837062,
+      "archive_file": "docs/reports/bridgefree-lifecycle-2026-10-08/evidence-103.tar.gz"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running `target/debug/xtask lint`
+    Checking nullnet-client v0.1.0 (/root/nullnet-layer1-20261008/bypass/members/nullnet-client)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.89s
+    Checking nullnet-ebpf v0.1.0 (/root/nullnet-layer1-20261008/bypass/ebpf)
+    Finished `dev` profile [optimized] target(s) in 0.16s

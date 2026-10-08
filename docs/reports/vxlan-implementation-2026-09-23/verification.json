@@ -1,0 +1,120 @@
+{
+  "date": "2026-09-23",
+  "release_status": "not_ready",
+  "investigation_status": "stopped_at_user_request_after_final_candidate_failed_target",
+  "linux_ci": {
+    "unit": "nn-final-cleanup-ci.service",
+    "result": "passed",
+    "rust_suites": [
+      {
+        "passed": 101,
+        "failed": 0,
+        "ignored": 8
+      },
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 38,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 267,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "ui_tests_passed": 7,
+    "commands": [
+      "cargo fmt --check (client, grpc, server, proxy, ebpf)",
+      "cargo xtask build",
+      "cargo xtask lint",
+      "cargo build (grpc, server, proxy)",
+      "cargo clippy (grpc, server, proxy) -- -D warnings",
+      "cargo test (client, grpc, server, proxy)",
+      "npm --prefix members/nullnet-server/ui test"
+    ]
+  },
+  "lab_hosts": [
+    {
+      "host": 103,
+      "original_containers": 8,
+      "container_errors": [],
+      "owned_links_remaining": [],
+      "named_namespaces": "",
+      "fixture_containers_remaining": 0,
+      "probe_rules_remaining": [],
+      "owned_xfrm_states_remaining": 0,
+      "services": {
+        "client": {
+          "MainPID": "1124949",
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "binary": "/root/nullnet-vxlan-baseline/run/baseline/nullnet-client",
+          "sha256": "521b0f3dce08755e8eccb7e9eab3b8ce113858e7e8cfd07ee6a01017199dadc1"
+        }
+      },
+      "host_observers": {
+        "NetworkManager": "active",
+        "avahi-daemon": "active",
+        "systemd-udevd": "active"
+      }
+    },
+    {
+      "host": 104,
+      "original_containers": 2,
+      "container_errors": [],
+      "owned_links_remaining": [],
+      "named_namespaces": "",
+      "fixture_containers_remaining": 0,
+      "probe_rules_remaining": [],
+      "owned_xfrm_states_remaining": 0,
+      "services": {
+        "client": {
+          "MainPID": "1523431",
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "binary": "/root/nullnet-vxlan-baseline/run/baseline/nullnet-client",
+          "sha256": "521b0f3dce08755e8eccb7e9eab3b8ce113858e7e8cfd07ee6a01017199dadc1"
+        },
+        "server": {
+          "MainPID": "1523407",
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "binary": "/root/nullnet-vxlan-baseline/run/baseline/nullnet-server",
+          "sha256": "6f7f6f517c177dca4bb998963dc5d1c1595a2d14e65f3279e7d99988ef4140c3"
+        },
+        "proxy": {
+          "MainPID": "1523456",
+          "NRestarts": "0",
+          "ActiveState": "active",
+          "binary": "/root/nullnet-vxlan-baseline/run/baseline/nullnet-proxy",
+          "sha256": "637b4a148cdcf262dd76b3b0eaef209e2abe661e817ca65f968f941829a83019"
+        }
+      },
+      "host_observers": {
+        "NetworkManager": "active",
+        "avahi-daemon": "active",
+        "systemd-udevd": "active"
+      }
+    }
+  ],
+  "lab_baseline_commit": "e3e228b",
+  "runtime_fd_limit_retained": 65536,
+  "no_commit_or_push": true,
+  "remaining_release_checks": [
+    "Complete egress and host-service behavior",
+    "Docker restart/name-generation E2E",
+    "Complete firewall recovery and negative packet matrix",
+    "All four integrated before/after cases at target throughput",
+    "Release setup/changelog documentation"
+  ]
+}

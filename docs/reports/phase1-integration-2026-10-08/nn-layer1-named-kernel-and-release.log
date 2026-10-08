@@ -1,0 +1,88 @@
+    Checking nullnet-client v0.1.0 (/root/nullnet-layer1-20261008/fresh/members/nullnet-client)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.72s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running unittests src/main.rs (target/debug/deps/nullnet_client-8b61ead9a50fc4b3)
+
+running 1 test
+dump returned 1 flow(s) for 127.0.0.1
+test conntrack::tests::live_dump_flows_sees_a_real_connection ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 112 filtered out; finished in 0.01s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/main.rs (target/debug/deps/nullnet_client-8b61ead9a50fc4b3)
+
+running 1 test
+test commands::vxlan_cleanup::tests::named_batches_and_partial_discovery_preserve_foreign_devices ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 112 filtered out; finished in 0.08s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running unittests src/main.rs (target/debug/deps/nullnet_client-8b61ead9a50fc4b3)
+
+running 1 test
+conntrack v1.4.8 (conntrack-tools): 1 flow entries have been created.
+conntrack v1.4.8 (conntrack-tools): 1 flow entries have been created.
+conntrack v1.4.8 (conntrack-tools): 1 flow entries have been created.
+conntrack v1.4.8 (conntrack-tools): 1 flow entries have been created.
+conntrack v1.4.8 (conntrack-tools): 1 flow entries have been created.
+conntrack v1.4.8 (conntrack-tools): 1 flow entries have been created.
+conntrack v1.4.8 (conntrack-tools): 1 flow entries have been created.
+conntrack v1.4.8 (conntrack-tools): 1 flow entries have been created.
+test commands::endpoint_io::tests::batched_cleanup_removes_owned_tcp_udp_flows_and_preserves_foreign_flows ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 112 filtered out; finished in 0.06s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/main.rs (target/debug/deps/nullnet_client-8b61ead9a50fc4b3)
+
+running 1 test
+PING 10.250.0.3 (10.250.0.3) 56(84) bytes of data.
+64 bytes from 10.250.0.3: icmp_seq=1 ttl=64 time=0.047 ms
+
+--- 10.250.0.3 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.047/0.047/0.047/0.000 ms
+[ERROR] [members/nullnet-client/src/commands/netlink.rs:221] Received a netlink error message No such device (os error 19)
+[ERROR] [members/nullnet-client/src/commands/netlink.rs:221] Received a netlink error message No such device (os error 19)
+[ERROR] [members/nullnet-client/src/commands/netlink.rs:221] Received a netlink error message No such device (os error 19)
+[ERROR] [members/nullnet-client/src/commands/netlink.rs:221] Received a netlink error message No such device (os error 19)
+PING 10.250.1.3 (10.250.1.3) 56(84) bytes of data.
+64 bytes from 10.250.1.3: icmp_seq=1 ttl=64 time=0.064 ms
+
+--- 10.250.1.3 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.064/0.064/0.064/0.000 ms
+net.ipv4.ip_forward = 1
+PING 10.250.1.3 (10.250.1.3) 56(84) bytes of data.
+
+--- 10.250.1.3 ping statistics ---
+1 packets transmitted, 0 received, 100% packet loss, time 0ms
+
+PING 10.250.1.3 (10.250.1.3) 56(84) bytes of data.
+64 bytes from 10.250.1.3: icmp_seq=1 ttl=63 time=0.101 ms
+
+--- 10.250.1.3 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.101/0.101/0.101/0.000 ms
+[ERROR] [members/nullnet-client/src/commands/netlink.rs:221] Received a netlink error message No such device (os error 19)
+[ERROR] [members/nullnet-client/src/commands/netlink.rs:221] Received a netlink error message No such device (os error 19)
+[ERROR] [members/nullnet-client/src/commands/netlink.rs:221] Received a netlink error message No such device (os error 19)
+[ERROR] [members/nullnet-client/src/commands/netlink.rs:221] Received a netlink error message No such device (os error 19)
+PING 10.250.2.4 (10.250.2.4) 56(84) bytes of data.
+64 bytes from 10.250.2.4: icmp_seq=1 ttl=64 time=0.090 ms
+
+--- 10.250.2.4 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.090/0.090/0.090/0.000 ms
+[ERROR] [members/nullnet-client/src/commands/netlink.rs:221] Received a netlink error message No such device (os error 19)
+[ERROR] [members/nullnet-client/src/commands/netlink.rs:221] Received a netlink error message No such device (os error 19)
+[ERROR] [members/nullnet-client/src/commands/netlink.rs:221] Received a netlink error message No such device (os error 19)
+test commands::vxlan::endpoint_packet_tests::fresh_endpoints_deliver_packets_and_release_owned_resources ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 112 filtered out; finished in 1.34s
+
+   Compiling nullnet-client v0.1.0 (/root/nullnet-layer1-20261008/fresh/members/nullnet-client)
+    Finished `release` profile [optimized] target(s) in 47.88s
+2fb301f651fbccc537f6911b6c58308e123e4b5e3ea7fa2acd5e717fdd2e9a01  /root/nullnet-layer1-20261008/artifacts/named/nullnet-client
+DONE_RECONCILE_RELEASE

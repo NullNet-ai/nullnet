@@ -1,0 +1,115 @@
+   Compiling nullnet-client v0.1.0 (/root/nullnet-layer1-20261008/bypass/members/nullnet-client)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.03s
+    Checking nullnet-client v0.1.0 (/root/nullnet-layer1-20261008/bypass/members/nullnet-client)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.77s
+   Compiling nullnet-client v0.1.0 (/root/nullnet-layer1-20261008/bypass/members/nullnet-client)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.35s
+     Running unittests src/main.rs (target/debug/deps/nullnet_client-15fce36dfbd536f7)
+
+running 103 tests
+test commands::dnat::tests::scoped_by_source_like_the_rule ... ok
+test commands::egress::purge_tests::cross_host_forwarding_rules_preserve_existing_scope ... ok
+test commands::dnat::tests::unspecified_source_stays_unscoped ... ok
+test commands::egress::purge_tests::net_ids_come_from_our_table_range_only ... ok
+test commands::egress::purge_tests::empty_output_yields_nothing ... ok
+test commands::egress::purge_tests::local_forwarding_excludes_internal_traffic_and_unsolicited_replies ... ok
+test commands::egress::purge_tests::snat_rules_scoped_to_overlay_bridges ... ok
+test commands::egress::tests::private_and_special_ranges_are_internal ... ok
+test commands::egress::tests::public_addresses_are_external ... ok
+test commands::egress::purge_tests::local_cleanup_is_scoped_to_tagged_edge_and_preserves_other_rules ... ok
+test commands::netlink::ownership_tests::startup_preserves_docker_and_unrelated_veths ... ok
+test commands::vxlan::tests::veth_mac_matches_vxlan_setup_shs_printf_derivation ... ok
+test commands::vxlan::tests::xfrm_spi_offsets_clear_of_the_iana_reserved_range ... ok
+test commands::vxlan::tests::veth_mac_is_locally_administered_and_side_scoped ... ok
+test commands::xfrm_tests::empty_output_yields_nothing ... ok
+test commands::xfrm_tests::orphan_namespace_cleanup_is_scoped_to_nullnet_names ... ok
+test commands::vxlan_cleanup::tests::cancelled_setup_releases_its_scheduling_hint ... ok
+test commands::xfrm_tests::states_scoped_to_our_spi_range ... ok
+test commands::xfrm_tests::policies_carry_their_selector_and_direction ... ok
+test conntrack::tests::a_dnat_flush_does_not_report_a_trigger_chain_idle ... ok
+test conntrack::tests::concurrent_flows_to_one_host_do_not_collapse ... ok
+test conntrack::tests::concurrent_flows_to_one_destination_finish_it_only_once ... ok
+test conntrack::tests::live_destroy_event_parses_to_the_real_tuple ... ignored, needs root, network, and up to ~30s of conntrack timeout
+test conntrack::tests::conntrack_line_parses_the_original_tuple_not_the_reply ... ok
+test conntrack::tests::conntrack_line_parses_udp_and_skips_other_protocols ... ok
+test conntrack::tests::live_dump_flows_sees_a_real_connection ... ignored, needs root and network
+test conntrack::tests::duplicate_insert_is_idempotent ... ok
+test commands::egress::purge_tests::steerable_matches_what_install_steer_accepts ... ok
+test conntrack::tests::empty_dump_during_suppression_is_not_idle ... ok
+test conntrack::tests::new_flow_clears_suppression ... ok
+test conntrack::tests::reconcile_repairs_destinations_in_both_directions ... ok
+test conntrack::tests::one_destination_finishes_while_the_owner_stays_active ... ok
+test conntrack::tests::owners_are_independent ... ok
+test conntrack::tests::reconcile_to_empty_reports_idle ... ok
+test conntrack::tests::reconcile_from_a_dump_restores_the_exact_flow_set ... ok
+test conntrack::tests::suppression_expires_and_idle_is_reported_again ... ok
+test conntrack::tests::reconcile_on_an_untracked_owner_reports_nothing ... ok
+test conntrack::tests::trigger_ports_on_one_container_are_independent ... ok
+test control_channel::failure_tests::failed_kernel_teardown_is_not_acknowledged ... ignored, requires root, nnreview0 dummy interface, and the lab TLS server
+test conntrack::tests::suppressed_owner_never_reports_idle ... ok
+test container_report_tests::reports_pause_state_for_standalone_and_swarm ... ok
+test crypto::tests::open_vlan_id_rejects_short_datagrams ... ok
+test conntrack::tests::unknown_flow_destroy_is_ignored ... ok
+test crypto::tests::seal_plain_then_open_round_trips_vlan_id_and_frame_untransformed ... ok
+test crypto::tests::nonce_randomizes_ciphertext ... ok
+test crypto::tests::truncated_data_fails_without_panicking ... ok
+test crypto::tests::round_trip ... ok
+test control_channel::lifecycle::tests::orders_one_tunnel_without_blocking_another_and_releases_state ... ok
+test crypto::tests::seal_then_open_round_trips_vlan_id_and_plaintext ... ok
+test host_mappings::edit_tests::a_failed_read_writes_nothing ... ok
+test crypto::tests::wrong_key_fails ... ok
+test host_mappings::tests::leaves_unmarked_content_untouched ... ok
+test host_mappings::edit_tests::reports_no_change_and_leaves_the_file_alone ... ok
+test host_mappings::edit_tests::writes_in_place_and_reports_the_change ... ok
+test nfqueue::cache::tests::container_index_extracts_name_and_sandbox_prefix ... ok
+test nfqueue::cache::tests::container_index_skips_empty_name ... ok
+test nfqueue::cache::tests::container_index_handles_multiple_lines ... ok
+test host_mappings::tests::strips_only_marked_lines ... ok
+test nfqueue::cache::tests::container_index_skips_malformed_lines ... ok
+test host_mappings::tests::teardown_waits_for_publication_and_prevents_late_republication ... ok
+test nfqueue::cache::tests::rebuild_tracks_the_new_address_without_retaining_the_old_one ... ok
+test nfqueue::cache::tests::container_index_skips_short_sandbox ... ok
+test nfqueue::cache::tests::docker_refresh_preserves_overlay_liveness_addresses ... ok
+test nfqueue::cache::tests::resolve_direct_match_wins ... ok
+test nfqueue::cache::tests::replace_and_get_round_trip ... ok
+test host_mappings::tests::slow_publication_does_not_block_unrelated_tunnels ... ok
+test nfqueue::cache::tests::resolve_direct_match_wins_even_when_name_looks_like_gateway ... ok
+test nfqueue::cache::tests::network_endpoints_skips_blanks_and_empty_fields ... ok
+test nfqueue::cache::tests::network_endpoints_parses_basic ... ok
+test nfqueue::cache::tests::resolve_gateway_ingress_sbox_skipped ... ok
+test nfqueue::cache::tests::resolve_gateway_unknown_sandbox_skipped ... ok
+test nfqueue::cache::tests::resolve_gateway_prefix_with_sandbox_match ... ok
+test nfqueue::cache::tests::resolve_lb_endpoint_skipped ... ok
+test nfqueue::cache::tests::resolve_unknown_name_skipped ... ok
+test nfqueue::cache::tests::same_host_teardown_keeps_the_other_endpoint_and_docker_address ... ok
+test nfqueue::cache::tests::strip_cidr_garbage_returns_none ... ok
+test nfqueue::cache::tests::strip_cidr_with_mask ... ok
+test nfqueue::cache::tests::strip_cidr_without_mask ... ok
+test nfqueue::listener::tests::container_less_owner_matches_anything ... ok
+test nfqueue::listener::tests::every_replica_of_the_declaring_service_owns_it ... ok
+test nfqueue::listener::tests::foreign_container_on_a_watched_port_is_not_attributed ... ok
+test nfqueue::listener::tests::scoped_owner_wins_over_legacy_catch_all ... ok
+test nfqueue::listener::tests::two_services_can_share_a_port ... ok
+test nfqueue::listener::tests::unwatched_port_is_a_miss ... ok
+test nfqueue::parse::tests::extracts_tcp ... ok
+test nfqueue::parse::tests::extracts_udp ... ok
+test nfqueue::parse::tests::rejects_too_short ... ok
+test nfqueue::parse::tests::rejects_unknown_protocol ... ok
+test triggers::tests::atomic_claim_elects_one_sender_and_preserves_active ... ok
+test nfqueue::parse::tests::rejects_non_ipv4 ... ok
+test triggers::tests::distinct_containers_are_independent ... ok
+test triggers::tests::concurrent_pending_share_notify ... ok
+test triggers::tests::forget_pending_keeps_an_active_entry ... ok
+test triggers::tests::enabled_notified_wakes_on_subsequent_mark_active ... ok
+test triggers::tests::forget_pending_drops_pending_entry ... ok
+test triggers::tests::old_failure_cannot_forget_replacement ... ok
+test triggers::tests::installed_trigger_waits_for_both_endpoints ... ok
+test triggers::tests::prepared_steering_survives_rpc_failure_and_is_cleaned_before_activation ... ok
+test triggers::tests::peek_returns_unspecified_when_absent ... ok
+test triggers::tests::remove_by_vxlan_returns_container_port_and_ip ... ok
+test commands::vxlan::tests::command_wait_yields_and_preserves_output_and_status ... ok
+test triggers::tests::pending_then_active_wakes_waiter ... ok
+test triggers::tests::state_recheck_catches_mark_active_that_fired_before_enable ... ok
+
+test result: ok. 100 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.06s
+

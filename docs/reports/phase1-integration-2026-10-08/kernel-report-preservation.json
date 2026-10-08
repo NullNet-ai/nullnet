@@ -1,0 +1,7 @@
+{
+  "instruction": "Leave the non-product CPU/RTNL breakdown PDF and generator unchanged during product integration.",
+  "sha256": {
+    "docs/reports/lifecycle-performance-summary-2026-10-06/nullnet-cpu-rtnl-breakdown.pdf": "4f5037cda8e8030a8dd075845cec79db9fb65e1178af229136f57938fad5c171",
+    "docs/reports/lifecycle-performance-summary-2026-10-06/build_pdf.py": "268306e5994b8e6b9061e61b1d061c29f211125b57699b5f552171a2a9d0f91a"
+  }
+}

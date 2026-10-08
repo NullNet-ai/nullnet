@@ -1,0 +1,346 @@
+{
+  "status": "kernel-readiness-fix-verified",
+  "date": "2026-09-28",
+  "cause": "deferred carrier/qdisc activation dropped the first UDP packet in the sending container",
+  "fix": "individual RTM_GETLINK readiness barrier after activation, lower devices before stacked devices",
+  "source_sha256": {
+    "node.py": "10a8f891d6cd64b8ebaf8e106ce649a08e3eff04c6a95cf90d247b9366c890cb",
+    "prototype.py": "893755afced4c02933f665e4a4b12375080d74e40cd5858b34daace7ba50017b",
+    "coordinator.py": "4a675e666c8519cda0ffd4c1814d75e3e42f23dc98f58494c1c7a8268dae3ef3"
+  },
+  "cross_host_trials": [
+    {
+      "trial": 0,
+      "seconds": 60.027513489996636,
+      "waves": 909,
+      "setups": 29088,
+      "retirements": 29088,
+      "setups_per_second": 484.57779289570954,
+      "retirements_per_second": 484.57779289570954
+    },
+    {
+      "trial": 1,
+      "seconds": 60.00483507100216,
+      "waves": 899,
+      "setups": 28768,
+      "retirements": 28768,
+      "setups_per_second": 479.4280321903989,
+      "retirements_per_second": 479.4280321903989
+    },
+    {
+      "trial": 2,
+      "seconds": 60.03723684000215,
+      "waves": 903,
+      "setups": 28896,
+      "retirements": 28896,
+      "setups_per_second": 481.3012976764266,
+      "retirements_per_second": 481.3012976764266
+    }
+  ],
+  "same_host_trials": [
+    {
+      "trial": 0,
+      "seconds": 60.024234489000264,
+      "waves": 563,
+      "setups": 18016,
+      "retirements": 18016,
+      "setup_per_second": 300.14543547909005,
+      "retire_per_second": 300.14543547909005
+    },
+    {
+      "trial": 1,
+      "seconds": 60.071855731999676,
+      "waves": 562,
+      "setups": 17984,
+      "retirements": 17984,
+      "setup_per_second": 299.3748034059834,
+      "retire_per_second": 299.3748034059834
+    },
+    {
+      "trial": 2,
+      "seconds": 60.09441762700044,
+      "waves": 563,
+      "setups": 18016,
+      "retirements": 18016,
+      "setup_per_second": 299.79490128057097,
+      "retire_per_second": 299.79490128057097
+    }
+  ],
+  "complete_setups": 140768,
+  "complete_retirements": 140768,
+  "lifecycle_errors": 0,
+  "traffic_errors": 0,
+  "cross_host_proof": [
+    {
+      "label": "prepared-idle",
+      "result": [
+        {
+          "sent": 0
+        },
+        {
+          "received": 0
+        }
+      ]
+    },
+    {
+      "label": "active-frame-parity",
+      "result": [
+        {
+          "sent": 12
+        },
+        {
+          "received": 12
+        }
+      ]
+    },
+    {
+      "label": "ciphertext-only",
+      "result": {
+        "esp_packets": 20,
+        "plaintext": 0
+      }
+    },
+    {
+      "label": "current-key-replay-rejected",
+      "result": {
+        "received": 0
+      }
+    },
+    {
+      "label": "plaintext-rejected",
+      "result": [
+        {
+          "attempted": 12,
+          "local_drops": 12
+        },
+        {
+          "received": 0
+        }
+      ]
+    },
+    {
+      "label": "wrong-vni-rejected",
+      "result": [
+        {
+          "attempted": 12,
+          "local_drops": 0
+        },
+        {
+          "received": 0
+        }
+      ]
+    },
+    {
+      "label": "missing-rejected",
+      "result": [
+        {
+          "sent": 12
+        },
+        {
+          "received": 0
+        }
+      ]
+    },
+    {
+      "label": "missing-unrelated-slot-survived",
+      "result": true
+    },
+    {
+      "label": "missing-recovered",
+      "result": [
+        {
+          "sent": 12
+        },
+        {
+          "received": 12
+        }
+      ]
+    },
+    {
+      "label": "wrong-key-rejected",
+      "result": [
+        {
+          "sent": 12
+        },
+        {
+          "received": 0
+        }
+      ]
+    },
+    {
+      "label": "wrong-key-unrelated-slot-survived",
+      "result": true
+    },
+    {
+      "label": "wrong-key-recovered",
+      "result": [
+        {
+          "sent": 12
+        },
+        {
+          "received": 12
+        }
+      ]
+    },
+    {
+      "label": "reset-idle",
+      "result": [
+        {
+          "sent": 0
+        },
+        {
+          "received": 0
+        }
+      ]
+    },
+    {
+      "label": "old-key-replay-rejected",
+      "result": {
+        "received": 0
+      }
+    },
+    {
+      "label": "new-generation-frame-parity",
+      "result": [
+        {
+          "sent": 12
+        },
+        {
+          "received": 12
+        }
+      ]
+    },
+    {
+      "label": "final-idle",
+      "result": [
+        {
+          "sent": 0
+        },
+        {
+          "received": 0
+        }
+      ]
+    }
+  ],
+  "same_host_frame_proof": {
+    "kind": "same-host-retained-devices",
+    "slots": 2,
+    "workers": 2,
+    "attachment": "container",
+    "source_sha256": "893755afced4c02933f665e4a4b12375080d74e40cd5858b34daace7ba50017b",
+    "kernel": "6.12.95+deb13-amd64",
+    "trials": [],
+    "proof_sha256": "a0524e254c34708f76f311f3407791a936322f14bc03487f0c51c78b67848d86",
+    "preparation_seconds": 0.14491791300042678,
+    "inventories": [
+      {
+        "label": "prepared",
+        "links": 20,
+        "addresses": 0,
+        "neighbors": 0,
+        "dynamic_fdb": 0,
+        "sas": 0
+      },
+      {
+        "label": "reset-0",
+        "links": 20,
+        "addresses": 0,
+        "neighbors": 0,
+        "dynamic_fdb": 0,
+        "sas": 0
+      },
+      {
+        "label": "reset-1",
+        "links": 20,
+        "addresses": 0,
+        "neighbors": 0,
+        "dynamic_fdb": 0,
+        "sas": 0
+      },
+      {
+        "label": "reset-2",
+        "links": 20,
+        "addresses": 0,
+        "neighbors": 0,
+        "dynamic_fdb": 0,
+        "sas": 0
+      }
+    ],
+    "frame_checks": [
+      {
+        "label": "prepared-idle",
+        "sent": 0,
+        "received": 0,
+        "expected": 0
+      },
+      {
+        "label": "active-0",
+        "sent": 12,
+        "received": 12,
+        "expected": 12
+      },
+      {
+        "label": "reset-idle-0",
+        "sent": 0,
+        "received": 0,
+        "expected": 0
+      },
+      {
+        "label": "active-1",
+        "sent": 12,
+        "received": 12,
+        "expected": 12
+      },
+      {
+        "label": "reset-idle-1",
+        "sent": 0,
+        "received": 0,
+        "expected": 0
+      },
+      {
+        "label": "active-2",
+        "sent": 12,
+        "received": 12,
+        "expected": 12
+      },
+      {
+        "label": "reset-idle-2",
+        "sent": 0,
+        "received": 0,
+        "expected": 0
+      }
+    ],
+    "completed": true,
+    "destruction_seconds": 0.4160599460001322,
+    "cleanup_errors": []
+  },
+  "original_lab_preserved": true,
+  "product_files_unchanged": 30,
+  "product_pool_integrated": false,
+  "execution_latency_ms": {
+    "cross": {
+      "up": {
+        "p50": 24.06711100047687,
+        "p95": 39.16950300026656,
+        "p99": 44.34033500001533
+      },
+      "down": {
+        "p50": 18.00469400041038,
+        "p95": 27.248909000263666,
+        "p99": 32.4018689998411
+      }
+    },
+    "same": {
+      "setup": {
+        "p50": 39.95299200050795,
+        "p95": 66.58455000069807,
+        "p99": 76.91220300057466
+      },
+      "retire": {
+        "p50": 54.285227000036684,
+        "p95": 91.70519300005253,
+        "p99": 100.59759999967355
+      }
+    }
+  }
+}

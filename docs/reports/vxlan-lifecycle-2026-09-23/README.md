@@ -1,5 +1,7 @@
 # VXLAN encrypted setup and teardown
 
+**Implementation update (23 September):** The integrated throughput target was not met and the investigation is stopped. See [the current conclusion](../vxlan-implementation-2026-09-23/conclusion.md). The measurements below remain endpoint-harness results, not production throughput.
+
 [Start here: next steps and key documents from September 22–23](../VXLAN-NEXT-STEPS.md).
 
 This package contains the current baseline and the final tested endpoint candidate. Superseded designs and intermediate measurements are excluded.

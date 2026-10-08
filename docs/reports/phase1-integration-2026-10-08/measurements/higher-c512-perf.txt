@@ -1,0 +1,46 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 15K of event 'cycles:P'
+# Event count (approx.): 324201942205
+#
+# Overhead  Command          Shared Object                                   Symbol                                                                                                           IPC   [IPC Coverage]
+# ........  ...............  ..............................................  ...............................................................................................................  ....................
+#
+     5.07%  tokio-rt-worker  [kernel.kallsyms]                               [k] osq_lock                                                                                                     -      -            
+     4.93%  tokio-rt-worker  [kernel.kallsyms]                               [k] mutex_spin_on_owner                                                                                          -      -            
+     4.69%  tokio-rt-worker  [kernel.kallsyms]                               [k] flow_indr_dev_setup_offload                                                                                  -      -            
+     4.53%  conntrack        [kernel.kallsyms]                               [k] ctnetlink_dump_table                                                                                         -      -            
+     3.09%  tokio-rt-worker  nullnet-client                                  [.] 0x00000000006c9a12                                                                                           -      -            
+     2.08%  tokio-rt-worker  [kernel.kallsyms]                               [k] fib_table_flush                                                                                              -      -            
+     1.99%  conntrack        [kernel.kallsyms]                               [k] __nla_reserve                                                                                                -      -            
+     1.92%  tokio-rt-worker  [kernel.kallsyms]                               [k] ctnetlink_dump_table                                                                                         -      -            
+     1.57%  tokio-rt-worker  libc.so.6                                       [.] 0x000000000017c4ea                                                                                           -      -            
+     1.29%  conntrack        [kernel.kallsyms]                               [k] __raw_callee_save___pv_queued_spin_unlock                                                                    -      -            
+     1.22%  conntrack        [kernel.kallsyms]                               [k] srso_alias_safe_ret                                                                                          -      -            
+     1.14%  kworker/1:9-eve  [kernel.kallsyms]                               [k] xfrm_policy_match                                                                                            -      -            
+     1.11%  conntrack        [kernel.kallsyms]                               [k] nla_put                                                                                                      -      -            
+     1.06%  tokio-rt-worker  [kernel.kallsyms]                               [k] _raw_spin_lock_bh                                                                                            -      -            
+     1.06%  conntrack        [kernel.kallsyms]                               [k] ctnetlink_fill_info                                                                                          -      -            
+     1.06%  tokio-rt-worker  [kernel.kallsyms]                               [k] vxlan_netdevice_event                                                                                        -      -            
+     1.00%  conntrack        [kernel.kallsyms]                               [k] _raw_spin_lock                                                                                               -      -            
+     0.98%  conntrack        [kernel.kallsyms]                               [k] _raw_spin_unlock                                                                                             -      -            
+     0.94%  tokio-rt-worker  [kernel.kallsyms]                               [k] __raw_callee_save___pv_queued_spin_unlock                                                                    -      -            
+     0.92%  conntrack        [kernel.kallsyms]                               [k] nf_conntrack_lock                                                                                            -      -            
+     0.90%  tokio-rt-worker  [kernel.kallsyms]                               [k] xfrm_dev_policy_flush                                                                                        -      -            
+     0.85%  ksoftirqd/1      [kernel.kallsyms]                               [k] xfrm_policy_match                                                                                            -      -            
+     0.77%  conntrack        libmnl.so.0.2.0                                 [.] mnl_attr_parse_nested                                                                                        -      -            
+     0.73%  tokio-rt-worker  [kernel.kallsyms]                               [k] srso_alias_safe_ret                                                                                          -      -            
+     0.70%  tokio-rt-worker  [kernel.kallsyms]                               [k] vxlan_vni_in_use                                                                                             -      -            
+     0.68%  tokio-rt-worker  [kernel.kallsyms]                               [k] _raw_spin_lock                                                                                               -      -            
+     0.67%  conntrack        [kernel.kallsyms]                               [k] __nla_put                                                                                                    -      -            
+     0.62%  tokio-rt-worker  [kernel.kallsyms]                               [k] xfrm_policy_match                                                                                            -      -            
+     0.61%  conntrack        [kernel.kallsyms]                               [k] memset_orig                                                                                                  -      -            
+     0.56%  tokio-rt-worker  [kernel.kallsyms]                               [k] neigh_flush_dev.isra.0                                                                                       -      -            
+
+
+#
+# (Tip: To only collect call graph on one event use perf record -e cpu/cpu-cycles,callgraph=1/,branches ; perf report --show-ref-call-graph)
+#

@@ -1,0 +1,249 @@
+{
+  "conditions": [
+    {
+      "condition": "pooled-redirect-isolation",
+      "records": [
+        {
+          "side": 1,
+          "message": "packet-open",
+          "response": {
+            "opened": true
+          }
+        },
+        {
+          "side": 0,
+          "message": "packet-open",
+          "response": {
+            "opened": true
+          }
+        },
+        {
+          "side": 1,
+          "message": "wave",
+          "response": {
+            "up": [
+              {
+                "seconds": 0.00254200299968943
+              },
+              {
+                "seconds": 0.00274739300039073
+              },
+              {
+                "seconds": 0.0021515280000130588
+              },
+              {
+                "seconds": 0.0015091879999999946
+              }
+            ],
+            "down": []
+          }
+        },
+        {
+          "side": 0,
+          "message": "wave",
+          "response": {
+            "up": [
+              {
+                "seconds": 0.0030160309997881996
+              },
+              {
+                "seconds": 0.003109714999936841
+              },
+              {
+                "seconds": 0.0022746499998902436
+              },
+              {
+                "seconds": 0.002847427000233438
+              }
+            ],
+            "down": []
+          }
+        },
+        {
+          "side": 0,
+          "message": "traffic",
+          "response": {
+            "bidirectional_deliveries": 8
+          }
+        },
+        {
+          "side": 1,
+          "message": "traffic",
+          "response": {
+            "bidirectional_deliveries": 8
+          }
+        },
+        {
+          "side": 0,
+          "message": "gateway",
+          "response": {
+            "gateway_roundtrips": 4
+          }
+        },
+        {
+          "side": 1,
+          "message": "gateway",
+          "response": {
+            "gateway_roundtrips": 4
+          }
+        },
+        {
+          "side": 0,
+          "message": "host-open",
+          "response": {
+            "host_sockets": 1
+          }
+        },
+        {
+          "side": 1,
+          "message": "host-open",
+          "response": {
+            "host_sockets": 1
+          }
+        },
+        {
+          "side": 0,
+          "message": "host-traffic",
+          "response": {
+            "host_to_host_deliveries": 1
+          }
+        },
+        {
+          "side": 1,
+          "message": "host-traffic",
+          "response": {
+            "host_to_host_deliveries": 1
+          }
+        },
+        {
+          "side": 0,
+          "message": "host-close",
+          "response": {
+            "closed": true
+          }
+        },
+        {
+          "side": 1,
+          "message": "host-close",
+          "response": {
+            "closed": true
+          }
+        },
+        {
+          "side": 0,
+          "message": "packet-open",
+          "response": {
+            "opened": true
+          }
+        },
+        {
+          "side": 1,
+          "message": "packet-open",
+          "response": {
+            "opened": true
+          }
+        },
+        {
+          "side": 0,
+          "message": "wire-open",
+          "response": {
+            "opened": true
+          }
+        },
+        {
+          "side": 0,
+          "message": "packet-send",
+          "response": {
+            "sent": 12
+          }
+        },
+        {
+          "side": 1,
+          "message": "packet-receive",
+          "response": {
+            "received": 12
+          }
+        },
+        {
+          "side": 0,
+          "message": "wire-check",
+          "response": {
+            "esp_packets": 12,
+            "plaintext": 0
+          }
+        },
+        {
+          "side": 0,
+          "message": "replay",
+          "response": {
+            "replayed": 12
+          }
+        },
+        {
+          "side": 1,
+          "message": "packet-receive",
+          "response": {
+            "received": 0
+          }
+        },
+        {
+          "side": 0,
+          "message": "inject",
+          "response": {
+            "attempted": 12,
+            "local_drops": 12
+          }
+        },
+        {
+          "side": 1,
+          "message": "packet-receive",
+          "response": {
+            "received": 0
+          }
+        },
+        {
+          "side": 0,
+          "message": "inject",
+          "response": {
+            "attempted": 12,
+            "local_drops": 0
+          }
+        },
+        {
+          "side": 1,
+          "message": "packet-receive",
+          "response": {
+            "received": 0
+          }
+        },
+        {
+          "side": 1,
+          "message": "finish",
+          "response": {
+            "cleaned": true,
+            "preservation": {
+              "containers": true,
+              "links": true,
+              "routes": true,
+              "services": true,
+              "xfrm_hash": true,
+              "policy_hash": true,
+              "iptables_hash": true
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "checks": {
+    "bidirectional_udp": true,
+    "container_local_gateway_roundtrip": true,
+    "host_gateway_to_host_gateway": true,
+    "ethernet_frame_parity": 12,
+    "ciphertext_only": true,
+    "current_key_replay_rejected": true,
+    "plaintext_rejected": true,
+    "wrong_vni_authenticated_mark_rejected": true
+  },
+  "cleanup_note": "VM1 interrupted after successful checks while awaiting further input; scoped cleanup preserved all original state. VM2 finished normally. No product or original application restart."
+}

@@ -1,0 +1,3872 @@
+{
+  "103": {
+    "balanced": [
+      {
+        "concurrency": 64,
+        "filter": "baseline",
+        "cycles": 3392,
+        "seconds": 30.492157593002048,
+        "cycles_per_second": 111.24171812553088,
+        "host_cpu_ms_per_cycle": 45.595518867924525,
+        "process_cpu_ms_per_cycle": 4.427718315742925,
+        "trial_cycles_per_second": [
+          110.51511104280549,
+          111.95050161125751
+        ]
+      },
+      {
+        "concurrency": 64,
+        "filter": "udev",
+        "cycles": 8704,
+        "seconds": 30.143477433000953,
+        "cycles_per_second": 288.75235179305815,
+        "host_cpu_ms_per_cycle": 8.368566176470589,
+        "process_cpu_ms_per_cycle": 4.637744963924632,
+        "trial_cycles_per_second": [
+          284.9835493276247,
+          292.50854439412404
+        ]
+      },
+      {
+        "concurrency": 64,
+        "filter": "all",
+        "cycles": 9344,
+        "seconds": 30.093659255999228,
+        "cycles_per_second": 310.49730179081683,
+        "host_cpu_ms_per_cycle": 6.808647260273973,
+        "process_cpu_ms_per_cycle": 4.912511010273972,
+        "trial_cycles_per_second": [
+          301.2074101941939,
+          319.8356253205319
+        ]
+      },
+      {
+        "concurrency": 256,
+        "filter": "baseline",
+        "cycles": 7936,
+        "seconds": 30.985974117003934,
+        "cycles_per_second": 256.1158790759146,
+        "host_cpu_ms_per_cycle": 16.793094758064516,
+        "process_cpu_ms_per_cycle": 5.0131825017641125,
+        "trial_cycles_per_second": [
+          236.34768349927836,
+          275.0622382431679
+        ]
+      },
+      {
+        "concurrency": 256,
+        "filter": "udev",
+        "cycles": 10752,
+        "seconds": 30.667622806999134,
+        "cycles_per_second": 350.59776454359286,
+        "host_cpu_ms_per_cycle": 8.842075892857142,
+        "process_cpu_ms_per_cycle": 5.257977419549851,
+        "trial_cycles_per_second": [
+          350.7141115615265,
+          350.4814946947204
+        ]
+      },
+      {
+        "concurrency": 256,
+        "filter": "all",
+        "cycles": 10496,
+        "seconds": 30.2748995869988,
+        "cycles_per_second": 346.68983690064437,
+        "host_cpu_ms_per_cycle": 9.377858231707316,
+        "process_cpu_ms_per_cycle": 5.458153641196646,
+        "trial_cycles_per_second": [
+          370.39294101977157,
+          322.7727405801367
+        ]
+      }
+    ],
+    "raw_balanced": [
+      {
+        "label": "events-warmup-c256",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 6.7248851809999906,
+        "cycles": 1280,
+        "cycles_per_second": 190.33782221537706,
+        "cpu_delta": [
+          1514,
+          0,
+          1752,
+          1905,
+          0,
+          0,
+          61,
+          5,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 6854248435,
+          "user": 1.116939,
+          "system": 5.7373069999999995
+        },
+        "filter": "baseline",
+        "drop_delta": {
+          "uevent": 0,
+          "link": 0,
+          "address": 0,
+          "route": 0,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c64-t0-baseline",
+        "mode": "mixed",
+        "concurrency": 64,
+        "trace": false,
+        "seconds": 15.056764494001982,
+        "cycles": 1664,
+        "cycles_per_second": 110.51511104280549,
+        "cpu_delta": [
+          3658,
+          0,
+          3998,
+          4026,
+          1,
+          0,
+          20,
+          8,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 7411308008,
+          "user": 1.1905900000000003,
+          "system": 6.220708
+        },
+        "filter": "baseline",
+        "drop_delta": {
+          "uevent": 0,
+          "link": 0,
+          "address": 0,
+          "route": 0,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c64-t1-udev",
+        "mode": "mixed",
+        "concurrency": 64,
+        "trace": false,
+        "seconds": 15.046482542999001,
+        "cycles": 4288,
+        "cycles_per_second": 284.9835493276247,
+        "cpu_delta": [
+          988,
+          0,
+          2611,
+          7966,
+          5,
+          0,
+          30,
+          3,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 19905007870,
+          "user": 2.7564420000000003,
+          "system": 17.148574999999997
+        },
+        "filter": "udev",
+        "drop_delta": {
+          "uevent": 174080,
+          "link": 0,
+          "address": 0,
+          "route": 0,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c64-t2-all",
+        "mode": "mixed",
+        "concurrency": 64,
+        "trace": false,
+        "seconds": 15.085950232998584,
+        "cycles": 4544,
+        "cycles_per_second": 301.2074101941939,
+        "cpu_delta": [
+          671,
+          0,
+          2693,
+          8225,
+          3,
+          0,
+          26,
+          4,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 22560235085,
+          "user": 2.9313330000000004,
+          "system": 19.628908999999997
+        },
+        "filter": "all",
+        "drop_delta": {
+          "uevent": 184320,
+          "link": 670264,
+          "address": 50688,
+          "route": 110592,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c64-t3-all",
+        "mode": "mixed",
+        "concurrency": 64,
+        "trace": false,
+        "seconds": 15.007709023000643,
+        "cycles": 4800,
+        "cycles_per_second": 319.8356253205319,
+        "cpu_delta": [
+          298,
+          0,
+          2649,
+          8531,
+          3,
+          0,
+          25,
+          3,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 23342267795,
+          "user": 2.9831840000000014,
+          "system": 20.359092999999994
+        },
+        "filter": "all",
+        "drop_delta": {
+          "uevent": 194560,
+          "link": 707416,
+          "address": 53504,
+          "route": 116736,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c64-t4-udev",
+        "mode": "mixed",
+        "concurrency": 64,
+        "trace": false,
+        "seconds": 15.096994890001952,
+        "cycles": 4416,
+        "cycles_per_second": 292.50854439412404,
+        "cpu_delta": [
+          1013,
+          0,
+          2618,
+          7934,
+          3,
+          0,
+          24,
+          3,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 20461924296,
+          "user": 2.59319,
+          "system": 17.868648000000007
+        },
+        "filter": "udev",
+        "drop_delta": {
+          "uevent": 179200,
+          "link": 0,
+          "address": 0,
+          "route": 0,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c64-t5-baseline",
+        "mode": "mixed",
+        "concurrency": 64,
+        "trace": false,
+        "seconds": 15.435393099000066,
+        "cycles": 1728,
+        "cycles_per_second": 111.95050161125751,
+        "cpu_delta": [
+          3761,
+          0,
+          4014,
+          4162,
+          0,
+          0,
+          15,
+          7,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 7607512519,
+          "user": 1.2486680000000003,
+          "system": 6.35883299999999
+        },
+        "filter": "baseline",
+        "drop_delta": {
+          "uevent": 0,
+          "link": 0,
+          "address": 0,
+          "route": 0,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c256-t0-baseline",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 15.164100392001274,
+        "cycles": 3584,
+        "cycles_per_second": 236.34768349927836,
+        "cpu_delta": [
+          3115,
+          0,
+          3561,
+          5034,
+          3,
+          0,
+          26,
+          5,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 18279675365,
+          "user": 3.116890999999999,
+          "system": 15.162786000000011
+        },
+        "filter": "baseline",
+        "drop_delta": {
+          "uevent": 0,
+          "link": 0,
+          "address": 0,
+          "route": 0,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c256-t1-udev",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 15.328724515999056,
+        "cycles": 5376,
+        "cycles_per_second": 350.7141115615265,
+        "cpu_delta": [
+          1105,
+          0,
+          3602,
+          7027,
+          6,
+          0,
+          33,
+          5,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 28456714786,
+          "user": 4.240048000000002,
+          "system": 24.216678999999985
+        },
+        "filter": "udev",
+        "drop_delta": {
+          "uevent": 225280,
+          "link": 0,
+          "address": 0,
+          "route": 0,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c256-t2-all",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 15.205473366997467,
+        "cycles": 5632,
+        "cycles_per_second": 370.39294101977157,
+        "cpu_delta": [
+          1126,
+          0,
+          3581,
+          6944,
+          3,
+          0,
+          21,
+          3,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 30773550953,
+          "user": 4.364318000000001,
+          "system": 26.409231000000005
+        },
+        "filter": "all",
+        "drop_delta": {
+          "uevent": 235520,
+          "link": 850264,
+          "address": 64768,
+          "route": 141312,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c256-t3-all",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 15.069426220001333,
+        "cycles": 4864,
+        "cycles_per_second": 322.7727405801367,
+        "cpu_delta": [
+          1919,
+          0,
+          3165,
+          6437,
+          3,
+          0,
+          31,
+          4,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 26515229665,
+          "user": 4.206336,
+          "system": 22.308917999999977
+        },
+        "filter": "all",
+        "drop_delta": {
+          "uevent": 204800,
+          "link": 736044,
+          "address": 56320,
+          "route": 122880,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c256-t4-udev",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 15.338898291000078,
+        "cycles": 5376,
+        "cycles_per_second": 350.4814946947204,
+        "cpu_delta": [
+          1122,
+          0,
+          3617,
+          7029,
+          4,
+          0,
+          28,
+          2,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 28077058429,
+          "user": 4.169248000000003,
+          "system": 23.907801000000006
+        },
+        "filter": "udev",
+        "drop_delta": {
+          "uevent": 225280,
+          "link": 0,
+          "address": 0,
+          "route": 0,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c256-t5-baseline",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 15.82187372500266,
+        "cycles": 4352,
+        "cycles_per_second": 275.0622382431679,
+        "cpu_delta": [
+          3099,
+          0,
+          3502,
+          5571,
+          4,
+          0,
+          24,
+          4,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 21504940969,
+          "user": 3.644511999999999,
+          "system": 17.86040699999998
+        },
+        "filter": "baseline",
+        "drop_delta": {
+          "uevent": 0,
+          "link": 0,
+          "address": 0,
+          "route": 0,
+          "neighbor": 0
+        },
+        "slots": 512
+      }
+    ],
+    "sustained": [
+      {
+        "label": "events-filtered-warmup",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 6.2539371689999825,
+        "cycles": 2304,
+        "cycles_per_second": 368.4079225196972,
+        "cpu_delta": [
+          190,
+          0,
+          1486,
+          3075,
+          2,
+          0,
+          11,
+          1,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 12928826412,
+          "user": 1.8988160000000003,
+          "system": 11.030004
+        },
+        "filter": "all",
+        "drop_delta": {
+          "uevent": 102400,
+          "link": 399791,
+          "address": 28159,
+          "route": 61440,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-filtered-sustained",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 60.29488622400095,
+        "cycles": 22784,
+        "cycles_per_second": 377.8761587733225,
+        "cpu_delta": [
+          1697,
+          0,
+          14151,
+          30125,
+          15,
+          0,
+          109,
+          10,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 121280862209,
+          "user": 16.416821,
+          "system": 104.86404300000001
+        },
+        "filter": "all",
+        "drop_delta": {
+          "uevent": 921600,
+          "link": 3609764,
+          "address": 253440,
+          "route": 552960,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-filtered-sampled",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 15.629225506003422,
+        "cycles": 6144,
+        "cycles_per_second": 393.109690409163,
+        "cpu_delta": [
+          449,
+          0,
+          3676,
+          7825,
+          5,
+          0,
+          43,
+          1,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 30478987412,
+          "user": 4.113170999999998,
+          "system": 26.365814000000015
+        },
+        "filter": "all",
+        "drop_delta": {
+          "uevent": 256000,
+          "link": 1004152,
+          "address": 70400,
+          "route": 153600,
+          "neighbor": 0
+        },
+        "slots": 512
+      }
+    ],
+    "final": [
+      {
+        "label": "events-final-c64",
+        "mode": "mixed",
+        "concurrency": 64,
+        "trace": false,
+        "seconds": 15.160756700002821,
+        "cycles": 4800,
+        "cycles_per_second": 316.60688809807937,
+        "cpu_delta": [
+          274,
+          0,
+          2686,
+          8692,
+          3,
+          0,
+          25,
+          2,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 23265453240,
+          "user": 2.658752,
+          "system": 20.6067
+        },
+        "filter": "all",
+        "drop_delta": {
+          "uevent": 194560,
+          "link": 765435,
+          "address": 53503,
+          "route": 116736,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-final-c256",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 15.514744737000001,
+        "cycles": 5888,
+        "cycles_per_second": 379.5099500385676,
+        "cpu_delta": [
+          426,
+          0,
+          3616,
+          7749,
+          4,
+          0,
+          24,
+          3,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 31405763542,
+          "user": 4.213196999999999,
+          "system": 27.192559999999997
+        },
+        "filter": "all",
+        "drop_delta": {
+          "uevent": 245760,
+          "link": 961568,
+          "address": 67584,
+          "route": 147456,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-final-lock-trace",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": true,
+        "seconds": 8.563442933998886,
+        "cycles": 3328,
+        "cycles_per_second": 388.6287356206995,
+        "cpu_delta": [
+          199,
+          0,
+          1957,
+          4244,
+          1,
+          0,
+          16,
+          1,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 16569082610,
+          "user": 1.9718239999999998,
+          "system": 14.597257000000006
+        },
+        "filter": "all",
+        "drop_delta": {
+          "uevent": 143360,
+          "link": 563884,
+          "address": 39424,
+          "route": 86016,
+          "neighbor": 0
+        },
+        "slots": 512
+      }
+    ],
+    "final_restoration": {
+      "containers": true,
+      "links": true,
+      "routes": true,
+      "services": true,
+      "xfrm_hash": true,
+      "policy_hash": true,
+      "iptables_hash": true,
+      "subscribed_sockets_restored": true,
+      "trace_instance_removed": true,
+      "trace_probes_removed": true
+    },
+    "audited_target_sockets": [
+      {
+        "protocol": 15,
+        "groups": 1,
+        "portid": 2808836440,
+        "pid": 1,
+        "comm": "systemd",
+        "fd": 47,
+        "inode": 8255,
+        "original_filter_instructions": 0,
+        "original_filter_hex": ""
+      },
+      {
+        "protocol": 0,
+        "groups": 273,
+        "portid": 818,
+        "pid": 818,
+        "comm": "avahi-daemon",
+        "fd": 16,
+        "inode": 8770,
+        "original_filter_instructions": 0,
+        "original_filter_hex": ""
+      },
+      {
+        "protocol": 0,
+        "groups": 263633,
+        "portid": 877,
+        "pid": 877,
+        "comm": "NetworkManager",
+        "fd": 13,
+        "inode": 1695,
+        "original_filter_instructions": 0,
+        "original_filter_hex": ""
+      },
+      {
+        "protocol": 0,
+        "groups": 1,
+        "portid": 970,
+        "pid": 970,
+        "comm": "ovs-vswitchd",
+        "fd": 14,
+        "inode": 588,
+        "original_filter_instructions": 0,
+        "original_filter_hex": ""
+      },
+      {
+        "protocol": 0,
+        "groups": 2321,
+        "portid": 2703088662,
+        "pid": 970,
+        "comm": "ovs-vswitchd",
+        "fd": 16,
+        "inode": 591,
+        "original_filter_instructions": 0,
+        "original_filter_hex": ""
+      },
+      {
+        "protocol": 0,
+        "groups": 1088,
+        "portid": 4166232897,
+        "pid": 970,
+        "comm": "ovs-vswitchd",
+        "fd": 17,
+        "inode": 595,
+        "original_filter_instructions": 0,
+        "original_filter_hex": ""
+      },
+      {
+        "protocol": 0,
+        "groups": 1088,
+        "portid": 2017,
+        "pid": 2017,
+        "comm": "xdg-desktop-por",
+        "fd": 8,
+        "inode": 12074,
+        "original_filter_instructions": 0,
+        "original_filter_hex": ""
+      }
+    ]
+  },
+  "104": {
+    "balanced": [
+      {
+        "concurrency": 64,
+        "filter": "baseline",
+        "cycles": 3392,
+        "seconds": 30.437237055997684,
+        "cycles_per_second": 111.44244117031653,
+        "host_cpu_ms_per_cycle": 46.06132075471698,
+        "process_cpu_ms_per_cycle": 4.450429874115566,
+        "trial_cycles_per_second": [
+          112.28032127803236,
+          110.58546901004553
+        ]
+      },
+      {
+        "concurrency": 64,
+        "filter": "udev",
+        "cycles": 8768,
+        "seconds": 30.16168101999574,
+        "cycles_per_second": 290.6999777030743,
+        "host_cpu_ms_per_cycle": 8.44662408759124,
+        "process_cpu_ms_per_cycle": 4.562938877281022,
+        "trial_cycles_per_second": [
+          285.74780280063794,
+          295.6033996011633
+        ]
+      },
+      {
+        "concurrency": 64,
+        "filter": "all",
+        "cycles": 9280,
+        "seconds": 30.19885044500188,
+        "cycles_per_second": 307.29646537045267,
+        "host_cpu_ms_per_cycle": 7.395474137931035,
+        "process_cpu_ms_per_cycle": 4.7570823375,
+        "trial_cycles_per_second": [
+          292.84116788637544,
+          321.7143252842626
+        ]
+      },
+      {
+        "concurrency": 256,
+        "filter": "baseline",
+        "cycles": 8448,
+        "seconds": 30.96541191900178,
+        "cycles_per_second": 272.8205270479843,
+        "host_cpu_ms_per_cycle": 15.303030303030303,
+        "process_cpu_ms_per_cycle": 4.9633742188683705,
+        "trial_cycles_per_second": [
+          271.0455776774922,
+          274.51243498235493
+        ]
+      },
+      {
+        "concurrency": 256,
+        "filter": "udev",
+        "cycles": 10752,
+        "seconds": 30.172116915004153,
+        "cycles_per_second": 356.3555063202472,
+        "host_cpu_ms_per_cycle": 8.605840773809524,
+        "process_cpu_ms_per_cycle": 5.137944309151786,
+        "trial_cycles_per_second": [
+          357.30052007998125,
+          355.4154782528483
+        ]
+      },
+      {
+        "concurrency": 256,
+        "filter": "all",
+        "cycles": 10496,
+        "seconds": 30.434985054998833,
+        "cycles_per_second": 344.866277444617,
+        "host_cpu_ms_per_cycle": 9.470274390243903,
+        "process_cpu_ms_per_cycle": 5.451901802782012,
+        "trial_cycles_per_second": [
+          366.44667043192885,
+          322.85120776568516
+        ]
+      }
+    ],
+    "raw_balanced": [
+      {
+        "label": "events-warmup-c256",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 6.779354198999499,
+        "cycles": 1280,
+        "cycles_per_second": 188.80854465295576,
+        "cpu_delta": [
+          1523,
+          0,
+          1753,
+          1984,
+          0,
+          0,
+          11,
+          3,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 6834403288,
+          "user": 1.0632030000000001,
+          "system": 5.771208
+        },
+        "filter": "baseline",
+        "drop_delta": {
+          "uevent": 0,
+          "link": 0,
+          "address": 0,
+          "route": 0,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c64-t0-baseline",
+        "mode": "mixed",
+        "concurrency": 64,
+        "trace": false,
+        "seconds": 15.390052151000418,
+        "cycles": 1728,
+        "cycles_per_second": 112.28032127803236,
+        "cpu_delta": [
+          3744,
+          0,
+          4078,
+          4044,
+          2,
+          0,
+          7,
+          8,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 7758590015,
+          "user": 1.1988470000000002,
+          "system": 6.559742999999999
+        },
+        "filter": "baseline",
+        "drop_delta": {
+          "uevent": 0,
+          "link": 0,
+          "address": 0,
+          "route": 0,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c64-t1-udev",
+        "mode": "mixed",
+        "concurrency": 64,
+        "trace": false,
+        "seconds": 15.006239620997803,
+        "cycles": 4288,
+        "cycles_per_second": 285.74780280063794,
+        "cpu_delta": [
+          1055,
+          0,
+          2587,
+          7859,
+          3,
+          0,
+          16,
+          3,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 19641627350,
+          "user": 2.4182900000000003,
+          "system": 17.223346
+        },
+        "filter": "udev",
+        "drop_delta": {
+          "uevent": 174080,
+          "link": 0,
+          "address": 0,
+          "route": 0,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c64-t2-all",
+        "mode": "mixed",
+        "concurrency": 64,
+        "trace": false,
+        "seconds": 15.079846976001136,
+        "cycles": 4416,
+        "cycles_per_second": 292.84116788637544,
+        "cpu_delta": [
+          1293,
+          0,
+          2528,
+          7709,
+          3,
+          0,
+          17,
+          3,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 20500618381,
+          "user": 2.579604,
+          "system": 17.921016
+        },
+        "filter": "all",
+        "drop_delta": {
+          "uevent": 179200,
+          "link": 649156,
+          "address": 49280,
+          "route": 107520,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c64-t3-all",
+        "mode": "mixed",
+        "concurrency": 64,
+        "trace": false,
+        "seconds": 15.119003469000745,
+        "cycles": 4864,
+        "cycles_per_second": 321.7143252842626,
+        "cpu_delta": [
+          273,
+          0,
+          2741,
+          8583,
+          3,
+          0,
+          11,
+          1,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 23645105711,
+          "user": 2.7301920000000006,
+          "system": 20.914914000000003
+        },
+        "filter": "all",
+        "drop_delta": {
+          "uevent": 197120,
+          "link": 715208,
+          "address": 54208,
+          "route": 118272,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c64-t4-udev",
+        "mode": "mixed",
+        "concurrency": 64,
+        "trace": false,
+        "seconds": 15.155441398997937,
+        "cycles": 4480,
+        "cycles_per_second": 295.6033996011633,
+        "cpu_delta": [
+          1059,
+          0,
+          2673,
+          7942,
+          4,
+          0,
+          16,
+          2,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 20366220726,
+          "user": 2.7406889999999997,
+          "system": 17.625535
+        },
+        "filter": "udev",
+        "drop_delta": {
+          "uevent": 181760,
+          "link": 0,
+          "address": 0,
+          "route": 0,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c64-t5-baseline",
+        "mode": "mixed",
+        "concurrency": 64,
+        "trace": false,
+        "seconds": 15.047184904997266,
+        "cycles": 1664,
+        "cycles_per_second": 110.58546901004553,
+        "cpu_delta": [
+          3776,
+          0,
+          4014,
+          3959,
+          3,
+          0,
+          5,
+          7,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 7337268118,
+          "user": 1.2368379999999988,
+          "system": 6.100430000000003
+        },
+        "filter": "baseline",
+        "drop_delta": {
+          "uevent": 0,
+          "link": 0,
+          "address": 0,
+          "route": 0,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c256-t0-baseline",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 15.111849583001458,
+        "cycles": 4096,
+        "cycles_per_second": 271.0455776774922,
+        "cpu_delta": [
+          2856,
+          0,
+          3430,
+          5324,
+          2,
+          0,
+          17,
+          4,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 20606484490,
+          "user": 3.4486960000000018,
+          "system": 17.157816999999994
+        },
+        "filter": "baseline",
+        "drop_delta": {
+          "uevent": 0,
+          "link": 0,
+          "address": 0,
+          "route": 0,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c256-t1-udev",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 15.046157780001522,
+        "cycles": 5376,
+        "cycles_per_second": 357.30052007998125,
+        "cpu_delta": [
+          1136,
+          0,
+          3436,
+          6939,
+          4,
+          0,
+          15,
+          3,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 27460439417,
+          "user": 4.179435000000002,
+          "system": 23.281005000000007
+        },
+        "filter": "udev",
+        "drop_delta": {
+          "uevent": 225280,
+          "link": 0,
+          "address": 0,
+          "route": 0,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c256-t2-all",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 15.369221375000052,
+        "cycles": 5632,
+        "cycles_per_second": 366.44667043192885,
+        "cpu_delta": [
+          1076,
+          0,
+          3590,
+          7091,
+          3,
+          0,
+          16,
+          2,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 30592488405,
+          "user": 4.237101999999997,
+          "system": 26.35538600000001
+        },
+        "filter": "all",
+        "drop_delta": {
+          "uevent": 235520,
+          "link": 849656,
+          "address": 64768,
+          "route": 141312,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c256-t3-all",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 15.065763679998781,
+        "cycles": 4864,
+        "cycles_per_second": 322.85120776568516,
+        "cpu_delta": [
+          1940,
+          0,
+          3297,
+          6365,
+          3,
+          0,
+          21,
+          5,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 26630672917,
+          "user": 4.012179,
+          "system": 22.618492000000003
+        },
+        "filter": "all",
+        "drop_delta": {
+          "uevent": 204800,
+          "link": 735920,
+          "address": 56320,
+          "route": 122880,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c256-t4-udev",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 15.125959135002631,
+        "cycles": 5376,
+        "cycles_per_second": 355.4154782528483,
+        "cpu_delta": [
+          1133,
+          0,
+          3517,
+          6965,
+          2,
+          0,
+          16,
+          4,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 27782737795,
+          "user": 4.223243000000004,
+          "system": 23.55949000000001
+        },
+        "filter": "udev",
+        "drop_delta": {
+          "uevent": 225280,
+          "link": 0,
+          "address": 0,
+          "route": 0,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-c256-t5-baseline",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 15.853562336000323,
+        "cycles": 4352,
+        "cycles_per_second": 274.51243498235493,
+        "cpu_delta": [
+          3070,
+          0,
+          3536,
+          5589,
+          4,
+          0,
+          19,
+          4,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 21324100911,
+          "user": 3.5217990000000015,
+          "system": 17.802305999999987
+        },
+        "filter": "baseline",
+        "drop_delta": {
+          "uevent": 0,
+          "link": 0,
+          "address": 0,
+          "route": 0,
+          "neighbor": 0
+        },
+        "slots": 512
+      }
+    ],
+    "sustained": [
+      {
+        "label": "events-filtered-warmup",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 6.247057561002293,
+        "cycles": 2304,
+        "cycles_per_second": 368.81363385906445,
+        "cpu_delta": [
+          184,
+          0,
+          1454,
+          3121,
+          0,
+          0,
+          12,
+          2,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 12484662361,
+          "user": 1.8673330000000001,
+          "system": 10.617322999999999
+        },
+        "filter": "all",
+        "drop_delta": {
+          "uevent": 102400,
+          "link": 400671,
+          "address": 28159,
+          "route": 61440,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-filtered-sustained",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 60.02554592999877,
+        "cycles": 22784,
+        "cycles_per_second": 379.57172478815085,
+        "cpu_delta": [
+          1612,
+          0,
+          13973,
+          30202,
+          17,
+          0,
+          53,
+          9,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 118529154074,
+          "user": 15.818896,
+          "system": 102.710259
+        },
+        "filter": "all",
+        "drop_delta": {
+          "uevent": 921600,
+          "link": 3611544,
+          "address": 253440,
+          "route": 552960,
+          "neighbor": 0
+        },
+        "slots": 512
+      }
+    ],
+    "final": [
+      {
+        "label": "events-final-c64",
+        "mode": "mixed",
+        "concurrency": 64,
+        "trace": false,
+        "seconds": 15.084644816000946,
+        "cycles": 4800,
+        "cycles_per_second": 318.2043766060987,
+        "cpu_delta": [
+          276,
+          0,
+          2626,
+          8623,
+          3,
+          0,
+          15,
+          2,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 23336634956,
+          "user": 2.745277,
+          "system": 20.591357000000002
+        },
+        "filter": "all",
+        "drop_delta": {
+          "uevent": 194560,
+          "link": 765371,
+          "address": 53503,
+          "route": 116736,
+          "neighbor": 0
+        },
+        "slots": 512
+      },
+      {
+        "label": "events-final-c256",
+        "mode": "mixed",
+        "concurrency": 256,
+        "trace": false,
+        "seconds": 15.404279694997967,
+        "cycles": 5888,
+        "cycles_per_second": 382.23143935200903,
+        "cpu_delta": [
+          420,
+          0,
+          3596,
+          7726,
+          4,
+          0,
+          16,
+          3,
+          0,
+          0
+        ],
+        "cpus": 8,
+        "kernel": "6.12.95+deb13-amd64",
+        "setup_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "retire_cpu_delta": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "process_delta": {
+          "clock": 30638264725,
+          "user": 4.146685,
+          "system": 26.491573
+        },
+        "filter": "all",
+        "drop_delta": {
+          "uevent": 245760,
+          "link": 960900,
+          "address": 67584,
+          "route": 147456,
+          "neighbor": 0
+        },
+        "slots": 512
+      }
+    ],
+    "final_restoration": {
+      "containers": true,
+      "links": true,
+      "routes": true,
+      "services": true,
+      "xfrm_hash": true,
+      "policy_hash": true,
+      "iptables_hash": true,
+      "subscribed_sockets_restored": true,
+      "trace_instance_removed": true,
+      "trace_probes_removed": true
+    },
+    "audited_target_sockets": [
+      {
+        "protocol": 15,
+        "groups": 1,
+        "portid": 3297737618,
+        "pid": 1,
+        "comm": "systemd",
+        "fd": 47,
+        "inode": 5523,
+        "original_filter_instructions": 0,
+        "original_filter_hex": ""
+      },
+      {
+        "protocol": 0,
+        "groups": 273,
+        "portid": 809,
+        "pid": 809,
+        "comm": "avahi-daemon",
+        "fd": 16,
+        "inode": 4689,
+        "original_filter_instructions": 0,
+        "original_filter_hex": ""
+      },
+      {
+        "protocol": 0,
+        "groups": 263633,
+        "portid": 876,
+        "pid": 876,
+        "comm": "NetworkManager",
+        "fd": 13,
+        "inode": 7697,
+        "original_filter_instructions": 0,
+        "original_filter_hex": ""
+      },
+      {
+        "protocol": 0,
+        "groups": 1,
+        "portid": 959,
+        "pid": 959,
+        "comm": "ovs-vswitchd",
+        "fd": 14,
+        "inode": 8890,
+        "original_filter_instructions": 0,
+        "original_filter_hex": ""
+      },
+      {
+        "protocol": 0,
+        "groups": 2321,
+        "portid": 3974541878,
+        "pid": 959,
+        "comm": "ovs-vswitchd",
+        "fd": 16,
+        "inode": 8893,
+        "original_filter_instructions": 0,
+        "original_filter_hex": ""
+      },
+      {
+        "protocol": 0,
+        "groups": 1088,
+        "portid": 3059296832,
+        "pid": 959,
+        "comm": "ovs-vswitchd",
+        "fd": 17,
+        "inode": 8897,
+        "original_filter_instructions": 0,
+        "original_filter_hex": ""
+      },
+      {
+        "protocol": 0,
+        "groups": 1088,
+        "portid": 2952,
+        "pid": 2952,
+        "comm": "xdg-desktop-por",
+        "fd": 8,
+        "inode": 12050,
+        "original_filter_instructions": 0,
+        "original_filter_hex": ""
+      }
+    ]
+  },
+  "filtered_cpu_samples_103": {
+    "sample_period_units": "nanoseconds",
+    "commands_ns": {
+      "nn-est-main": 2676767650,
+      "swapper": 81505049690,
+      "docker": 20202020,
+      "tokio-rt-worker": 80808080,
+      "systemd-journal": 1767676750,
+      "nn-est-worker": 26202019940,
+      "kworker/3:0+eve": 121212120,
+      "kworker/7:4-eve": 161616160,
+      "kworker/5:8-eve": 212121210,
+      "kworker/6:8-eve": 30303030,
+      "kworker/2:4-eve": 111111110,
+      "kworker/4:8-eve": 202020200,
+      "kworker/0:8-eve": 131313130,
+      "rcu_exp_gp_kthr": 565656560,
+      "kworker/2:2-eve": 202020200,
+      "kworker/1:7-eve": 40404040,
+      "kworker/4:1-eve": 141414140,
+      "kworker/5:5-eve": 151515150,
+      "kworker/7:6-eve": 151515150,
+      "kworker/0:9-ata": 111111110,
+      "kworker/1:6-eve": 70707070,
+      "kworker/5:1-eve": 121212120,
+      "kworker/5:0-eve": 121212120,
+      "kworker/4:6-eve": 171717170,
+      "kworker/5:2-eve": 70707070,
+      "ksoftirqd/2": 20202020,
+      "kworker/6:5-eve": 191919190,
+      "ksoftirqd/4": 20202020,
+      "ksoftirqd/7": 40404040,
+      "kworker/3:5-eve": 111111110,
+      "gnome-shell": 50505050,
+      "kworker/7:3-eve": 202020200,
+      "kworker/0:3-eve": 90909090,
+      "kworker/6:6-eve": 121212120,
+      "kworker/1:2-eve": 151515150,
+      "kworker/0:0-eve": 20202020,
+      "kworker/4:3-eve": 131313130,
+      "kworker/1:9-eve": 70707070,
+      "kworker/u34:4-k": 111111110,
+      "kworker/4:2-eve": 80808080,
+      "kworker/6:4-eve": 141414140,
+      "ksoftirqd/1": 30303030,
+      "kworker/1:10-ev": 151515150,
+      "kworker/2:3-eve": 181818180,
+      "kworker/6:0-eve": 111111110,
+      "kworker/7:1-eve": 161616160,
+      "kworker/3:8-eve": 141414140,
+      "kworker/0:1-eve": 151515150,
+      "kworker/7:5-eve": 111111110,
+      "kworker/u33:9-k": 151515150,
+      "jbd2/sda1-8": 10101010,
+      "kworker/6:3-eve": 181818180,
+      "ksoftirqd/6": 40404040,
+      "kworker/0:7-eve": 202020200,
+      "dockerd": 30303030,
+      "ovsdb-server": 60606060,
+      "kworker/5:6-eve": 121212120,
+      "kworker/0:6-eve": 121212120,
+      "kworker/7:2-eve": 90909090,
+      "kworker/2:8-eve": 121212120,
+      "kworker/5:3-eve": 181818180,
+      "kworker/1:3-eve": 80808080,
+      "kworker/4:4-eve": 282828280,
+      "nullnet-client": 80808080,
+      "kworker/3:7-eve": 212121210,
+      "kworker/2:6-eve": 101010100,
+      "kworker/2:0-eve": 121212120,
+      "kworker/4:0-eve": 101010100,
+      "journal-offline": 303030300,
+      "kworker/6:1-eve": 111111110,
+      "kworker/u32:0-i": 60606060,
+      "kworker/1:5-eve": 181818180,
+      "kworker/5:4-eve": 141414140,
+      "kworker/u34:8-k": 80808080,
+      "rcu_preempt": 10101010,
+      "ksoftirqd/0": 10101010,
+      "ksoftirqd/5": 20202020,
+      "kworker/3:4-eve": 181818180,
+      "kworker/0:2-eve": 111111110,
+      "systemd": 141414140,
+      "sshd-session": 40404040,
+      "kworker/3:3-eve": 131313130,
+      "systemd-user-ru": 10101010,
+      "16": 10101010,
+      "kthreadd": 323232320,
+      "gdbus": 10101010,
+      "9": 50505050,
+      "systemctl": 30303030,
+      "kworker/0:4-eve": 111111110,
+      "wireplumber": 50505050,
+      "module-rt": 10101010,
+      "pipewire-pulse": 10101010,
+      "polkitd": 10101010,
+      "pipewire": 10101010,
+      "sshd": 10101010,
+      ":648333": 10101010,
+      "sshd-auth": 10101010,
+      "kworker/u33:3-k": 60606060,
+      "env": 10101010,
+      "kworker/2:5-eve": 40404040,
+      ":648411": 40404040,
+      "kworker/u34:3-k": 90909090,
+      ":648412": 20202020,
+      ":648413": 20202020,
+      "kworker/7:8-eve": 101010100,
+      "kworker/1:8-eve": 30303030,
+      "kworker/3:9-eve": 20202020,
+      "kworker/u32:1-i": 30303030,
+      "httpd": 10101010
+    },
+    "families_ns": {
+      "lifecycle caller": 28878787590,
+      "idle": 81505049690,
+      "other userspace": 3242424210,
+      "kernel workers": 9070706980
+    },
+    "ancestry_source": "PERF_RECORD_FORK and PERF_RECORD_COMM at sample time",
+    "processes_ns": {
+      "647310/nn-est-main": 2676767650,
+      "0/swapper": 81505049690,
+      "648323/docker": 10101010,
+      "1021/tokio-rt-worker": 80808080,
+      "365/systemd-journal": 1767676750,
+      "647310/nn-est-worker": 26202019940,
+      "498294/kworker/3:0+eve": 121212120,
+      "501633/kworker/7:4-eve": 161616160,
+      "525211/kworker/5:8-eve": 212121210,
+      "648196/kworker/6:8-eve": 30303030,
+      "502816/kworker/2:4-eve": 111111110,
+      "648218/kworker/4:8-eve": 202020200,
+      "581559/kworker/0:8-eve": 131313130,
+      "20/rcu_exp_gp_kthr": 565656560,
+      "496562/kworker/2:2-eve": 202020200,
+      "525351/kworker/1:7-eve": 40404040,
+      "496667/kworker/4:1-eve": 141414140,
+      "501631/kworker/5:5-eve": 151515150,
+      "524353/kworker/7:6-eve": 151515150,
+      "581658/kworker/0:9-ata": 111111110,
+      "525246/kworker/1:6-eve": 70707070,
+      "496385/kworker/5:1-eve": 121212120,
+      "464854/kworker/5:0-eve": 121212120,
+      "501640/kworker/4:6-eve": 171717170,
+      "497054/kworker/5:2-eve": 70707070,
+      "33/ksoftirqd/2": 20202020,
+      "501641/kworker/6:5-eve": 191919190,
+      "45/ksoftirqd/4": 20202020,
+      "63/ksoftirqd/7": 40404040,
+      "503359/kworker/3:5-eve": 111111110,
+      "1260/gnome-shell": 50505050,
+      "500356/kworker/7:3-eve": 202020200,
+      "502814/kworker/0:3-eve": 90909090,
+      "501643/kworker/6:6-eve": 121212120,
+      "498134/kworker/1:2-eve": 151515150,
+      "491214/kworker/0:0-eve": 20202020,
+      "501636/kworker/4:3-eve": 131313130,
+      "525430/kworker/1:9-eve": 70707070,
+      "500128/kworker/u34:4-k": 111111110,
+      "498259/kworker/4:2-eve": 80808080,
+      "501632/kworker/6:4-eve": 141414140,
+      "27/ksoftirqd/1": 30303030,
+      "581668/kworker/1:10-ev": 151515150,
+      "501642/kworker/2:3-eve": 181818180,
+      "497868/kworker/6:0-eve": 111111110,
+      "497869/kworker/7:1-eve": 161616160,
+      "581581/kworker/3:8-eve": 141414140,
+      "498196/kworker/0:1-eve": 151515150,
+      "501644/kworker/7:5-eve": 111111110,
+      "500628/kworker/u33:9-k": 151515150,
+      "317/jbd2/sda1-8": 10101010,
+      "501629/kworker/6:3-eve": 181818180,
+      "57/ksoftirqd/6": 40404040,
+      "525244/kworker/0:7-eve": 202020200,
+      "1279/dockerd": 30303030,
+      "844/ovsdb-server": 60606060,
+      "501635/kworker/5:6-eve": 121212120,
+      "523833/kworker/0:6-eve": 121212120,
+      "494079/kworker/7:2-eve": 90909090,
+      "581573/kworker/2:8-eve": 121212120,
+      "648073/kworker/5:3-eve": 181818180,
+      "500352/kworker/1:3-eve": 80808080,
+      "501637/kworker/4:4-eve": 282828280,
+      "1021/nullnet-client": 80808080,
+      "525245/kworker/3:7-eve": 212121210,
+      "525263/kworker/2:6-eve": 101010100,
+      "495204/kworker/2:0-eve": 121212120,
+      "495981/kworker/4:0-eve": 101010100,
+      "365/journal-offline": 303030300,
+      "190/kworker/6:1-eve": 111111110,
+      "12/kworker/u32:0-i": 60606060,
+      "525209/kworker/1:5-eve": 181818180,
+      "501630/kworker/5:4-eve": 141414140,
+      "501463/kworker/u34:8-k": 80808080,
+      "18/rcu_preempt": 10101010,
+      "17/ksoftirqd/0": 10101010,
+      "51/ksoftirqd/5": 20202020,
+      "501638/kworker/3:4-eve": 181818180,
+      "496747/kworker/0:2-eve": 111111110,
+      "1/systemd": 30303030,
+      "648333/sshd-session": 20202020,
+      "497175/kworker/3:3-eve": 131313130,
+      "648339/systemd": 10101010,
+      "648339/systemd-user-ru": 10101010,
+      "648341/16": 10101010,
+      "648341/systemd": 101010100,
+      "648336/kthreadd": 151515150,
+      "826/gdbus": 10101010,
+      "648348/9": 10101010,
+      "648351/systemctl": 10101010,
+      "648352/systemctl": 10101010,
+      "648363/9": 10101010,
+      "648367/9": 10101010,
+      "648365/9": 10101010,
+      "518475/kworker/0:4-eve": 111111110,
+      "648374/9": 10101010,
+      "648370/wireplumber": 50505050,
+      "648367/module-rt": 10101010,
+      "648373/pipewire-pulse": 10101010,
+      "826/polkitd": 10101010,
+      "648365/pipewire": 10101010,
+      "1034/sshd": 10101010,
+      "648333/:648333": 10101010,
+      "648400/sshd-auth": 10101010,
+      "648398/sshd-session": 20202020,
+      "500009/kworker/u33:3-k": 60606060,
+      "648403/env": 10101010,
+      "648335/kthreadd": 171717170,
+      "503454/kworker/2:5-eve": 40404040,
+      "648411/:648411": 40404040,
+      "498483/kworker/u34:3-k": 90909090,
+      "648412/:648412": 20202020,
+      "648413/:648413": 20202020,
+      "648416/systemctl": 10101010,
+      "525248/kworker/7:8-eve": 101010100,
+      "525352/kworker/1:8-eve": 30303030,
+      "648419/docker": 10101010,
+      "581593/kworker/3:9-eve": 20202020,
+      "114/kworker/u32:1-i": 30303030,
+      "3391/httpd": 10101010
+    },
+    "symbols_ns": {
+      "swapper/[kernel.kallsyms]/pv_native_safe_halt": 79070706280,
+      "nn-est-worker/[kernel.kallsyms]/mutex_spin_on_owner": 4333333290,
+      "nn-est-worker/[kernel.kallsyms]/osq_lock": 4262626220,
+      "nn-est-worker/[kernel.kallsyms]/_raw_spin_unlock_irqrestore": 2373737350,
+      "swapper/[kernel.kallsyms]/finish_task_switch.isra.0": 1545454530,
+      "nn-est-worker/[kernel.kallsyms]/finish_task_switch.isra.0": 1393939380,
+      "nn-est-worker//usr/lib/x86_64-linux-gnu/libc.so.6/[unknown]": 1252525240,
+      "nn-est-worker//usr/bin/python3.13/_PyEval_EvalFrameDefault": 838383830,
+      "nn-est-worker//usr/bin/python3.13/[unknown]": 808080800,
+      "nn-est-worker/[kernel.kallsyms]/srso_alias_safe_ret": 515151510,
+      "systemd-journal//usr/lib/x86_64-linux-gnu/systemd/libsystemd-shared-257.so/[unknown]": 282828280,
+      "nn-est-main/[kernel.kallsyms]/_raw_spin_unlock_irqrestore": 202020200,
+      "nn-est-worker/[kernel.kallsyms]/__get_user_8": 191919190,
+      "nn-est-worker/[kernel.kallsyms]/netlink_broadcast_filtered": 181818180,
+      "nn-est-worker/[kernel.kallsyms]/strlen": 171717170,
+      "systemd-journal//usr/lib/x86_64-linux-gnu/libc.so.6/[unknown]": 171717170,
+      "rcu_exp_gp_kthr/[kernel.kallsyms]/_raw_spin_unlock_irqrestore": 171717170,
+      "nn-est-worker/[kernel.kallsyms]/__raw_callee_save___kvm_vcpu_is_preempted": 161616160,
+      "nn-est-worker/[kernel.kallsyms]/memcpy_orig": 151515150,
+      "nn-est-worker/[kernel.kallsyms]/do_syscall_64": 151515150,
+      "nn-est-worker/[kernel.kallsyms]/fib_table_flush": 151515150,
+      "nn-est-worker/[kernel.kallsyms]/fdget": 141414140,
+      "swapper/[kernel.kallsyms]/tick_nohz_idle_enter": 141414140,
+      "nn-est-worker/[kernel.kallsyms]/memset_orig": 131313130,
+      "nn-est-worker/[kernel.kallsyms]/neigh_flush_dev.isra.0": 131313130,
+      "nn-est-worker/[kernel.kallsyms]/nla_put": 121212120,
+      "rcu_exp_gp_kthr/[kernel.kallsyms]/finish_task_switch.isra.0": 121212120,
+      "kworker/5:3-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 121212120,
+      "nn-est-worker/[kernel.kallsyms]/__nla_put": 121212120,
+      "nn-est-worker/[kernel.kallsyms]/vsnprintf": 121212120,
+      "kworker/2:2-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 111111110,
+      "nn-est-worker/[kernel.kallsyms]/notifier_call_chain": 111111110,
+      "kworker/4:1-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 111111110,
+      "nn-est-worker/[kernel.kallsyms]/strcmp": 111111110,
+      "kworker/4:4-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 111111110,
+      "rcu_exp_gp_kthr/[kernel.kallsyms]/smp_call_function_single": 101010100,
+      "kworker/5:8-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 101010100,
+      "nn-est-worker/[kernel.kallsyms]/rtnl_fill_ifinfo.isra.0": 101010100,
+      "nn-est-worker//usr/bin/python3.13/_PyLong_New": 101010100,
+      "nn-est-worker/[kernel.kallsyms]/__kernfs_new_node": 101010100,
+      "kworker/6:5-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 101010100,
+      "nn-est-worker/[kernel.kallsyms]/__schedule": 101010100,
+      "kworker/4:6-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 101010100,
+      "kthreadd/[kernel.kallsyms]/nf_ct_iterate_cleanup": 101010100,
+      "kthreadd/[kernel.kallsyms]/mutex_spin_on_owner": 101010100,
+      "kworker/7:6-eve/[kernel.kallsyms]/mutex_spin_on_owner": 90909090,
+      "nn-est-main/[kernel.kallsyms]/rb_erase": 90909090,
+      "kworker/7:3-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 90909090,
+      "kworker/4:4-eve/[kernel.kallsyms]/mutex_spin_on_owner": 90909090,
+      "kworker/1:5-eve/[kernel.kallsyms]/mutex_spin_on_owner": 90909090,
+      "systemd-journal//usr/lib/systemd/systemd-journald/[unknown]": 90909090,
+      "nn-est-worker/[kernel.kallsyms]/__nla_reserve": 90909090,
+      "kworker/3:4-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 90909090,
+      "kworker/5:6-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 90909090,
+      "kworker/7:4-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 80808080,
+      "kworker/4:8-eve/[kernel.kallsyms]/mutex_spin_on_owner": 80808080,
+      "kworker/5:5-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 80808080,
+      "kworker/4:8-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 80808080,
+      "kworker/3:5-eve/[kernel.kallsyms]/mutex_spin_on_owner": 80808080,
+      "nn-est-worker/[kernel.kallsyms]/aa_sk_perm": 80808080,
+      "kworker/6:3-eve/[kernel.kallsyms]/mutex_spin_on_owner": 80808080,
+      "nn-est-worker/[kernel.kallsyms]/idr_get_free": 80808080,
+      "nn-est-worker/[kernel.kallsyms]/futex_wake": 80808080,
+      "kworker/2:3-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 80808080,
+      "kworker/7:1-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 80808080,
+      "kworker/3:7-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 80808080,
+      "kworker/4:0-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 80808080,
+      "rcu_exp_gp_kthr/[kernel.kallsyms]/native_write_msr": 80808080,
+      "nn-est-worker/[kernel.kallsyms]/do_sys_poll": 80808080,
+      "kworker/1:5-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 80808080,
+      "kworker/0:4-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 80808080,
+      "nn-est-worker/[kernel.kallsyms]/syscall_exit_to_user_mode": 70707070,
+      "kworker/2:4-eve/[kernel.kallsyms]/mutex_spin_on_owner": 70707070,
+      "nn-est-worker/[kernel.kallsyms]/bpf_skb_load_helper_32_no_cache": 70707070,
+      "nn-est-main/[kernel.kallsyms]/kernfs_find_ns": 70707070,
+      "kworker/1:2-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 70707070,
+      "nn-est-worker/[kernel.kallsyms]/__x64_sys_futex": 70707070,
+      "nn-est-worker/[kernel.kallsyms]/find_entry.isra.0": 70707070,
+      "swapper/[kernel.kallsyms]/handle_softirqs": 70707070,
+      "nn-est-main/[kernel.kallsyms]/neigh_flush_dev.isra.0": 70707070,
+      "nn-est-worker/[kernel.kallsyms]/kfree": 70707070,
+      "nn-est-worker/[kernel.kallsyms]/__rseq_handle_notify_resume": 70707070,
+      "nn-est-worker/[kernel.kallsyms]/fib6_ifdown": 70707070,
+      "kworker/6:0-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 70707070,
+      "kworker/4:3-eve/[kernel.kallsyms]/mutex_spin_on_owner": 70707070,
+      "nn-est-worker//usr/bin/python3.13/_PyEval_FrameClearAndPop": 70707070,
+      "kworker/2:0-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 70707070,
+      "nn-est-worker/[kernel.kallsyms]/neigh_dump_info": 70707070,
+      "nn-est-worker/[kernel.kallsyms]/htab_lru_map_update_elem": 70707070,
+      "kworker/3:3-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 70707070,
+      "kworker/5:1-eve/[kernel.kallsyms]/mutex_spin_on_owner": 60606060,
+      "kworker/0:8-eve/[kernel.kallsyms]/mutex_spin_on_owner": 60606060,
+      "nn-est-worker/[kernel.kallsyms]/netdev_name_node_lookup": 60606060,
+      "systemd-journal//usr/lib/x86_64-linux-gnu/systemd/libsystemd-shared-257.so/journal_file_move_to_object": 60606060,
+      "kworker/7:3-eve/[kernel.kallsyms]/mutex_spin_on_owner": 60606060,
+      "kworker/1:2-eve/[kernel.kallsyms]/mutex_spin_on_owner": 60606060,
+      "swapper/[kernel.kallsyms]/do_idle": 60606060,
+      "kworker/5:5-eve/[kernel.kallsyms]/mutex_spin_on_owner": 60606060,
+      "nn-est-worker/[kernel.kallsyms]/down_write": 60606060,
+      "kworker/7:1-eve/[kernel.kallsyms]/mutex_spin_on_owner": 60606060,
+      "kworker/0:1-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 60606060,
+      "kworker/3:8-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 60606060,
+      "nn-est-worker/[kernel.kallsyms]/br_fill_info": 60606060,
+      "nn-est-worker//usr/bin/python3.13/_PyBytes_Resize": 60606060,
+      "nn-est-worker/[kernel.kallsyms]/kernfs_add_one": 60606060,
+      "kworker/7:5-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 60606060,
+      "systemd-journal//usr/lib/x86_64-linux-gnu/systemd/libsystemd-shared-257.so/siphash24_compress": 60606060,
+      "ovsdb-server/[kernel.kallsyms]/finish_task_switch.isra.0": 60606060,
+      "kworker/6:4-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 60606060,
+      "nn-est-worker/[kernel.kallsyms]/kmem_cache_alloc_node_noprof": 60606060,
+      "nn-est-main/[kernel.kallsyms]/kernfs_remove_by_name_ns": 60606060,
+      "kworker/2:6-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 60606060,
+      "kworker/6:6-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 60606060,
+      "kworker/5:4-eve/[kernel.kallsyms]/mutex_spin_on_owner": 60606060,
+      "kworker/0:2-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 60606060,
+      "nn-est-worker/[kernel.kallsyms]/kernfs_link_sibling": 60606060,
+      "swapper/[kernel.kallsyms]/sched_balance_rq": 60606060,
+      "nn-est-worker/[kernel.kallsyms]/vxlan_vni_in_use": 50505050,
+      "nn-est-worker/[kernel.kallsyms]/netlink_recvmsg": 50505050,
+      "kworker/5:8-eve/[kernel.kallsyms]/mutex_spin_on_owner": 50505050,
+      "kworker/2:2-eve/[kernel.kallsyms]/mutex_spin_on_owner": 50505050,
+      "nn-est-worker/[kernel.kallsyms]/addrconf_ifdown.isra.0": 50505050,
+      "kworker/6:6-eve/[kernel.kallsyms]/mutex_spin_on_owner": 50505050,
+      "systemd-journal//usr/lib/x86_64-linux-gnu/systemd/libsystemd-shared-257.so/journal_file_find_data_object_with_hash": 50505050,
+      "nn-est-worker/[kernel.kallsyms]/__kmalloc_node_track_caller_noprof": 50505050,
+      "nn-est-main/[kernel.kallsyms]/find_entry.isra.0": 50505050,
+      "kworker/1:10-ev/[kernel.kallsyms]/nf_ct_iterate_cleanup": 50505050,
+      "nn-est-worker/[kernel.kallsyms]/futex_wait_queue": 50505050,
+      "nn-est-worker/[kernel.kallsyms]/_raw_spin_lock_bh": 50505050,
+      "kworker/0:7-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 50505050,
+      "nn-est-worker/[kernel.kallsyms]/_raw_spin_lock": 50505050,
+      "kworker/3:8-eve/[kernel.kallsyms]/mutex_spin_on_owner": 50505050,
+      "kworker/2:8-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 50505050,
+      "nn-est-worker/[kernel.kallsyms]/futex_wait": 50505050,
+      "systemd-journal//usr/lib/x86_64-linux-gnu/systemd/libsystemd-shared-257.so/mmap_cache_fd_get": 50505050,
+      "kworker/1:10-ev/[kernel.kallsyms]/mutex_spin_on_owner": 50505050,
+      "kworker/7:2-eve/[kernel.kallsyms]/mutex_spin_on_owner": 50505050,
+      "kworker/6:1-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 50505050,
+      "nn-est-worker/[kernel.kallsyms]/__kernfs_create_file": 50505050,
+      "nn-est-worker/[kernel.kallsyms]/sock_poll": 50505050,
+      "kworker/u32:0-i/[kernel.kallsyms]/mutex_spin_on_owner": 50505050,
+      "kworker/6:3-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 50505050,
+      "kworker/7:4-eve/[kernel.kallsyms]/mutex_spin_on_owner": 50505050,
+      "systemd-journal//usr/lib/x86_64-linux-gnu/systemd/libsystemd-shared-257.so/jenkins_hashlittle2": 50505050,
+      "kworker/0:6-eve/[kernel.kallsyms]/nf_ct_iterate_cleanup": 50505050,
+      "nn-est-worker/[kernel.kallsyms]/if_nlmsg_size": 50505050,
+      "nn-est-main//usr/bin/python3.13/[unknown]": 50505050,
+      "nn-est-main/[kernel.kallsyms]/notifier_call_chain": 50505050,
+      "kworker/0:7-eve/[kernel.kallsyms]/mutex_spin_on_owner": 50505050,
+      "kworker/3:7-eve/[kernel.kallsyms]/mutex_spin_on_owner": 50505050
+    },
+    "phases_ns": {},
+    "unparsed_examples": [],
+    "stderr": ""
+  },
+  "traffic_proof": {
+    "ready": [
+      {
+        "ready": true,
+        "variant": "bridge",
+        "pid": 657659
+      },
+      {
+        "ready": true,
+        "variant": "bridge",
+        "pid": 601219
+      }
+    ],
+    "idle_inventory": [
+      {
+        "idle": 16
+      },
+      {
+        "idle": 16
+      }
+    ],
+    "quiet": [
+      {
+        "delivered": 0
+      },
+      {
+        "delivered": 0
+      }
+    ],
+    "result": "passed",
+    "edge_generations": 168,
+    "bidirectional_deliveries": 336,
+    "cleanup": [
+      {
+        "cleaned": true,
+        "preservation": {
+          "containers": true,
+          "links": true,
+          "routes": true,
+          "services": true,
+          "xfrm_hash": true,
+          "policy_hash": true,
+          "iptables_hash": true
+        },
+        "exit_code": 0,
+        "stderr": ""
+      },
+      {
+        "cleaned": true,
+        "preservation": {
+          "containers": true,
+          "links": true,
+          "routes": true,
+          "services": true,
+          "xfrm_hash": true,
+          "policy_hash": true,
+          "iptables_hash": true
+        },
+        "exit_code": 0,
+        "stderr": ""
+      }
+    ]
+  },
+  "filtered_rtnl_trace_103": {
+    "label": "events-final-lock-trace",
+    "seconds": 8.565674362002028,
+    "fixture_tids": 513,
+    "all_hold_ms": 7838.974000082089,
+    "lock_occupancy": 0.9151613368418912,
+    "waits": {
+      "fixture": {
+        "count": 73229,
+        "sum_ms": 2308602.724999957,
+        "mean_ms": 31.525798863837508,
+        "p50_ms": 6.494999997812556,
+        "p95_ms": 157.57600000142702,
+        "max_ms": 365.97100000290084
+      },
+      "other": {
+        "count": 15082,
+        "sum_ms": 16140.690999949584,
+        "mean_ms": 1.070195663701736,
+        "p50_ms": 0.0010000003385357559,
+        "p95_ms": 0.16900000264286064,
+        "max_ms": 353.7479999977222
+      }
+    },
+    "holds": {
+      "fixture/rtnl_newlink": {
+        "count": 6656,
+        "sum_ms": 1945.8659998745134,
+        "mean_ms": 0.29234765623114684,
+        "p50_ms": 0.3149999974993989,
+        "p95_ms": 0.7310000000870787,
+        "max_ms": 4.4280000001890585
+      },
+      "fixture/rtnl_setlink": {
+        "count": 19968,
+        "sum_ms": 2900.3549999724783,
+        "mean_ms": 0.14525015023900634,
+        "p50_ms": 0.0959999997576233,
+        "p95_ms": 0.4039999985252507,
+        "max_ms": 51.11300000135088
+      },
+      "fixture/other": {
+        "count": 36608,
+        "sum_ms": 479.0320002284716,
+        "mean_ms": 0.013085445810436833,
+        "p50_ms": 0.009999999747378752,
+        "p95_ms": 0.027999998565064743,
+        "max_ms": 20.767000001796987
+      },
+      "other/other": {
+        "count": 15082,
+        "sum_ms": 219.07400011696154,
+        "mean_ms": 0.01452552712617435,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.015000001440057531,
+        "max_ms": 4.886000002443325
+      },
+      "fixture/rtnl_dellink": {
+        "count": 13,
+        "sum_ms": 2075.005999999121,
+        "mean_ms": 159.61584615377853,
+        "p50_ms": 158.79900000072666,
+        "p95_ms": 170.81599999801256,
+        "max_ms": 170.81599999801256
+      },
+      "fixture/inet_rtm_newaddr": {
+        "count": 6656,
+        "sum_ms": 172.41399992781226,
+        "mean_ms": 0.02590354566223141,
+        "p50_ms": 0.02099999983329326,
+        "p95_ms": 0.052999999752501026,
+        "max_ms": 0.937000000703847
+      },
+      "fixture/inet_rtm_deladdr": {
+        "count": 3328,
+        "sum_ms": 47.2269999627315,
+        "mean_ms": 0.014190805277263071,
+        "p50_ms": 0.012000000424450263,
+        "p95_ms": 0.022000000171829015,
+        "max_ms": 0.954999999521533
+      }
+    },
+    "functions": {
+      "fixture/register_netdevice": {
+        "count": 9984,
+        "sum_ms": 1194.9179999428452,
+        "mean_ms": 0.11968329326350613,
+        "p50_ms": 0.09700000009615906,
+        "p95_ms": 0.2280000007885974,
+        "max_ms": 1.7660000012256205
+      },
+      "fixture/synchronize_rcu_expedited": {
+        "count": 30550,
+        "sum_ms": 1010.3210003835557,
+        "mean_ms": 0.03307106384234225,
+        "p50_ms": 0.022000000171829015,
+        "p95_ms": 0.052999999752501026,
+        "max_ms": 22.77499999763677
+      },
+      "fixture/call_netdevice_notifiers": {
+        "count": 23271,
+        "sum_ms": 172.30200029734988,
+        "mean_ms": 0.0074041511021163625,
+        "p50_ms": 0.003999997716164216,
+        "p95_ms": 0.017000002117129043,
+        "max_ms": 1.0980000006384216
+      },
+      "fixture/rtnl_newlink": {
+        "count": 6656,
+        "sum_ms": 1935.8950000132609,
+        "mean_ms": 0.29084960937699234,
+        "p50_ms": 0.31399999716086313,
+        "p95_ms": 0.7289999994100071,
+        "max_ms": 4.425999999511987
+      },
+      "fixture/netdev_run_todo": {
+        "count": 73229,
+        "sum_ms": 527.1110001740453,
+        "mean_ms": 0.0071981182342247645,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.0040000013541430235,
+        "max_ms": 36.856999999145046
+      },
+      "fixture/synchronize_net": {
+        "count": 16657,
+        "sum_ms": 608.8690001161012,
+        "mean_ms": 0.03655334094471401,
+        "p50_ms": 0.024000000848900527,
+        "p95_ms": 0.058000001445179805,
+        "max_ms": 22.77499999763677
+      },
+      "fixture/dev_deactivate_many": {
+        "count": 6669,
+        "sum_ms": 335.30200021778,
+        "mean_ms": 0.05027770283667416,
+        "p50_ms": 0.03199999991920777,
+        "p95_ms": 0.10800000018207356,
+        "max_ms": 21.20700000159559
+      },
+      "fixture/vxlan_flush": {
+        "count": 6656,
+        "sum_ms": 45.853999865357764,
+        "mean_ms": 0.0068891225759251445,
+        "p50_ms": 0.005999998393235728,
+        "p95_ms": 0.012000000424450263,
+        "max_ms": 0.15899999925750308
+      },
+      "fixture/vxlan_sock_release": {
+        "count": 3328,
+        "sum_ms": 477.266999972926,
+        "mean_ms": 0.14340955528032634,
+        "p50_ms": 0.026999998226528987,
+        "p95_ms": 0.04999999873689376,
+        "max_ms": 50.91499999980442
+      },
+      "fixture/vxlan_stop": {
+        "count": 3328,
+        "sum_ms": 508.46699991234345,
+        "mean_ms": 0.15278455526212242,
+        "p50_ms": 0.03400000059627928,
+        "p95_ms": 0.06500000017695129,
+        "max_ms": 50.92299999887473
+      },
+      "fixture/rtnl_setlink": {
+        "count": 19968,
+        "sum_ms": 2872.768000110227,
+        "mean_ms": 0.14386858974910993,
+        "p50_ms": 0.09499999941908754,
+        "p95_ms": 0.402000001486158,
+        "max_ms": 51.110000000335276
+      },
+      "other/netdev_run_todo": {
+        "count": 15082,
+        "sum_ms": 9.164999974018428,
+        "mean_ms": 0.0006076780250642109,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0020000006770715117,
+        "max_ms": 0.02099999983329326
+      },
+      "other/synchronize_rcu": {
+        "count": 111,
+        "sum_ms": 2898.3709999556595,
+        "mean_ms": 26.111450450050988,
+        "p50_ms": 24.474000001646345,
+        "p95_ms": 39.65700000117067,
+        "max_ms": 43.87900000074296
+      },
+      "fixture/synchronize_rcu": {
+        "count": 13,
+        "sum_ms": 366.3629999900877,
+        "mean_ms": 28.181769230006743,
+        "p50_ms": 25.797000002057757,
+        "p95_ms": 50.73099999935948,
+        "max_ms": 50.73099999935948
+      },
+      "fixture/udp_tunnel_sock_release": {
+        "count": 13,
+        "sum_ms": 366.58499999612104,
+        "mean_ms": 28.19884615354777,
+        "p50_ms": 25.811999999859836,
+        "p95_ms": 50.757000000885455,
+        "max_ms": 50.757000000885455
+      },
+      "fixture/dev_close_many": {
+        "count": 13,
+        "sum_ms": 283.7480000052892,
+        "mean_ms": 21.826769231176094,
+        "p50_ms": 22.613000001001637,
+        "p95_ms": 31.745000000228174,
+        "max_ms": 31.745000000228174
+      },
+      "fixture/dev_shutdown": {
+        "count": 9984,
+        "sum_ms": 78.85499994881684,
+        "mean_ms": 0.007898137014104252,
+        "p50_ms": 0.0019999970390927047,
+        "p95_ms": 0.02099999983329326,
+        "max_ms": 2.122999998391606
+      },
+      "fixture/br_del_if": {
+        "count": 6656,
+        "sum_ms": 902.5629999487137,
+        "mean_ms": 0.1356014122519101,
+        "p50_ms": 0.13299999773153104,
+        "p95_ms": 0.1740000006975606,
+        "max_ms": 22.951999999349937
+      },
+      "fixture/unregister_netdevice_many": {
+        "count": 9997,
+        "sum_ms": 2053.187000001344,
+        "mean_ms": 0.20538031409436272,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0010000003385357559,
+        "max_ms": 169.25600000104168
+      },
+      "fixture/netdev_unregister_kobject": {
+        "count": 9984,
+        "sum_ms": 376.66000002718647,
+        "mean_ms": 0.037726362182210184,
+        "p50_ms": 0.03400000059627928,
+        "p95_ms": 0.03999999898951501,
+        "max_ms": 4.08400000014808
+      },
+      "fixture/napi_disable": {
+        "count": 26624,
+        "sum_ms": 7.055000081891194,
+        "mean_ms": 0.00026498648144122574,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0010000003385357559,
+        "max_ms": 1.1149999991175719
+      },
+      "fixture/rtnl_dellink": {
+        "count": 13,
+        "sum_ms": 2074.961999998777,
+        "mean_ms": 159.61246153836748,
+        "p50_ms": 158.79499999937252,
+        "p95_ms": 170.8139999973355,
+        "max_ms": 170.8139999973355
+      },
+      "fixture/inet_rtm_newaddr": {
+        "count": 6656,
+        "sum_ms": 163.0719999957364,
+        "mean_ms": 0.024499999999359437,
+        "p50_ms": 0.019999999494757503,
+        "p95_ms": 0.050999999075429514,
+        "max_ms": 0.9360000003653113
+      },
+      "fixture/br_add_if": {
+        "count": 6656,
+        "sum_ms": 762.9570001372485,
+        "mean_ms": 0.11462695314562027,
+        "p50_ms": 0.10300000212737359,
+        "p95_ms": 0.2229999990959186,
+        "max_ms": 0.9780000000318978
+      },
+      "fixture/vxlan_open": {
+        "count": 3328,
+        "sum_ms": 4.752999979245942,
+        "mean_ms": 0.0014281850899176508,
+        "p50_ms": 0.0010000003385357559,
+        "p95_ms": 0.0020000006770715117,
+        "max_ms": 0.1520000005257316
+      },
+      "fixture/rcu_barrier": {
+        "count": 13,
+        "sum_ms": 343.6630000032892,
+        "mean_ms": 26.4356153848684,
+        "p50_ms": 25.061000000278,
+        "p95_ms": 34.779000001435634,
+        "max_ms": 34.779000001435634
+      },
+      "other/synchronize_rcu_expedited": {
+        "count": 2222,
+        "sum_ms": 41.8320000062522,
+        "mean_ms": 0.0188262826310766,
+        "p50_ms": 0.009999999747378752,
+        "p95_ms": 0.037000001611886546,
+        "max_ms": 1.4040000023669563
+      },
+      "other/synchronize_net": {
+        "count": 2222,
+        "sum_ms": 43.31399999864516,
+        "mean_ms": 0.019493249324322753,
+        "p50_ms": 0.009999999747378752,
+        "p95_ms": 0.03899999865097925,
+        "max_ms": 1.4049999990675133
+      },
+      "other/dev_deactivate_many": {
+        "count": 2222,
+        "sum_ms": 47.35899993829662,
+        "mean_ms": 0.021313681340367516,
+        "p50_ms": 0.012000000424450263,
+        "p95_ms": 0.04199999966658652,
+        "max_ms": 1.4080000000831205
+      },
+      "fixture/inet_rtm_deladdr": {
+        "count": 3328,
+        "sum_ms": 42.51599989584065,
+        "mean_ms": 0.012775240353317504,
+        "p50_ms": 0.0109999964479357,
+        "p95_ms": 0.019999999494757503,
+        "max_ms": 0.9540000028209761
+      }
+    },
+    "rcu_union_inside_hold_ms": {
+      "fixture": 1392.2130002138147,
+      "other": 43.31399999864516
+    },
+    "actors": {
+      "nn-est-worker": {
+        "count": 73216,
+        "sum_ms": 5544.893999966007,
+        "mean_ms": 0.07573336429149376,
+        "p50_ms": 0.017000002117129043,
+        "p95_ms": 0.34700000105658546,
+        "max_ms": 51.11300000135088
+      },
+      "kworker/5:5": {
+        "count": 15,
+        "sum_ms": 0.07700000060140155,
+        "mean_ms": 0.00513333337342677,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.03099999958067201,
+        "max_ms": 0.03099999958067201
+      },
+      "nn-est-main": {
+        "count": 13,
+        "sum_ms": 2075.005999999121,
+        "mean_ms": 159.61584615377853,
+        "p50_ms": 158.79900000072666,
+        "p95_ms": 170.81599999801256,
+        "max_ms": 170.81599999801256
+      },
+      "kworker/4:6": {
+        "count": 18,
+        "sum_ms": 0.049000009312294424,
+        "mean_ms": 0.0027222227395719122,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.012000000424450263,
+        "max_ms": 0.012000000424450263
+      },
+      "kworker/u32:0": {
+        "count": 6503,
+        "sum_ms": 16.145000008691568,
+        "mean_ms": 0.002482700293509391,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.0040000013541430235,
+        "max_ms": 0.07099999857018702
+      },
+      "kworker/u32:1": {
+        "count": 7024,
+        "sum_ms": 17.857000006188173,
+        "mean_ms": 0.0025422835999698423,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.0040000013541430235,
+        "max_ms": 0.07999999797903001
+      },
+      "kworker/u33:15": {
+        "count": 168,
+        "sum_ms": 35.635000003821915,
+        "mean_ms": 0.21211309526084474,
+        "p50_ms": 0.06000000212225132,
+        "p95_ms": 1.335000000835862,
+        "max_ms": 4.886000002443325
+      },
+      "kworker/1:8": {
+        "count": 8,
+        "sum_ms": 0.02600000152597204,
+        "mean_ms": 0.003250000190746505,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.016000001778593287,
+        "max_ms": 0.016000001778593287
+      },
+      "kworker/u34:7": {
+        "count": 250,
+        "sum_ms": 69.84399997600121,
+        "mean_ms": 0.27937599990400486,
+        "p50_ms": 0.057999997807201,
+        "p95_ms": 2.1990000022924505,
+        "max_ms": 3.4500000001571607
+      },
+      "kworker/3:4": {
+        "count": 2,
+        "sum_ms": 0.0029999973776284605,
+        "mean_ms": 0.0014999986888142303,
+        "p50_ms": 0.0019999970390927047,
+        "p95_ms": 0.0019999970390927047,
+        "max_ms": 0.0019999970390927047
+      },
+      "kworker/0:7": {
+        "count": 3,
+        "sum_ms": 0.004999998054699972,
+        "mean_ms": 0.0016666660182333242,
+        "p50_ms": 0.0019999970390927047,
+        "p95_ms": 0.0020000006770715117,
+        "max_ms": 0.0020000006770715117
+      },
+      "kworker/1:3": {
+        "count": 34,
+        "sum_ms": 0.3560000150173437,
+        "mean_ms": 0.010470588676980697,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.07800000093993731,
+        "max_ms": 0.1540000012028031
+      },
+      "kworker/1:10": {
+        "count": 19,
+        "sum_ms": 0.05000000601285137,
+        "mean_ms": 0.0026315792638342828,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.009000003046821803,
+        "max_ms": 0.009000003046821803
+      },
+      "kworker/3:8": {
+        "count": 28,
+        "sum_ms": 0.6300000131886918,
+        "mean_ms": 0.022500000471024708,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.22600000011152588,
+        "max_ms": 0.2899999999499414
+      },
+      "kworker/6:5": {
+        "count": 41,
+        "sum_ms": 0.7650000043213367,
+        "mean_ms": 0.01865853669076431,
+        "p50_ms": 0.0010000003385357559,
+        "p95_ms": 0.1320000010309741,
+        "max_ms": 0.16200000027311035
+      },
+      "kworker/7:3": {
+        "count": 22,
+        "sum_ms": 0.21499999638763256,
+        "mean_ms": 0.009772727108528754,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.01799999881768599,
+        "max_ms": 0.1609999999345746
+      },
+      "kworker/4:5": {
+        "count": 25,
+        "sum_ms": 0.5139999921084382,
+        "mean_ms": 0.020559999684337527,
+        "p50_ms": 0.0010000003385357559,
+        "p95_ms": 0.13500000204658136,
+        "max_ms": 0.22499999977299012
+      },
+      "kworker/5:8": {
+        "count": 21,
+        "sum_ms": 0.450999999884516,
+        "mean_ms": 0.02147619047069124,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.11699999959091656,
+        "max_ms": 0.17099999968195334
+      },
+      "kworker/0:2": {
+        "count": 19,
+        "sum_ms": 0.06900000153109431,
+        "mean_ms": 0.003631579027952332,
+        "p50_ms": 0.0019999970390927047,
+        "p95_ms": 0.014000001101521775,
+        "max_ms": 0.014000001101521775
+      },
+      "kworker/3:3": {
+        "count": 27,
+        "sum_ms": 0.2080000049318187,
+        "mean_ms": 0.007703703886363655,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.005000001692678779,
+        "max_ms": 0.15300000086426735
+      },
+      "kworker/2:3": {
+        "count": 6,
+        "sum_ms": 0.12900000365334563,
+        "mean_ms": 0.02150000060889094,
+        "p50_ms": 0.006999998731771484,
+        "p95_ms": 0.11300000187475234,
+        "max_ms": 0.11300000187475234
+      },
+      "kworker/6:1": {
+        "count": 18,
+        "sum_ms": 0.19899999097106047,
+        "mean_ms": 0.011055555053947804,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.14699999883305281,
+        "max_ms": 0.14699999883305281
+      },
+      "kworker/2:9": {
+        "count": 11,
+        "sum_ms": 0.02600000152597204,
+        "mean_ms": 0.0023636365023610947,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.009999999747378752,
+        "max_ms": 0.009999999747378752
+      },
+      "kworker/6:3": {
+        "count": 4,
+        "sum_ms": 0.011000003723893315,
+        "mean_ms": 0.0027500009309733286,
+        "p50_ms": 0.0030000010156072676,
+        "p95_ms": 0.006000002031214535,
+        "max_ms": 0.006000002031214535
+      },
+      "kworker/0:4": {
+        "count": 10,
+        "sum_ms": 0.028000005841022357,
+        "mean_ms": 0.0028000005841022357,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.009000003046821803,
+        "max_ms": 0.009000003046821803
+      },
+      "kworker/4:2": {
+        "count": 41,
+        "sum_ms": 0.3890000079991296,
+        "mean_ms": 0.009487805073149502,
+        "p50_ms": 0.0010000003385357559,
+        "p95_ms": 0.043000000005122274,
+        "max_ms": 0.14000000010128133
+      },
+      "kworker/7:5": {
+        "count": 22,
+        "sum_ms": 0.24100000518956222,
+        "mean_ms": 0.010954545690434647,
+        "p50_ms": 0.0019999970390927047,
+        "p95_ms": 0.0959999997576233,
+        "max_ms": 0.1159999992523808
+      },
+      "kworker/3:5": {
+        "count": 8,
+        "sum_ms": 0.044000007619615644,
+        "mean_ms": 0.0055000009524519555,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.031000003218650818,
+        "max_ms": 0.031000003218650818
+      },
+      "kworker/1:0": {
+        "count": 17,
+        "sum_ms": 0.12099999730708078,
+        "mean_ms": 0.0071176469004165166,
+        "p50_ms": 0.0019999970390927047,
+        "p95_ms": 0.0760000002628658,
+        "max_ms": 0.0760000002628658
+      },
+      "kworker/4:1": {
+        "count": 21,
+        "sum_ms": 0.44299999717622995,
+        "mean_ms": 0.021095237960772856,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.14000000010128133,
+        "max_ms": 0.15699999858043157
+      },
+      "kworker/2:6": {
+        "count": 17,
+        "sum_ms": 0.02800000220304355,
+        "mean_ms": 0.0016470589531202087,
+        "p50_ms": 0.0010000003385357559,
+        "p95_ms": 0.0040000013541430235,
+        "max_ms": 0.0040000013541430235
+      },
+      "kworker/6:4": {
+        "count": 30,
+        "sum_ms": 0.4040000058012083,
+        "mean_ms": 0.013466666860040277,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.14999999984866008,
+        "max_ms": 0.1609999999345746
+      },
+      "kworker/3:0": {
+        "count": 4,
+        "sum_ms": 0.11799999992945231,
+        "mean_ms": 0.02949999998236308,
+        "p50_ms": 0.019999999494757503,
+        "p95_ms": 0.0959999997576233,
+        "max_ms": 0.0959999997576233
+      },
+      "kworker/5:6": {
+        "count": 15,
+        "sum_ms": 0.0850000033096876,
+        "mean_ms": 0.005666666887312507,
+        "p50_ms": 0.0010000003385357559,
+        "p95_ms": 0.06200000279932283,
+        "max_ms": 0.06200000279932283
+      },
+      "kworker/1:2": {
+        "count": 2,
+        "sum_ms": 0.05699999746866524,
+        "mean_ms": 0.02849999873433262,
+        "p50_ms": 0.05199999941396527,
+        "p95_ms": 0.05199999941396527,
+        "max_ms": 0.05199999941396527
+      },
+      "kworker/0:1": {
+        "count": 18,
+        "sum_ms": 0.06699998994008638,
+        "mean_ms": 0.003722221663338132,
+        "p50_ms": 0.0019999970390927047,
+        "p95_ms": 0.02300000051036477,
+        "max_ms": 0.02300000051036477
+      },
+      "kworker/2:1": {
+        "count": 10,
+        "sum_ms": 0.043000000005122274,
+        "mean_ms": 0.004300000000512227,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.022000000171829015,
+        "max_ms": 0.022000000171829015
+      },
+      "kworker/3:9": {
+        "count": 23,
+        "sum_ms": 0.07900000491645187,
+        "mean_ms": 0.003434782822454429,
+        "p50_ms": 0.0019999970390927047,
+        "p95_ms": 0.008000002708286047,
+        "max_ms": 0.03300000025774352
+      },
+      "kworker/1:5": {
+        "count": 21,
+        "sum_ms": 0.18400000408291817,
+        "mean_ms": 0.008761904956329437,
+        "p50_ms": 0.0010000003385357559,
+        "p95_ms": 0.04400000034365803,
+        "max_ms": 0.06399999983841553
+      },
+      "kworker/0:8": {
+        "count": 20,
+        "sum_ms": 0.09700001101009548,
+        "mean_ms": 0.004850000550504774,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.06600000051548705,
+        "max_ms": 0.06600000051548705
+      },
+      "kworker/7:6": {
+        "count": 21,
+        "sum_ms": 0.09600000703358091,
+        "mean_ms": 0.004571428906360996,
+        "p50_ms": 0.0019999970390927047,
+        "p95_ms": 0.00799999907030724,
+        "max_ms": 0.05600000076810829
+      },
+      "kworker/6:6": {
+        "count": 14,
+        "sum_ms": 0.05900000542169437,
+        "mean_ms": 0.004214286101549598,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.03300000025774352,
+        "max_ms": 0.03300000025774352
+      },
+      "kworker/u33:0": {
+        "count": 102,
+        "sum_ms": 20.973000031517586,
+        "mean_ms": 0.20561764736781946,
+        "p50_ms": 0.06100000246078707,
+        "p95_ms": 1.5270000003511086,
+        "max_ms": 2.1640000013576355
+      },
+      "kworker/2:8": {
+        "count": 29,
+        "sum_ms": 0.32900000223889947,
+        "mean_ms": 0.011344827663410327,
+        "p50_ms": 0.0010000003385357559,
+        "p95_ms": 0.11499999891384505,
+        "max_ms": 0.13799999942420982
+      },
+      "kworker/1:6": {
+        "count": 9,
+        "sum_ms": 0.1049999991664663,
+        "mean_ms": 0.01166666657405181,
+        "p50_ms": 0.0010000003385357559,
+        "p95_ms": 0.0940000027185306,
+        "max_ms": 0.0940000027185306
+      },
+      "kworker/7:2": {
+        "count": 12,
+        "sum_ms": 0.02399999721092172,
+        "mean_ms": 0.00199999976757681,
+        "p50_ms": 0.0019999970390927047,
+        "p95_ms": 0.006999998731771484,
+        "max_ms": 0.006999998731771484
+      },
+      "kworker/0:6": {
+        "count": 14,
+        "sum_ms": 0.43200000072829425,
+        "mean_ms": 0.030857142909163873,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.15800000255694613,
+        "max_ms": 0.15800000255694613
+      },
+      "kworker/2:2": {
+        "count": 7,
+        "sum_ms": 0.017999995179707184,
+        "mean_ms": 0.002571427882815312,
+        "p50_ms": 0.0010000003385357559,
+        "p95_ms": 0.00799999907030724,
+        "max_ms": 0.00799999907030724
+      },
+      "kworker/u34:3": {
+        "count": 98,
+        "sum_ms": 33.61099999892758,
+        "mean_ms": 0.34296938774415897,
+        "p50_ms": 0.07399999958579428,
+        "p95_ms": 2.294999998412095,
+        "max_ms": 3.0299999998533167
+      },
+      "kworker/5:0": {
+        "count": 28,
+        "sum_ms": 0.6150000117486343,
+        "mean_ms": 0.021964286133879796,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.1359999987471383,
+        "max_ms": 0.16999999934341758
+      },
+      "kworker/2:0": {
+        "count": 24,
+        "sum_ms": 0.6309999989753123,
+        "mean_ms": 0.02629166662397135,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.15100000018719584,
+        "max_ms": 0.17500000103609636
+      },
+      "kworker/4:3": {
+        "count": 11,
+        "sum_ms": 0.05500000042957254,
+        "mean_ms": 0.005000000039052049,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.02300000051036477,
+        "max_ms": 0.02300000051036477
+      },
+      "kworker/1:1": {
+        "count": 18,
+        "sum_ms": 0.03300000753370114,
+        "mean_ms": 0.0018333337518722853,
+        "p50_ms": 0.0010000003385357559,
+        "p95_ms": 0.006000002031214535,
+        "max_ms": 0.006000002031214535
+      },
+      "kworker/6:2": {
+        "count": 17,
+        "sum_ms": 0.033999993320321664,
+        "mean_ms": 0.001999999607077745,
+        "p50_ms": 0.0019999970390927047,
+        "p95_ms": 0.009999999747378752,
+        "max_ms": 0.009999999747378752
+      },
+      "kworker/4:4": {
+        "count": 14,
+        "sum_ms": 0.21300000298651867,
+        "mean_ms": 0.015214285927608475,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.1520000005257316,
+        "max_ms": 0.1520000005257316
+      },
+      "kworker/3:7": {
+        "count": 15,
+        "sum_ms": 0.08699998943484388,
+        "mean_ms": 0.005799999295656259,
+        "p50_ms": 0.0019999970390927047,
+        "p95_ms": 0.05500000042957254,
+        "max_ms": 0.05500000042957254
+      },
+      "kworker/3:1": {
+        "count": 9,
+        "sum_ms": 0.060000005760230124,
+        "mean_ms": 0.006666667306692236,
+        "p50_ms": 0.005000001692678779,
+        "p95_ms": 0.02800000220304355,
+        "max_ms": 0.02800000220304355
+      },
+      "kworker/6:8": {
+        "count": 3,
+        "sum_ms": 0.008999995770864189,
+        "mean_ms": 0.002999998590288063,
+        "p50_ms": 0.0019999970390927047,
+        "p95_ms": 0.005999998393235728,
+        "max_ms": 0.005999998393235728
+      },
+      "kworker/u33:14": {
+        "count": 61,
+        "sum_ms": 15.374000002339017,
+        "mean_ms": 0.25203278692359044,
+        "p50_ms": 0.06399999983841553,
+        "p95_ms": 1.1999999987892807,
+        "max_ms": 3.3719999992172234
+      },
+      "kworker/5:3": {
+        "count": 8,
+        "sum_ms": 0.08799999704933725,
+        "mean_ms": 0.010999999631167157,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.04499999704421498,
+        "max_ms": 0.04499999704421498
+      },
+      "kworker/5:4": {
+        "count": 4,
+        "sum_ms": 0.008999999408842996,
+        "mean_ms": 0.002249999852210749,
+        "p50_ms": 0.0010000003385357559,
+        "p95_ms": 0.006999998731771484,
+        "max_ms": 0.006999998731771484
+      },
+      "kworker/0:3": {
+        "count": 10,
+        "sum_ms": 0.04999999873689376,
+        "mean_ms": 0.004999999873689376,
+        "p50_ms": 0.0020000006770715117,
+        "p95_ms": 0.02599999788799323,
+        "max_ms": 0.02599999788799323
+      },
+      "kworker/7:9": {
+        "count": 9,
+        "sum_ms": 0.47700000141048804,
+        "mean_ms": 0.0530000001567209,
+        "p50_ms": 0.018999999156221747,
+        "p95_ms": 0.1720000000204891,
+        "max_ms": 0.1720000000204891
+      }
+    },
+    "overruns": {
+      "cpu7": 0,
+      "cpu6": 0,
+      "cpu5": 0,
+      "cpu4": 0,
+      "cpu3": 0,
+      "cpu2": 0,
+      "cpu1": 0,
+      "cpu0": 0
+    },
+    "boundary_errors": {},
+    "incomplete_holds": 0,
+    "kprobe_profile": "  rtnl_lock_in                                           25066               0\n  rtnl_lock_out                                          25052              14\n  rtnl_lock_killable_in                                      0               0\n  rtnl_lock_killable_out                                     0               0\n  rtnl_trylock_in                                            0               0\n  rtnl_trylock_out                                           0               0\n  rtnl_newlink_in                                         6656               0\n  rtnl_newlink_out                                        6656               0\n  rtnl_setlink_in                                        19968               0\n  rtnl_setlink_out                                       19968               0\n  rtnl_dellink_in                                           13               0\n  rtnl_dellink_out                                          13               0\n  register_netdevice_in                                   9984               0\n  register_netdevice_out                                  9984               0\n  unregister_netdevice_many_in                            9997               0\n  unregister_netdevice_many_out                           9997               0\n  synchronize_rcu_expedited_in                           32772               0\n  synchronize_rcu_expedited_out                          32772               0\n  synchronize_net_in                                     18879               0\n  synchronize_net_out                                    18879               0\n  rcu_barrier_in                                            13               0\n  rcu_barrier_out                                           13               0\n  synchronize_rcu_in                                       126               0\n  synchronize_rcu_out                                      126               0\n  vxlan_sock_release_in                                   3328               0\n  vxlan_sock_release_out                                  3328               0\n  vxlan_flush_in                                          6656               0\n  vxlan_flush_out                                         6656               0\n  udp_tunnel_sock_release_in                                13               0\n  udp_tunnel_sock_release_out                               13               0\n  dev_deactivate_many_in                                  8891               0\n  dev_deactivate_many_out                                 8891               0\n  dev_close_many_in                                         13               0\n  dev_close_many_out                                        13               0\n  call_netdevice_notifiers_in                            23271               0\n  call_netdevice_notifiers_out                           23271               0\n  netdev_unregister_kobject_in                            9984               0\n  netdev_unregister_kobject_out                           9984               0\n  dev_shutdown_in                                         9984               0\n  dev_shutdown_out                                        9984               0\n  napi_disable_in                                        26624               0\n  napi_disable_out                                       26624               0\n  dev_change_name_in                                         0               0\n  dev_change_name_out                                        0               0\n  br_add_if_in                                            6656               0\n  br_add_if_out                                           6656               0\n  br_del_if_in                                            6656               0\n  br_del_if_out                                           6656               0\n  vxlan_open_in                                           3328               0\n  vxlan_open_out                                          3328               0\n  vxlan_stop_in                                           3328               0\n  vxlan_stop_out                                          3328               0\n  inet_rtm_newaddr_in                                     6656               0\n  inet_rtm_newaddr_out                                    6656               0\n  inet_rtm_deladdr_in                                     3328               0\n  inet_rtm_deladdr_out                                    3328               0\n  netdev_run_todo_in                                     88311               0\n  netdev_run_todo_out                                    88311               0\n  release                                                88311               0\n  mutex_in                                              726665               0\n  mutex_out                                             726667               0\n"
+  },
+  "perf_lost_records": "",
+  "validation": {
+    "kernel_filter_cases_per_host": 76,
+    "linux_python_compile": "passed",
+    "product_integration": "not_performed",
+    "invalid_overlap_proof": "excluded; sequential reruns passed"
+  }
+}

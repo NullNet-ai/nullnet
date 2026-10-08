@@ -1,0 +1,672 @@
+{
+  "host-103": {
+    "cycles": 8192,
+    "rows": {
+      "other_actor": {
+        "requests": 0,
+        "holds": 46281,
+        "hold_ms": 865.1660001014534,
+        "wait_ms": 34160.751000112214,
+        "requests_per_cycle": 0.0,
+        "hold_ms_per_cycle": 0.10561108399675945,
+        "mean_hold_ms": 0.018693762021163185
+      },
+      "setup/add_bridge_address": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 235.10099998475198,
+        "wait_ms": 58930.66800002907,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.02869885253720117,
+        "mean_hold_ms": 0.02869885253720117
+      },
+      "setup/add_container_address": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 219.31000003587542,
+        "wait_ms": 63871.63100004727,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.026771240238754324,
+        "mean_hold_ms": 0.026771240238754324
+      },
+      "setup/attach_and_enable_outer": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 1436.1050000170508,
+        "wait_ms": 62048.60799997914,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.1753057861348939,
+        "mean_hold_ms": 0.1753057861348939
+      },
+      "setup/attach_and_enable_transport": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 1005.4399999917223,
+        "wait_ms": 63953.16800002274,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.12273437499898954,
+        "mean_hold_ms": 0.12273437499898954
+      },
+      "setup/create_veth": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 3812.315000077433,
+        "wait_ms": 524787.6919999653,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.4653704834078898,
+        "mean_hold_ms": 0.4653704834078898
+      },
+      "setup/create_vxlan": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 960.388000011335,
+        "wait_ms": 628742.1979999781,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.11723486328263366,
+        "mean_hold_ms": 0.11723486328263366
+      },
+      "setup/creation_lookup_inner": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 68.6769999738317,
+        "wait_ms": 1265304.390999956,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.008383422848368127,
+        "mean_hold_ms": 0.008383422848368127
+      },
+      "setup/creation_lookup_transport": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 62.20099997608486,
+        "wait_ms": 326484.37399997417,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.007592895504893171,
+        "mean_hold_ms": 0.007592895504893171
+      },
+      "setup/enable_bridge": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 476.8629999962286,
+        "wait_ms": 52930.616999999074,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.058210815429227125,
+        "mean_hold_ms": 0.058210815429227125
+      },
+      "setup/enable_container_peer": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 271.0029999479957,
+        "wait_ms": 50966.01500002453,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.03308142089208932,
+        "mean_hold_ms": 0.03308142089208932
+      },
+      "setup/ipsec_16": {
+        "requests": 16384,
+        "holds": 0,
+        "hold_ms": 0,
+        "wait_ms": 0,
+        "requests_per_cycle": 2.0,
+        "hold_ms_per_cycle": 0.0,
+        "mean_hold_ms": null
+      },
+      "setup/ipsec_19": {
+        "requests": 8192,
+        "holds": 0,
+        "hold_ms": 0,
+        "wait_ms": 0,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.0,
+        "mean_hold_ms": null
+      },
+      "setup/readiness_bridge": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 194.74199996602692,
+        "wait_ms": 22140.712000062194,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.023772216792727896,
+        "mean_hold_ms": 0.023772216792727896
+      },
+      "setup/readiness_inner": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 59.906000006776594,
+        "wait_ms": 14842.289000003802,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.007312744141452221,
+        "mean_hold_ms": 0.007312744141452221
+      },
+      "setup/readiness_outer": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 94.27499998582789,
+        "wait_ms": 31314.444000028743,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.011508178709207506,
+        "mean_hold_ms": 0.011508178709207506
+      },
+      "setup/readiness_transport": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 89.02999996189465,
+        "wait_ms": 40816.954000037185,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.010867919917223468,
+        "mean_hold_ms": 0.010867919917223468
+      },
+      "setup/tc_filter": {
+        "requests": 24576,
+        "holds": 24576,
+        "hold_ms": 418.38600003575266,
+        "wait_ms": 114993.96400002751,
+        "requests_per_cycle": 3.0,
+        "hold_ms_per_cycle": 0.05107250976998934,
+        "mean_hold_ms": 0.01702416992332978
+      },
+      "setup/tc_qdisc": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 141.92299998558155,
+        "wait_ms": 185842.3800000255,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.017324584959177436,
+        "mean_hold_ms": 0.017324584959177436
+      },
+      "teardown/bridge_neighbor_dump": {
+        "requests": 8192,
+        "holds": 0,
+        "hold_ms": 0,
+        "wait_ms": 0,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.0,
+        "mean_hold_ms": null
+      },
+      "teardown/delete_vxlan_and_veth_batch": {
+        "requests": 32,
+        "holds": 32,
+        "hold_ms": 5824.430999998185,
+        "wait_ms": 346.0850000001301,
+        "requests_per_cycle": 0.00390625,
+        "hold_ms_per_cycle": 0.710990112304466,
+        "mean_hold_ms": 182.01346874994329
+      },
+      "teardown/disable_bridge": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 2585.2510000122493,
+        "wait_ms": 60230.22499998115,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.3155823974624328,
+        "mean_hold_ms": 0.3155823974624328
+      },
+      "teardown/disable_transport": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 1918.0310000538157,
+        "wait_ms": 526394.382999999,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.2341346435612568,
+        "mean_hold_ms": 0.2341346435612568
+      },
+      "teardown/ipsec_17": {
+        "requests": 16384,
+        "holds": 0,
+        "hold_ms": 0,
+        "wait_ms": 0,
+        "requests_per_cycle": 2.0,
+        "hold_ms_per_cycle": 0.0,
+        "mean_hold_ms": null
+      },
+      "teardown/ipsec_20": {
+        "requests": 8192,
+        "holds": 0,
+        "hold_ms": 0,
+        "wait_ms": 0,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.0,
+        "mean_hold_ms": null
+      },
+      "teardown/remove_bridge_address": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 133.35700000880024,
+        "wait_ms": 76941.10399999227,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.016278930665136748,
+        "mean_hold_ms": 0.016278930665136748
+      },
+      "teardown/scoped_conntrack_delete": {
+        "requests": 32768,
+        "holds": 0,
+        "hold_ms": 0,
+        "wait_ms": 0,
+        "requests_per_cycle": 4.0,
+        "hold_ms_per_cycle": 0.0,
+        "mean_hold_ms": null
+      },
+      "teardown/verify_retained_bridge": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 105.68699996747455,
+        "wait_ms": 63269.321000032505,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.012901245113217108,
+        "mean_hold_ms": 0.012901245113217108
+      }
+    },
+    "fixture_hold_ms_per_cycle": 2.4551296386712274,
+    "setup_hold_ms_per_cycle": 1.165242309564718,
+    "teardown_hold_ms_per_cycle": 1.2898873291065094,
+    "trace_lock_occupancy": [
+      0.8250235284879884,
+      0.8256086183768642,
+      0.8238854745661305
+    ],
+    "untraced_rates": [
+      369.9855739095893,
+      392.6081572261068,
+      381.30270465637517
+    ],
+    "traced_rates": [
+      313.0324123056577,
+      322.7447494940071,
+      330.2291991875867
+    ],
+    "preservation": {
+      "containers": true,
+      "links": true,
+      "routes": true,
+      "services": true,
+      "xfrm_hash": true,
+      "policy_hash": true,
+      "iptables_hash": true
+    },
+    "drop_counts": {
+      "uevent": 771072,
+      "link": 3009587,
+      "address": 211199,
+      "route": 460803,
+      "neighbor": 0
+    },
+    "trace_integrity": [
+      {
+        "overruns": {
+          "cpu7": 0,
+          "cpu6": 0,
+          "cpu5": 0,
+          "cpu4": 0,
+          "cpu3": 0,
+          "cpu2": 0,
+          "cpu1": 0,
+          "cpu0": 0
+        },
+        "boundary_errors": {},
+        "marker_errors": {}
+      },
+      {
+        "overruns": {
+          "cpu7": 0,
+          "cpu6": 0,
+          "cpu5": 0,
+          "cpu4": 0,
+          "cpu3": 0,
+          "cpu2": 0,
+          "cpu1": 0,
+          "cpu0": 0
+        },
+        "boundary_errors": {},
+        "marker_errors": {}
+      },
+      {
+        "overruns": {
+          "cpu7": 0,
+          "cpu6": 0,
+          "cpu5": 0,
+          "cpu4": 0,
+          "cpu3": 0,
+          "cpu2": 0,
+          "cpu1": 0,
+          "cpu0": 0
+        },
+        "boundary_errors": {},
+        "marker_errors": {}
+      }
+    ]
+  },
+  "host-104": {
+    "cycles": 8192,
+    "rows": {
+      "other_actor": {
+        "requests": 0,
+        "holds": 45584,
+        "hold_ms": 828.7950000285491,
+        "wait_ms": 33155.604000055064,
+        "requests_per_cycle": 0.0,
+        "hold_ms_per_cycle": 0.1011712646519225,
+        "mean_hold_ms": 0.018181708494834792
+      },
+      "setup/add_bridge_address": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 230.13899997658882,
+        "wait_ms": 53085.09400001367,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.02809313964557969,
+        "mean_hold_ms": 0.02809313964557969
+      },
+      "setup/add_container_address": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 216.70300002006115,
+        "wait_ms": 49948.05100001304,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.02645300293213637,
+        "mean_hold_ms": 0.02645300293213637
+      },
+      "setup/attach_and_enable_outer": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 1405.3210000574836,
+        "wait_ms": 61005.215999997745,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.17154797363982954,
+        "mean_hold_ms": 0.17154797363982954
+      },
+      "setup/attach_and_enable_transport": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 979.4409999503841,
+        "wait_ms": 63821.86100003764,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.11956066893925588,
+        "mean_hold_ms": 0.11956066893925588
+      },
+      "setup/create_veth": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 3803.624999990461,
+        "wait_ms": 534032.5130000002,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.4643096923816481,
+        "mean_hold_ms": 0.4643096923816481
+      },
+      "setup/create_vxlan": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 988.6430000087785,
+        "wait_ms": 516348.03500003915,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.12068395996200909,
+        "mean_hold_ms": 0.12068395996200909
+      },
+      "setup/creation_lookup_inner": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 70.54799994784844,
+        "wait_ms": 1464090.6520000335,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.008611816399883843,
+        "mean_hold_ms": 0.008611816399883843
+      },
+      "setup/creation_lookup_transport": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 66.58899993999512,
+        "wait_ms": 269281.9780000227,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.008128540031737685,
+        "mean_hold_ms": 0.008128540031737685
+      },
+      "setup/enable_bridge": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 463.2069999643136,
+        "wait_ms": 55920.20100000991,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.05654382323783125,
+        "mean_hold_ms": 0.05654382323783125
+      },
+      "setup/enable_container_peer": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 263.93200001621153,
+        "wait_ms": 54432.60600004487,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.03221826172072895,
+        "mean_hold_ms": 0.03221826172072895
+      },
+      "setup/ipsec_16": {
+        "requests": 16384,
+        "holds": 0,
+        "hold_ms": 0,
+        "wait_ms": 0,
+        "requests_per_cycle": 2.0,
+        "hold_ms_per_cycle": 0.0,
+        "mean_hold_ms": null
+      },
+      "setup/ipsec_19": {
+        "requests": 8192,
+        "holds": 0,
+        "hold_ms": 0,
+        "wait_ms": 0,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.0,
+        "mean_hold_ms": null
+      },
+      "setup/readiness_bridge": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 186.84300002405507,
+        "wait_ms": 24940.726999997423,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.02280798340137391,
+        "mean_hold_ms": 0.02280798340137391
+      },
+      "setup/readiness_inner": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 58.447000003980065,
+        "wait_ms": 16149.271999945995,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.007134643555173348,
+        "mean_hold_ms": 0.007134643555173348
+      },
+      "setup/readiness_outer": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 93.58199998951022,
+        "wait_ms": 34357.34300000513,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.01142358398309451,
+        "mean_hold_ms": 0.01142358398309451
+      },
+      "setup/readiness_transport": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 84.98000000963657,
+        "wait_ms": 46108.44899994572,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.010373535157426339,
+        "mean_hold_ms": 0.010373535157426339
+      },
+      "setup/tc_filter": {
+        "requests": 24576,
+        "holds": 24576,
+        "hold_ms": 388.29199999054254,
+        "wait_ms": 76226.60200002792,
+        "requests_per_cycle": 3.0,
+        "hold_ms_per_cycle": 0.047398925780095524,
+        "mean_hold_ms": 0.01579964192669851
+      },
+      "setup/tc_qdisc": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 143.12400009293924,
+        "wait_ms": 136393.89999988998,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.017471191417595122,
+        "mean_hold_ms": 0.017471191417595122
+      },
+      "teardown/bridge_neighbor_dump": {
+        "requests": 8192,
+        "holds": 0,
+        "hold_ms": 0,
+        "wait_ms": 0,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.0,
+        "mean_hold_ms": null
+      },
+      "teardown/delete_vxlan_and_veth_batch": {
+        "requests": 32,
+        "holds": 32,
+        "hold_ms": 5723.1089999995675,
+        "wait_ms": 232.57700000340265,
+        "requests_per_cycle": 0.00390625,
+        "hold_ms_per_cycle": 0.6986217041015097,
+        "mean_hold_ms": 178.84715624998648
+      },
+      "teardown/disable_bridge": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 2498.7990000772697,
+        "wait_ms": 48793.70299994116,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.30502917481411984,
+        "mean_hold_ms": 0.30502917481411984
+      },
+      "teardown/disable_transport": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 1900.2869999912946,
+        "wait_ms": 537218.5890000346,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.23196862792862483,
+        "mean_hold_ms": 0.23196862792862483
+      },
+      "teardown/ipsec_17": {
+        "requests": 16384,
+        "holds": 0,
+        "hold_ms": 0,
+        "wait_ms": 0,
+        "requests_per_cycle": 2.0,
+        "hold_ms_per_cycle": 0.0,
+        "mean_hold_ms": null
+      },
+      "teardown/ipsec_20": {
+        "requests": 8192,
+        "holds": 0,
+        "hold_ms": 0,
+        "wait_ms": 0,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.0,
+        "mean_hold_ms": null
+      },
+      "teardown/remove_bridge_address": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 131.0349999830578,
+        "wait_ms": 64323.2240000234,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.01599548339636936,
+        "mean_hold_ms": 0.01599548339636936
+      },
+      "teardown/scoped_conntrack_delete": {
+        "requests": 32768,
+        "holds": 0,
+        "hold_ms": 0,
+        "wait_ms": 0,
+        "requests_per_cycle": 4.0,
+        "hold_ms_per_cycle": 0.0,
+        "mean_hold_ms": null
+      },
+      "teardown/verify_retained_bridge": {
+        "requests": 8192,
+        "holds": 8192,
+        "hold_ms": 105.27299990644678,
+        "wait_ms": 58249.04500001503,
+        "requests_per_cycle": 1.0,
+        "hold_ms_per_cycle": 0.01285070799639243,
+        "mean_hold_ms": 0.01285070799639243
+      }
+    },
+    "fixture_hold_ms_per_cycle": 2.4172264404224153,
+    "setup_hold_ms_per_cycle": 1.1527607421853991,
+    "teardown_hold_ms_per_cycle": 1.2644656982370162,
+    "trace_lock_occupancy": [
+      0.8244187466886617,
+      0.8065775510557808,
+      0.8121278631261183
+    ],
+    "untraced_rates": [
+      371.28187695758425,
+      385.7179862790206,
+      393.6977729294214
+    ],
+    "traced_rates": [
+      326.0682822054027,
+      316.4717676995512,
+      327.4086608842688
+    ],
+    "preservation": {
+      "containers": true,
+      "links": true,
+      "routes": true,
+      "services": true,
+      "xfrm_hash": true,
+      "policy_hash": true,
+      "iptables_hash": true
+    },
+    "drop_counts": {
+      "uevent": 781312,
+      "link": 3048843,
+      "address": 214015,
+      "route": 466947,
+      "neighbor": 0
+    },
+    "trace_integrity": [
+      {
+        "overruns": {
+          "cpu7": 0,
+          "cpu6": 0,
+          "cpu5": 0,
+          "cpu4": 0,
+          "cpu3": 0,
+          "cpu2": 0,
+          "cpu1": 0,
+          "cpu0": 0
+        },
+        "boundary_errors": {},
+        "marker_errors": {}
+      },
+      {
+        "overruns": {
+          "cpu7": 0,
+          "cpu6": 0,
+          "cpu5": 0,
+          "cpu4": 0,
+          "cpu3": 0,
+          "cpu2": 0,
+          "cpu1": 0,
+          "cpu0": 0
+        },
+        "boundary_errors": {},
+        "marker_errors": {}
+      },
+      {
+        "overruns": {
+          "cpu7": 0,
+          "cpu6": 0,
+          "cpu5": 0,
+          "cpu4": 0,
+          "cpu3": 0,
+          "cpu2": 0,
+          "cpu1": 0,
+          "cpu0": 0
+        },
+        "boundary_errors": {},
+        "marker_errors": {}
+      }
+    ]
+  }
+}

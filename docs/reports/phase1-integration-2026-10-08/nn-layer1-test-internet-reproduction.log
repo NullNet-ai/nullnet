@@ -1,0 +1,73 @@
+
+running 1 test
+[geo] IPINFO_API_URL not set; using free db-ip.com fallback
+Received proxy request for 'A'
+BLOCKED_TEST_DNS host=download.db-ip.com service=
+BLOCKED_TEST_DNS host=download.db-ip.com service=
+'NET_TYPE' environment variable not set
+1.1.1.1 acknowledged
+5.5.5.5 acknowledged
+3.3.3.3 acknowledged
+1.1.1.1 acknowledged
+4.4.4.4 acknowledged
+3.3.3.3 acknowledged
+Received proxy request for 'B'
+2.2.2.2 acknowledged
+5.5.5.5 acknowledged
+4.4.4.4 acknowledged
+2.2.2.2 acknowledged
+Received proxy request for 'A'
+1.1.1.1 acknowledged
+6.6.6.6 acknowledged
+--- start.dot ---
+digraph G {
+	bgcolor=grey10;
+	node [color=white, fontcolor=white];
+	edge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];
+
+	"A" [label=<A<BR/><FONT POINT-SIZE="9">1 active / 0 paused / 1 total</FONT>>] [style=solid, color=green];
+	"10.0.0.1 (via 5.5.5.5)" -> "A" [label="VXLAN 101 [0ms]"];
+	"10.0.0.2 (via 6.6.6.6)" -> "A" [label="VXLAN 106 [0ms]"];
+
+	"B" [label=<B<BR/><FONT POINT-SIZE="9">1 active / 0 paused / 1 total</FONT>>] [style=solid, color=green];
+	"10.0.0.1 (via 5.5.5.5)" -> "B" [label="VXLAN 104 [0ms]"];
+
+	"C" [label=<C<BR/><FONT POINT-SIZE="9">1 active / 0 paused / 1 total</FONT>>] [style=dashed, color=green];
+	"A" -> "C" [label="VXLAN 102 [0ms]"];
+
+	"D" [label=<D<BR/><FONT POINT-SIZE="9">1 active / 0 paused / 1 total</FONT>>] [style=dashed, color=green];
+	"B" -> "D" [label="VXLAN 105 [0ms]"];
+	"C" -> "D" [label="VXLAN 103 [0ms]"];
+}
+
+Proxy client '10.0.0.1 (via 5.5.5.5)' timed out on service 'A'
+Sending network 101 teardown to client 5.5.5.5
+Sending network 101 teardown to client 1.1.1.1
+Proxy client '10.0.0.2 (via 6.6.6.6)' timed out on service 'A'
+Sending network 102 teardown to client 1.1.1.1
+Sending network 102 teardown to client 3.3.3.3
+Sending network 103 teardown to client 3.3.3.3
+Sending network 103 teardown to client 4.4.4.4
+Sending network 106 teardown to client 6.6.6.6
+Sending network 106 teardown to client 1.1.1.1
+--- after_timeout_A.dot ---
+digraph G {
+	bgcolor=grey10;
+	node [color=white, fontcolor=white];
+	edge [color=white, fontcolor=white, fontsize=9, labelangle=180, labeldistance=0.8];
+
+	"A" [label=<A<BR/><FONT POINT-SIZE="9">0 active / 0 paused / 1 total</FONT>>] [style=solid, color=green];
+
+	"B" [label=<B<BR/><FONT POINT-SIZE="9">1 active / 0 paused / 1 total</FONT>>] [style=solid, color=green];
+	"10.0.0.1 (via 5.5.5.5)" -> "B" [label="VXLAN 104 [0ms]"];
+
+	"C" [label=<C<BR/><FONT POINT-SIZE="9">0 active / 0 paused / 1 total</FONT>>] [style=dashed, color=green];
+
+	"D" [label=<D<BR/><FONT POINT-SIZE="9">1 active / 0 paused / 1 total</FONT>>] [style=dashed, color=green];
+	"B" -> "D" [label="VXLAN 105 [0ms]"];
+}
+
+test tests::proxy_timeout_A ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 281 filtered out; finished in 1.14s
+

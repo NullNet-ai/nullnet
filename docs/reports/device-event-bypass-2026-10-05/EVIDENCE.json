@@ -1,0 +1,30 @@
+{
+  "archive": "~/.codex/backups/nullnet-layer1-20261008/research-evidence",
+  "purpose": "Large raw captures are preserved outside Git; reports, scripts and compact results remain in this directory.",
+  "files": [
+    {
+      "file": "evidence-104.tar.gz",
+      "sha256": "c61ba127580cc729842acd0e494ce47309da313aa34547aad3e469fd47166d2a",
+      "bytes": 8621763,
+      "archive_file": "docs/reports/device-event-bypass-2026-10-05/evidence-104.tar.gz"
+    },
+    {
+      "file": "fine-lock-evidence-103-2026-10-06.tar.gz",
+      "sha256": "28048de72213084b046912df54458d2631236e1a01b35886b2dbb0a73d363644",
+      "bytes": 23176214,
+      "archive_file": "docs/reports/device-event-bypass-2026-10-05/fine-lock-evidence-103-2026-10-06.tar.gz"
+    },
+    {
+      "file": "fine-lock-evidence-104-2026-10-06.tar.gz",
+      "sha256": "314f33b0101a551143a4a474ecb0e5cde1745dba929fbd9264774273532a98ca",
+      "bytes": 23254944,
+      "archive_file": "docs/reports/device-event-bypass-2026-10-05/fine-lock-evidence-104-2026-10-06.tar.gz"
+    },
+    {
+      "file": "evidence-103.tar.gz",
+      "sha256": "8716dcb5a7e207c576bb7902d18aa13fb01da809865fc35c38fc298861441d54",
+      "bytes": 36250427,
+      "archive_file": "docs/reports/device-event-bypass-2026-10-05/evidence-103.tar.gz"
+    }
+  ]
+}

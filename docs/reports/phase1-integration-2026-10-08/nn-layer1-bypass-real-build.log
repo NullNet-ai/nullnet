@@ -1,0 +1,7 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running `target/debug/xtask build`
+   Compiling nullnet-ebpf v0.1.0 (/root/nullnet-layer1-20261008/bypass/ebpf)
+    Finished `dev` profile [optimized] target(s) in 0.36s
+    Blocking waiting for file lock on build directory
+   Compiling nullnet-client v0.1.0 (/root/nullnet-layer1-20261008/bypass/members/nullnet-client)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.10s

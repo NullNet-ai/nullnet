@@ -1,0 +1,18 @@
+{
+  "archive": "~/.codex/backups/nullnet-layer1-20261008/research-evidence",
+  "purpose": "Large raw captures are preserved outside Git; reports, scripts and compact results remain in this directory.",
+  "files": [
+    {
+      "file": "evidence-104.tar.gz",
+      "sha256": "4d366121116eeeefc3a2ba3799216bdff29d384c1bfe1b3f09bd695485699116",
+      "bytes": 3518615,
+      "archive_file": "docs/reports/lifecycle-cpu-2026-10-05/evidence-104.tar.gz"
+    },
+    {
+      "file": "evidence-103.tar.gz",
+      "sha256": "be203ff55d2d70037b8a0a9045ec5c16b7e0e9492e785c2b4ae5c2ee2b15e34a",
+      "bytes": 18423970,
+      "archive_file": "docs/reports/lifecycle-cpu-2026-10-05/evidence-103.tar.gz"
+    }
+  ]
+}

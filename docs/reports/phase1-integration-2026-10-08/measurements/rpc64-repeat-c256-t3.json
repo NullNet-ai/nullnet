@@ -1,0 +1,228 @@
+{
+  "label": "rpc64-repeat-c256-t3",
+  "variant": "rpc64-repeat",
+  "concurrency": 256,
+  "count": 1008,
+  "load": {
+    "unix_start": 1791478412.6175132,
+    "unix_end": 1791478414.123862,
+    "count": 1008,
+    "concurrency": 256,
+    "identities": 1008,
+    "services": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "ok": 1008,
+    "errors": 0,
+    "request_seconds": 1.5061446899999282,
+    "requests_per_second": 669.2584096950526,
+    "p50_ms": 335.7636000000639,
+    "p95_ms": 463.51528800005326
+  },
+  "nodes": {
+    "103": {
+      "label": "rpc64-repeat-c256-t3",
+      "before": {
+        "unix": 1791478411.899141,
+        "host_cpu_seconds": 12600.33,
+        "client_cpu": "usage_usec 13686821\nuser_usec 1938620\nsystem_usec 11748200\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "281939",
+        "conntrack_count": 5944,
+        "cursor": "s=67bfec5eb55c4e40a0a22a68ed50db40;i=264f75e;b=59c471ae03e24964a348d7b4014e5037;m=64eb2bfb1;t=65d5712158c90;x=b041582acfb0b87b"
+      },
+      "after": {
+        "unix": 1791478418.9936008,
+        "host_cpu_seconds": 12608.96,
+        "client_cpu": "usage_usec 19776930\nuser_usec 2578203\nsystem_usec 17198727\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "281939",
+        "conntrack_count": 8813
+      },
+      "host_cpu_seconds": 8.6299999999992,
+      "setups": 1008,
+      "retirements": 1008,
+      "lifecycle_errors": [],
+      "remaining_owned_links": [],
+      "server_retirements": 0,
+      "last_server_retirement_unix": null,
+      "last_retirement_unix": 1791478415.833523
+    },
+    "104": {
+      "label": "rpc64-repeat-c256-t3",
+      "before": {
+        "unix": 1791478411.8967543,
+        "host_cpu_seconds": 5235.26,
+        "client_cpu": "usage_usec 7129307\nuser_usec 1782832\nsystem_usec 5346475\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "148496",
+        "conntrack_count": 5959,
+        "cursor": "s=3d9af771a9944221b78bfb41a34fe8af;i=389fb86;b=fe81f69071ca41dca257d62dfb3bd8b0;m=64ebe6bc5;t=65d57120e3be0;x=25a8376e98948889",
+        "server_cursor": "s=3d9af771a9944221b78bfb41a34fe8af;i=389fd54;b=fe81f69071ca41dca257d62dfb3bd8b0;m=64efdf833;t=65d57124dc84d;x=e8e73b4d406ef312"
+      },
+      "after": {
+        "unix": 1791478419.314906,
+        "host_cpu_seconds": 5242.65,
+        "client_cpu": "usage_usec 9762256\nuser_usec 2340622\nsystem_usec 7421634\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "148496",
+        "conntrack_count": 8824
+      },
+      "host_cpu_seconds": 7.389999999999418,
+      "setups": 1008,
+      "retirements": 1008,
+      "lifecycle_errors": [],
+      "remaining_owned_links": [],
+      "server_retirements": 1008,
+      "last_server_retirement_unix": 1791478415.831352,
+      "last_retirement_unix": 1791478415.331855
+    }
+  },
+  "history_before": [
+    128714,
+    0,
+    128714
+  ],
+  "history_after": [
+    129722,
+    0,
+    129722
+  ],
+  "graph": {
+    "proxies": [
+      "192.168.1.104"
+    ],
+    "nodes": [
+      {
+        "id": "p1-01.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-02.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-03.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-04.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-05.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-06.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-07.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-08.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-09.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-10.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-11.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-12.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      }
+    ],
+    "edges": []
+  },
+  "internet_checks": [
+    {
+      "elapsed": 5.005202539003221,
+      "internet": true,
+      "probe": {
+        "unix": 1791478417.799525,
+        "probes": [
+          {
+            "url": "https://www.apple.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          },
+          {
+            "url": "https://www.google.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          }
+        ],
+        "ok": true
+      }
+    }
+  ],
+  "completion_boundary": "server ID release after endpoint acknowledgements",
+  "complete_kernel_cleanup_seconds": 3.2160098552703857,
+  "complete_acknowledged_seconds": 3.213838815689087,
+  "complete_cycles_per_second": 313.6436074762736,
+  "drain_observed_unix": 1791478419.4933052,
+  "conservative_complete_cycles_per_second": 150.5063305730208
+}

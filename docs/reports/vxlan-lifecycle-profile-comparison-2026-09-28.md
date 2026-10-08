@@ -34,7 +34,8 @@ Pooling makes activation much faster: a prefilled burst served **720 requests/s*
 
 On-demand pays for creation/deletion. Pooling avoids that work but still pays for safe reset, retains many interfaces, and can stall waiting for reusable slots. Both contend for kernel networking resources. Increasing cleanup concurrency in on-demand shifted delays into setup without improving complete throughput.
 
-**Result:** pooling benefits bursts, but has no demonstrated sustained-throughput advantage. Earlier medians were **72.1 cycles/s on-demand versus 65.4 pooled**. Kernel cleanup/reset is the measured bottleneck.
+**Result:** pooling benefits bursts, but has no demonstrated sustained-throughput advantage. Earlier medians were **72.1 cycles/s on-demand versus 65.4 pooled**
+. Kernel cleanup/reset is the measured bottleneck.
 
 Evidence: [on-demand profile](nonpooled-profile-2026-09-28/README.md), [pooled profile](pooled-profile-2026-09-28/README.md), [three-wave comparison](vxlan-prepared-implementation-2026-09-28/README.md).
 

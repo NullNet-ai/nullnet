@@ -1,0 +1,31 @@
+{
+  "label": "rpc64-c256-t2",
+  "valid_performance_comparison": false,
+  "exclusion_reason": "Internet-health probe failed; workload stopped",
+  "internet_checks": [
+    {
+      "elapsed": 5.00248728999577,
+      "internet": false,
+      "probe": {
+        "unix": 1791477813.9765031,
+        "returncode": 28,
+        "status": "000",
+        "stderr": ""
+      }
+    }
+  ],
+  "internet_probe_details": [
+    {
+      "unix": 1791477805.926601,
+      "returncode": 0,
+      "status": "200",
+      "stderr": ""
+    },
+    {
+      "unix": 1791477813.9765031,
+      "returncode": 28,
+      "status": "000",
+      "stderr": ""
+    }
+  ]
+}

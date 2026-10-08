@@ -1,0 +1,6 @@
+   Compiling nullnet-grpc-lib v0.1.0 (/root/nullnet-layer1-20261008/fresh/members/nullnet-grpc-lib)
+   Compiling nullnet-server v0.1.0 (/root/nullnet-layer1-20261008/fresh/members/nullnet-server)
+    Finished `release` profile [optimized] target(s) in 2m 10s
+90d677261291909f0e1949a59a45f439e458d7a421d875aec3490892cbada7ac  /root/nullnet-layer1-20261008/artifacts/phase1-ready/nullnet-client
+865a592e566313f2be64c7f1e8b611faa6801271946aae68383e1b53b88f2b72  /root/nullnet-layer1-20261008/artifacts/phase1-ready/nullnet-proxy
+afcf0bcb4aae8a72b69267eb8363bfe4d5560ea7a286575077be3c42822643e6  /root/nullnet-layer1-20261008/artifacts/phase1-ready/nullnet-server

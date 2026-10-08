@@ -1,0 +1,63 @@
+{
+  "ready": [
+    {
+      "ready": true,
+      "variant": "bridge",
+      "pid": 27106
+    },
+    {
+      "ready": true,
+      "variant": "bridge",
+      "pid": 53297
+    }
+  ],
+  "idle_inventory": [
+    {
+      "idle": 16
+    },
+    {
+      "idle": 16
+    }
+  ],
+  "quiet": [
+    {
+      "delivered": 0
+    },
+    {
+      "delivered": 0
+    }
+  ],
+  "result": "passed",
+  "edge_generations": 168,
+  "bidirectional_deliveries": 336,
+  "cleanup": [
+    {
+      "cleaned": true,
+      "preservation": {
+        "containers": true,
+        "links": true,
+        "routes": true,
+        "services": true,
+        "xfrm_hash": true,
+        "policy_hash": true,
+        "iptables_hash": true
+      },
+      "exit_code": 0,
+      "stderr": ""
+    },
+    {
+      "cleaned": true,
+      "preservation": {
+        "containers": true,
+        "links": true,
+        "routes": true,
+        "services": true,
+        "xfrm_hash": true,
+        "policy_hash": true,
+        "iptables_hash": true
+      },
+      "exit_code": 0,
+      "stderr": ""
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running `target/debug/xtask lint`
+    Checking nullnet-client v0.1.0 (/root/nullnet-policy-integration-20260929/members/nullnet-client)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.24s
+    Finished `dev` profile [optimized] target(s) in 0.13s

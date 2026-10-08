@@ -1,0 +1,578 @@
+{
+  "hosts": {
+    "103": {
+      "diagnostic_cycles": 7936,
+      "concurrent_request_cpu_ms": {
+        "setup/IPsec policy outadd": 0.057838434349798386,
+        "setup/IPsec state inadd": 0.06704937210181451,
+        "setup/IPsec state outadd": 0.07477653200604839,
+        "setup/address_add": 0.2078823271169355,
+        "setup/create_veth": 0.5207840401965727,
+        "setup/create_vxlan": 0.23668290927419355,
+        "setup/enable": 0.2530172130796371,
+        "setup/enable_attach": 0.4201524904233871,
+        "setup/getlink_readiness": 0.902368705141129,
+        "setup/lifecycle_inclusive": 3.404183049773185,
+        "setup/tc_filter_add": 0.2720759551411291,
+        "setup/tc_qdisc_add": 0.1029041527217742,
+        "teardown/IPsec policy out delete": 0.03777145690524193,
+        "teardown/IPsec state in delete": 0.030264233114919353,
+        "teardown/IPsec state out delete": 0.031969551033266125,
+        "teardown/address_remove": 0.06623080657762097,
+        "teardown/conntrack_delete": 0.23914819140625002,
+        "teardown/delete_link_batch": 0.5089271086189516,
+        "teardown/disable": 0.31186532938508066,
+        "teardown/getlink_readiness": 0.05560948336693548,
+        "teardown/lifecycle_inclusive": 1.0587041028225808,
+        "teardown/neighbor_dump_inclusive": 0.14451178276209675
+      },
+      "workloads": [
+        {
+          "label": "locks-mixed-c256",
+          "cycles": 1536,
+          "cycles_per_second": 284.67327299245324,
+          "host_cpu_ms_per_cycle": 15.0390625,
+          "process_cpu_ms_per_cycle": 4.332545997395833,
+          "process_user_ms_per_cycle": 0.5943430989583329,
+          "process_system_ms_per_cycle": 3.7382037760416664
+        },
+        {
+          "label": "process-mixed-c256",
+          "cycles": 3584,
+          "cycles_per_second": 282.73033836349657,
+          "host_cpu_ms_per_cycle": 14.617745535714286,
+          "process_cpu_ms_per_cycle": 4.486147402901786,
+          "process_user_ms_per_cycle": 0.7353671875,
+          "process_system_ms_per_cycle": 3.750772321428571
+        },
+        {
+          "label": "process-mixed-c64",
+          "cycles": 1472,
+          "cycles_per_second": 119.12108392797032,
+          "host_cpu_ms_per_cycle": 43.53940217391305,
+          "process_cpu_ms_per_cycle": 4.364341848505435,
+          "process_user_ms_per_cycle": 0.6726243206521738,
+          "process_system_ms_per_cycle": 3.6917146739130438
+        },
+        {
+          "label": "process-separate-c256",
+          "cycles": 3328,
+          "cycles_per_second": 269.33900855615707,
+          "host_cpu_ms_per_cycle": 16.03064903846154,
+          "process_cpu_ms_per_cycle": 4.693162948016827,
+          "process_user_ms_per_cycle": 0.6416580528846154,
+          "process_system_ms_per_cycle": 4.051506911057692
+        },
+        {
+          "label": "process-separate-c64",
+          "cycles": 1344,
+          "cycles_per_second": 108.8332580749616,
+          "host_cpu_ms_per_cycle": 43.49702380952381,
+          "process_cpu_ms_per_cycle": 4.440806840029762,
+          "process_user_ms_per_cycle": 0.5305907738095238,
+          "process_system_ms_per_cycle": 3.9102202380952376
+        },
+        {
+          "label": "sampled-mixed-c256",
+          "cycles": 3328,
+          "cycles_per_second": 268.16462162990746,
+          "host_cpu_ms_per_cycle": 16.559495192307693,
+          "process_cpu_ms_per_cycle": 4.0813667100360576,
+          "process_user_ms_per_cycle": 0.6547563100961541,
+          "process_system_ms_per_cycle": 3.426618689903847
+        }
+      ],
+      "phased_caller_costs": {
+        "setup/veth_create_and_peer_lookup": {
+          "caller_cpu_ms": 0.8208410078125,
+          "min_ms": 0.77755159765625,
+          "max_ms": 0.86413041796875,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "setup/vxlan_create": {
+          "caller_cpu_ms": 0.322090255859375,
+          "min_ms": 0.29781248046875,
+          "max_ms": 0.34636803125,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "setup/tc_qdisc_and_three_filters": {
+          "caller_cpu_ms": 0.2386978828125,
+          "min_ms": 0.17279507421875,
+          "max_ms": 0.30460069140625,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "setup/ipsec_out_state": {
+          "caller_cpu_ms": 0.060511033203125,
+          "min_ms": 0.05406464453125,
+          "max_ms": 0.066957421875,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "setup/ipsec_in_state": {
+          "caller_cpu_ms": 0.056127742187499996,
+          "min_ms": 0.0543984765625,
+          "max_ms": 0.0578570078125,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "setup/ipsec_out_policy": {
+          "caller_cpu_ms": 0.039294953125,
+          "min_ms": 0.037123453125,
+          "max_ms": 0.041466453125,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "setup/container_address": {
+          "caller_cpu_ms": 0.069186642578125,
+          "min_ms": 0.06746401953125,
+          "max_ms": 0.070909265625,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "setup/bridge_address": {
+          "caller_cpu_ms": 0.0999419921875,
+          "min_ms": 0.0811391171875,
+          "max_ms": 0.1187448671875,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "setup/outer_attach_enable": {
+          "caller_cpu_ms": 0.313252076171875,
+          "min_ms": 0.2244056328125,
+          "max_ms": 0.40209851953125,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "setup/vxlan_attach_enable": {
+          "caller_cpu_ms": 0.2577305234375,
+          "min_ms": 0.2065626015625,
+          "max_ms": 0.3088984453125,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "setup/bridge_enable": {
+          "caller_cpu_ms": 0.13889005078125,
+          "min_ms": 0.13331098046875,
+          "max_ms": 0.14446912109375,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "setup/container_peer_enable": {
+          "caller_cpu_ms": 0.147995720703125,
+          "min_ms": 0.099801046875,
+          "max_ms": 0.19619039453125,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "setup/readiness": {
+          "caller_cpu_ms": 0.32615821875,
+          "min_ms": 0.29110908984375,
+          "max_ms": 0.36120734765625,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/vxlan_revoke": {
+          "caller_cpu_ms": 0.0959283046875,
+          "min_ms": 0.08807009765625,
+          "max_ms": 0.10378651171875,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/ipsec_policy_remove": {
+          "caller_cpu_ms": 0.040088119140625,
+          "min_ms": 0.04006152734375,
+          "max_ms": 0.0401147109375,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/ipsec_out_state_remove": {
+          "caller_cpu_ms": 0.03365714453125,
+          "min_ms": 0.0329784765625,
+          "max_ms": 0.0343358125,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/ipsec_in_state_remove": {
+          "caller_cpu_ms": 0.035109494140625,
+          "min_ms": 0.034550453125,
+          "max_ms": 0.03566853515625,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/retiring_group_assignment": {
+          "caller_cpu_ms": 0.14956066406250001,
+          "min_ms": 0.13717666015625,
+          "max_ms": 0.16194466796875,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/batched_vxlan_veth_delete": {
+          "caller_cpu_ms": 0.585634958984375,
+          "min_ms": 0.55472687890625,
+          "max_ms": 0.6165430390625,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/scoped_conntrack_flush": {
+          "caller_cpu_ms": 0.150783677734375,
+          "min_ms": 0.14345501171875,
+          "max_ms": 0.15811234375,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/bridge_disable": {
+          "caller_cpu_ms": 0.202725583984375,
+          "min_ms": 0.12544023828125,
+          "max_ms": 0.2800109296875,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/bridge_rename": {
+          "caller_cpu_ms": 0.131371751953125,
+          "min_ms": 0.1299286875,
+          "max_ms": 0.13281481640625,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/bridge_name_restore": {
+          "caller_cpu_ms": 0.135241681640625,
+          "min_ms": 0.1231564921875,
+          "max_ms": 0.14732687109375,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/bridge_neighbor_dump": {
+          "caller_cpu_ms": 0.049563814453125,
+          "min_ms": 0.047912734375,
+          "max_ms": 0.05121489453125,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/bridge_address_remove": {
+          "caller_cpu_ms": 0.0850086171875,
+          "min_ms": 0.0713825859375,
+          "max_ms": 0.0986346484375,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/bridge_check": {
+          "caller_cpu_ms": 0.07108772656250001,
+          "min_ms": 0.06631303125,
+          "max_ms": 0.075862421875,
+          "repeats": 2,
+          "endpoints_per_repeat": 256
+        }
+      },
+      "untraced_separate_repeats": {
+        "rates": [
+          268.70815719587563,
+          287.7364095846838,
+          275.28209214052265
+        ],
+        "host_cpu_ms": [
+          16.55184659090909,
+          14.781901041666666,
+          15.559895833333334
+        ]
+      }
+    },
+    "104": {
+      "diagnostic_cycles": 8448,
+      "concurrent_request_cpu_ms": {
+        "setup/IPsec policy outadd": 0.058657716737689394,
+        "setup/IPsec state inadd": 0.06796130847537879,
+        "setup/IPsec state outadd": 0.07252046496212121,
+        "setup/address_add": 0.20846172135416666,
+        "setup/create_veth": 0.49402910381155307,
+        "setup/create_vxlan": 0.2268047312973485,
+        "setup/enable": 0.251676908499053,
+        "setup/enable_attach": 0.4030305003551137,
+        "setup/getlink_readiness": 0.8885572297585227,
+        "setup/lifecycle_inclusive": 3.319611028290719,
+        "setup/tc_filter_add": 0.26843949633049247,
+        "setup/tc_qdisc_add": 0.09831461695075758,
+        "teardown/IPsec policy out delete": 0.0337996270123106,
+        "teardown/IPsec state in delete": 0.027097880563446967,
+        "teardown/IPsec state out delete": 0.028601480705492427,
+        "teardown/address_remove": 0.06051978314393939,
+        "teardown/conntrack_delete": 0.22205104640151516,
+        "teardown/delete_link_batch": 0.4696059214015152,
+        "teardown/disable": 0.2791960814393939,
+        "teardown/getlink_readiness": 0.05449727592329545,
+        "teardown/lifecycle_inclusive": 0.9789684794034089,
+        "teardown/neighbor_dump_inclusive": 0.14237229142992422
+      },
+      "workloads": [
+        {
+          "label": "process-mixed-c256",
+          "cycles": 3584,
+          "cycles_per_second": 291.527486680632,
+          "host_cpu_ms_per_cycle": 15.108816964285714,
+          "process_cpu_ms_per_cycle": 3.8467304366629462,
+          "process_user_ms_per_cycle": 0.6094991629464286,
+          "process_system_ms_per_cycle": 3.2372304687500004
+        },
+        {
+          "label": "process-mixed-c64",
+          "cycles": 1536,
+          "cycles_per_second": 126.33135563685208,
+          "host_cpu_ms_per_cycle": 41.041666666666664,
+          "process_cpu_ms_per_cycle": 4.016335317057291,
+          "process_user_ms_per_cycle": 0.58927734375,
+          "process_system_ms_per_cycle": 3.4270553385416664
+        },
+        {
+          "label": "process-separate-c256",
+          "cycles": 3584,
+          "cycles_per_second": 271.09651835666966,
+          "host_cpu_ms_per_cycle": 15.915178571428571,
+          "process_cpu_ms_per_cycle": 4.389450023716518,
+          "process_user_ms_per_cycle": 0.5883035714285715,
+          "process_system_ms_per_cycle": 3.801145647321429
+        },
+        {
+          "label": "process-separate-c64",
+          "cycles": 1408,
+          "cycles_per_second": 112.52932954694863,
+          "host_cpu_ms_per_cycle": 41.56960227272727,
+          "process_cpu_ms_per_cycle": 4.213564635653409,
+          "process_user_ms_per_cycle": 0.49182812499999995,
+          "process_system_ms_per_cycle": 3.7217400568181818
+        }
+      ],
+      "phased_caller_costs": {
+        "setup/veth_create_and_peer_lookup": {
+          "caller_cpu_ms": 0.7448394479166667,
+          "min_ms": 0.72836349609375,
+          "max_ms": 0.764510375,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "setup/vxlan_create": {
+          "caller_cpu_ms": 0.30790668098958335,
+          "min_ms": 0.2560309609375,
+          "max_ms": 0.393715515625,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "setup/tc_qdisc_and_three_filters": {
+          "caller_cpu_ms": 0.26514087760416666,
+          "min_ms": 0.1736621171875,
+          "max_ms": 0.32741916796875,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "setup/ipsec_out_state": {
+          "caller_cpu_ms": 0.057209852864583334,
+          "min_ms": 0.055218625,
+          "max_ms": 0.059675296875,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "setup/ipsec_in_state": {
+          "caller_cpu_ms": 0.08536641145833333,
+          "min_ms": 0.051435140625,
+          "max_ms": 0.11047078515625,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "setup/ipsec_out_policy": {
+          "caller_cpu_ms": 0.05961202473958333,
+          "min_ms": 0.0420867734375,
+          "max_ms": 0.0749991796875,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "setup/container_address": {
+          "caller_cpu_ms": 0.07918575390625,
+          "min_ms": 0.06123699609375,
+          "max_ms": 0.09783659375,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "setup/bridge_address": {
+          "caller_cpu_ms": 0.07618815885416666,
+          "min_ms": 0.0532630546875,
+          "max_ms": 0.10019475390625,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "setup/outer_attach_enable": {
+          "caller_cpu_ms": 0.23641666927083332,
+          "min_ms": 0.1502945390625,
+          "max_ms": 0.3406971484375,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "setup/vxlan_attach_enable": {
+          "caller_cpu_ms": 0.25491159114583334,
+          "min_ms": 0.17368848046875,
+          "max_ms": 0.319308625,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "setup/bridge_enable": {
+          "caller_cpu_ms": 0.1632723515625,
+          "min_ms": 0.15236626171875,
+          "max_ms": 0.1844244765625,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "setup/container_peer_enable": {
+          "caller_cpu_ms": 0.18110533463541667,
+          "min_ms": 0.1553875390625,
+          "max_ms": 0.20076384375,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "setup/readiness": {
+          "caller_cpu_ms": 0.25762289583333337,
+          "min_ms": 0.23899227734375,
+          "max_ms": 0.2805707578125,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/vxlan_revoke": {
+          "caller_cpu_ms": 0.09701780859374999,
+          "min_ms": 0.0799526875,
+          "max_ms": 0.10611881640625,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/ipsec_policy_remove": {
+          "caller_cpu_ms": 0.03826681640625,
+          "min_ms": 0.034292015625,
+          "max_ms": 0.0407620625,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/ipsec_out_state_remove": {
+          "caller_cpu_ms": 0.03451753125,
+          "min_ms": 0.0336554921875,
+          "max_ms": 0.03525221875,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/ipsec_in_state_remove": {
+          "caller_cpu_ms": 0.04986154947916667,
+          "min_ms": 0.03553450390625,
+          "max_ms": 0.05882658984375,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/retiring_group_assignment": {
+          "caller_cpu_ms": 0.13825108463541666,
+          "min_ms": 0.12918963671875,
+          "max_ms": 0.14718801171875,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/batched_vxlan_veth_delete": {
+          "caller_cpu_ms": 0.6278756119791666,
+          "min_ms": 0.57122046875,
+          "max_ms": 0.710924015625,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/scoped_conntrack_flush": {
+          "caller_cpu_ms": 0.1836402161458333,
+          "min_ms": 0.14174229296875,
+          "max_ms": 0.25821915234375,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/bridge_disable": {
+          "caller_cpu_ms": 0.12601183072916666,
+          "min_ms": 0.11862716015625,
+          "max_ms": 0.1364979140625,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/bridge_rename": {
+          "caller_cpu_ms": 0.13910243098958333,
+          "min_ms": 0.132868140625,
+          "max_ms": 0.14778692578125,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/bridge_name_restore": {
+          "caller_cpu_ms": 0.14929265625,
+          "min_ms": 0.12445546875,
+          "max_ms": 0.19226932421875,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/bridge_neighbor_dump": {
+          "caller_cpu_ms": 0.05581933203125,
+          "min_ms": 0.050827796875,
+          "max_ms": 0.06161972265625,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/bridge_address_remove": {
+          "caller_cpu_ms": 0.07477411848958333,
+          "min_ms": 0.0674921953125,
+          "max_ms": 0.08041772265625,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        },
+        "teardown/bridge_check": {
+          "caller_cpu_ms": 0.07033615234375,
+          "min_ms": 0.065403703125,
+          "max_ms": 0.0761196640625,
+          "repeats": 3,
+          "endpoints_per_repeat": 256
+        }
+      },
+      "untraced_separate_repeats": {
+        "rates": [
+          284.53231640164535,
+          297.6607863175005,
+          273.4713175079339
+        ],
+        "host_cpu_ms": [
+          14.664713541666666,
+          14.371744791666666,
+          15.416666666666666
+        ]
+      }
+    }
+  },
+  "sampled_cpu": {
+    "other userspace": {
+      "ms_per_cycle": 3.2810071544471153,
+      "active_percent": 20.342491531802786
+    },
+    "udev and descendants": {
+      "ms_per_cycle": 7.1053078155048075,
+      "active_percent": 44.05344373353406
+    },
+    "kernel workers": {
+      "ms_per_cycle": 1.7300407752403848,
+      "active_percent": 10.726383138878434
+    },
+    "lifecycle caller": {
+      "ms_per_cycle": 4.0124805348557695,
+      "active_percent": 24.87768159578472
+    }
+  },
+  "locks": {
+    "cycles": 1536,
+    "seconds": 5.398051389000102,
+    "occupancy": 0.8514928200400033,
+    "fixture_hold_ms_per_cycle": 2.8966249999612024,
+    "rcu_within_fixture_hold_ms_per_cycle": 0.4732272135221649,
+    "holds_by_operation_ms_per_cycle": {
+      "fixture/rtnl_newlink": 0.9289817708291181,
+      "fixture/rtnl_setlink": 1.0440885416385843,
+      "fixture/other": 0.17529557290559458,
+      "fixture/inet_rtm_newaddr": 0.09145117187377612,
+      "fixture/rtnl_dellink": 0.6294192708334497,
+      "fixture/inet_rtm_deladdr": 0.027388671880679283
+    },
+    "fixture_lock_wait_ms_per_cycle": 1025.2581289062425
+  }
+}

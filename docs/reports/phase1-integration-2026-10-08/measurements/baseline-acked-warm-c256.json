@@ -1,0 +1,216 @@
+{
+  "label": "baseline-acked-warm-c256",
+  "seed": {
+    "unix_start": 1791480082.6334445,
+    "unix_end": 1791480089.5381675,
+    "count": 252,
+    "concurrency": 256,
+    "identities": 252,
+    "services": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "ok": 252,
+    "errors": 0,
+    "request_seconds": 6.904676546997507,
+    "requests_per_second": 36.49700290589021,
+    "p50_ms": 3621.352221001871,
+    "p95_ms": 6593.409994999092
+  },
+  "trials": [
+    {
+      "unix_start": 1791480090.8940177,
+      "unix_end": 1791480093.7863457,
+      "count": 10080,
+      "concurrency": 256,
+      "identities": 252,
+      "services": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "ok": 10080,
+      "errors": 0,
+      "request_seconds": 2.886983421001787,
+      "requests_per_second": 3491.5337326399426,
+      "p50_ms": 70.30354399830685,
+      "p95_ms": 88.53194599942071
+    }
+  ],
+  "nodes": {
+    "103": {
+      "label": "baseline-acked-warm-c256",
+      "before": {
+        "unix": 1791480082.314873,
+        "host_cpu_seconds": 13526.19,
+        "client_cpu": "usage_usec 47109602\nuser_usec 15490975\nsystem_usec 31618627\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "296716",
+        "conntrack_count": 3775,
+        "cursor": "s=67bfec5eb55c4e40a0a22a68ed50db40;i=265947d;b=59c471ae03e24964a348d7b4014e5037;m=6b241e95c;t=65d5775a4b63a;x=3e24ccc7a9c31a20"
+      },
+      "after": {
+        "unix": 1791480111.7652855,
+        "host_cpu_seconds": 13550.59,
+        "client_cpu": "usage_usec 64217022\nuser_usec 20017681\nsystem_usec 44199340\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "296716",
+        "conntrack_count": 44858
+      },
+      "host_cpu_seconds": 24.399999999999636,
+      "setups": 252,
+      "retirements": 252,
+      "lifecycle_errors": [],
+      "remaining_owned_links": [],
+      "server_retirements": 0,
+      "last_server_retirement_unix": null,
+      "last_retirement_unix": 1791480106.247635
+    },
+    "104": {
+      "label": "baseline-acked-warm-c256",
+      "before": {
+        "unix": 1791480082.308897,
+        "host_cpu_seconds": 5414.55,
+        "client_cpu": "usage_usec 34891209\nuser_usec 9021165\nsystem_usec 25870044\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "156207",
+        "conntrack_count": 4891,
+        "cursor": "s=3d9af771a9944221b78bfb41a34fe8af;i=38c78cf;b=fe81f69071ca41dca257d62dfb3bd8b0;m=6b24d6319;t=65d57759d3333;x=87e430382dea0cf7",
+        "server_cursor": "s=3d9af771a9944221b78bfb41a34fe8af;i=38c78e2;b=fe81f69071ca41dca257d62dfb3bd8b0;m=6b254f29c;t=65d5775a4c2b6;x=82278fea1b34547e"
+      },
+      "after": {
+        "unix": 1791480112.4957604,
+        "host_cpu_seconds": 5443.29,
+        "client_cpu": "usage_usec 44907073\nuser_usec 11302003\nsystem_usec 33605069\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "156207",
+        "conntrack_count": 45787
+      },
+      "host_cpu_seconds": 28.73999999999978,
+      "setups": 252,
+      "retirements": 252,
+      "lifecycle_errors": [],
+      "remaining_owned_links": [],
+      "server_retirements": 252,
+      "last_server_retirement_unix": 1791480110.286927,
+      "last_retirement_unix": 1791480110.286878
+    }
+  },
+  "history_before": [
+    137243,
+    0,
+    137243
+  ],
+  "history_after": [
+    137495,
+    0,
+    137495
+  ],
+  "graph": {
+    "proxies": [
+      "192.168.1.104"
+    ],
+    "nodes": [
+      {
+        "id": "p1-01.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-02.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-03.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-04.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-05.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-06.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-07.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-08.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-09.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-10.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-11.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-12.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      }
+    ],
+    "edges": []
+  }
+}

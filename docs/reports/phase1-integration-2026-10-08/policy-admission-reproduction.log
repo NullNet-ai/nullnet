@@ -1,0 +1,19 @@
+   Compiling nullnet-grpc-lib v0.1.0 (/root/nullnet-layer1-20261008/fresh/members/nullnet-grpc-lib)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.95s
+     Running unittests src/lib.rs (target/debug/deps/nullnet_grpc_lib-1379fb800dbcc42b)
+
+running 1 test
+
+thread 'admission_tests::ingress_policy_progresses_when_setup_admission_is_full' (283635) panicked at members/nullnet-grpc-lib/src/lib.rs:455:9:
+ingress policy was queued behind cold setup
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test admission_tests::ingress_policy_progresses_when_setup_admission_is_full ... FAILED
+
+failures:
+
+failures:
+    admission_tests::ingress_policy_progresses_when_setup_admission_is_full
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.20s
+
+error: test failed, to rerun pass `-p nullnet-grpc-lib --lib`

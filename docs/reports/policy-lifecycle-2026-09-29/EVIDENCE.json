@@ -1,0 +1,12 @@
+{
+  "archive": "~/.codex/backups/nullnet-layer1-20261008/research-evidence",
+  "purpose": "Large raw captures are preserved outside Git; reports, scripts and compact results remain in this directory.",
+  "files": [
+    {
+      "file": "evidence.tar.gz",
+      "sha256": "0c90180fb22fbb32b80d44364381ed5e37ce49e839c3d661a712818a54c88709",
+      "bytes": 1906705,
+      "archive_file": "docs/reports/policy-lifecycle-2026-09-29/evidence.tar.gz"
+    }
+  ]
+}

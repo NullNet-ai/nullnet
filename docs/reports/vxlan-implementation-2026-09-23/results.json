@@ -1,0 +1,382 @@
+{
+  "status": "stopped_after_final_candidate_missed_concurrent_target",
+  "minimum_new_edges_per_second": 200,
+  "application": [
+    {
+      "label": "before-configured-1008",
+      "start": 1790172553.8495898,
+      "ready": 1790172636.4101217,
+      "seconds": 82.56053185462952,
+      "clients": 1008,
+      "concurrency": 32,
+      "closed": 1790172651.4441679,
+      "successful": 1008,
+      "errors": 0,
+      "edges_per_second": 12.209223673302647,
+      "source_sha256": "c9d25e8a210eb79ba12e32c13d6f6ad2d525b87f5b0801d646df756bbba14071",
+      "hosts": [
+        {
+          "host": 103,
+          "records": 1106,
+          "errors": 0,
+          "source_sha256": "33f0988c1c9b5901995ca0ee8f091ecec7d36f036b03ea68e9d59b2684facb4f",
+          "setup": {
+            "count": 553,
+            "mean_ms": 407.4520795660036,
+            "p50_ms": 354,
+            "p95_ms": 1001,
+            "max_ms": 2110
+          },
+          "teardown": {
+            "count": 553,
+            "mean_ms": 1083.636528028933,
+            "p50_ms": 676,
+            "p95_ms": 2993,
+            "max_ms": 3507
+          }
+        },
+        {
+          "host": 104,
+          "records": 2926,
+          "errors": 0,
+          "source_sha256": "ab5b6301b208422d11298a7e27eaa7d3ded6943b4c8c8266fabb261f1bf48fe0",
+          "setup": {
+            "count": 1463,
+            "mean_ms": 1733.8168147641832,
+            "p50_ms": 1709,
+            "p95_ms": 3204,
+            "max_ms": 4281
+          },
+          "teardown": {
+            "count": 1463,
+            "mean_ms": 17559.08954203691,
+            "p50_ms": 19849,
+            "p95_ms": 26302,
+            "max_ms": 31014
+          }
+        }
+      ]
+    },
+    {
+      "label": "targeted-cold-1008",
+      "start": 1790178388.5223336,
+      "ready": 1790178403.2914786,
+      "seconds": 14.769145011901855,
+      "clients": 1008,
+      "concurrency": 32,
+      "closed": 1790178418.3282304,
+      "successful": 1008,
+      "errors": 0,
+      "edges_per_second": 68.25039629495774,
+      "source_sha256": "694b7ec2aa89beadb96e75b0cabdd000a6b6d08d5fd5050ae9a4dffa88c35517",
+      "hosts": [
+        {
+          "host": 103,
+          "records": 1046,
+          "errors": 0,
+          "source_sha256": "ab1d9ae19242ac12489b1f99e3d68c9ae72df1954ed9ea41cb21175507bef442",
+          "setup": {
+            "count": 523,
+            "mean_ms": 58.47227533460803,
+            "p50_ms": 23,
+            "p95_ms": 198,
+            "max_ms": 359
+          },
+          "teardown": {
+            "count": 523,
+            "mean_ms": 196.6959847036329,
+            "p50_ms": 146,
+            "p95_ms": 512,
+            "max_ms": 911
+          }
+        },
+        {
+          "host": 104,
+          "records": 2986,
+          "errors": 0,
+          "source_sha256": "a7fec6482eb3102cd6402f4996c87d1fe2c0dbc32952a2bea3512b1ba72cbb88",
+          "setup": {
+            "count": 1493,
+            "mean_ms": 253.5043536503684,
+            "p50_ms": 240,
+            "p95_ms": 420,
+            "max_ms": 596
+          },
+          "teardown": {
+            "count": 1493,
+            "mean_ms": 622.9745478901541,
+            "p50_ms": 478,
+            "p95_ms": 1747,
+            "max_ms": 2392
+          }
+        }
+      ]
+    },
+    {
+      "label": "targeted-cross-1008",
+      "start": 1790178542.5448394,
+      "ready": 1790178553.6123478,
+      "seconds": 11.067508459091187,
+      "clients": 1008,
+      "concurrency": 32,
+      "closed": 1790178568.6494768,
+      "successful": 1008,
+      "errors": 0,
+      "edges_per_second": 91.0774094933714,
+      "source_sha256": "54a6d34066b69d6cd4d9f7907d43dab0f523158e7c85f9969b2c19dea425520b",
+      "hosts": [
+        {
+          "host": 103,
+          "records": 2016,
+          "errors": 0,
+          "source_sha256": "21a551ea637a6a3b9666c301cdb86987a5af1aee6d25d50c6aa48dac1f4e7962",
+          "setup": {
+            "count": 1008,
+            "mean_ms": 296.25099206349205,
+            "p50_ms": 292.0,
+            "p95_ms": 355,
+            "max_ms": 560
+          },
+          "teardown": {
+            "count": 1008,
+            "mean_ms": 1037.0853174603174,
+            "p50_ms": 810.5,
+            "p95_ms": 2909,
+            "max_ms": 3535
+          }
+        },
+        {
+          "host": 104,
+          "records": 2016,
+          "errors": 0,
+          "source_sha256": "fe2ac5c4f1482ba2f8948c7c54b528b270056da4190bf11909651905ac7a8701",
+          "setup": {
+            "count": 1008,
+            "mean_ms": 6.559523809523809,
+            "p50_ms": 2.0,
+            "p95_ms": 9,
+            "max_ms": 153
+          },
+          "teardown": {
+            "count": 1008,
+            "mean_ms": 1761.3154761904761,
+            "p50_ms": 1387.0,
+            "p95_ms": 4367,
+            "max_ms": 4672
+          }
+        }
+      ]
+    },
+    {
+      "label": "targeted-same-1008",
+      "start": 1790178649.3858612,
+      "ready": 1790178677.4797032,
+      "seconds": 28.093842029571533,
+      "clients": 1008,
+      "concurrency": 32,
+      "closed": 1790178692.5188103,
+      "successful": 1008,
+      "errors": 0,
+      "edges_per_second": 35.87974898338863,
+      "source_sha256": "1fcbd97feb32a11cb2b4d91ffa93a495376ea65ee60903218c9ff67765e9379d",
+      "hosts": [
+        {
+          "host": 103,
+          "records": 0,
+          "errors": 0,
+          "source_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        {
+          "host": 104,
+          "records": 4032,
+          "errors": 0,
+          "source_sha256": "4f94ac022235a275bf3b97ecb70f31ddedfd3a8944f2a4123e42f4ea9c4c26c3",
+          "setup": {
+            "count": 2016,
+            "mean_ms": 353.35019841269843,
+            "p50_ms": 309.5,
+            "p95_ms": 689,
+            "max_ms": 1514
+          },
+          "teardown": {
+            "count": 2016,
+            "mean_ms": 3692.1329365079364,
+            "p50_ms": 4189.0,
+            "p95_ms": 7072,
+            "max_ms": 8588
+          }
+        }
+      ]
+    }
+  ],
+  "last_candidate_kernel": {
+    "source_sha256": "539ff111c4dc7c0c5876222fe045dd05bf28ba519bb416619fae05d7fc3bf38d",
+    "pool_slots": 2048,
+    "endpoint_halves_per_edge": 2,
+    "setup_concurrency": 32,
+    "retirement_concurrency": 192,
+    "rows": [
+      {
+        "phase": "pool_preallocation",
+        "seconds": 23.496613483
+      },
+      {
+        "phase": "setup",
+        "edges": 192,
+        "seconds": 0.926390653,
+        "edges_per_second": 207.2559771390526
+      },
+      {
+        "phase": "typed_dump",
+        "count": 5057,
+        "seconds": 0.612781439
+      },
+      {
+        "phase": "raw_dump",
+        "count": 5057,
+        "seconds": 0.043829206
+      },
+      {
+        "phase": "teardown",
+        "edges": 192,
+        "seconds": 0.909670665,
+        "edges_per_second": 211.06539694780636
+      },
+      {
+        "phase": "reuse_setup",
+        "wave": 1,
+        "edges": 192,
+        "seconds": 1.001289812,
+        "edges_per_second": 191.7526750986257
+      },
+      {
+        "phase": "reuse_teardown",
+        "wave": 1,
+        "edges": 192,
+        "seconds": 1.013569844,
+        "edges_per_second": 189.42947162109925
+      },
+      {
+        "phase": "reuse_setup",
+        "wave": 2,
+        "edges": 192,
+        "seconds": 1.068478417,
+        "edges_per_second": 179.6947855428698
+      },
+      {
+        "phase": "reuse_teardown",
+        "wave": 2,
+        "edges": 192,
+        "seconds": 1.03459684,
+        "edges_per_second": 185.5795345363707
+      },
+      {
+        "phase": "reuse_setup",
+        "wave": 3,
+        "edges": 192,
+        "seconds": 1.0886782799999999,
+        "edges_per_second": 176.36064163969544
+      },
+      {
+        "phase": "reuse_teardown",
+        "wave": 3,
+        "edges": 192,
+        "seconds": 1.220232794,
+        "edges_per_second": 157.34702504643553
+      },
+      {
+        "phase": "reuse_setup",
+        "wave": 4,
+        "edges": 192,
+        "seconds": 1.058474866,
+        "edges_per_second": 181.3930648401433
+      },
+      {
+        "phase": "reuse_teardown",
+        "wave": 4,
+        "edges": 192,
+        "seconds": 1.239464553,
+        "edges_per_second": 154.90559978926643
+      },
+      {
+        "phase": "reuse_setup",
+        "wave": 5,
+        "edges": 192,
+        "seconds": 1.116994444,
+        "edges_per_second": 171.8898433482271
+      },
+      {
+        "phase": "reuse_teardown",
+        "wave": 5,
+        "edges": 192,
+        "seconds": 1.149012909,
+        "edges_per_second": 167.09995031047993
+      },
+      {
+        "phase": "reuse_setup",
+        "wave": 6,
+        "edges": 192,
+        "seconds": 1.232818726,
+        "edges_per_second": 155.74065833909145
+      },
+      {
+        "phase": "reuse_teardown",
+        "wave": 6,
+        "edges": 192,
+        "seconds": 1.200645185,
+        "edges_per_second": 159.91402155999984
+      },
+      {
+        "phase": "concurrent",
+        "wave": 1,
+        "created": 192,
+        "retired": 192,
+        "seconds": 2.786529529,
+        "created_edges_per_second": 68.9029123868294,
+        "retired_edges_per_second": 68.9029123868294
+      },
+      {
+        "phase": "concurrent",
+        "wave": 2,
+        "created": 192,
+        "retired": 192,
+        "seconds": 2.837787976,
+        "created_edges_per_second": 67.65833163851562,
+        "retired_edges_per_second": 67.65833163851562
+      },
+      {
+        "phase": "concurrent",
+        "wave": 3,
+        "created": 192,
+        "retired": 192,
+        "seconds": 2.854421634,
+        "created_edges_per_second": 67.26406418484986,
+        "retired_edges_per_second": 67.26406418484986
+      }
+    ],
+    "test_passed": true
+  },
+  "private_plane_packet_checks": {
+    "healthy": [
+      "PING 198.19.240.2 (198.19.240.2) 1052(1080) bytes of data.\n1060 bytes from 198.19.240.2: icmp_seq=1 ttl=64 time=0.829 ms\n1060 bytes from 198.19.240.2: icmp_seq=2 ttl=64 time=0.702 ms\n1060 bytes from 198.19.240.2: icmp_seq=3 ttl=64 time=0.634 ms\n\n--- 198.19.240.2 ping statistics ---\n3 packets transmitted, 3 received, 0% packet loss, time 113ms\nrtt min/avg/max/mdev = 0.634/0.721/0.829/0.080 ms\n",
+      "PING 198.19.241.2 (198.19.241.2) 1052(1080) bytes of data.\n1060 bytes from 198.19.241.2: icmp_seq=1 ttl=64 time=0.640 ms\n1060 bytes from 198.19.241.2: icmp_seq=2 ttl=64 time=0.227 ms\n1060 bytes from 198.19.241.2: icmp_seq=3 ttl=64 time=0.291 ms\n\n--- 198.19.241.2 ping statistics ---\n3 packets transmitted, 3 received, 0% packet loss, time 115ms\nrtt min/avg/max/mdev = 0.227/0.386/0.640/0.181 ms\n",
+      "PING 198.19.240.1 (198.19.240.1) 1052(1080) bytes of data.\n1060 bytes from 198.19.240.1: icmp_seq=1 ttl=64 time=0.561 ms\n1060 bytes from 198.19.240.1: icmp_seq=2 ttl=64 time=0.592 ms\n1060 bytes from 198.19.240.1: icmp_seq=3 ttl=64 time=0.554 ms\n\n--- 198.19.240.1 ping statistics ---\n3 packets transmitted, 3 received, 0% packet loss, time 109ms\nrtt min/avg/max/mdev = 0.554/0.569/0.592/0.016 ms\n",
+      "PING 198.19.241.1 (198.19.241.1) 1052(1080) bytes of data.\n1060 bytes from 198.19.241.1: icmp_seq=1 ttl=64 time=0.378 ms\n1060 bytes from 198.19.241.1: icmp_seq=2 ttl=64 time=0.328 ms\n1060 bytes from 198.19.241.1: icmp_seq=3 ttl=64 time=0.586 ms\n\n--- 198.19.241.1 ping statistics ---\n3 packets transmitted, 3 received, 0% packet loss, time 112ms\nrtt min/avg/max/mdev = 0.328/0.430/0.586/0.111 ms\n"
+    ],
+    "wrong_vni_drops": 20,
+    "replay_drops": 20,
+    "pmtu_notice": "PING 198.19.240.2 (198.19.240.2) 1052(1080) bytes of data.\nFrom 198.19.240.2 icmp_seq=1 Frag needed and DF set (mtu = 616)\n\n--- 198.19.240.2 ping statistics ---\n3 packets transmitted, 0 received, +3 errors, 100% packet loss, time 113ms\n\n",
+    "small_mtu": [
+      "PING 198.19.240.2 (198.19.240.2) 128(156) bytes of data.\n136 bytes from 198.19.240.2: icmp_seq=1 ttl=64 time=0.494 ms\n136 bytes from 198.19.240.2: icmp_seq=2 ttl=64 time=0.425 ms\n136 bytes from 198.19.240.2: icmp_seq=3 ttl=64 time=0.455 ms\n\n--- 198.19.240.2 ping statistics ---\n3 packets transmitted, 3 received, 0% packet loss, time 111ms\nrtt min/avg/max/mdev = 0.425/0.458/0.494/0.028 ms\n",
+      "PING 198.19.241.2 (198.19.241.2) 128(156) bytes of data.\n136 bytes from 198.19.241.2: icmp_seq=1 ttl=64 time=0.650 ms\n136 bytes from 198.19.241.2: icmp_seq=2 ttl=64 time=0.731 ms\n136 bytes from 198.19.241.2: icmp_seq=3 ttl=64 time=1.18 ms\n\n--- 198.19.241.2 ping statistics ---\n3 packets transmitted, 3 received, 0% packet loss, time 112ms\nrtt min/avg/max/mdev = 0.650/0.853/1.180/0.233 ms\n",
+      "PING 198.19.240.1 (198.19.240.1) 128(156) bytes of data.\n136 bytes from 198.19.240.1: icmp_seq=1 ttl=64 time=0.599 ms\n136 bytes from 198.19.240.1: icmp_seq=2 ttl=64 time=0.415 ms\n136 bytes from 198.19.240.1: icmp_seq=3 ttl=64 time=1.12 ms\n\n--- 198.19.240.1 ping statistics ---\n3 packets transmitted, 3 received, 0% packet loss, time 109ms\nrtt min/avg/max/mdev = 0.415/0.711/1.120/0.298 ms\n",
+      "PING 198.19.241.1 (198.19.241.1) 128(156) bytes of data.\n136 bytes from 198.19.241.1: icmp_seq=1 ttl=64 time=0.591 ms\n136 bytes from 198.19.241.1: icmp_seq=2 ttl=64 time=0.563 ms\n136 bytes from 198.19.241.1: icmp_seq=3 ttl=64 time=0.565 ms\n\n--- 198.19.241.1 ping statistics ---\n3 packets transmitted, 3 received, 0% packet loss, time 109ms\nrtt min/avg/max/mdev = 0.563/0.573/0.591/0.012 ms\n"
+    ],
+    "fragmented_outer": {
+      "received": 20
+    },
+    "wrong_key_drops": 4,
+    "missing_crypto_output_guard": "Chain OUTPUT (policy ACCEPT 184 packets, 85036 bytes)\n    pkts      bytes target     prot opt in     out     source               destination         \n       5      864 DROP       udp  --  *      *       0.0.0.0/0            0.0.0.0/0            udp dpt:4790 policy match dir out pol none\n",
+    "passed": true
+  }
+}

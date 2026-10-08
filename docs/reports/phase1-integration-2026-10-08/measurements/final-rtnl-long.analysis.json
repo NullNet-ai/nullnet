@@ -1,0 +1,400 @@
+{
+  "label": "final-rtnl-long",
+  "seconds": 40.924507335003,
+  "fixture_tids": 37,
+  "all_hold_ms": 23133.820999944874,
+  "lock_occupancy": 0.5652803785901257,
+  "waits": {
+    "other": {
+      "count": 41629,
+      "sum_ms": 10297.512999979517,
+      "mean_ms": 0.24736392899131657,
+      "p50_ms": 0.0,
+      "p95_ms": 0.09299999874201603,
+      "max_ms": 433.1950000014331
+    },
+    "fixture": {
+      "count": 118112,
+      "sum_ms": 69472.04700002112,
+      "mean_ms": 0.5881878809944893,
+      "p50_ms": 0.05699999746866524,
+      "p95_ms": 2.4039999989327043,
+      "max_ms": 177.2899999996298
+    }
+  },
+  "holds": {
+    "other/other": {
+      "count": 41629,
+      "sum_ms": 529.6639998668979,
+      "mean_ms": 0.01272343798474376,
+      "p50_ms": 0.0020000006770715117,
+      "p95_ms": 0.04999999873689376,
+      "max_ms": 1.0990000009769574
+    },
+    "fixture/rtnl_newlink": {
+      "count": 8064,
+      "sum_ms": 4541.577999953006,
+      "mean_ms": 0.5631917162640135,
+      "p50_ms": 0.47000000267871656,
+      "p95_ms": 1.0839999995368998,
+      "max_ms": 35.53999999712687
+    },
+    "fixture/other": {
+      "count": 73713,
+      "sum_ms": 4943.579000089812,
+      "mean_ms": 0.06706522594508177,
+      "p50_ms": 0.012000000424450263,
+      "p95_ms": 0.29800000265822746,
+      "max_ms": 27.221000000281492
+    },
+    "fixture/rtnl_setlink": {
+      "count": 28222,
+      "sum_ms": 744.7220000358357,
+      "mean_ms": 0.026387995182334194,
+      "p50_ms": 0.02099999983329326,
+      "p95_ms": 0.06300000313785858,
+      "max_ms": 1.5500000008614734
+    },
+    "fixture/inet_rtm_newaddr": {
+      "count": 8064,
+      "sum_ms": 788.2149999823014,
+      "mean_ms": 0.0977449156724084,
+      "p50_ms": 0.055999997130129486,
+      "p95_ms": 0.3440000000409782,
+      "max_ms": 3.1640000015613623
+    },
+    "fixture/rtnl_dellink": {
+      "count": 49,
+      "sum_ms": 11586.06300001702,
+      "mean_ms": 236.45026530646982,
+      "p50_ms": 167.90600000240374,
+      "p95_ms": 587.4910000020463,
+      "max_ms": 704.8910000012256
+    }
+  },
+  "functions": {
+    "other/netdev_run_todo": {
+      "count": 41629,
+      "sum_ms": 27.307000164000783,
+      "mean_ms": 0.0006559609926733956,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0020000006770715117,
+      "max_ms": 0.06500000017695129
+    },
+    "other/synchronize_rcu": {
+      "count": 91,
+      "sum_ms": 3858.561999983067,
+      "mean_ms": 42.401780219594144,
+      "p50_ms": 36.74399999727029,
+      "p95_ms": 79.9849999966682,
+      "max_ms": 92.82399999938207
+    },
+    "fixture/register_netdevice": {
+      "count": 12096,
+      "sum_ms": 1809.9749999673804,
+      "mean_ms": 0.14963417658460487,
+      "p50_ms": 0.12900000001536682,
+      "p95_ms": 0.3020000003743917,
+      "max_ms": 4.218999998556683
+    },
+    "fixture/synchronize_rcu_expedited": {
+      "count": 14839,
+      "sum_ms": 1790.5450002290308,
+      "mean_ms": 0.12066480222582593,
+      "p50_ms": 0.043000000005122274,
+      "p95_ms": 0.29799999902024865,
+      "max_ms": 34.63700000065728
+    },
+    "fixture/call_netdevice_notifiers": {
+      "count": 8064,
+      "sum_ms": 27.465999897685833,
+      "mean_ms": 0.0034060019714392156,
+      "p50_ms": 0.0020000006770715117,
+      "p95_ms": 0.006999998731771484,
+      "max_ms": 0.8159999997587875
+    },
+    "fixture/rtnl_newlink": {
+      "count": 8064,
+      "sum_ms": 4524.049000097875,
+      "mean_ms": 0.561017981162931,
+      "p50_ms": 0.46800000200164504,
+      "p95_ms": 1.0799999981827568,
+      "max_ms": 35.53400000237161
+    },
+    "fixture/netdev_run_todo": {
+      "count": 118112,
+      "sum_ms": 1723.877999898832,
+      "mean_ms": 0.01459528244292563,
+      "p50_ms": 0.0010000003385357559,
+      "p95_ms": 0.0040000013541430235,
+      "max_ms": 57.534000003215624
+    },
+    "fixture/rtnl_setlink": {
+      "count": 28222,
+      "sum_ms": 698.2340000577096,
+      "mean_ms": 0.024740769614404,
+      "p50_ms": 0.019999999494757503,
+      "p95_ms": 0.060999998822808266,
+      "max_ms": 1.5469999998458661
+    },
+    "fixture/xfrm_user_rcv_msg": {
+      "count": 24194,
+      "sum_ms": 734.8339998789015,
+      "mean_ms": 0.030372571706989402,
+      "p50_ms": 0.008999999408842996,
+      "p95_ms": 0.14100000043981709,
+      "max_ms": 3.6289999989094213
+    },
+    "fixture/inet_rtm_newaddr": {
+      "count": 8064,
+      "sum_ms": 770.9110000287183,
+      "mean_ms": 0.09559908234483114,
+      "p50_ms": 0.05400000009103678,
+      "p95_ms": 0.340000002324814,
+      "max_ms": 3.1600000002072193
+    },
+    "fixture/vxlan_open": {
+      "count": 4032,
+      "sum_ms": 6.411000034859171,
+      "mean_ms": 0.0015900297705503897,
+      "p50_ms": 0.0010000003385357559,
+      "p95_ms": 0.0029999973776284605,
+      "max_ms": 0.28200000087963417
+    },
+    "fixture/synchronize_net": {
+      "count": 4099,
+      "sum_ms": 201.39199995537638,
+      "mean_ms": 0.049131983399701484,
+      "p50_ms": 0.043000000005122274,
+      "p95_ms": 0.07100000220816582,
+      "max_ms": 19.931000002543442
+    },
+    "fixture/vxlan_flush": {
+      "count": 8064,
+      "sum_ms": 47.70299992378568,
+      "mean_ms": 0.005915550585786915,
+      "p50_ms": 0.005000001692678779,
+      "p95_ms": 0.00799999907030724,
+      "max_ms": 0.06800000119255856
+    },
+    "fixture/dev_deactivate_many": {
+      "count": 49,
+      "sum_ms": 19.950000001699664,
+      "mean_ms": 0.40714285717754417,
+      "p50_ms": 0.4580000022542663,
+      "p95_ms": 1.0680000013962854,
+      "max_ms": 1.6370000012102537
+    },
+    "fixture/vxlan_sock_release": {
+      "count": 4032,
+      "sum_ms": 196.34200002110447,
+      "mean_ms": 0.04869593254491678,
+      "p50_ms": 0.043000000005122274,
+      "p95_ms": 0.0689999978931155,
+      "max_ms": 19.93399999992107
+    },
+    "fixture/vxlan_stop": {
+      "count": 4032,
+      "sum_ms": 223.20599999875412,
+      "mean_ms": 0.055358630952071955,
+      "p50_ms": 0.04999999873689376,
+      "p95_ms": 0.07699999696342275,
+      "max_ms": 19.940999998652842
+    },
+    "fixture/dev_close_many": {
+      "count": 49,
+      "sum_ms": 5027.181000001292,
+      "mean_ms": 102.59553061227126,
+      "p50_ms": 69.07300000239047,
+      "p95_ms": 259.07400000141934,
+      "max_ms": 333.4309999991092
+    },
+    "fixture/dev_shutdown": {
+      "count": 12096,
+      "sum_ms": 1958.4530000647646,
+      "mean_ms": 0.16190914352387273,
+      "p50_ms": 0.0959999997576233,
+      "p95_ms": 0.45699999827775173,
+      "max_ms": 6.901000000652857
+    },
+    "fixture/unregister_netdevice_many": {
+      "count": 12145,
+      "sum_ms": 11518.445000107022,
+      "mean_ms": 0.9484104569869923,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0010000003385357559,
+      "max_ms": 702.1329999988666
+    },
+    "fixture/netdev_unregister_kobject": {
+      "count": 12096,
+      "sum_ms": 531.1149999834015,
+      "mean_ms": 0.04390831679756957,
+      "p50_ms": 0.03899999865097925,
+      "p95_ms": 0.05500000042957254,
+      "max_ms": 3.4279999999853317
+    },
+    "fixture/napi_disable": {
+      "count": 32256,
+      "sum_ms": 10.61900003332994,
+      "mean_ms": 0.0003292100704777387,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0010000003385357559,
+      "max_ms": 1.012999997328734
+    },
+    "fixture/rtnl_dellink": {
+      "count": 49,
+      "sum_ms": 11585.868999995,
+      "mean_ms": 236.44630612234693,
+      "p50_ms": 167.90300000138814,
+      "p95_ms": 587.4839999996766,
+      "max_ms": 704.8859999995329
+    },
+    "fixture/rcu_barrier": {
+      "count": 49,
+      "sum_ms": 1446.7100000074424,
+      "mean_ms": 29.52469387770291,
+      "p50_ms": 27.458000000478933,
+      "p95_ms": 46.71099999904982,
+      "max_ms": 56.6690000014205
+    },
+    "fixture/xfrm_del_sa": {
+      "count": 8064,
+      "sum_ms": 22.675000138406176,
+      "mean_ms": 0.002811879977480925,
+      "p50_ms": 0.0020000006770715117,
+      "p95_ms": 0.005000001692678779,
+      "max_ms": 0.14200000077835284
+    },
+    "fixture/ctnetlink_dump_table": {
+      "count": 17169,
+      "sum_ms": 2063.31399996634,
+      "mean_ms": 0.12017671384275963,
+      "p50_ms": 0.03199999991920777,
+      "p95_ms": 0.050000002374872565,
+      "max_ms": 13.417999998637242
+    },
+    "fixture/nfnetlink_rcv_msg": {
+      "count": 233,
+      "sum_ms": 1468.7169999888283,
+      "mean_ms": 6.303506437720293,
+      "p50_ms": 7.063999997626524,
+      "p95_ms": 8.587000000261469,
+      "max_ms": 13.426999998046085
+    },
+    "other/ctnetlink_dump_table": {
+      "count": 375514,
+      "sum_ms": 15984.393001061107,
+      "mean_ms": 0.042566703241586484,
+      "p50_ms": 0.03900000228895806,
+      "p95_ms": 0.05600000076810829,
+      "max_ms": 8.458999996946659
+    },
+    "other/nfnetlink_rcv_msg": {
+      "count": 899,
+      "sum_ms": 192.1590000638389,
+      "mean_ms": 0.2137474972901434,
+      "p50_ms": 0.05199999941396527,
+      "p95_ms": 0.15799999891896732,
+      "max_ms": 10.137000001122942
+    }
+  },
+  "rcu_union_inside_hold_ms": {
+    "other": 0,
+    "fixture": 1793.212000218773
+  },
+  "actors": {
+    "sshd-session": {
+      "count": 2166,
+      "sum_ms": 101.69599998698686,
+      "mean_ms": 0.046951061859181374,
+      "p50_ms": 0.03699999797390774,
+      "p95_ms": 0.06399999983841553,
+      "max_ms": 1.0990000009769574
+    },
+    "sshd-auth": {
+      "count": 301,
+      "sum_ms": 13.490000008459901,
+      "mean_ms": 0.044817275775614285,
+      "p50_ms": 0.035000000934815034,
+      "p95_ms": 0.05199999941396527,
+      "max_ms": 0.8529999977326952
+    },
+    "sudo": {
+      "count": 3195,
+      "sum_ms": 109.53000015069847,
+      "mean_ms": 0.03428169018801204,
+      "p50_ms": 0.02800000220304355,
+      "p95_ms": 0.06999999823165126,
+      "max_ms": 0.7329999971261714
+    },
+    "tokio-rt-worker": {
+      "count": 118112,
+      "sum_ms": 22604.157000077976,
+      "mean_ms": 0.1913790046741904,
+      "p50_ms": 0.017000002117129043,
+      "p95_ms": 0.48299999980372377,
+      "max_ms": 704.8910000012256
+    },
+    "kworker/u33:2": {
+      "count": 575,
+      "sum_ms": 28.529999985039467,
+      "mean_ms": 0.04961739127832951,
+      "p50_ms": 0.037000001611886546,
+      "p95_ms": 0.11699999959091656,
+      "max_ms": 0.6669999966106843
+    },
+    "kworker/u34:0": {
+      "count": 601,
+      "sum_ms": 22.937000034289667,
+      "mean_ms": 0.03816472551462507,
+      "p50_ms": 0.029000002541579306,
+      "p95_ms": 0.07700000060140155,
+      "max_ms": 0.3219999998691492
+    },
+    "kworker/u32:0": {
+      "count": 32256,
+      "sum_ms": 85.71499967729324,
+      "mean_ms": 0.0026573350594398947,
+      "p50_ms": 0.0020000006770715117,
+      "p95_ms": 0.005999998393235728,
+      "max_ms": 0.08499999967170879
+    },
+    "kworker/u34:4": {
+      "count": 1507,
+      "sum_ms": 74.97900002999813,
+      "mean_ms": 0.04975381554744402,
+      "p50_ms": 0.0380000019504223,
+      "p95_ms": 0.11300000187475234,
+      "max_ms": 0.5220000020926818
+    },
+    "kworker/u33:0": {
+      "count": 338,
+      "sum_ms": 16.30099998874357,
+      "mean_ms": 0.04822781061758453,
+      "p50_ms": 0.03699999797390774,
+      "p95_ms": 0.10599999950500205,
+      "max_ms": 0.3170000018144492
+    },
+    "ip": {
+      "count": 690,
+      "sum_ms": 76.48600000538863,
+      "mean_ms": 0.11084927537012845,
+      "p50_ms": 0.1049999991664663,
+      "p95_ms": 0.1339999980700668,
+      "max_ms": 0.44999999954598024
+    }
+  },
+  "overruns": {
+    "cpu7": 0,
+    "cpu6": 0,
+    "cpu5": 0,
+    "cpu4": 0,
+    "cpu3": 0,
+    "cpu2": 0,
+    "cpu1": 0,
+    "cpu0": 0
+  },
+  "boundary_errors": {},
+  "incomplete_holds": 0,
+  "kprobe_profile": "  rtnl_lock_in                                           67533               0\n  rtnl_lock_out                                          67533               0\n  rtnl_lock_killable_in                                      0               0\n  rtnl_lock_killable_out                                     0               0\n  rtnl_trylock_in                                            0               0\n  rtnl_trylock_out                                           0               0\n  xfrm_del_sa_in                                          8064               0\n  xfrm_del_sa_out                                         8064               0\n  xfrm_user_rcv_msg_in                                   24194               0\n  xfrm_user_rcv_msg_out                                  24194               0\n  ctnetlink_dump_table_in                               392694               0\n  ctnetlink_dump_table_out                              392693               0\n  nfnetlink_rcv_msg_in                                    1132               0\n  nfnetlink_rcv_msg_out                                   1132               0\n  rtnl_newlink_in                                         8064               0\n  rtnl_newlink_out                                        8064               0\n  rtnl_setlink_in                                        28222               0\n  rtnl_setlink_out                                       28222               0\n  rtnl_dellink_in                                           49               0\n  rtnl_dellink_out                                          49               0\n  register_netdevice_in                                  12096               0\n  register_netdevice_out                                 12096               0\n  unregister_netdevice_many_in                           12145               0\n  unregister_netdevice_many_out                          12145               0\n  synchronize_rcu_expedited_in                           14839               0\n  synchronize_rcu_expedited_out                          14839               0\n  synchronize_net_in                                      4099               0\n  synchronize_net_out                                     4099               0\n  rcu_barrier_in                                            49               0\n  rcu_barrier_out                                           49               0\n  synchronize_rcu_in                                        93               0\n  synchronize_rcu_out                                       93               0\n  vxlan_sock_release_in                                   4032               0\n  vxlan_sock_release_out                                  4032               0\n  vxlan_flush_in                                          8064               0\n  vxlan_flush_out                                         8064               0\n  udp_tunnel_sock_release_in                                 0               0\n  udp_tunnel_sock_release_out                                0               0\n  dev_deactivate_many_in                                    49               0\n  dev_deactivate_many_out                                   49               0\n  dev_close_many_in                                         49               0\n  dev_close_many_out                                        49               0\n  call_netdevice_notifiers_in                             8064               0\n  call_netdevice_notifiers_out                            8064               0\n  netdev_unregister_kobject_in                           12096               0\n  netdev_unregister_kobject_out                          12096               0\n  dev_shutdown_in                                        12096               0\n  dev_shutdown_out                                       12096               0\n  napi_disable_in                                        32256               0\n  napi_disable_out                                       32256               0\n  dev_change_name_in                                         0               0\n  dev_change_name_out                                        0               0\n  br_add_if_in                                               0               0\n  br_add_if_out                                              0               0\n  br_del_if_in                                               0               0\n  br_del_if_out                                              0               0\n  vxlan_open_in                                           4032               0\n  vxlan_open_out                                          4032               0\n  vxlan_stop_in                                           4032               0\n  vxlan_stop_out                                          4032               0\n  inet_rtm_newaddr_in                                     8064               0\n  inet_rtm_newaddr_out                                    8064               0\n  inet_rtm_deladdr_in                                        0               0\n  inet_rtm_deladdr_out                                       0               0\n  netdev_run_todo_in                                    159741               0\n  netdev_run_todo_out                                   159741               0\n  release                                               159741               0\n  mutex_in                                             1710609               0\n  mutex_out                                            1710611               0\n"
+}

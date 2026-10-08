@@ -1,0 +1,516 @@
+{
+  "label": "baseline-acked-c256-t1",
+  "variant": "baseline-acked",
+  "concurrency": 256,
+  "count": 1008,
+  "load": {
+    "unix_start": 1791480007.6311827,
+    "unix_end": 1791480074.853761,
+    "count": 1008,
+    "concurrency": 256,
+    "identities": 1008,
+    "services": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "ok": 1008,
+    "errors": 0,
+    "request_seconds": 67.22228059900226,
+    "requests_per_second": 14.995028300407903,
+    "p50_ms": 16994.81483300042,
+    "p95_ms": 19326.874616999703
+  },
+  "nodes": {
+    "103": {
+      "label": "baseline-acked-c256-t1",
+      "before": {
+        "unix": 1791480006.8715346,
+        "host_cpu_seconds": 13478.54,
+        "client_cpu": "usage_usec 1356293\nuser_usec 570825\nsystem_usec 785468\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "296716",
+        "conntrack_count": 4,
+        "cursor": "s=67bfec5eb55c4e40a0a22a68ed50db40;i=265415f;b=59c471ae03e24964a348d7b4014e5037;m=6adf7eaad;t=65d57715ab78c;x=2624384a9d5d55e8"
+      },
+      "after": {
+        "unix": 1791480080.459724,
+        "host_cpu_seconds": 13525.98,
+        "client_cpu": "usage_usec 47058097\nuser_usec 15478462\nsystem_usec 31579634\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "296716",
+        "conntrack_count": 3774
+      },
+      "host_cpu_seconds": 47.43999999999869,
+      "setups": 1008,
+      "retirements": 1008,
+      "lifecycle_errors": [],
+      "remaining_owned_links": [],
+      "server_retirements": 0,
+      "last_server_retirement_unix": null,
+      "last_retirement_unix": 1791480076.571091
+    },
+    "104": {
+      "label": "baseline-acked-c256-t1",
+      "before": {
+        "unix": 1791480006.8720405,
+        "host_cpu_seconds": 5367.84,
+        "client_cpu": "usage_usec 1619354\nuser_usec 653732\nsystem_usec 965621\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "156207",
+        "conntrack_count": 16,
+        "cursor": "s=3d9af771a9944221b78bfb41a34fe8af;i=38beeb1;b=fe81f69071ca41dca257d62dfb3bd8b0;m=6ae0ccbb2;t=65d57715c9bcd;x=1171ad207df1d4f8",
+        "server_cursor": "s=3d9af771a9944221b78bfb41a34fe8af;i=38beeaf;b=fe81f69071ca41dca257d62dfb3bd8b0;m=6ae0ae797;t=65d57715ab7b2;x=6bd0ae7da9dd2a1e"
+      },
+      "after": {
+        "unix": 1791480080.6714404,
+        "host_cpu_seconds": 5413.89,
+        "client_cpu": "usage_usec 34852401\nuser_usec 9013546\nsystem_usec 25838854\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "156207",
+        "conntrack_count": 4886
+      },
+      "host_cpu_seconds": 46.05000000000018,
+      "setups": 1008,
+      "retirements": 1008,
+      "lifecycle_errors": [],
+      "remaining_owned_links": [],
+      "server_retirements": 1008,
+      "last_server_retirement_unix": 1791480077.00965,
+      "last_retirement_unix": 1791480077.009597
+    }
+  },
+  "history_before": [
+    136235,
+    0,
+    136235
+  ],
+  "history_after": [
+    137243,
+    0,
+    137243
+  ],
+  "graph": {
+    "proxies": [
+      "192.168.1.104"
+    ],
+    "nodes": [
+      {
+        "id": "p1-01.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-02.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-03.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-04.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-05.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-06.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-07.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-08.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-09.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-10.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-11.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-12.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      }
+    ],
+    "edges": []
+  },
+  "internet_checks": [
+    {
+      "elapsed": 5.00505648899707,
+      "internet": true,
+      "probe": {
+        "unix": 1791480012.738678,
+        "probes": [
+          {
+            "url": "https://www.apple.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          },
+          {
+            "url": "https://www.google.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          }
+        ],
+        "ok": true
+      }
+    },
+    {
+      "elapsed": 10.473753033998946,
+      "internet": true,
+      "probe": {
+        "unix": 1791480018.236147,
+        "probes": [
+          {
+            "url": "https://www.apple.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          },
+          {
+            "url": "https://www.google.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          }
+        ],
+        "ok": true
+      }
+    },
+    {
+      "elapsed": 15.976983137996285,
+      "internet": true,
+      "probe": {
+        "unix": 1791480023.758442,
+        "probes": [
+          {
+            "url": "https://www.apple.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          },
+          {
+            "url": "https://www.google.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          }
+        ],
+        "ok": true
+      }
+    },
+    {
+      "elapsed": 21.498347098000522,
+      "internet": true,
+      "probe": {
+        "unix": 1791480029.289042,
+        "probes": [
+          {
+            "url": "https://www.apple.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          },
+          {
+            "url": "https://www.google.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          }
+        ],
+        "ok": true
+      }
+    },
+    {
+      "elapsed": 27.02866031099984,
+      "internet": true,
+      "probe": {
+        "unix": 1791480034.82943,
+        "probes": [
+          {
+            "url": "https://www.apple.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          },
+          {
+            "url": "https://www.google.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          }
+        ],
+        "ok": true
+      }
+    },
+    {
+      "elapsed": 32.56379560699861,
+      "internet": true,
+      "probe": {
+        "unix": 1791480040.306806,
+        "probes": [
+          {
+            "url": "https://www.apple.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          },
+          {
+            "url": "https://www.google.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          }
+        ],
+        "ok": true
+      }
+    },
+    {
+      "elapsed": 38.04666871899826,
+      "internet": true,
+      "probe": {
+        "unix": 1791480045.7840269,
+        "probes": [
+          {
+            "url": "https://www.apple.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          },
+          {
+            "url": "https://www.google.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          }
+        ],
+        "ok": true
+      }
+    },
+    {
+      "elapsed": 43.5237003000002,
+      "internet": true,
+      "probe": {
+        "unix": 1791480051.4069571,
+        "probes": [
+          {
+            "url": "https://www.apple.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          },
+          {
+            "url": "https://www.google.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          }
+        ],
+        "ok": true
+      }
+    },
+    {
+      "elapsed": 49.141707905997464,
+      "internet": true,
+      "probe": {
+        "unix": 1791480057.037694,
+        "probes": [
+          {
+            "url": "https://www.apple.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          },
+          {
+            "url": "https://www.google.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          }
+        ],
+        "ok": true
+      }
+    },
+    {
+      "elapsed": 54.774580846999015,
+      "internet": true,
+      "probe": {
+        "unix": 1791480062.4817111,
+        "probes": [
+          {
+            "url": "https://www.apple.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          },
+          {
+            "url": "https://www.google.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          }
+        ],
+        "ok": true
+      }
+    },
+    {
+      "elapsed": 60.21871941500285,
+      "internet": true,
+      "probe": {
+        "unix": 1791480067.9643,
+        "probes": [
+          {
+            "url": "https://www.apple.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          },
+          {
+            "url": "https://www.google.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          }
+        ],
+        "ok": true
+      }
+    },
+    {
+      "elapsed": 65.70200783300243,
+      "internet": true,
+      "probe": {
+        "unix": 1791480073.524427,
+        "probes": [
+          {
+            "url": "https://www.apple.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          },
+          {
+            "url": "https://www.google.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          }
+        ],
+        "ok": true
+      }
+    },
+    {
+      "elapsed": 71.26062506699964,
+      "internet": true,
+      "probe": {
+        "unix": 1791480078.99985,
+        "probes": [
+          {
+            "url": "https://www.apple.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          },
+          {
+            "url": "https://www.google.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          }
+        ],
+        "ok": true
+      }
+    }
+  ],
+  "completion_boundary": "server ID release after endpoint acknowledgements",
+  "complete_kernel_cleanup_seconds": 69.37841439247131,
+  "complete_acknowledged_seconds": 69.37846732139587,
+  "complete_cycles_per_second": 14.529003578739182,
+  "drain_observed_unix": 1791480080.8512251,
+  "conservative_complete_cycles_per_second": 13.800608484240788
+}

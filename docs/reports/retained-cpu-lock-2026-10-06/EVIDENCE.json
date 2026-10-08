@@ -1,0 +1,18 @@
+{
+  "archive": "~/.codex/backups/nullnet-layer1-20261008/research-evidence",
+  "purpose": "Large raw captures are preserved outside Git; reports, scripts and compact results remain in this directory.",
+  "files": [
+    {
+      "file": "evidence-104.tar.gz",
+      "sha256": "5a9787d487a83d3e45c6ddc4e3dbaaefe9224e1eb1f0256e6c9f7f57dd27bed5",
+      "bytes": 56890883,
+      "archive_file": "docs/reports/retained-cpu-lock-2026-10-06/evidence-104.tar.gz"
+    },
+    {
+      "file": "evidence-103.tar.gz",
+      "sha256": "b38fd62a6c466dc75b8b77e171af7f1d30690f24bf8726e8bfaffbda13c821b8",
+      "bytes": 56876560,
+      "archive_file": "docs/reports/retained-cpu-lock-2026-10-06/evidence-103.tar.gz"
+    }
+  ]
+}

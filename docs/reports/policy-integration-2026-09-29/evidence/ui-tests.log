@@ -1,0 +1,51 @@
+
+> ui@0.0.0 test
+> node --test tests/*.test.mjs
+
+TAP version 13
+# (node:1143737) ExperimentalWarning: The MockTimers API is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: slow requests complete before another poll starts
+ok 1 - slow requests complete before another poll starts
+  ---
+  duration_ms: 2.103158
+  ...
+# Subtest: stopping cancels an in-flight request and prevents another poll
+ok 2 - stopping cancels an in-flight request and prevents another poll
+  ---
+  duration_ms: 0.328527
+  ...
+# Subtest: stopping cancels a scheduled poll
+ok 3 - stopping cancels a scheduled poll
+  ---
+  duration_ms: 0.224185
+  ...
+# Subtest: without an interval the request runs once
+ok 4 - without an interval the request runs once
+  ---
+  duration_ms: 0.317537
+  ...
+# Subtest: manual refresh cancels the old request and remains awaitable
+ok 5 - manual refresh cancels the old request and remains awaitable
+  ---
+  duration_ms: 0.560416
+  ...
+# Subtest: an empty historical range retains configured services without live edges
+ok 6 - an empty historical range retains configured services without live edges
+  ---
+  duration_ms: 2.844258
+  ...
+# Subtest: historical sessions add removed services without dropping idle current services
+ok 7 - historical sessions add removed services without dropping idle current services
+  ---
+  duration_ms: 0.558553
+  ...
+1..7
+# tests 7
+# suites 0
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 493.822571

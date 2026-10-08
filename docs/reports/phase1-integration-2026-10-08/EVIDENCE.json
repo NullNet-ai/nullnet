@@ -1,0 +1,42 @@
+{
+  "archive": "~/.codex/backups/nullnet-layer1-20261008/research-evidence",
+  "purpose": "Large raw captures are preserved outside Git; reports, scripts and compact results remain in this directory.",
+  "files": [
+    {
+      "file": "measurements/final-rtnl.trace.gz",
+      "sha256": "cc4a6925031c92f32582e7e8b1877d62c346a404ec3942d11dae14a830a20abd",
+      "bytes": 6223988,
+      "archive_file": "docs/reports/phase1-integration-2026-10-08/measurements/final-rtnl.trace.gz"
+    },
+    {
+      "file": "measurements/named-rtnl-long.trace.gz",
+      "sha256": "26e3811b22d0b7c9be8abdd82de18f911754ffe7c48b7e08cd5ebb0db9fc96cc",
+      "bytes": 12535075,
+      "archive_file": "docs/reports/phase1-integration-2026-10-08/measurements/named-rtnl-long.trace.gz"
+    },
+    {
+      "file": "measurements/shared-profile.trace.gz",
+      "sha256": "c32293288eb42dbc7486820570fbaff984859f51cf0c820eed084f02d66bf621",
+      "bytes": 2657829,
+      "archive_file": "docs/reports/phase1-integration-2026-10-08/measurements/shared-profile.trace.gz"
+    },
+    {
+      "file": "measurements/reconcile-rtnl-long.trace.gz",
+      "sha256": "e504a9b43c71452ea752e4da94e8fc919ea60b450e64406d94e40e5c525e0c41",
+      "bytes": 13499823,
+      "archive_file": "docs/reports/phase1-integration-2026-10-08/measurements/reconcile-rtnl-long.trace.gz"
+    },
+    {
+      "file": "measurements/final-rtnl-long.trace.gz",
+      "sha256": "82b3d9c992920344170485732bc000b2ba5da56d908bb59529a27401ad0733b3",
+      "bytes": 18312851,
+      "archive_file": "docs/reports/phase1-integration-2026-10-08/measurements/final-rtnl-long.trace.gz"
+    },
+    {
+      "file": "measurements/phase1-rtnl.trace.gz",
+      "sha256": "cf974432440b6325201431548a329546dee03ab16018de58082b0998a21e98ac",
+      "bytes": 3915808,
+      "archive_file": "docs/reports/phase1-integration-2026-10-08/measurements/phase1-rtnl.trace.gz"
+    }
+  ]
+}

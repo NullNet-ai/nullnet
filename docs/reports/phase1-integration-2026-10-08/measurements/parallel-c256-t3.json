@@ -1,0 +1,214 @@
+{
+  "label": "parallel-c256-t3",
+  "variant": "parallel",
+  "concurrency": 256,
+  "count": 1008,
+  "load": {
+    "unix_start": 1791473180.9320724,
+    "unix_end": 1791473182.4766612,
+    "count": 1008,
+    "concurrency": 256,
+    "identities": 1008,
+    "services": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "ok": 1008,
+    "errors": 0,
+    "request_seconds": 1.5443876509998518,
+    "requests_per_second": 652.6858715474776,
+    "p50_ms": 341.15672199914115,
+    "p95_ms": 471.7213650001213
+  },
+  "nodes": {
+    "103": {
+      "label": "parallel-c256-t3",
+      "before": {
+        "unix": 1791473180.4769716,
+        "host_cpu_seconds": 10980.37,
+        "client_cpu": "usage_usec 13414021\nuser_usec 1780792\nsystem_usec 11633229\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "252045",
+        "conntrack_count": 5945,
+        "cursor": "s=67bfec5eb55c4e40a0a22a68ed50db40;i=2634854;b=59c471ae03e24964a348d7b4014e5037;m=516ecd8c3;t=65d55da4fa5a2;x=127fabc11bf002bb"
+      },
+      "after": {
+        "unix": 1791473186.8260262,
+        "host_cpu_seconds": 10989.12,
+        "client_cpu": "usage_usec 19193655\nuser_usec 2273693\nsystem_usec 16919962\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "252045",
+        "conntrack_count": 8788
+      },
+      "host_cpu_seconds": 8.75,
+      "setups": 1008,
+      "retirements": 1008,
+      "lifecycle_errors": [],
+      "remaining_owned_links": [],
+      "server_retirements": 0,
+      "last_server_retirement_unix": null,
+      "last_retirement_unix": 1791473184.174445
+    },
+    "104": {
+      "label": "parallel-c256-t3",
+      "before": {
+        "unix": 1791473180.4658318,
+        "host_cpu_seconds": 4490.56,
+        "client_cpu": "usage_usec 7058195\nuser_usec 1795941\nsystem_usec 5262254\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "124174",
+        "conntrack_count": 5958,
+        "cursor": "s=3d9af771a9944221b78bfb41a34fe8af;i=37e0ab2;b=fe81f69071ca41dca257d62dfb3bd8b0;m=516f7d79f;t=65d55da47a7ba;x=cf8ced49e1bb5cdd",
+        "server_cursor": "s=3d9af771a9944221b78bfb41a34fe8af;i=37e0c81;b=fe81f69071ca41dca257d62dfb3bd8b0;m=5173852fb;t=65d55da882316;x=c8c1597df6c9a6bc"
+      },
+      "after": {
+        "unix": 1791473187.0507348,
+        "host_cpu_seconds": 4497.92,
+        "client_cpu": "usage_usec 9699172\nuser_usec 2316078\nsystem_usec 7383094\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "124174",
+        "conntrack_count": 8797
+      },
+      "host_cpu_seconds": 7.359999999999673,
+      "setups": 1008,
+      "retirements": 1008,
+      "lifecycle_errors": [],
+      "remaining_owned_links": [],
+      "server_retirements": 1008,
+      "last_server_retirement_unix": 1791473184.170004,
+      "last_retirement_unix": 1791473183.55709
+    }
+  },
+  "history_before": [
+    77294,
+    0,
+    77294
+  ],
+  "history_after": [
+    78302,
+    0,
+    78302
+  ],
+  "graph": {
+    "proxies": [
+      "192.168.1.104"
+    ],
+    "nodes": [
+      {
+        "id": "p1-01.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-02.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-03.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-04.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-05.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-06.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-07.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-08.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-09.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-10.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-11.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-12.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      }
+    ],
+    "edges": []
+  },
+  "internet_checks": [
+    {
+      "elapsed": 5.004432211004314,
+      "internet": true,
+      "probe": {
+        "unix": 1791473185.732049,
+        "returncode": 0,
+        "status": "200",
+        "stderr": ""
+      }
+    }
+  ],
+  "completion_boundary": "server ID release after endpoint acknowledgements",
+  "complete_kernel_cleanup_seconds": 3.242372512817383,
+  "complete_acknowledged_seconds": 3.237931489944458,
+  "complete_cycles_per_second": 311.3098603631329,
+  "drain_observed_unix": 1791473187.305673,
+  "conservative_complete_cycles_per_second": 164.74188983354978
+}

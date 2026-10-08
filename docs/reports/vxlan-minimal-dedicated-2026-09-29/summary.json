@@ -1,0 +1,696 @@
+{
+  "scope": "Kernel harness only; not integrated Nullnet throughput",
+  "target_cycles_per_second": 200,
+  "workloads": {
+    "bridge-cross-batched-3x60.json": {
+      "sha256": "df83e7d91aa4c1f8585d3d5e77d3c3d203dd4cdd83a8c5330d5b4a77270e87ef",
+      "median_cycles_per_second": 101.02726134777345,
+      "setups": 18208,
+      "retirements": 18208,
+      "trials": [
+        {
+          "trial": 0,
+          "seconds": 60.181775878001645,
+          "setups": 6080,
+          "retirements": 6080,
+          "complete_cycles_per_second": 101.02726134777345,
+          "final_drain_seconds": 0.1795064280013321,
+          "operation_latency_ms": {
+            "up": {
+              "mean": 151.34780533421068,
+              "p50": 160.8415900000182,
+              "p95": 248.49299900006372,
+              "max": 330.11523599998327
+            },
+            "down": {
+              "mean": 203.49773857993418,
+              "p50": 201.8841919998522,
+              "p95": 253.17430700010846,
+              "max": 369.7886140000719
+            }
+          },
+          "mean_phase_latency_ms": {
+            "up/create_links": 43.73113032771375,
+            "up/crypto": 41.55204108248385,
+            "up/connect_address_enable": 50.40375315049456,
+            "up/readiness": 15.658689444160936,
+            "down/revoke": 11.073404608881177,
+            "down/crypto_remove": 0.11601554991672533,
+            "down/delete_batch": 95.80617630526471,
+            "down/flows_bridge_reset": 32.276486754522416
+          }
+        },
+        {
+          "trial": 1,
+          "seconds": 60.052482793995296,
+          "setups": 5984,
+          "retirements": 5984,
+          "complete_cycles_per_second": 99.64617150847168,
+          "final_drain_seconds": 0.15866567600460257,
+          "operation_latency_ms": {
+            "up": {
+              "mean": 154.58769601554232,
+              "p50": 163.9814729999216,
+              "p95": 252.32095199999094,
+              "max": 348.6471039998378
+            },
+            "down": {
+              "mean": 204.85745222869204,
+              "p50": 204.7471250000399,
+              "p95": 257.67821799991,
+              "max": 347.33289699988745
+            }
+          },
+          "mean_phase_latency_ms": {
+            "up/create_links": 45.001694002591016,
+            "up/crypto": 42.080364696355396,
+            "up/connect_address_enable": 51.84036408856978,
+            "up/readiness": 15.663036751418737,
+            "down/revoke": 11.103902031166,
+            "down/crypto_remove": 0.1156358553637292,
+            "down/delete_batch": 95.34805190107186,
+            "down/flows_bridge_reset": 32.87845059675854
+          }
+        },
+        {
+          "trial": 2,
+          "seconds": 60.512072757999704,
+          "setups": 6144,
+          "retirements": 6144,
+          "complete_cycles_per_second": 101.5334580352441,
+          "final_drain_seconds": 0.18177596799796447,
+          "operation_latency_ms": {
+            "up": {
+              "mean": 153.2527931319174,
+              "p50": 161.2097160000303,
+              "p95": 254.91042599992397,
+              "max": 329.25083500003893
+            },
+            "down": {
+              "mean": 205.8500546144217,
+              "p50": 205.11693899993588,
+              "p95": 259.4542519998413,
+              "max": 325.2839220001533
+            }
+          },
+          "mean_phase_latency_ms": {
+            "up/create_links": 45.68592564949568,
+            "up/crypto": 41.58440445255462,
+            "up/connect_address_enable": 51.15546912288381,
+            "up/readiness": 14.82487900203605,
+            "down/revoke": 11.828948732993283,
+            "down/crypto_remove": 0.11430783406559304,
+            "down/delete_batch": 95.21826319271239,
+            "down/flows_bridge_reset": 32.25772428442299
+          }
+        }
+      ],
+      "preservation": [
+        {
+          "cleaned": true,
+          "preservation": {
+            "containers": true,
+            "links": true,
+            "routes": true,
+            "services": true,
+            "xfrm_hash": true,
+            "policy_hash": true,
+            "iptables_hash": true
+          }
+        },
+        {
+          "cleaned": true,
+          "preservation": {
+            "containers": true,
+            "links": true,
+            "routes": true,
+            "services": true,
+            "xfrm_hash": true,
+            "policy_hash": true,
+            "iptables_hash": true
+          }
+        }
+      ],
+      "frame_checks": null,
+      "negative_checks": null,
+      "within_window_replay_observation": null
+    },
+    "redirect-cross-batched-3x60.json": {
+      "sha256": "7d86cafcdeb2507c06de85b79c9365579293d11d7a228a2fded31958e4fefd1a",
+      "median_cycles_per_second": 136.9502434113365,
+      "setups": 24672,
+      "retirements": 24672,
+      "trials": [
+        {
+          "trial": 0,
+          "seconds": 60.11119235600199,
+          "setups": 8352,
+          "retirements": 8352,
+          "complete_cycles_per_second": 138.94251091437664,
+          "final_drain_seconds": 0.17047345799801406,
+          "operation_latency_ms": {
+            "up": {
+              "mean": 126.75225501891866,
+              "p50": 130.00603599994065,
+              "p95": 211.64225699999406,
+              "max": 316.5356829999837
+            },
+            "down": {
+              "mean": 159.0563074162496,
+              "p50": 155.4342069998711,
+              "p95": 224.06376800017824,
+              "max": 333.22031100010463
+            }
+          },
+          "mean_phase_latency_ms": {
+            "up/create_links": 53.67407683435137,
+            "up/crypto": 35.512835087703294,
+            "up/connect_address_enable": 32.13745192289194,
+            "up/readiness": 5.425972461027211,
+            "down/revoke": 20.67837469552247,
+            "down/crypto_remove": 0.10664180741123548,
+            "down/delete_batch": 91.56471243294612,
+            "down/flows_bridge_reset": 2.472104564355382
+          }
+        },
+        {
+          "trial": 1,
+          "seconds": 60.17974429199967,
+          "setups": 8096,
+          "retirements": 8096,
+          "complete_cycles_per_second": 134.5303157274513,
+          "final_drain_seconds": 0.14395125000010012,
+          "operation_latency_ms": {
+            "up": {
+              "mean": 126.44790164463943,
+              "p50": 129.54980699987573,
+              "p95": 213.10784199999944,
+              "max": 283.40885700004037
+            },
+            "down": {
+              "mean": 159.20705638506595,
+              "p50": 154.0308759999789,
+              "p95": 226.43010900014815,
+              "max": 293.8556840001638
+            }
+          },
+          "mean_phase_latency_ms": {
+            "up/create_links": 53.689458923171664,
+            "up/crypto": 36.225822233263095,
+            "up/connect_address_enable": 31.243919161869915,
+            "up/readiness": 5.286742815711549,
+            "down/revoke": 20.49902489031524,
+            "down/crypto_remove": 0.1088537609935601,
+            "down/delete_batch": 93.1937402569156,
+            "down/flows_bridge_reset": 2.4812994273726665
+          }
+        },
+        {
+          "trial": 2,
+          "seconds": 60.05100681200565,
+          "setups": 8224,
+          "retirements": 8224,
+          "complete_cycles_per_second": 136.9502434113365,
+          "final_drain_seconds": 0.15347085699613672,
+          "operation_latency_ms": {
+            "up": {
+              "mean": 128.44447715770826,
+              "p50": 130.38625900003353,
+              "p95": 218.3369730000777,
+              "max": 300.19857199999933
+            },
+            "down": {
+              "mean": 160.273528420416,
+              "p50": 153.7124680000943,
+              "p95": 228.85343400002967,
+              "max": 306.77614000001086
+            }
+          },
+          "mean_phase_latency_ms": {
+            "up/create_links": 55.42693869546517,
+            "up/crypto": 36.05932906772897,
+            "up/connect_address_enable": 31.501089622568564,
+            "up/readiness": 5.455259731395212,
+            "down/revoke": 22.043779936405528,
+            "down/crypto_remove": 0.10597604304550366,
+            "down/delete_batch": 92.09781810700176,
+            "down/flows_bridge_reset": 2.4486517765681115
+          }
+        }
+      ],
+      "preservation": [
+        {
+          "cleaned": true,
+          "preservation": {
+            "containers": true,
+            "links": true,
+            "routes": true,
+            "services": true,
+            "xfrm_hash": true,
+            "policy_hash": true,
+            "iptables_hash": true
+          }
+        },
+        {
+          "cleaned": true,
+          "preservation": {
+            "containers": true,
+            "links": true,
+            "routes": true,
+            "services": true,
+            "xfrm_hash": true,
+            "policy_hash": true,
+            "iptables_hash": true
+          }
+        }
+      ],
+      "frame_checks": null,
+      "negative_checks": null,
+      "within_window_replay_observation": null
+    },
+    "direct-same-3x60.json": {
+      "sha256": "ea7ea486572e5752ec8a227bc6c8d81aa29cc9927c779df1052e82516e6c511f",
+      "median_cycles_per_second": 132.39903492021142,
+      "setups": 23872,
+      "retirements": 23872,
+      "trials": [
+        {
+          "trial": 0,
+          "seconds": 60.18170755400001,
+          "setups": 7968,
+          "retirements": 7968,
+          "complete_cycles_per_second": 132.39903492021142,
+          "final_drain_seconds": 0.06667951999997968,
+          "operation_latency_ms": {
+            "up": {
+              "mean": 194.16989220155568,
+              "p50": 206.56388499992318,
+              "p95": 272.1848310000041,
+              "max": 413.53282799991575
+            },
+            "down": {
+              "mean": 198.67756063980806,
+              "p50": 203.5988879999877,
+              "p95": 279.78166899993084,
+              "max": 412.1008270001312
+            }
+          },
+          "mean_phase_latency_ms": {
+            "up/create_links": 22.76867987901651,
+            "up/crypto": 161.31287416453304,
+            "up/connect_address_enable": 7.8155547971889465,
+            "up/readiness": 2.27139487500133,
+            "down/revoke": 22.08055564909528,
+            "down/delete_batch": 98.01918026505518,
+            "down/flows_bridge_reset": 2.0359200583579744
+          }
+        },
+        {
+          "trial": 1,
+          "seconds": 60.114217628000006,
+          "setups": 7968,
+          "retirements": 7968,
+          "complete_cycles_per_second": 132.54767864247583,
+          "final_drain_seconds": 0.09121660100004192,
+          "operation_latency_ms": {
+            "up": {
+              "mean": 193.25382207781163,
+              "p50": 204.9755829998503,
+              "p95": 279.6946640000897,
+              "max": 391.402466000045
+            },
+            "down": {
+              "mean": 200.38970911696677,
+              "p50": 202.38032799989014,
+              "p95": 288.3322899999712,
+              "max": 378.05948199979866
+            }
+          },
+          "mean_phase_latency_ms": {
+            "up/create_links": 22.90105189269465,
+            "up/crypto": 160.1142041532383,
+            "up/connect_address_enable": 7.968775180721851,
+            "up/readiness": 2.2685519909627936,
+            "down/revoke": 22.400366307729545,
+            "down/delete_batch": 98.53280236948687,
+            "down/flows_bridge_reset": 1.839800518449277
+          }
+        },
+        {
+          "trial": 2,
+          "seconds": 60.163313335999874,
+          "setups": 7936,
+          "retirements": 7936,
+          "complete_cycles_per_second": 131.90762875174534,
+          "final_drain_seconds": 0.0855313050001314,
+          "operation_latency_ms": {
+            "up": {
+              "mean": 194.96851580909703,
+              "p50": 208.21947099989302,
+              "p95": 261.77421700003833,
+              "max": 340.88011900007587
+            },
+            "down": {
+              "mean": 199.2575901160532,
+              "p50": 206.20667999992293,
+              "p95": 272.2400010000001,
+              "max": 345.89146200005416
+            }
+          },
+          "mean_phase_latency_ms": {
+            "up/create_links": 21.413754652848073,
+            "up/crypto": 163.23213935824091,
+            "up/connect_address_enable": 7.784744426410965,
+            "up/readiness": 2.536573286669098,
+            "down/revoke": 21.400638201864982,
+            "down/delete_batch": 97.7432367943546,
+            "down/flows_bridge_reset": 1.8365500682949194
+          }
+        }
+      ],
+      "preservation": {
+        "containers": true,
+        "links": true,
+        "routes": true,
+        "services": true,
+        "xfrm_hash": true,
+        "policy_hash": true,
+        "iptables_hash": true
+      },
+      "frame_checks": [
+        {
+          "label": "active-frame-parity",
+          "sent": 12,
+          "received": 12,
+          "expected": 12
+        },
+        {
+          "label": "inactive-key",
+          "sent": 12,
+          "received": 0,
+          "expected": 0
+        },
+        {
+          "label": "restored-key",
+          "sent": 12,
+          "received": 12,
+          "expected": 12
+        }
+      ],
+      "negative_checks": null,
+      "within_window_replay_observation": null
+    },
+    "bridge-same-3x60.json": {
+      "sha256": "890f393da134471209b50211ec1e0f44bcbf57c069b0b50409eba8dac562886b",
+      "median_cycles_per_second": 86.48720636233999,
+      "setups": 15264,
+      "retirements": 15264,
+      "trials": [
+        {
+          "trial": 0,
+          "seconds": 60.30949800999997,
+          "setups": 5216,
+          "retirements": 5216,
+          "complete_cycles_per_second": 86.48720636233999,
+          "final_drain_seconds": 0.17126566299998558,
+          "operation_latency_ms": {
+            "up": {
+              "mean": 295.1170112833561,
+              "p50": 232.60537600003772,
+              "p95": 590.6402170001002,
+              "max": 767.1551989999443
+            },
+            "down": {
+              "mean": 271.4299781681356,
+              "p50": 217.2594599999229,
+              "p95": 507.0013320000726,
+              "max": 689.9807719998989
+            }
+          },
+          "mean_phase_latency_ms": {
+            "up/create_links": 62.83179334509176,
+            "up/crypto": 195.8678199971243,
+            "up/connect_address_enable": 27.155702740031373,
+            "up/readiness": 9.260110743100144,
+            "down/revoke": 25.35549783282353,
+            "down/delete_batch": 108.1101109631816,
+            "down/flows_bridge_reset": 17.08804695264577
+          }
+        },
+        {
+          "trial": 1,
+          "seconds": 60.056857731000036,
+          "setups": 4736,
+          "retirements": 4736,
+          "complete_cycles_per_second": 78.85860464450141,
+          "final_drain_seconds": 0.12087132399983602,
+          "operation_latency_ms": {
+            "up": {
+              "mean": 321.933019031883,
+              "p50": 268.8710809998156,
+              "p95": 629.8121370000445,
+              "max": 854.415648000213
+            },
+            "down": {
+              "mean": 294.62358761465464,
+              "p50": 247.99088700001448,
+              "p95": 565.6312149999394,
+              "max": 825.465622000138
+            }
+          },
+          "mean_phase_latency_ms": {
+            "up/create_links": 72.33602647339521,
+            "up/crypto": 209.3232614712885,
+            "up/connect_address_enable": 30.9502138289683,
+            "up/readiness": 9.32191480447516,
+            "down/revoke": 29.72361273648616,
+            "down/delete_batch": 110.00383672973926,
+            "down/flows_bridge_reset": 17.807349621832977
+          }
+        },
+        {
+          "trial": 2,
+          "seconds": 60.435152189999826,
+          "setups": 5312,
+          "retirements": 5312,
+          "complete_cycles_per_second": 87.8958653615995,
+          "final_drain_seconds": 0.23848257600002398,
+          "operation_latency_ms": {
+            "up": {
+              "mean": 293.8772202289152,
+              "p50": 211.8622409998352,
+              "p95": 639.0561279999929,
+              "max": 921.1855640000977
+            },
+            "down": {
+              "mean": 269.73278417884137,
+              "p50": 204.25490900015575,
+              "p95": 540.4480410002179,
+              "max": 789.4159249999575
+            }
+          },
+          "mean_phase_latency_ms": {
+            "up/create_links": 60.69919752390297,
+            "up/crypto": 195.49715547232566,
+            "up/connect_address_enable": 28.354722038584978,
+            "up/readiness": 9.324512239261857,
+            "down/revoke": 22.84813233132747,
+            "down/delete_batch": 113.13684513252923,
+            "down/flows_bridge_reset": 17.092854219506368
+          }
+        }
+      ],
+      "preservation": {
+        "containers": true,
+        "links": true,
+        "routes": true,
+        "services": true,
+        "xfrm_hash": true,
+        "policy_hash": true,
+        "iptables_hash": true
+      },
+      "frame_checks": [
+        {
+          "label": "active-frame-parity",
+          "sent": 12,
+          "received": 12,
+          "expected": 12
+        },
+        {
+          "label": "plaintext-parent-injection",
+          "sent": 12,
+          "received": 0,
+          "expected": 0
+        },
+        {
+          "label": "inactive-key",
+          "sent": 12,
+          "received": 0,
+          "expected": 0
+        },
+        {
+          "label": "restored-key",
+          "sent": 12,
+          "received": 12,
+          "expected": 12
+        }
+      ],
+      "negative_checks": [
+        "absent-before-creation",
+        "current-key-replay-outside-128-packet-window",
+        "absent-after-retirement",
+        "previous-generation-replay"
+      ],
+      "within_window_replay_observation": {
+        "injected": 20,
+        "received": 20
+      }
+    },
+    "redirect-same-3x60.json": {
+      "sha256": "b684c6026de732e8fd5c353487eb130da2f61ec6a207290e8763301133e4dc7b",
+      "median_cycles_per_second": 140.22196552595778,
+      "setups": 24960,
+      "retirements": 24960,
+      "trials": [
+        {
+          "trial": 0,
+          "seconds": 60.01952886299978,
+          "setups": 7776,
+          "retirements": 7776,
+          "complete_cycles_per_second": 129.55783138100688,
+          "final_drain_seconds": 0.07136232800030484,
+          "operation_latency_ms": {
+            "up": {
+              "mean": 204.9064682316104,
+              "p50": 149.85009100018942,
+              "p95": 462.0735319999767,
+              "max": 618.2169109997631
+            },
+            "down": {
+              "mean": 190.60935619084458,
+              "p50": 147.2310919998563,
+              "p95": 418.6278439997295,
+              "max": 559.0161220002301
+            }
+          },
+          "mean_phase_latency_ms": {
+            "up/create_links": 61.78077965239382,
+            "up/crypto": 123.07028777250031,
+            "up/connect_address_enable": 15.92082503677998,
+            "up/readiness": 4.133144468364473,
+            "down/revoke": 25.326538332305205,
+            "down/delete_batch": 91.4856364897001,
+            "down/flows_bridge_reset": 2.4428979120385015
+          }
+        },
+        {
+          "trial": 1,
+          "seconds": 60.13634431199989,
+          "setups": 8768,
+          "retirements": 8768,
+          "complete_cycles_per_second": 145.80201208290595,
+          "final_drain_seconds": 0.08565721500008294,
+          "operation_latency_ms": {
+            "up": {
+              "mean": 182.60657341115547,
+              "p50": 135.12767300017003,
+              "p95": 472.1566910002366,
+              "max": 738.5488719996829
+            },
+            "down": {
+              "mean": 172.86669052018829,
+              "p50": 131.69825800014223,
+              "p95": 405.72068800020133,
+              "max": 542.9688079998414
+            }
+          },
+          "mean_phase_latency_ms": {
+            "up/create_links": 54.49029696133779,
+            "up/crypto": 109.34542267495428,
+            "up/connect_address_enable": 14.430088606868322,
+            "up/readiness": 4.338961729925306,
+            "down/revoke": 21.667299384580392,
+            "down/delete_batch": 84.01008138686855,
+            "down/flows_bridge_reset": 2.7609893552686007
+          }
+        },
+        {
+          "trial": 2,
+          "seconds": 60.01912730599997,
+          "setups": 8416,
+          "retirements": 8416,
+          "complete_cycles_per_second": 140.22196552595778,
+          "final_drain_seconds": 0.07987979699964853,
+          "operation_latency_ms": {
+            "up": {
+              "mean": 190.21512024132548,
+              "p50": 139.11973899985242,
+              "p95": 439.9526799998057,
+              "max": 758.4107580000818
+            },
+            "down": {
+              "mean": 178.31936184993233,
+              "p50": 136.96744799972294,
+              "p95": 381.8140590001349,
+              "max": 512.5074620000305
+            }
+          },
+          "mean_phase_latency_ms": {
+            "up/create_links": 55.75594321993846,
+            "up/crypto": 115.37790310087793,
+            "up/connect_address_enable": 14.978598192015214,
+            "up/readiness": 4.101138019128675,
+            "down/revoke": 21.94116707022647,
+            "down/delete_batch": 87.32648529277051,
+            "down/flows_bridge_reset": 2.8197512997869865
+          }
+        }
+      ],
+      "preservation": {
+        "containers": true,
+        "links": true,
+        "routes": true,
+        "services": true,
+        "xfrm_hash": true,
+        "policy_hash": true,
+        "iptables_hash": true
+      },
+      "frame_checks": [
+        {
+          "label": "active-frame-parity",
+          "sent": 12,
+          "received": 12,
+          "expected": 12
+        },
+        {
+          "label": "plaintext-parent-injection",
+          "sent": 12,
+          "received": 0,
+          "expected": 0
+        },
+        {
+          "label": "inactive-key",
+          "sent": 12,
+          "received": 0,
+          "expected": 0
+        },
+        {
+          "label": "restored-key",
+          "sent": 12,
+          "received": 12,
+          "expected": 12
+        }
+      ],
+      "negative_checks": [
+        "absent-before-creation",
+        "current-key-replay-outside-128-packet-window",
+        "absent-after-retirement",
+        "previous-generation-replay"
+      ],
+      "within_window_replay_observation": {
+        "injected": 20,
+        "received": 20
+      }
+    }
+  }
+}

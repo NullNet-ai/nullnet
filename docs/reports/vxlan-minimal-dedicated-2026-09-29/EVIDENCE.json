@@ -1,0 +1,12 @@
+{
+  "archive": "~/.codex/backups/nullnet-layer1-20261008/research-evidence",
+  "purpose": "Large raw captures are preserved outside Git; reports, scripts and compact results remain in this directory.",
+  "files": [
+    {
+      "file": "evidence.tar.gz",
+      "sha256": "c2c97201c8bd676c843b77304b6d62c17ca6bcef87378246f4f0648fe7d03544",
+      "bytes": 13489804,
+      "archive_file": "docs/reports/vxlan-minimal-dedicated-2026-09-29/evidence.tar.gz"
+    }
+  ]
+}

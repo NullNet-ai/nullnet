@@ -1,0 +1,197 @@
+{
+  "label": "phase1-queues-c256-t1",
+  "variant": "phase1-queues",
+  "concurrency": 256,
+  "count": 1008,
+  "load": {
+    "unix_start": 1791467746.7855682,
+    "unix_end": 1791467748.7645476,
+    "count": 1008,
+    "concurrency": 256,
+    "identities": 1008,
+    "services": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "ok": 1008,
+    "errors": 0,
+    "request_seconds": 1.9787340599978052,
+    "requests_per_second": 509.41661154865756,
+    "p50_ms": 382.9821910003375,
+    "p95_ms": 695.3618739971716
+  },
+  "nodes": {
+    "103": {
+      "label": "phase1-queues-c256-t1",
+      "before": {
+        "unix": 1791467746.3568919,
+        "host_cpu_seconds": 7870.14,
+        "client_cpu": "usage_usec 1030634\nuser_usec 371085\nsystem_usec 659549\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "188306",
+        "cursor": "s=67bfec5eb55c4e40a0a22a68ed50db40;i=260e5f7;b=59c471ae03e24964a348d7b4014e5037;m=3d3436e4d;t=65d5496a63b2c;x=6a065fb2be49a378"
+      },
+      "after": {
+        "unix": 1791467752.375859,
+        "host_cpu_seconds": 7879.86,
+        "client_cpu": "usage_usec 8384811\nuser_usec 2007452\nsystem_usec 6377358\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "188306"
+      },
+      "host_cpu_seconds": 9.719999999999345,
+      "setups": 1008,
+      "retirements": 1008,
+      "lifecycle_errors": [],
+      "remaining_owned_links": [],
+      "last_retirement_unix": 1791467751.349259
+    },
+    "104": {
+      "label": "phase1-queues-c256-t1",
+      "before": {
+        "unix": 1791467746.3533373,
+        "host_cpu_seconds": 3440.86,
+        "client_cpu": "usage_usec 1103598\nuser_usec 441450\nsystem_usec 662148\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "88708",
+        "cursor": "s=3d9af771a9944221b78bfb41a34fe8af;i=36d5a5e;b=fe81f69071ca41dca257d62dfb3bd8b0;m=3d349f7f6;t=65d549699c811;x=43662d1be82350cd"
+      },
+      "after": {
+        "unix": 1791467752.3787107,
+        "host_cpu_seconds": 3448.32,
+        "client_cpu": "usage_usec 4954508\nuser_usec 1895426\nsystem_usec 3059081\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "88708"
+      },
+      "host_cpu_seconds": 7.460000000000036,
+      "setups": 1008,
+      "retirements": 1008,
+      "lifecycle_errors": [],
+      "remaining_owned_links": [],
+      "last_retirement_unix": 1791467749.96606
+    }
+  },
+  "history_before": [
+    8960,
+    0,
+    8960
+  ],
+  "history_after": [
+    9968,
+    0,
+    9968
+  ],
+  "graph": {
+    "proxies": [
+      "192.168.1.104"
+    ],
+    "nodes": [
+      {
+        "id": "p1-01.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-02.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-03.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-04.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-05.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-06.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-07.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-08.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-09.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-10.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-11.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-12.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      }
+    ],
+    "edges": []
+  },
+  "internet_checks": [
+    {
+      "elapsed": 5.00040287199954,
+      "internet": true
+    }
+  ],
+  "complete_kernel_cleanup_seconds": 4.563690662384033,
+  "complete_cycles_per_second": 220.87386603749988,
+  "drain_observed_unix": 1791467752.470165,
+  "conservative_complete_cycles_per_second": 180.22068958461747
+}

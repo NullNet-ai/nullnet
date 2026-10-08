@@ -1,0 +1,12 @@
+{
+  "archive": "~/.codex/backups/nullnet-layer1-20261008/research-evidence",
+  "purpose": "Large raw captures are preserved outside Git; reports, scripts and compact results remain in this directory.",
+  "files": [
+    {
+      "file": "evidence.tar.gz",
+      "sha256": "0345ae3cddff13b27eef46c6fac9b7adba44a7880b1ba92f2b53aa73aaa4eb35",
+      "bytes": 88620629,
+      "archive_file": "docs/reports/kernel-parallelism-2026-10-01/evidence.tar.gz"
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+['Ok(())', 'Ok(())']
+["encrypted-A"]
+["encrypted-B"]
+sent plaintext, wrong-edge, correct encrypted, replay and damaged-authentication packets
+
+PLAINTEXT_WRONG_EDGE_REPLAY_AUTHENTICATION_PASS
+['ok', 'ok']
+
+running 1 test
+PING 10.251.250.3 (10.251.250.3) 1000(1028) bytes of data.
+1008 bytes from 10.251.250.3: icmp_seq=1 ttl=64 time=0.845 ms
+1008 bytes from 10.251.250.3: icmp_seq=2 ttl=64 time=0.427 ms
+1008 bytes from 10.251.250.3: icmp_seq=3 ttl=64 time=0.623 ms
+
+--- 10.251.250.3 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2056ms
+rtt min/avg/max/mdev = 0.427/0.631/0.845/0.170 ms
+PING 10.251.251.3 (10.251.251.3) 1000(1028) bytes of data.
+1008 bytes from 10.251.251.3: icmp_seq=1 ttl=64 time=0.724 ms
+1008 bytes from 10.251.251.3: icmp_seq=2 ttl=64 time=0.714 ms
+1008 bytes from 10.251.251.3: icmp_seq=3 ttl=64 time=0.708 ms
+
+--- 10.251.251.3 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2044ms
+rtt min/avg/max/mdev = 0.708/0.715/0.724/0.006 ms
+PING 10.251.251.3 (10.251.251.3) 1000(1028) bytes of data.
+1008 bytes from 10.251.251.3: icmp_seq=1 ttl=64 time=0.285 ms
+1008 bytes from 10.251.251.3: icmp_seq=2 ttl=64 time=0.747 ms
+1008 bytes from 10.251.251.3: icmp_seq=3 ttl=64 time=0.709 ms
+
+--- 10.251.251.3 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2035ms
+rtt min/avg/max/mdev = 0.285/0.580/0.747/0.209 ms
+test commands::vxlan::endpoint_packet_tests::cross_host_fresh_endpoint_packet_proof ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 107 filtered out; finished in 16.34s
+
+
+
+running 1 test
+PING 10.251.250.1 (10.251.250.1) 1000(1028) bytes of data.
+1008 bytes from 10.251.250.1: icmp_seq=1 ttl=64 time=0.358 ms
+1008 bytes from 10.251.250.1: icmp_seq=2 ttl=64 time=0.568 ms
+1008 bytes from 10.251.250.1: icmp_seq=3 ttl=64 time=0.692 ms
+
+--- 10.251.250.1 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2045ms
+rtt min/avg/max/mdev = 0.358/0.539/0.692/0.137 ms
+PING 10.251.251.1 (10.251.251.1) 1000(1028) bytes of data.
+1008 bytes from 10.251.251.1: icmp_seq=1 ttl=64 time=0.332 ms
+1008 bytes from 10.251.251.1: icmp_seq=2 ttl=64 time=0.440 ms
+1008 bytes from 10.251.251.1: icmp_seq=3 ttl=64 time=0.414 ms
+
+--- 10.251.251.1 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2047ms
+rtt min/avg/max/mdev = 0.332/0.395/0.440/0.046 ms
+PING 10.251.251.1 (10.251.251.1) 1000(1028) bytes of data.
+1008 bytes from 10.251.251.1: icmp_seq=1 ttl=64 time=0.577 ms
+1008 bytes from 10.251.251.1: icmp_seq=2 ttl=64 time=0.668 ms
+1008 bytes from 10.251.251.1: icmp_seq=3 ttl=64 time=0.685 ms
+
+--- 10.251.251.1 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2053ms
+rtt min/avg/max/mdev = 0.577/0.643/0.685/0.047 ms
+test commands::vxlan::endpoint_packet_tests::cross_host_fresh_endpoint_packet_proof ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 107 filtered out; finished in 16.55s
+
+

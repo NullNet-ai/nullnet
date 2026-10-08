@@ -1,0 +1,370 @@
+{
+  "label": "baseline-acked-dependencies-proxy",
+  "load": {
+    "unix_start": 1791480114.5451715,
+    "unix_end": 1791480118.442314,
+    "count": 64,
+    "concurrency": 16,
+    "identities": 64,
+    "services": [
+      1
+    ],
+    "ok": 64,
+    "errors": 0,
+    "request_seconds": 3.897123355000076,
+    "requests_per_second": 16.422369571106056,
+    "p50_ms": 461.58814699811046,
+    "p95_ms": 1137.6341839968518
+  },
+  "graph_during": {
+    "proxies": [
+      "192.168.1.104"
+    ],
+    "nodes": [
+      {
+        "id": "p1-01.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-02.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-03.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-04.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-05.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-06.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-07.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-08.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-09.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-10.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-11.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-12.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      }
+    ],
+    "edges": [
+      {
+        "from": "198.18.81.190",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 149,
+        "setup_ms": 1773
+      },
+      {
+        "from": "198.18.81.191",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 263,
+        "setup_ms": 1754
+      },
+      {
+        "from": "198.18.81.192",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 286,
+        "setup_ms": 1717
+      },
+      {
+        "from": "p1-01.test",
+        "to": "p1-02.test",
+        "net_id": 187,
+        "setup_ms": 707
+      },
+      {
+        "from": "p1-01.test",
+        "to": "p1-07.test",
+        "net_id": 110,
+        "setup_ms": 260
+      },
+      {
+        "from": "p1-02.test",
+        "to": "p1-04.test",
+        "net_id": 197,
+        "setup_ms": 190
+      },
+      {
+        "from": "p1-02.test",
+        "to": "p1-09.test",
+        "net_id": 340,
+        "setup_ms": 121
+      },
+      {
+        "from": "p1-03.test",
+        "to": "p1-10.test",
+        "net_id": 273,
+        "setup_ms": 83
+      },
+      {
+        "from": "p1-04.test",
+        "to": "p1-06.test",
+        "net_id": 278,
+        "setup_ms": 188
+      },
+      {
+        "from": "p1-04.test",
+        "to": "p1-12.test",
+        "net_id": 303,
+        "setup_ms": 93
+      },
+      {
+        "from": "p1-07.test",
+        "to": "p1-03.test",
+        "net_id": 283,
+        "setup_ms": 411
+      },
+      {
+        "from": "p1-07.test",
+        "to": "p1-08.test",
+        "net_id": 130,
+        "setup_ms": 434
+      },
+      {
+        "from": "p1-08.test",
+        "to": "p1-05.test",
+        "net_id": 326,
+        "setup_ms": 220
+      },
+      {
+        "from": "p1-09.test",
+        "to": "p1-11.test",
+        "net_id": 234,
+        "setup_ms": 134
+      }
+    ]
+  },
+  "graph_after": {
+    "proxies": [
+      "192.168.1.104"
+    ],
+    "nodes": [
+      {
+        "id": "p1-01.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-02.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-03.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-04.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-05.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-06.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-07.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-08.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-09.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-10.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-11.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-12.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      }
+    ],
+    "edges": []
+  },
+  "nodes": {
+    "103": {
+      "label": "baseline-acked-dependencies-proxy",
+      "before": {
+        "unix": 1791480113.7257466,
+        "host_cpu_seconds": 13552.91,
+        "client_cpu": "usage_usec 66245358\nuser_usec 20609851\nsystem_usec 45635506\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "296716",
+        "conntrack_count": 44739,
+        "cursor": "s=67bfec5eb55c4e40a0a22a68ed50db40;i=265a9a2;b=59c471ae03e24964a348d7b4014e5037;m=6b4478eb6;t=65d5777aa5b95;x=3e24ccc7a9c31a20"
+      },
+      "after": {
+        "unix": 1791480122.021974,
+        "host_cpu_seconds": 13563.72,
+        "client_cpu": "usage_usec 74577112\nuser_usec 23052272\nsystem_usec 51524840\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "296716",
+        "conntrack_count": 37725
+      },
+      "host_cpu_seconds": 10.80999999999949,
+      "setups": 76,
+      "retirements": 76,
+      "lifecycle_errors": [],
+      "remaining_owned_links": [],
+      "server_retirements": 0,
+      "last_server_retirement_unix": null,
+      "last_retirement_unix": 1791480121.18744
+    },
+    "104": {
+      "label": "baseline-acked-dependencies-proxy",
+      "before": {
+        "unix": 1791480113.7103405,
+        "host_cpu_seconds": 5443.76,
+        "client_cpu": "usage_usec 44981366\nuser_usec 11318256\nsystem_usec 33663109\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "156207",
+        "conntrack_count": 45791,
+        "cursor": "s=3d9af771a9944221b78bfb41a34fe8af;i=38daee2;b=fe81f69071ca41dca257d62dfb3bd8b0;m=6b477367c;t=65d5777c70696;x=87e430382dea0cf7",
+        "server_cursor": "s=3d9af771a9944221b78bfb41a34fe8af;i=38daeea;b=fe81f69071ca41dca257d62dfb3bd8b0;m=6b47cc1b5;t=65d5777cc91d0;x=a3111a331ab0b935"
+      },
+      "after": {
+        "unix": 1791480122.0554276,
+        "host_cpu_seconds": 5449.64,
+        "client_cpu": "usage_usec 47778100\nuser_usec 12026363\nsystem_usec 35751737\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "156207",
+        "conntrack_count": 47481
+      },
+      "host_cpu_seconds": 5.880000000000109,
+      "setups": 74,
+      "retirements": 74,
+      "lifecycle_errors": [],
+      "remaining_owned_links": [],
+      "server_retirements": 75,
+      "last_server_retirement_unix": 1791480121.366984,
+      "last_retirement_unix": 1791480121.366793
+    }
+  }
+}

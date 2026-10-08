@@ -1,0 +1,227 @@
+{
+  "date": "2026-09-28",
+  "status": "cross-host-gate-failed",
+  "product_integrated": false,
+  "superseded_product_changes_removed": false,
+  "slots": 64,
+  "workers_per_host": 32,
+  "kernel": "6.12.95+deb13-amd64",
+  "completed_minute": {
+    "trial": 0,
+    "seconds": 60.01097833899985,
+    "waves": 942,
+    "setups": 30144,
+    "retirements": 30144,
+    "setups_per_second": 502.3080915248146,
+    "retirements_per_second": 502.3080915248146
+  },
+  "sustained_attempts": 3,
+  "sustained_failures": 3,
+  "cause": "unestablished post-reuse UDP receive timeout",
+  "proof": {
+    "trials": [],
+    "slots": 2,
+    "ready": [
+      {
+        "ready": true,
+        "preparation_seconds": 0.034652272000130324
+      },
+      {
+        "ready": true,
+        "preparation_seconds": 0.01767993600014961
+      }
+    ],
+    "proof": [
+      {
+        "label": "prepared-idle",
+        "result": [
+          {
+            "sent": 0
+          },
+          {
+            "received": 0
+          }
+        ]
+      },
+      {
+        "label": "active-frame-parity",
+        "result": [
+          {
+            "sent": 12
+          },
+          {
+            "received": 12
+          }
+        ]
+      },
+      {
+        "label": "ciphertext-only",
+        "result": {
+          "esp_packets": 15,
+          "plaintext": 0
+        }
+      },
+      {
+        "label": "current-key-replay-rejected",
+        "result": {
+          "received": 0
+        }
+      },
+      {
+        "label": "plaintext-rejected",
+        "result": [
+          {
+            "attempted": 12,
+            "local_drops": 12
+          },
+          {
+            "received": 0
+          }
+        ]
+      },
+      {
+        "label": "wrong-vni-rejected",
+        "result": [
+          {
+            "attempted": 12,
+            "local_drops": 0
+          },
+          {
+            "received": 0
+          }
+        ]
+      },
+      {
+        "label": "missing-rejected",
+        "result": [
+          {
+            "sent": 12
+          },
+          {
+            "received": 0
+          }
+        ]
+      },
+      {
+        "label": "missing-unrelated-slot-survived",
+        "result": true
+      },
+      {
+        "label": "missing-recovered",
+        "result": [
+          {
+            "sent": 12
+          },
+          {
+            "received": 12
+          }
+        ]
+      },
+      {
+        "label": "wrong-key-rejected",
+        "result": [
+          {
+            "sent": 12
+          },
+          {
+            "received": 0
+          }
+        ]
+      },
+      {
+        "label": "wrong-key-unrelated-slot-survived",
+        "result": true
+      },
+      {
+        "label": "wrong-key-recovered",
+        "result": [
+          {
+            "sent": 12
+          },
+          {
+            "received": 12
+          }
+        ]
+      },
+      {
+        "label": "reset-idle",
+        "result": [
+          {
+            "sent": 0
+          },
+          {
+            "received": 0
+          }
+        ]
+      },
+      {
+        "label": "old-key-replay-rejected",
+        "result": {
+          "received": 0
+        }
+      },
+      {
+        "label": "new-generation-frame-parity",
+        "result": [
+          {
+            "sent": 12
+          },
+          {
+            "received": 12
+          }
+        ]
+      },
+      {
+        "label": "final-idle",
+        "result": [
+          {
+            "sent": 0
+          },
+          {
+            "received": 0
+          }
+        ]
+      }
+    ],
+    "completed": true,
+    "cleanup": [
+      {
+        "cleaned": true,
+        "preservation": {
+          "containers": true,
+          "links": true,
+          "routes": true,
+          "services": true,
+          "xfrm_hash": true,
+          "policy_hash": true,
+          "iptables_hash": true
+        }
+      },
+      {
+        "cleaned": true,
+        "preservation": {
+          "containers": true,
+          "links": true,
+          "routes": true,
+          "services": true,
+          "xfrm_hash": true,
+          "policy_hash": true,
+          "iptables_hash": true
+        }
+      }
+    ]
+  },
+  "source_sha256": "dd2ac83843fa320b7c2773b0f6a6238b4a3b11f53938e2fe1c6337bcc8ec5e18",
+  "completed_minute_endpoint_execution_ms": {
+    "up": {
+      "p50": 20.215905999975803,
+      "p95": 29.75562399979026,
+      "p99": 36.54348100008065
+    },
+    "down": {
+      "p50": 19.4990670001971,
+      "p95": 29.28453000004083,
+      "p99": 35.97201000002315
+    }
+  }
+}

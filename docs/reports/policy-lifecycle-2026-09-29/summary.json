@@ -1,0 +1,1912 @@
+{
+  "scope": "isolated cross-host kernel prototype",
+  "target_cycles_per_second": 500,
+  "workloads": {
+    "overlap": {
+      "sha256": "a377f7f99982e033d1520bcad9af2c82e4456fb1c08040f73850ce7be74c55db",
+      "median_cycles_per_second": 1845.6470455574288,
+      "min_cycles_per_second": 1628.6979981460238,
+      "max_cycles_per_second": 1893.4474208325257,
+      "total_cycles": 322112,
+      "trials": [
+        {
+          "trial": 0,
+          "seconds": 60.00713964600436,
+          "creations": 110752,
+          "retirements": 110752,
+          "rejection_checks": 221504,
+          "cycles_per_second": 1845.6470455574288,
+          "batches": 3461,
+          "final_drain_seconds": 0.008306502997584175,
+          "mean_batch_phase_ms": {
+            "activation_ms": 5.069984334317462,
+            "traffic_ms": 5.005518672865887,
+            "retirement_ms": 2.50003415810147,
+            "rejection_ms": 4.743972266413552
+          }
+        },
+        {
+          "trial": 1,
+          "seconds": 60.01328515900241,
+          "creations": 113632,
+          "retirements": 113632,
+          "rejection_checks": 227264,
+          "cycles_per_second": 1893.4474208325257,
+          "batches": 3551,
+          "final_drain_seconds": 0.006090367001888808,
+          "mean_batch_phase_ms": {
+            "activation_ms": 4.827489670550884,
+            "traffic_ms": 4.744428157123198,
+            "retirement_ms": 2.483182095156733,
+            "rejection_ms": 4.826752535324671
+          }
+        },
+        {
+          "trial": 2,
+          "seconds": 60.00375767100195,
+          "creations": 97728,
+          "retirements": 97728,
+          "rejection_checks": 195456,
+          "cycles_per_second": 1628.6979981460238,
+          "batches": 3054,
+          "final_drain_seconds": 0.007380861003184691,
+          "mean_batch_phase_ms": {
+            "activation_ms": 6.078951632568343,
+            "traffic_ms": 5.044058257481941,
+            "retirement_ms": 2.934443505212947,
+            "rejection_ms": 5.5707450896974136
+          }
+        }
+      ],
+      "ready": [
+        {
+          "ready": true,
+          "seconds": 3.2280050169993046,
+          "kernel": "6.12.95+deb13-amd64",
+          "containers": 8,
+          "links": 17,
+          "source": "d77ae804dd2b9938f8454338b78111ba92c23bb50d27451e00b5f6462b0de62c",
+          "bpf_source": "65872510586efa65ba7a4dbf52388a3fa0efd4cbf9ab8af234ed3d3165d7f2bb"
+        },
+        {
+          "ready": true,
+          "seconds": 3.205052023000462,
+          "kernel": "6.12.95+deb13-amd64",
+          "containers": 8,
+          "links": 17,
+          "source": "d77ae804dd2b9938f8454338b78111ba92c23bb50d27451e00b5f6462b0de62c",
+          "bpf_source": "65872510586efa65ba7a4dbf52388a3fa0efd4cbf9ab8af234ed3d3165d7f2bb"
+        }
+      ],
+      "warm": {
+        "bidirectional_exchanges": 11712,
+        "seconds": 1.0017093810020015,
+        "exchanges_per_second": 11692.013893575186
+      },
+      "proofs": [
+        {
+          "name": "default-deny",
+          "result": [
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                0,
+                64,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                0,
+                64,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "partial-prepare-denied",
+          "result": [
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "encrypted-bidirectional-traffic",
+          "result": [
+            {
+              "received": 64
+            },
+            {
+              "received": 64
+            }
+          ]
+        },
+        {
+          "name": "ciphertext-only-underlay",
+          "result": {
+            "esp_packets": 128,
+            "plaintext_udp": 0
+          }
+        },
+        {
+          "name": "encrypted-packet-replay-denied",
+          "result": {
+            "replay": {
+              "replayed": 64
+            },
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                64,
+                0,
+                0,
+                0,
+                0,
+                0,
+                64,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "crypto-missing-denied",
+          "result": {
+            "delivered": 0,
+            "counters": [
+              0,
+              0,
+              128,
+              0,
+              64,
+              0,
+              0,
+              0,
+              0,
+              0,
+              64,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "name": "crypto-missing-restored",
+          "result": [
+            {
+              "received": 64
+            },
+            {
+              "received": 64
+            }
+          ]
+        },
+        {
+          "name": "crypto-wrong-key-denied",
+          "result": {
+            "delivered": 0,
+            "counters": [
+              0,
+              0,
+              128,
+              0,
+              128,
+              0,
+              0,
+              0,
+              0,
+              0,
+              128,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "name": "crypto-wrong-key-restored",
+          "result": [
+            {
+              "received": 64
+            },
+            {
+              "received": 64
+            }
+          ]
+        },
+        {
+          "name": "source-identity-spoof-denied",
+          "result": {
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            "sender_counters": [
+              0,
+              1,
+              128,
+              0,
+              320,
+              0,
+              0,
+              0,
+              0,
+              0,
+              192,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "name": "wrong-generation-denied",
+          "result": {
+            "sent": {
+              "injected": 1,
+              "local_blocked": false
+            },
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                192,
+                0,
+                0,
+                0,
+                1,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "unknown-source-denied",
+          "result": {
+            "sent": {
+              "injected": 1,
+              "local_blocked": false
+            },
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                192,
+                0,
+                0,
+                1,
+                1,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "receiver-revocation-denied",
+          "result": {
+            "sent": {
+              "injected": 1,
+              "local_blocked": false
+            },
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                192,
+                0,
+                0,
+                2,
+                1,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "both-retired-denied",
+          "result": [
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                1,
+                192,
+                0,
+                320,
+                0,
+                0,
+                0,
+                0,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                0,
+                192,
+                0,
+                192,
+                0,
+                0,
+                2,
+                1,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "previous-generation-after-reuse-denied",
+          "result": {
+            "sent": {
+              "injected": 1,
+              "local_blocked": false
+            },
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                192,
+                0,
+                192,
+                0,
+                0,
+                2,
+                2,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "new-generation-delivered",
+          "result": [
+            {
+              "received": 64
+            },
+            {
+              "received": 64
+            }
+          ]
+        },
+        {
+          "name": "lease-writer-process-exited",
+          "result": [
+            {
+              "writer_exited": true,
+              "lease_ms": 100
+            },
+            {
+              "writer_exited": true,
+              "lease_ms": 100
+            }
+          ]
+        },
+        {
+          "name": "controller-renewal-loss-expires",
+          "result": [
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                1,
+                256,
+                0,
+                384,
+                0,
+                0,
+                0,
+                0,
+                0,
+                256,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                0,
+                256,
+                0,
+                256,
+                0,
+                0,
+                2,
+                2,
+                0,
+                256,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "expired-receiver-denied",
+          "result": {
+            "sent": {
+              "injected": 1,
+              "local_blocked": false
+            },
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                256,
+                0,
+                256,
+                0,
+                0,
+                3,
+                2,
+                0,
+                256,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        }
+      ],
+      "cleanup": [
+        {
+          "preservation": {
+            "containers": true,
+            "links": true,
+            "routes": true,
+            "services": true,
+            "xfrm_hash": true,
+            "policy_hash": true,
+            "iptables_hash": true
+          },
+          "cleaned": true
+        },
+        {
+          "preservation": {
+            "containers": true,
+            "links": true,
+            "routes": true,
+            "services": true,
+            "xfrm_hash": true,
+            "policy_hash": true,
+            "iptables_hash": true
+          },
+          "cleaned": true
+        }
+      ],
+      "fixed_interface_inventory": true
+    },
+    "burst": {
+      "sha256": "e0c4bca099e0c72172a7363e843c2b58e0bbaddbcdfe3205d250fa2b8dc538a2",
+      "median_cycles_per_second": 3149.096639269083,
+      "min_cycles_per_second": 3148.0246764652857,
+      "max_cycles_per_second": 3524.039510947976,
+      "total_cycles": 589440,
+      "trials": [
+        {
+          "trial": 0,
+          "seconds": 60.01477733399952,
+          "creations": 188928,
+          "retirements": 188928,
+          "rejection_checks": 377856,
+          "cycles_per_second": 3148.0246764652857,
+          "batches": 2952,
+          "final_drain_seconds": 0.006877829000586644,
+          "mean_batch_phase_ms": {
+            "activation_ms": 6.264584128371283,
+            "traffic_ms": 4.993293153414171,
+            "retirement_ms": 3.0593563618733643,
+            "rejection_ms": 5.994510056183113
+          }
+        },
+        {
+          "trial": 1,
+          "seconds": 60.014671396005724,
+          "creations": 188992,
+          "retirements": 188992,
+          "rejection_checks": 377984,
+          "cycles_per_second": 3149.096639269083,
+          "batches": 2953,
+          "final_drain_seconds": 0.007691437996982131,
+          "mean_batch_phase_ms": {
+            "activation_ms": 6.477512321778189,
+            "traffic_ms": 5.201148429993013,
+            "retirement_ms": 3.0251021103887252,
+            "rejection_ms": 5.600698283828793
+          }
+        },
+        {
+          "trial": 2,
+          "seconds": 60.02202851099719,
+          "creations": 211520,
+          "retirements": 211520,
+          "rejection_checks": 423040,
+          "cycles_per_second": 3524.039510947976,
+          "batches": 3305,
+          "final_drain_seconds": 0.006899414998770226,
+          "mean_batch_phase_ms": {
+            "activation_ms": 5.7846279479462845,
+            "traffic_ms": 4.55931519615348,
+            "retirement_ms": 2.7695743449676202,
+            "rejection_ms": 5.031143631113329
+          }
+        }
+      ],
+      "ready": [
+        {
+          "ready": true,
+          "seconds": 3.0538001049999366,
+          "kernel": "6.12.95+deb13-amd64",
+          "containers": 8,
+          "links": 17,
+          "source": "d77ae804dd2b9938f8454338b78111ba92c23bb50d27451e00b5f6462b0de62c",
+          "bpf_source": "65872510586efa65ba7a4dbf52388a3fa0efd4cbf9ab8af234ed3d3165d7f2bb"
+        },
+        {
+          "ready": true,
+          "seconds": 2.9110147189994677,
+          "kernel": "6.12.95+deb13-amd64",
+          "containers": 8,
+          "links": 17,
+          "source": "d77ae804dd2b9938f8454338b78111ba92c23bb50d27451e00b5f6462b0de62c",
+          "bpf_source": "65872510586efa65ba7a4dbf52388a3fa0efd4cbf9ab8af234ed3d3165d7f2bb"
+        }
+      ],
+      "warm": {
+        "bidirectional_exchanges": 15040,
+        "seconds": 1.0001660819980316,
+        "exchanges_per_second": 15037.502541532498
+      },
+      "proofs": [
+        {
+          "name": "default-deny",
+          "result": [
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                0,
+                64,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                0,
+                64,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "partial-prepare-denied",
+          "result": [
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "encrypted-bidirectional-traffic",
+          "result": [
+            {
+              "received": 64
+            },
+            {
+              "received": 64
+            }
+          ]
+        },
+        {
+          "name": "ciphertext-only-underlay",
+          "result": {
+            "esp_packets": 128,
+            "plaintext_udp": 0
+          }
+        },
+        {
+          "name": "encrypted-packet-replay-denied",
+          "result": {
+            "replay": {
+              "replayed": 64
+            },
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                64,
+                0,
+                0,
+                0,
+                0,
+                0,
+                64,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "crypto-missing-denied",
+          "result": {
+            "delivered": 0,
+            "counters": [
+              0,
+              0,
+              128,
+              0,
+              64,
+              0,
+              0,
+              0,
+              0,
+              0,
+              64,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "name": "crypto-missing-restored",
+          "result": [
+            {
+              "received": 64
+            },
+            {
+              "received": 64
+            }
+          ]
+        },
+        {
+          "name": "crypto-wrong-key-denied",
+          "result": {
+            "delivered": 0,
+            "counters": [
+              0,
+              0,
+              128,
+              0,
+              128,
+              0,
+              0,
+              0,
+              0,
+              0,
+              128,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "name": "crypto-wrong-key-restored",
+          "result": [
+            {
+              "received": 64
+            },
+            {
+              "received": 64
+            }
+          ]
+        },
+        {
+          "name": "source-identity-spoof-denied",
+          "result": {
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            "sender_counters": [
+              0,
+              1,
+              128,
+              0,
+              320,
+              0,
+              0,
+              0,
+              0,
+              0,
+              192,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "name": "wrong-generation-denied",
+          "result": {
+            "sent": {
+              "injected": 1,
+              "local_blocked": false
+            },
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                192,
+                0,
+                0,
+                0,
+                1,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "unknown-source-denied",
+          "result": {
+            "sent": {
+              "injected": 1,
+              "local_blocked": false
+            },
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                192,
+                0,
+                0,
+                1,
+                1,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "receiver-revocation-denied",
+          "result": {
+            "sent": {
+              "injected": 1,
+              "local_blocked": false
+            },
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                192,
+                0,
+                0,
+                2,
+                1,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "both-retired-denied",
+          "result": [
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                1,
+                192,
+                0,
+                320,
+                0,
+                0,
+                0,
+                0,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                0,
+                192,
+                0,
+                192,
+                0,
+                0,
+                2,
+                1,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "previous-generation-after-reuse-denied",
+          "result": {
+            "sent": {
+              "injected": 1,
+              "local_blocked": false
+            },
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                192,
+                0,
+                192,
+                0,
+                0,
+                2,
+                2,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "new-generation-delivered",
+          "result": [
+            {
+              "received": 64
+            },
+            {
+              "received": 64
+            }
+          ]
+        },
+        {
+          "name": "lease-writer-process-exited",
+          "result": [
+            {
+              "writer_exited": true,
+              "lease_ms": 100
+            },
+            {
+              "writer_exited": true,
+              "lease_ms": 100
+            }
+          ]
+        },
+        {
+          "name": "controller-renewal-loss-expires",
+          "result": [
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                1,
+                256,
+                0,
+                384,
+                0,
+                0,
+                0,
+                0,
+                0,
+                256,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                0,
+                256,
+                0,
+                256,
+                0,
+                0,
+                2,
+                2,
+                0,
+                256,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "expired-receiver-denied",
+          "result": {
+            "sent": {
+              "injected": 1,
+              "local_blocked": false
+            },
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                256,
+                0,
+                256,
+                0,
+                0,
+                3,
+                2,
+                0,
+                256,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        }
+      ],
+      "cleanup": [
+        {
+          "preservation": {
+            "containers": true,
+            "links": true,
+            "routes": true,
+            "services": true,
+            "xfrm_hash": true,
+            "policy_hash": true,
+            "iptables_hash": true
+          },
+          "cleaned": true
+        },
+        {
+          "preservation": {
+            "containers": true,
+            "links": true,
+            "routes": true,
+            "services": true,
+            "xfrm_hash": true,
+            "policy_hash": true,
+            "iptables_hash": true
+          },
+          "cleaned": true
+        }
+      ],
+      "fixed_interface_inventory": true
+    },
+    "stress": {
+      "sha256": "46792f1dfe0e4a02465f1610c46edbcdb756ee0ae1770859c715ab751af5ccdc",
+      "median_cycles_per_second": 1722.3682676561943,
+      "min_cycles_per_second": 1722.3682676561943,
+      "max_cycles_per_second": 1722.3682676561943,
+      "total_cycles": 103360,
+      "trials": [
+        {
+          "trial": 0,
+          "seconds": 60.01039495499572,
+          "creations": 103360,
+          "retirements": 103360,
+          "rejection_checks": 206720,
+          "cycles_per_second": 1722.3682676561943,
+          "batches": 3230,
+          "final_drain_seconds": 0.0064099890005309135,
+          "mean_batch_phase_ms": {
+            "activation_ms": 5.452894851909651,
+            "traffic_ms": 5.138087696591342,
+            "retirement_ms": 2.7913483105108448,
+            "rejection_ms": 5.177456665673382
+          }
+        }
+      ],
+      "ready": [
+        {
+          "ready": true,
+          "seconds": 3.232046989999617,
+          "kernel": "6.12.95+deb13-amd64",
+          "containers": 8,
+          "links": 17,
+          "source": "d77ae804dd2b9938f8454338b78111ba92c23bb50d27451e00b5f6462b0de62c",
+          "bpf_source": "65872510586efa65ba7a4dbf52388a3fa0efd4cbf9ab8af234ed3d3165d7f2bb"
+        },
+        {
+          "ready": true,
+          "seconds": 3.3045039340004223,
+          "kernel": "6.12.95+deb13-amd64",
+          "containers": 8,
+          "links": 17,
+          "source": "d77ae804dd2b9938f8454338b78111ba92c23bb50d27451e00b5f6462b0de62c",
+          "bpf_source": "65872510586efa65ba7a4dbf52388a3fa0efd4cbf9ab8af234ed3d3165d7f2bb"
+        }
+      ],
+      "warm": {
+        "bidirectional_exchanges": 12800,
+        "seconds": 1.0008936129961512,
+        "exchanges_per_second": 12788.571965889067
+      },
+      "proofs": [
+        {
+          "name": "default-deny",
+          "result": [
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                0,
+                64,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                0,
+                64,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "partial-prepare-denied",
+          "result": [
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "encrypted-bidirectional-traffic",
+          "result": [
+            {
+              "received": 64
+            },
+            {
+              "received": 64
+            }
+          ]
+        },
+        {
+          "name": "ciphertext-only-underlay",
+          "result": {
+            "esp_packets": 128,
+            "plaintext_udp": 0
+          }
+        },
+        {
+          "name": "encrypted-packet-replay-denied",
+          "result": {
+            "replay": {
+              "replayed": 64
+            },
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                64,
+                0,
+                0,
+                0,
+                0,
+                0,
+                64,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "crypto-missing-denied",
+          "result": {
+            "delivered": 0,
+            "counters": [
+              0,
+              0,
+              128,
+              0,
+              64,
+              0,
+              0,
+              0,
+              0,
+              0,
+              64,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "name": "crypto-missing-restored",
+          "result": [
+            {
+              "received": 64
+            },
+            {
+              "received": 64
+            }
+          ]
+        },
+        {
+          "name": "crypto-wrong-key-denied",
+          "result": {
+            "delivered": 0,
+            "counters": [
+              0,
+              0,
+              128,
+              0,
+              128,
+              0,
+              0,
+              0,
+              0,
+              0,
+              128,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "name": "crypto-wrong-key-restored",
+          "result": [
+            {
+              "received": 64
+            },
+            {
+              "received": 64
+            }
+          ]
+        },
+        {
+          "name": "source-identity-spoof-denied",
+          "result": {
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            "sender_counters": [
+              0,
+              1,
+              128,
+              0,
+              320,
+              0,
+              0,
+              0,
+              0,
+              0,
+              192,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "name": "wrong-generation-denied",
+          "result": {
+            "sent": {
+              "injected": 1,
+              "local_blocked": false
+            },
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                192,
+                0,
+                0,
+                0,
+                1,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "unknown-source-denied",
+          "result": {
+            "sent": {
+              "injected": 1,
+              "local_blocked": false
+            },
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                192,
+                0,
+                0,
+                1,
+                1,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "receiver-revocation-denied",
+          "result": {
+            "sent": {
+              "injected": 1,
+              "local_blocked": false
+            },
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                128,
+                0,
+                192,
+                0,
+                0,
+                2,
+                1,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "both-retired-denied",
+          "result": [
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                1,
+                192,
+                0,
+                320,
+                0,
+                0,
+                0,
+                0,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                0,
+                192,
+                0,
+                192,
+                0,
+                0,
+                2,
+                1,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "previous-generation-after-reuse-denied",
+          "result": {
+            "sent": {
+              "injected": 1,
+              "local_blocked": false
+            },
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                192,
+                0,
+                192,
+                0,
+                0,
+                2,
+                2,
+                0,
+                192,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "new-generation-delivered",
+          "result": [
+            {
+              "received": 64
+            },
+            {
+              "received": 64
+            }
+          ]
+        },
+        {
+          "name": "lease-writer-process-exited",
+          "result": [
+            {
+              "writer_exited": true,
+              "lease_ms": 100
+            },
+            {
+              "writer_exited": true,
+              "lease_ms": 100
+            }
+          ]
+        },
+        {
+          "name": "controller-renewal-loss-expires",
+          "result": [
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                1,
+                256,
+                0,
+                384,
+                0,
+                0,
+                0,
+                0,
+                0,
+                256,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "denied": 64,
+              "counters": [
+                0,
+                0,
+                256,
+                0,
+                256,
+                0,
+                0,
+                2,
+                2,
+                0,
+                256,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "expired-receiver-denied",
+          "result": {
+            "sent": {
+              "injected": 1,
+              "local_blocked": false
+            },
+            "receiver": {
+              "delivered": 0,
+              "counters": [
+                0,
+                0,
+                256,
+                0,
+                256,
+                0,
+                0,
+                3,
+                2,
+                0,
+                256,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "tcp-established-bidirectional",
+          "result": [
+            {
+              "tcp_received": 12
+            },
+            {
+              "tcp_received": 12
+            }
+          ]
+        },
+        {
+          "name": "tcp-established-revoked",
+          "result": [
+            {
+              "delivered": 0
+            },
+            {
+              "delivered": 0
+            }
+          ]
+        },
+        {
+          "name": "independent-flow-survives-churn",
+          "result": [
+            {
+              "exchanges": 13655,
+              "errors": []
+            },
+            {
+              "exchanges": 13655,
+              "errors": []
+            }
+          ]
+        }
+      ],
+      "cleanup": [
+        {
+          "preservation": {
+            "containers": true,
+            "links": true,
+            "routes": true,
+            "services": true,
+            "xfrm_hash": true,
+            "policy_hash": true,
+            "iptables_hash": true
+          },
+          "cleaned": true
+        },
+        {
+          "preservation": {
+            "containers": true,
+            "links": true,
+            "routes": true,
+            "services": true,
+            "xfrm_hash": true,
+            "policy_hash": true,
+            "iptables_hash": true
+          },
+          "cleaned": true
+        }
+      ],
+      "fixed_interface_inventory": true
+    }
+  },
+  "total_measured_cycles": 1014912
+}
