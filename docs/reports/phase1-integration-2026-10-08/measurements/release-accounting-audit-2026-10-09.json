@@ -1,0 +1,22 @@
+{
+  "label": "phase1-ready-c256-t2-n4032",
+  "old_parser_count": 4030,
+  "corrected_parser_count": 4032,
+  "endpoint_retirements": 4032,
+  "missing_multiplicities": {},
+  "extra_multiplicities": {},
+  "interleaved_records": [
+    {
+      "message": "[geo] lookup 198.18Network 615 teardown complete; ID released",
+      "unix": 1791480290.119318,
+      "id": 615
+    },
+    {
+      "message": ".96.44 timed out after 5Network 619 teardown complete; ID released",
+      "unix": 1791480290.119318,
+      "id": 619
+    }
+  ],
+  "original_run_status": "failed measurement audit retained; fresh final run required",
+  "scope": "historical wave only; excludes later reboot and traffic"
+}

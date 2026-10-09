@@ -3,14 +3,18 @@ import argparse,json,pathlib,subprocess,time
 from api import api,login,STACK
 from lab import root,nodes,history,internet
 
-p=argparse.ArgumentParser();p.add_argument('variant');p.add_argument('--trials',type=int,default=3);a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('variant');p.add_argument('--trials',type=int,default=3);p.add_argument('--services',default='1,2,3,4,5,6');p.add_argument('--tls-ca');a=p.parse_args()
+selected=[int(s) for s in a.services.split(',')];expected={'103':0,'104':252}
+for n in range(252):expected['103' if selected[n%len(selected)]<=6 else '104']+=1
 out=pathlib.Path(__file__).resolve().parents[1]/'measurements'
 label=a.variant+'-warm-c256';assert not (out/(label+'.json')).exists()
 def configure(timeout):
  services=[{'name':f'p1-{i:02d}.test','docker_container':f'nn-phase1-{i:02d}','host_ip':'192.168.1.103' if i<=6 else '192.168.1.104','port':9000+i,'timeout':timeout,'pausable':False} for i in range(1,13)]
  api('/api/service-config/'+STACK,{'services':services})
 def load(count,suffix):
- result=json.loads(root('103',['python3','/tmp/http-load.py','--count',str(count),'--concurrency','256','--identities','252','--offset','128','--output','/tmp/nn-layer1-'+label+'-'+suffix+'.json']))
+ args=['python3','/tmp/http-load.py','--count',str(count),'--concurrency','256','--identities','252','--offset','128','--services',a.services,'--output','/tmp/nn-layer1-'+label+'-'+suffix+'.json']
+ if a.tls_ca:args+=['--tls-ca',a.tls_ca]
+ result=json.loads(root('103',args))
  assert result['errors']==0,result
  assert internet(),'Internet-health probe failed'
  return result
@@ -18,17 +22,17 @@ login();assert not api('/api/graph/'+STACK)['edges'];assert internet()
 before_history=history();nodes('before',label);trials=[]
 try:
  configure(0);seed=load(252,'seed');seed_nodes=nodes('poll',label)
- assert all(n['setups']==252 and n['retirements']==0 for n in seed_nodes.values())
+ assert all(n['setups']==expected[h] and n['retirements']==0 for h,n in seed_nodes.items())
  for trial in range(1,a.trials+1):
   trials.append(load(10080,str(trial)))
   current=nodes('poll',label)
-  assert all(n['setups']==252 and n['retirements']==0 and not n['lifecycle_errors'] for n in current.values()),current
+  assert all(n['setups']==expected[h] and n['retirements']==0 and not n['lifecycle_errors'] for h,n in current.items()),current
   print(json.dumps({'label':label,'trial':trial,'requests_per_second':trials[-1]['requests_per_second'],'errors':0}),flush=True)
 finally:configure(1)
 deadline=time.monotonic()+90
 while True:
  current=nodes('poll',label);graph=api('/api/graph/'+STACK)
- if all(n['setups']==252 and n['retirements']==252 and not n['remaining_owned_links'] for n in current.values()) and current['104']['server_retirements']==252 and not graph['edges']:break
+ if all(n['setups']==expected[h] and n['retirements']==expected[h] and not n['remaining_owned_links'] for h,n in current.items()) and current['104']['server_retirements']==252 and not graph['edges']:break
  assert time.monotonic()<deadline,current
  time.sleep(.5)
 after=nodes('after',label);after_history=history()

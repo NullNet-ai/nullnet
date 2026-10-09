@@ -1,0 +1,244 @@
+{
+  "label": "fresh-only-same-c256-t1",
+  "variant": "fresh-only-same",
+  "concurrency": 256,
+  "count": 1008,
+  "expected_endpoint_counts": {
+    "103": 0,
+    "104": 2016
+  },
+  "load": {
+    "unix_start": 1791555301.7748513,
+    "unix_end": 1791555305.5588582,
+    "count": 1008,
+    "concurrency": 256,
+    "identities": 1008,
+    "services": [
+      7,
+      8,
+      9,
+      10,
+      11,
+      12
+    ],
+    "ok": 1008,
+    "errors": 0,
+    "request_seconds": 3.783769580997614,
+    "requests_per_second": 266.4009999610586,
+    "p50_ms": 589.9009029999434,
+    "p95_ms": 911.3841440012038
+  },
+  "nodes": {
+    "103": {
+      "label": "fresh-only-same-c256-t1",
+      "before": {
+        "unix": 1791555300.73457,
+        "host_cpu_seconds": 1155.38,
+        "client_cpu": "usage_usec 1372535\nuser_usec 510315\nsystem_usec 862220\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "78892",
+        "conntrack_count": 7,
+        "cursor": "s=67bfec5eb55c4e40a0a22a68ed50db40;i=267281b;b=b3e1ec89bbb944d1a75ab02384b5256f;m=4f6a53134;t=65d68f8d4c594;x=8aafbe4e8a6990cb"
+      },
+      "after": {
+        "unix": 1791555309.2596443,
+        "host_cpu_seconds": 1156.72,
+        "client_cpu": "usage_usec 1635256\nuser_usec 591765\nsystem_usec 1043490\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "78892",
+        "conntrack_count": 1019
+      },
+      "host_cpu_seconds": 1.3399999999999181,
+      "setups": 0,
+      "retirements": 0,
+      "lifecycle_errors": [],
+      "remaining_owned_links": [],
+      "server_retirements": 0,
+      "last_server_retirement_unix": null,
+      "last_retirement_unix": null,
+      "unscoped_counts": {
+        "setups": 0,
+        "retirements": 0,
+        "server_retirements": 0
+      },
+      "scope": "Phase 1 fixture IDs; full unscoped records preserved on each host"
+    },
+    "104": {
+      "label": "fresh-only-same-c256-t1",
+      "before": {
+        "unix": 1791555300.7545578,
+        "host_cpu_seconds": 8062.37,
+        "client_cpu": "usage_usec 1820471\nuser_usec 609694\nsystem_usec 1210776\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "316668",
+        "conntrack_count": 19,
+        "cursor": "s=3d9af771a9944221b78bfb41a34fe8af;i=3b0aa21;b=7dfc35bddf114d689033ea3d9613e5c1;m=4f6a6d667;t=65d68f8d786c2;x=ffacbd986036c025",
+        "server_cursor": "s=3d9af771a9944221b78bfb41a34fe8af;i=3b0aa19;b=7dfc35bddf114d689033ea3d9613e5c1;m=4f6a2d5d8;t=65d68f8d38633;x=564500f24dab75b2"
+      },
+      "after": {
+        "unix": 1791555309.6609342,
+        "host_cpu_seconds": 8078.15,
+        "client_cpu": "usage_usec 11166999\nuser_usec 1550600\nsystem_usec 9616399\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "316668",
+        "conntrack_count": 3026
+      },
+      "host_cpu_seconds": 15.779999999999745,
+      "setups": 2016,
+      "retirements": 2016,
+      "lifecycle_errors": [],
+      "remaining_owned_links": [],
+      "server_retirements": 1008,
+      "last_server_retirement_unix": 1791555307.798229,
+      "last_retirement_unix": 1791555307.798065,
+      "unscoped_counts": {
+        "setups": 2016,
+        "retirements": 2016,
+        "server_retirements": 1008
+      },
+      "scope": "Phase 1 fixture IDs; full unscoped records preserved on each host"
+    }
+  },
+  "history_before": [
+    253482,
+    0,
+    253482
+  ],
+  "history_after": [
+    254490,
+    0,
+    254490
+  ],
+  "graph": {
+    "proxies": [
+      "192.168.1.104"
+    ],
+    "nodes": [
+      {
+        "id": "p1-01.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-02.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-03.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-04.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-05.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-06.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-07.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-08.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-09.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-10.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-11.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-12.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      }
+    ],
+    "edges": []
+  },
+  "internet_checks": [
+    {
+      "elapsed": 5.001148007999291,
+      "internet": true,
+      "probe": {
+        "unix": 1791555306.6387498,
+        "probes": [
+          {
+            "url": "https://www.apple.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          },
+          {
+            "url": "https://www.google.com",
+            "returncode": 0,
+            "status": "200",
+            "stderr": "",
+            "ok": true
+          }
+        ],
+        "ok": true
+      }
+    }
+  ],
+  "completion_boundary": "server ID release after endpoint acknowledgements",
+  "complete_kernel_cleanup_seconds": 6.023213624954224,
+  "complete_acknowledged_seconds": 6.0233776569366455,
+  "complete_cycles_per_second": 167.347966109873,
+  "drain_observed_unix": 1791555309.9735198,
+  "conservative_complete_cycles_per_second": 127.82011226113761
+}

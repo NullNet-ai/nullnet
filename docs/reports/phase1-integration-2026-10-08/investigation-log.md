@@ -175,3 +175,48 @@ that diagnostic wave. None of these runs supplies a valid headline rate.
 Large raw capture files named in this report are preserved outside Git.
 [EVIDENCE.json](EVIDENCE.json) records their original paths, sizes, SHA-256 hashes
 and verified archive location. Compact results and reproduction helpers remain here.
+
+## October 9 resume
+
+Both hosts rebooted; the running binaries still match the saved phase1-ready
+SHA-256 values and isolated paths. Original checkout edits were preserved.
+Historical release accounting is resolved: whole-line matching missed two
+release messages interleaved with GeoIP output. Searching every message for
+release records gives 4,032, with exact multiplicities matching retirement IDs.
+The compact accounting audit preserves the original failure and both offending
+messages. No runtime change was needed.
+
+Host .104 GDM failed because the root filesystem had no available space. Removed
+the unused September policy experiment debug target (5.8 GB) and downloaded APT
+packages (7.5 GB). Available space became 13 GB; GDM started successfully.
+Phase 1 artifacts, private database, original sources and application data were
+preserved. Reboot-cleared load/measurement helpers and owned fake-client routes
+were restored. The fresh 4,032-request coordinator failed at login because local
+sandbox network access was denied, before launching workload. The user explicitly
+prohibited further approval prompts, including sandbox prompts. Remaining final
+correctness checks, fresh benchmarks and fixture cleanup have not run.
+
+### Oct 9 — same-host retirement regression reproduced and fixed
+
+Matched 1,008-cycle/C256 same-host run: 21.696 acknowledged cycles/s, versus 342–346 cross-host. A traced repeat showed 12 ENODEV results while assigning cached names to the retiring group, 1,385 RTM_DELLINK calls, and 1,358 RCU barriers totaling 35.234 seconds. Veth deletion cascades to the peer and its MACsec child; stale names caused the existing recovery path to delete each original group individually.
+
+On ENODEV, cleanup now reuses group discovery and finishes the remaining devices in the retiring cohort. Other errors retain the existing cleanup/error behavior. Full Linux CI and the privileged partial-discovery/foreign-device test pass. New deployed client SHA256: `f393ef0194054cf6d643d65150d608070e02a695657dcf9f001ae3b3073d8ed6`. First untraced same-host repeat: 190.172 acknowledged cycles/s, 1,008 successes, 2,016 endpoint retirements, all histories closed, empty graph. Matched cross-host: 339.721 cycles/s. Traced after run: 28 delete calls and 28 RCU barriers totaling 0.831 seconds, zero trace loss. The performance requirement is still unmet: same-host remains slower and needs further work; these results do not establish readiness.
+
+### Oct 9 — scope correction and long-run backlog
+
+The user accepts roughly 190 same-host acknowledged cycles/s and requests that implementation changes address relevant, justified bottlenecks. Ingress-only qdisc tuning (185.53 short /99.83 long) was reverted; native-workers=8 (174.18 short /89.82 long, long HTTP149.00/s) was rejected and reverted. TCX was tested only in an isolated namespace; 16 attachments/deletions took0.328/0.320 seconds versus nativeTC0.0012/0.030 seconds. It was rejected for fresh-device lifecycle use. No TCX/shared-block implementation is retained. The tested cleanup client `f393ef0194054cf6d643d65150d608070e02a695657dcf9f001ae3b3073d8ed6` is restored on both hosts.
+
+Long-run lifecycle backlog is quantified in `measurements/oct9-long-wave-backlog.json`. Completed setups minus completed retirements peaked at7,366 same-host endpoints versus1,984 in the short wave. Cross-host .103 peaked at3,765 versus .1041,390. At10seconds .103 had3,925 completed setups but218 retirements; median teardown11.951seconds. Same-host long median teardown18.672seconds versus short1.264seconds. These include queue/permit waits and are not per-endpoint kernel CPU costs. Temporary untracked diagnostics are being built to separate group assignment, kernel deletion, encryption removal, native-worker admission, and conntrack cleanup before choosing a change.
+
+## Fresh-only long-run repeat and admission investigation
+
+After retention removal, deployed fresh-only 4,032-cycle C256 repeats measured 78.68/s same-host and 165.44/s cross-host, zero errors, exact endpoint retirements/server releases, closed histories and graph0. Short runs on the same build measured 167.35/328.37. Completed-but-not-retired endpoint peaks were 7,375 on .104 same-host and 3,808 on .103 cross-host (1,087 on .104). Same-host setup median was 70ms, retirement median 21,227ms. This is backlog growth, not evidence of a persistent leak after drain.
+
+A diagnostic fresh-only candidate gives each cleanup batch fair admission against setup. The existing 32 setup slots remain; a write-preferring Tokio RwLock prevents new setup readers overtaking an already queued cleanup writer. Setup read admission is released before rollback enters the cleanup worker, avoiding self-deadlock. The per-ID lifecycle lock remains held through rollback/ACK. No service/DB lock is involved, no retained resources are introduced, and cleanup continues full deletion. Performance acceptance remains pending; no win is claimed.
+
+The coarse fair-admission experiment passed full CI but is rejected: same long 106.98 complete cycles/s (110.26 requests/s), cross long 221.30 (237.42 requests/s), same short118.15 (138.27 requests/s). It reduced same-host completed-not-retired endpoints to995 and median retirement to296ms, but serialized routine traffic too heavily. Verified fresh-only runtime restored. A narrower candidate gates setup only when the cleanup worker collects its existing maximum128-request batch; partial batches retain the prior overlap. Its full CI and performance checks are pending.
+
+Final investigation: full-batch admission longsame155.23/cross319.08, shortsame144.77 (HTTP173.19 vs266.40 baseline). Both candidates rejected for short regression; baseline source/runtime restored. User said not to keep looping. No further tuning. See fresh-long-run-investigation.md.
+
+
+October 9 final scope: fresh-only backend/cleanup, separate VXLAN port, and full-ID-range egress fixes retained. RPC admission trial failed the same mixed 100/s latency guard and was removed. Final strict and diagnostic capacity failures and complete cleanup are documented in sustained-load-investigation.md. No hours-long capacity claim.

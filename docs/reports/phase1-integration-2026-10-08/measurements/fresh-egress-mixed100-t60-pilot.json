@@ -1,0 +1,2639 @@
+{
+  "label": "fresh-egress-mixed100-t60-pilot",
+  "offered_clients_per_second": 100.0,
+  "arrival_duration_seconds": 300.0,
+  "service_idle_timeout_seconds": 60,
+  "workload": {
+    "finished": true,
+    "unix_end": 1791562121.6007874,
+    "elapsed": 79.17062710399841,
+    "arrival_duration": 300.0,
+    "target_arrivals_per_second": 100.0,
+    "counters": {
+      "clients_started": 6954,
+      "clients_finished": 6019,
+      "clients_cancelled": 934,
+      "requests": 44848,
+      "errors": 0,
+      "missed_requests": 8955,
+      "bytes": 490040040,
+      "connections_opened": 6519,
+      "connections_reused": 38329,
+      "payload_requests": 467,
+      "single": 5182,
+      "medium": 1412,
+      "long": 360
+    },
+    "stop_reason": "HTTP response latency exceeds five seconds",
+    "first_error": null,
+    "max_active_clients": 941,
+    "max_inflight_requests": 940,
+    "max_scheduler_lag_ms": 26.864052069868194
+  },
+  "node_final": {
+    "103": {
+      "cpu_count": 8,
+      "unix": 1791562327.9981644,
+      "elapsed": 312.27404952099823,
+      "counts": {
+        "setups": 3491,
+        "retirements": 3491,
+        "server_releases": 0,
+        "setup_failures": 0
+      },
+      "completed_not_retired": 0,
+      "owned_root_links": 0,
+      "resources": {
+        "nullnet-client": {
+          "pid": 112232,
+          "rss_kb": 152728,
+          "fds": 69,
+          "cpu": {
+            "usage_usec": 79376930,
+            "user_usec": 5918067,
+            "system_usec": 73458862,
+            "nice_usec": 0,
+            "nr_periods": 0,
+            "nr_throttled": 0,
+            "throttled_usec": 0,
+            "nr_bursts": 0,
+            "burst_usec": 0
+          },
+          "cgroup_memory_bytes": 200876032
+        }
+      },
+      "available_ram_kb": 14279948,
+      "disk_free_bytes": 5139173376,
+      "setup_ms": {
+        "count": 0,
+        "sum": 0,
+        "max": 0
+      },
+      "teardown_ms": {
+        "count": 0,
+        "sum": 0,
+        "max": 0
+      },
+      "failures": [],
+      "stop_reason": null
+    },
+    "104": {
+      "cpu_count": 8,
+      "unix": 1791562333.692591,
+      "elapsed": 317.4118747399989,
+      "counts": {
+        "setups": 10461,
+        "retirements": 10461,
+        "server_releases": 6976,
+        "setup_failures": 0
+      },
+      "completed_not_retired": 0,
+      "owned_root_links": 0,
+      "resources": {
+        "nullnet-client": {
+          "pid": 367927,
+          "rss_kb": 812848,
+          "fds": 69,
+          "cpu": {
+            "usage_usec": 190459246,
+            "user_usec": 19473089,
+            "system_usec": 170986156,
+            "nice_usec": 0,
+            "nr_periods": 0,
+            "nr_throttled": 0,
+            "throttled_usec": 0,
+            "nr_bursts": 0,
+            "burst_usec": 0
+          },
+          "cgroup_memory_bytes": 894111744
+        },
+        "nullnet-server": {
+          "pid": 367790,
+          "rss_kb": 94016,
+          "fds": 20,
+          "cpu": {
+            "usage_usec": 39310755,
+            "user_usec": 23710118,
+            "system_usec": 15600637,
+            "nice_usec": 0,
+            "nr_periods": 0,
+            "nr_throttled": 0,
+            "throttled_usec": 0,
+            "nr_bursts": 0,
+            "burst_usec": 0
+          },
+          "cgroup_memory_bytes": 114958336
+        },
+        "nullnet-proxy": {
+          "pid": 367807,
+          "rss_kb": 138888,
+          "fds": 24,
+          "cpu": {
+            "usage_usec": 49973634,
+            "user_usec": 21308514,
+            "system_usec": 28665119,
+            "nice_usec": 0,
+            "nr_periods": 0,
+            "nr_throttled": 0,
+            "throttled_usec": 0,
+            "nr_bursts": 0,
+            "burst_usec": 0
+          },
+          "cgroup_memory_bytes": 129187840
+        }
+      },
+      "available_ram_kb": 12797528,
+      "disk_free_bytes": 3129847808,
+      "setup_ms": {
+        "count": 0,
+        "sum": 0,
+        "max": 0
+      },
+      "teardown_ms": {
+        "count": 2,
+        "sum": 36,
+        "max": 30
+      },
+      "failures": [],
+      "stop_reason": null
+    }
+  },
+  "history_before": [
+    309314,
+    0,
+    309314
+  ],
+  "history_after": [
+    316290,
+    0,
+    316290
+  ],
+  "graph_after": {
+    "proxies": [
+      "192.168.1.104"
+    ],
+    "nodes": [
+      {
+        "id": "p1-01.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-02.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-03.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-04.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-05.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-06.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-07.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-08.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-09.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-10.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-11.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-12.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      }
+    ],
+    "edges": []
+  },
+  "snapshots": [
+    {
+      "unix": 1791562043.539926,
+      "elapsed": 1.2397732720019121,
+      "nodes": {
+        "103": {
+          "cpu_count": 8,
+          "unix": 1791562035.7898576,
+          "elapsed": 20.065742331000365,
+          "counts": {
+            "setups": 15,
+            "retirements": 0,
+            "server_releases": 0,
+            "setup_failures": 0
+          },
+          "completed_not_retired": 15,
+          "owned_root_links": 27,
+          "resources": {
+            "nullnet-client": {
+              "pid": 112232,
+              "rss_kb": 15820,
+              "fds": 123,
+              "cpu": {
+                "usage_usec": 2267163,
+                "user_usec": 779562,
+                "system_usec": 1487600,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 50995200
+            }
+          },
+          "available_ram_kb": 14419620,
+          "disk_free_bytes": 5139197952,
+          "setup_ms": {
+            "count": 1,
+            "sum": 2,
+            "max": 2
+          },
+          "teardown_ms": {
+            "count": 0,
+            "sum": 0,
+            "max": 0
+          },
+          "failures": [],
+          "stop_reason": null
+        },
+        "104": {
+          "cpu_count": 8,
+          "unix": 1791562036.4836848,
+          "elapsed": 20.20296857199719,
+          "counts": {
+            "setups": 33,
+            "retirements": 0,
+            "server_releases": 0,
+            "setup_failures": 0
+          },
+          "completed_not_retired": 33,
+          "owned_root_links": 63,
+          "resources": {
+            "nullnet-client": {
+              "pid": 367927,
+              "rss_kb": 15860,
+              "fds": 159,
+              "cpu": {
+                "usage_usec": 2610573,
+                "user_usec": 827770,
+                "system_usec": 1782803,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 55889920
+            },
+            "nullnet-server": {
+              "pid": 367790,
+              "rss_kb": 32472,
+              "fds": 22,
+              "cpu": {
+                "usage_usec": 189428,
+                "user_usec": 108238,
+                "system_usec": 81190,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 13070336
+            },
+            "nullnet-proxy": {
+              "pid": 367807,
+              "rss_kb": 22276,
+              "fds": 24,
+              "cpu": {
+                "usage_usec": 137912,
+                "user_usec": 109505,
+                "system_usec": 28407,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 9527296
+            }
+          },
+          "available_ram_kb": 13584228,
+          "disk_free_bytes": 3092942848,
+          "setup_ms": {
+            "count": 2,
+            "sum": 1,
+            "max": 1
+          },
+          "teardown_ms": {
+            "count": 0,
+            "sum": 0,
+            "max": 0
+          },
+          "failures": [],
+          "stop_reason": null
+        }
+      },
+      "workload": {
+        "unix": 1791562042.4303617,
+        "elapsed": 0.00020057899746461771,
+        "rate_target": 100.0,
+        "active_clients": 1,
+        "inflight_requests": 0,
+        "max_active_clients": 1,
+        "max_inflight_requests": 0,
+        "max_scheduler_lag_ms": 0.13730299906455912,
+        "counters": {
+          "clients_started": 1,
+          "clients_finished": 0,
+          "clients_cancelled": 0,
+          "requests": 0,
+          "errors": 0,
+          "missed_requests": 0,
+          "bytes": 0,
+          "connections_opened": 0,
+          "connections_reused": 0,
+          "payload_requests": 0,
+          "single": 1,
+          "medium": 0,
+          "long": 0
+        },
+        "stop_reason": null,
+        "first_error": null,
+        "latency": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null
+        },
+        "cold_latency": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null
+        },
+        "warm_latency": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null
+        },
+        "window_seconds": 0.00020057899746461771,
+        "arrivals_per_second": 0.0,
+        "requests_per_second": 0.0
+      },
+      "internet_probe": {
+        "unix": 1791562044.3600533,
+        "origin": "lab103",
+        "ip_family": "IPv4",
+        "probes": [
+          {
+            "url": "https://www.apple.com",
+            "returncode": 0,
+            "status": "200",
+            "ok": true
+          },
+          {
+            "url": "https://www.google.com",
+            "returncode": 0,
+            "status": "200",
+            "ok": true
+          }
+        ],
+        "ok": true
+      }
+    },
+    {
+      "unix": 1791562055.4614,
+      "elapsed": 13.160860030999174,
+      "nodes": {
+        "103": {
+          "cpu_count": 8,
+          "unix": 1791562045.831519,
+          "elapsed": 30.1074036300015,
+          "counts": {
+            "setups": 197,
+            "retirements": 0,
+            "server_releases": 0,
+            "setup_failures": 0
+          },
+          "completed_not_retired": 197,
+          "owned_root_links": 391,
+          "resources": {
+            "nullnet-client": {
+              "pid": 112232,
+              "rss_kb": 16820,
+              "fds": 851,
+              "cpu": {
+                "usage_usec": 2993339,
+                "user_usec": 971070,
+                "system_usec": 2022268,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 65617920
+            }
+          },
+          "available_ram_kb": 14326700,
+          "disk_free_bytes": 5139197952,
+          "setup_ms": {
+            "count": 182,
+            "sum": 310,
+            "max": 26
+          },
+          "teardown_ms": {
+            "count": 0,
+            "sum": 0,
+            "max": 0
+          },
+          "failures": [],
+          "stop_reason": null
+        },
+        "104": {
+          "cpu_count": 8,
+          "unix": 1791562046.8563058,
+          "elapsed": 30.575590245996864,
+          "counts": {
+            "setups": 685,
+            "retirements": 0,
+            "server_releases": 0,
+            "setup_failures": 0
+          },
+          "completed_not_retired": 685,
+          "owned_root_links": 1490,
+          "resources": {
+            "nullnet-client": {
+              "pid": 367927,
+              "rss_kb": 17892,
+              "fds": 2065,
+              "cpu": {
+                "usage_usec": 4210125,
+                "user_usec": 1208053,
+                "system_usec": 3002071,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 96088064
+            },
+            "nullnet-server": {
+              "pid": 367790,
+              "rss_kb": 40672,
+              "fds": 499,
+              "cpu": {
+                "usage_usec": 1175471,
+                "user_usec": 670520,
+                "system_usec": 504950,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 29032448
+            },
+            "nullnet-proxy": {
+              "pid": 367807,
+              "rss_kb": 34992,
+              "fds": 143,
+              "cpu": {
+                "usage_usec": 1481884,
+                "user_usec": 906892,
+                "system_usec": 574992,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 23171072
+            }
+          },
+          "available_ram_kb": 13488644,
+          "disk_free_bytes": 3089448960,
+          "setup_ms": {
+            "count": 652,
+            "sum": 982,
+            "max": 37
+          },
+          "teardown_ms": {
+            "count": 0,
+            "sum": 0,
+            "max": 0
+          },
+          "failures": [],
+          "stop_reason": null
+        }
+      },
+      "workload": {
+        "unix": 1791562052.4325924,
+        "elapsed": 10.002430521999486,
+        "rate_target": 100.0,
+        "active_clients": 255,
+        "inflight_requests": 1,
+        "max_active_clients": 258,
+        "max_inflight_requests": 12,
+        "max_scheduler_lag_ms": 26.864052069868194,
+        "counters": {
+          "clients_started": 1073,
+          "clients_finished": 818,
+          "clients_cancelled": 0,
+          "requests": 3572,
+          "errors": 0,
+          "missed_requests": 0,
+          "bytes": 41971296,
+          "connections_opened": 1072,
+          "connections_reused": 2500,
+          "payload_requests": 40,
+          "single": 812,
+          "medium": 204,
+          "long": 57
+        },
+        "stop_reason": null,
+        "first_error": null,
+        "latency": {
+          "p50_ms": 1.5507239986618515,
+          "p95_ms": 8.522103998984676,
+          "p99_ms": 12.406743000610732
+        },
+        "cold_latency": {
+          "p50_ms": 7.115926000551553,
+          "p95_ms": 12.046458999975584,
+          "p99_ms": 24.25723299893434
+        },
+        "warm_latency": {
+          "p50_ms": 1.3253590004751459,
+          "p95_ms": 3.0613149974669795,
+          "p99_ms": 8.108844001981197
+        },
+        "window_seconds": 5.001222929000505,
+        "arrivals_per_second": 105.97408024479336,
+        "requests_per_second": 494.47905744410184
+      }
+    },
+    {
+      "unix": 1791562067.935755,
+      "elapsed": 25.634866971999145,
+      "nodes": {
+        "103": {
+          "cpu_count": 8,
+          "unix": 1791562055.9177887,
+          "elapsed": 40.19367341299949,
+          "counts": {
+            "setups": 716,
+            "retirements": 0,
+            "server_releases": 0,
+            "setup_failures": 0
+          },
+          "completed_not_retired": 716,
+          "owned_root_links": 1431,
+          "resources": {
+            "nullnet-client": {
+              "pid": 112232,
+              "rss_kb": 17516,
+              "fds": 2931,
+              "cpu": {
+                "usage_usec": 4709816,
+                "user_usec": 1255628,
+                "system_usec": 3454188,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 106229760
+            }
+          },
+          "available_ram_kb": 14169472,
+          "disk_free_bytes": 5139197952,
+          "setup_ms": {
+            "count": 519,
+            "sum": 1086,
+            "max": 37
+          },
+          "teardown_ms": {
+            "count": 0,
+            "sum": 0,
+            "max": 0
+          },
+          "failures": [],
+          "stop_reason": null
+        },
+        "104": {
+          "cpu_count": 8,
+          "unix": 1791562058.9921484,
+          "elapsed": 42.711432333999255,
+          "counts": {
+            "setups": 2278,
+            "retirements": 0,
+            "server_releases": 0,
+            "setup_failures": 0
+          },
+          "completed_not_retired": 2278,
+          "owned_root_links": 5146,
+          "resources": {
+            "nullnet-client": {
+              "pid": 367927,
+              "rss_kb": 21920,
+              "fds": 6967,
+              "cpu": {
+                "usage_usec": 8907910,
+                "user_usec": 1969116,
+                "system_usec": 6938794,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 197849088
+            },
+            "nullnet-server": {
+              "pid": 367790,
+              "rss_kb": 47272,
+              "fds": 510,
+              "cpu": {
+                "usage_usec": 5494159,
+                "user_usec": 3148135,
+                "system_usec": 2346024,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 41086976
+            },
+            "nullnet-proxy": {
+              "pid": 367807,
+              "rss_kb": 57296,
+              "fds": 324,
+              "cpu": {
+                "usage_usec": 8427714,
+                "user_usec": 4288085,
+                "system_usec": 4139628,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 47902720
+            }
+          },
+          "available_ram_kb": 13212444,
+          "disk_free_bytes": 3197693952,
+          "setup_ms": {
+            "count": 1593,
+            "sum": 3061,
+            "max": 26
+          },
+          "teardown_ms": {
+            "count": 0,
+            "sum": 0,
+            "max": 0
+          },
+          "failures": [],
+          "stop_reason": null
+        }
+      },
+      "workload": {
+        "unix": 1791562067.436254,
+        "elapsed": 25.006092456998886,
+        "rate_target": 100.0,
+        "active_clients": 319,
+        "inflight_requests": 1,
+        "max_active_clients": 336,
+        "max_inflight_requests": 21,
+        "max_scheduler_lag_ms": 26.864052069868194,
+        "counters": {
+          "clients_started": 2540,
+          "clients_finished": 2221,
+          "clients_cancelled": 0,
+          "requests": 13833,
+          "errors": 0,
+          "missed_requests": 1,
+          "bytes": 151104456,
+          "connections_opened": 2540,
+          "connections_reused": 11293,
+          "payload_requests": 144,
+          "single": 1899,
+          "medium": 510,
+          "long": 131
+        },
+        "stop_reason": null,
+        "first_error": null,
+        "latency": {
+          "p50_ms": 1.9133220012008678,
+          "p95_ms": 12.955163001606707,
+          "p99_ms": 19.944026000302983
+        },
+        "cold_latency": {
+          "p50_ms": 10.448289998748805,
+          "p95_ms": 22.985282997979084,
+          "p99_ms": 64.17115300064324
+        },
+        "warm_latency": {
+          "p50_ms": 1.7367469990858808,
+          "p95_ms": 4.991506000806112,
+          "p99_ms": 12.460793001082493
+        },
+        "window_seconds": 5.001066089000233,
+        "arrivals_per_second": 98.97889593755716,
+        "requests_per_second": 733.6435741311054
+      }
+    },
+    {
+      "unix": 1791562114.444641,
+      "elapsed": 72.08830787099942,
+      "nodes": {
+        "103": {
+          "cpu_count": 8,
+          "unix": 1791562076.1547527,
+          "elapsed": 60.43063722200168,
+          "counts": {
+            "setups": 1711,
+            "retirements": 0,
+            "server_releases": 0,
+            "setup_failures": 0
+          },
+          "completed_not_retired": 1711,
+          "owned_root_links": 3419,
+          "resources": {
+            "nullnet-client": {
+              "pid": 112232,
+              "rss_kb": 25016,
+              "fds": 6919,
+              "cpu": {
+                "usage_usec": 9075939,
+                "user_usec": 1859070,
+                "system_usec": 7216869,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 190337024
+            }
+          },
+          "available_ram_kb": 13896208,
+          "disk_free_bytes": 5139193856,
+          "setup_ms": {
+            "count": 492,
+            "sum": 1658,
+            "max": 30
+          },
+          "teardown_ms": {
+            "count": 0,
+            "sum": 0,
+            "max": 0
+          },
+          "failures": [],
+          "stop_reason": null
+        },
+        "104": {
+          "cpu_count": 8,
+          "unix": 1791562102.3608677,
+          "elapsed": 86.08015173899912,
+          "counts": {
+            "setups": 8129,
+            "retirements": 18,
+            "server_releases": 12,
+            "setup_failures": 0
+          },
+          "completed_not_retired": 8111,
+          "owned_root_links": 17653,
+          "resources": {
+            "nullnet-client": {
+              "pid": 367927,
+              "rss_kb": 241336,
+              "fds": 23646,
+              "cpu": {
+                "usage_usec": 61021000,
+                "user_usec": 5965082,
+                "system_usec": 55055917,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 763514880
+            },
+            "nullnet-server": {
+              "pid": 367790,
+              "rss_kb": 86800,
+              "fds": 564,
+              "cpu": {
+                "usage_usec": 26186892,
+                "user_usec": 15830238,
+                "system_usec": 10356654,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 112238592
+            },
+            "nullnet-proxy": {
+              "pid": 367807,
+              "rss_kb": 114444,
+              "fds": 730,
+              "cpu": {
+                "usage_usec": 44407107,
+                "user_usec": 18915226,
+                "system_usec": 25491880,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 107257856
+            }
+          },
+          "available_ram_kb": 12022356,
+          "disk_free_bytes": 3074224128,
+          "setup_ms": {
+            "count": 2130,
+            "sum": 232427,
+            "max": 311
+          },
+          "teardown_ms": {
+            "count": 0,
+            "sum": 0,
+            "max": 0
+          },
+          "failures": [],
+          "stop_reason": null
+        }
+      },
+      "workload": {
+        "unix": 1791562107.4470074,
+        "elapsed": 65.01684613399993,
+        "rate_target": 100.0,
+        "active_clients": 821,
+        "inflight_requests": 820,
+        "max_active_clients": 822,
+        "max_inflight_requests": 822,
+        "max_scheduler_lag_ms": 26.864052069868194,
+        "counters": {
+          "clients_started": 6567,
+          "clients_finished": 5747,
+          "clients_cancelled": 0,
+          "requests": 44077,
+          "errors": 0,
+          "missed_requests": 5615,
+          "bytes": 480596760,
+          "connections_opened": 6252,
+          "connections_reused": 37825,
+          "payload_requests": 458,
+          "single": 4895,
+          "medium": 1337,
+          "long": 335
+        },
+        "stop_reason": null,
+        "first_error": null,
+        "latency": {
+          "p50_ms": 2465.4151079994335,
+          "p95_ms": 3168.7188430005335,
+          "p99_ms": 3392.3423109990836
+        },
+        "cold_latency": {
+          "p50_ms": 2693.588289002946,
+          "p95_ms": 3380.4161139996722,
+          "p99_ms": 3920.5191399996693
+        },
+        "warm_latency": {
+          "p50_ms": 2366.5223409989267,
+          "p95_ms": 2938.0221430001257,
+          "p99_ms": 2970.544381001673
+        },
+        "window_seconds": 5.000832079000247,
+        "arrivals_per_second": 95.58409329664204,
+        "requests_per_second": 265.95574076262324
+      },
+      "internet_probe": {
+        "unix": 1791562119.3339999,
+        "origin": "lab103",
+        "ip_family": "IPv4",
+        "probes": [
+          {
+            "url": "https://www.apple.com",
+            "returncode": 28,
+            "status": "000",
+            "ok": false
+          },
+          {
+            "url": "https://www.google.com",
+            "returncode": 28,
+            "status": "000",
+            "ok": false
+          }
+        ],
+        "ok": false
+      }
+    },
+    {
+      "unix": 1791562137.202749,
+      "elapsed": 94.84574390700072,
+      "nodes": {
+        "103": {
+          "cpu_count": 8,
+          "unix": 1791562127.2555287,
+          "elapsed": 111.53141354200125,
+          "counts": {
+            "setups": 3491,
+            "retirements": 1084,
+            "server_releases": 0,
+            "setup_failures": 0
+          },
+          "completed_not_retired": 2407,
+          "owned_root_links": 4793,
+          "resources": {
+            "nullnet-client": {
+              "pid": 112232,
+              "rss_kb": 143284,
+              "fds": 9691,
+              "cpu": {
+                "usage_usec": 42364708,
+                "user_usec": 3708136,
+                "system_usec": 38656572,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 369111040
+            }
+          },
+          "available_ram_kb": 13738964,
+          "disk_free_bytes": 5139193856,
+          "setup_ms": {
+            "count": 33,
+            "sum": 3578,
+            "max": 301
+          },
+          "teardown_ms": {
+            "count": 517,
+            "sum": 222456,
+            "max": 1122
+          },
+          "failures": [],
+          "stop_reason": null
+        },
+        "104": {
+          "cpu_count": 8,
+          "unix": 1791562125.8577387,
+          "elapsed": 109.57702314599737,
+          "counts": {
+            "setups": 10461,
+            "retirements": 303,
+            "server_releases": 157,
+            "setup_failures": 0
+          },
+          "completed_not_retired": 10158,
+          "owned_root_links": 19888,
+          "resources": {
+            "nullnet-client": {
+              "pid": 367927,
+              "rss_kb": 462412,
+              "fds": 27065,
+              "cpu": {
+                "usage_usec": 100762319,
+                "user_usec": 7462725,
+                "system_usec": 93299594,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 1063591936
+            },
+            "nullnet-server": {
+              "pid": 367790,
+              "rss_kb": 101152,
+              "fds": 20,
+              "cpu": {
+                "usage_usec": 31934563,
+                "user_usec": 19559204,
+                "system_usec": 12375359,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 135274496
+            },
+            "nullnet-proxy": {
+              "pid": 367807,
+              "rss_kb": 138888,
+              "fds": 24,
+              "cpu": {
+                "usage_usec": 49475986,
+                "user_usec": 21030300,
+                "system_usec": 28445685,
+                "nice_usec": 0,
+                "nr_periods": 0,
+                "nr_throttled": 0,
+                "throttled_usec": 0,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "cgroup_memory_bytes": 129277952
+            }
+          },
+          "available_ram_kb": 11468056,
+          "disk_free_bytes": 3062054912,
+          "setup_ms": {
+            "count": 566,
+            "sum": 183675,
+            "max": 855
+          },
+          "teardown_ms": {
+            "count": 256,
+            "sum": 4193176,
+            "max": 17772
+          },
+          "failures": [],
+          "stop_reason": null
+        }
+      },
+      "workload": {
+        "unix": 1791562117.4493253,
+        "elapsed": 75.01915642499807,
+        "rate_target": 100.0,
+        "active_clients": 0,
+        "inflight_requests": 0,
+        "max_active_clients": 941,
+        "max_inflight_requests": 940,
+        "max_scheduler_lag_ms": 26.864052069868194,
+        "counters": {
+          "clients_started": 6954,
+          "clients_finished": 6019,
+          "clients_cancelled": 934,
+          "requests": 44848,
+          "errors": 0,
+          "missed_requests": 8955,
+          "bytes": 490040040,
+          "connections_opened": 6519,
+          "connections_reused": 38329,
+          "payload_requests": 467,
+          "single": 5182,
+          "medium": 1412,
+          "long": 360
+        },
+        "stop_reason": "HTTP response latency exceeds five seconds",
+        "first_error": null,
+        "latency": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null
+        },
+        "cold_latency": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null
+        },
+        "warm_latency": {
+          "p50_ms": null,
+          "p95_ms": null,
+          "p99_ms": null
+        },
+        "window_seconds": 5.001253499998711,
+        "arrivals_per_second": 0.0,
+        "requests_per_second": 0.0
+      },
+      "internet_probe": {
+        "unix": 1791562140.5129707,
+        "origin": "lab103",
+        "ip_family": "IPv4",
+        "probes": [
+          {
+            "url": "https://www.apple.com",
+            "returncode": 28,
+            "status": "000",
+            "ok": false
+          },
+          {
+            "url": "https://www.google.com",
+            "returncode": 28,
+            "status": "000",
+            "ok": false
+          }
+        ],
+        "ok": false
+      }
+    }
+  ],
+  "status": "stopped",
+  "stop_reason": "HTTP response latency exceeds five seconds",
+  "runtime": {
+    "103": "{ path=/root/nullnet-layer1-20261008/artifacts/phase1-fresh-egress/nullnet-client ; argv[]=/root/nullnet-layer1-20261008/artifacts/phase1-fresh-egress/nullnet-client ; ignore_errors=no ; start_time=[Fri 2026-10-09 18:06:49 CEST] ; stop_time=[n/a] ; pid=112232 ; code=(null) ; status=0/0 }\n",
+    "104": "{ path=/root/nullnet-layer1-20261008/artifacts/phase1-fresh-egress/nullnet-client ; argv[]=/root/nullnet-layer1-20261008/artifacts/phase1-fresh-egress/nullnet-client ; ignore_errors=no ; start_time=[Fri 2026-10-09 18:06:49 CEST] ; stop_time=[n/a] ; pid=367927 ; code=(null) ; status=0/0 }\n"
+  },
+  "mixed_traffic": [
+    {
+      "source": 1,
+      "kind": "backend",
+      "samples": [
+        {
+          "elapsed": 0.03536389799774042,
+          "requests": 1,
+          "errors": 0,
+          "bytes": 8,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 10.05117013799827,
+          "requests": 202,
+          "errors": 0,
+          "bytes": 1616,
+          "connections": 202,
+          "missed": 0
+        },
+        {
+          "elapsed": 20.10081660099968,
+          "requests": 403,
+          "errors": 0,
+          "bytes": 3224,
+          "connections": 403,
+          "missed": 0
+        },
+        {
+          "elapsed": 30.150936384998204,
+          "requests": 604,
+          "errors": 0,
+          "bytes": 4832,
+          "connections": 604,
+          "missed": 0
+        },
+        {
+          "elapsed": 40.20091776799745,
+          "requests": 805,
+          "errors": 0,
+          "bytes": 6440,
+          "connections": 805,
+          "missed": 0
+        },
+        {
+          "elapsed": 50.2012313439991,
+          "requests": 1005,
+          "errors": 0,
+          "bytes": 8040,
+          "connections": 1005,
+          "missed": 0
+        },
+        {
+          "elapsed": 60.20187401999647,
+          "requests": 1205,
+          "errors": 0,
+          "bytes": 9640,
+          "connections": 1205,
+          "missed": 0
+        },
+        {
+          "elapsed": 70.25154620299872,
+          "requests": 1406,
+          "errors": 0,
+          "bytes": 11248,
+          "connections": 1406,
+          "missed": 0
+        },
+        {
+          "elapsed": 80.25326839499758,
+          "requests": 1606,
+          "errors": 0,
+          "bytes": 12848,
+          "connections": 1606,
+          "missed": 0
+        },
+        {
+          "elapsed": 90.26245229399865,
+          "requests": 1806,
+          "errors": 0,
+          "bytes": 14448,
+          "connections": 1806,
+          "missed": 0
+        },
+        {
+          "elapsed": 100.30224731299677,
+          "requests": 2007,
+          "errors": 0,
+          "bytes": 16056,
+          "connections": 2007,
+          "missed": 0
+        },
+        {
+          "elapsed": 110.35145475899844,
+          "requests": 2208,
+          "errors": 0,
+          "bytes": 17664,
+          "connections": 2208,
+          "missed": 0
+        },
+        {
+          "final": true,
+          "requests": 2372,
+          "errors": 0,
+          "bytes": 18976,
+          "connections": 2372,
+          "missed": 0
+        }
+      ]
+    },
+    {
+      "source": 1,
+      "kind": "egress",
+      "samples": [
+        {
+          "elapsed": 0.053492220999032725,
+          "requests": 1,
+          "errors": 0,
+          "bytes": 21,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 10.10162815700096,
+          "requests": 102,
+          "errors": 0,
+          "bytes": 2142,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 20.20125791800092,
+          "requests": 203,
+          "errors": 0,
+          "bytes": 4263,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 30.201294411999697,
+          "requests": 303,
+          "errors": 0,
+          "bytes": 6363,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 40.20227859999795,
+          "requests": 403,
+          "errors": 0,
+          "bytes": 8463,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 50.30213960900073,
+          "requests": 504,
+          "errors": 0,
+          "bytes": 10584,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 60.303049047997774,
+          "requests": 604,
+          "errors": 0,
+          "bytes": 12684,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 70.40374099700057,
+          "requests": 705,
+          "errors": 0,
+          "bytes": 14805,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 80.4038236339984,
+          "requests": 805,
+          "errors": 0,
+          "bytes": 16905,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 90.41244299699974,
+          "requests": 905,
+          "errors": 0,
+          "bytes": 19005,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 100.50211293200118,
+          "requests": 1006,
+          "errors": 0,
+          "bytes": 21126,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 110.50258483599828,
+          "requests": 1106,
+          "errors": 0,
+          "bytes": 23226,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "final": true,
+          "requests": 1191,
+          "errors": 0,
+          "bytes": 25011,
+          "connections": 1,
+          "missed": 0
+        }
+      ]
+    },
+    {
+      "source": 2,
+      "kind": "backend",
+      "samples": [
+        {
+          "elapsed": 0.036509568002657034,
+          "requests": 1,
+          "errors": 0,
+          "bytes": 8,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 10.051187650002248,
+          "requests": 202,
+          "errors": 0,
+          "bytes": 1616,
+          "connections": 202,
+          "missed": 0
+        },
+        {
+          "elapsed": 20.10093667900219,
+          "requests": 403,
+          "errors": 0,
+          "bytes": 3224,
+          "connections": 403,
+          "missed": 0
+        },
+        {
+          "elapsed": 30.10104925899941,
+          "requests": 603,
+          "errors": 0,
+          "bytes": 4824,
+          "connections": 603,
+          "missed": 0
+        },
+        {
+          "elapsed": 40.10162038099952,
+          "requests": 803,
+          "errors": 0,
+          "bytes": 6424,
+          "connections": 803,
+          "missed": 0
+        },
+        {
+          "elapsed": 50.10187732600025,
+          "requests": 1003,
+          "errors": 0,
+          "bytes": 8024,
+          "connections": 1003,
+          "missed": 0
+        },
+        {
+          "elapsed": 60.15200276700125,
+          "requests": 1204,
+          "errors": 0,
+          "bytes": 9632,
+          "connections": 1204,
+          "missed": 0
+        },
+        {
+          "elapsed": 70.15941328900226,
+          "requests": 1404,
+          "errors": 0,
+          "bytes": 11232,
+          "connections": 1404,
+          "missed": 0
+        },
+        {
+          "elapsed": 80.2024505469999,
+          "requests": 1605,
+          "errors": 0,
+          "bytes": 12840,
+          "connections": 1605,
+          "missed": 0
+        },
+        {
+          "elapsed": 90.23415941799976,
+          "requests": 1805,
+          "errors": 0,
+          "bytes": 14440,
+          "connections": 1805,
+          "missed": 0
+        },
+        {
+          "elapsed": 100.25411023400011,
+          "requests": 2006,
+          "errors": 0,
+          "bytes": 16048,
+          "connections": 2006,
+          "missed": 0
+        },
+        {
+          "elapsed": 110.33684713000184,
+          "requests": 2207,
+          "errors": 0,
+          "bytes": 17656,
+          "connections": 2207,
+          "missed": 0
+        },
+        {
+          "final": true,
+          "requests": 2401,
+          "errors": 0,
+          "bytes": 19208,
+          "connections": 2401,
+          "missed": 0
+        }
+      ]
+    },
+    {
+      "source": 2,
+      "kind": "egress",
+      "samples": [
+        {
+          "elapsed": 0.040155787999538006,
+          "requests": 1,
+          "errors": 0,
+          "bytes": 21,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 10.10176149900144,
+          "requests": 102,
+          "errors": 0,
+          "bytes": 2142,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 20.201009314001567,
+          "requests": 203,
+          "errors": 0,
+          "bytes": 4263,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 30.2023302589987,
+          "requests": 303,
+          "errors": 0,
+          "bytes": 6363,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 40.30112314299913,
+          "requests": 404,
+          "errors": 0,
+          "bytes": 8484,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 50.30643966500065,
+          "requests": 504,
+          "errors": 0,
+          "bytes": 10584,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 60.40154383299887,
+          "requests": 605,
+          "errors": 0,
+          "bytes": 12705,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 70.40394653700059,
+          "requests": 705,
+          "errors": 0,
+          "bytes": 14805,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 80.40479412499917,
+          "requests": 805,
+          "errors": 0,
+          "bytes": 16905,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 90.41531676500017,
+          "requests": 905,
+          "errors": 0,
+          "bytes": 19005,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 100.50232182699983,
+          "requests": 1006,
+          "errors": 0,
+          "bytes": 21126,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 110.5057967219982,
+          "requests": 1106,
+          "errors": 0,
+          "bytes": 23226,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "final": true,
+          "requests": 1206,
+          "errors": 0,
+          "bytes": 25326,
+          "connections": 1,
+          "missed": 0
+        }
+      ]
+    },
+    {
+      "source": 3,
+      "kind": "backend",
+      "samples": [
+        {
+          "elapsed": 0.0391357100015739,
+          "requests": 1,
+          "errors": 0,
+          "bytes": 8,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 10.051626713000587,
+          "requests": 202,
+          "errors": 0,
+          "bytes": 1616,
+          "connections": 202,
+          "missed": 0
+        },
+        {
+          "elapsed": 20.100573241001257,
+          "requests": 403,
+          "errors": 0,
+          "bytes": 3224,
+          "connections": 403,
+          "missed": 0
+        },
+        {
+          "elapsed": 30.100661930999195,
+          "requests": 603,
+          "errors": 0,
+          "bytes": 4824,
+          "connections": 603,
+          "missed": 0
+        },
+        {
+          "elapsed": 40.101504618000035,
+          "requests": 803,
+          "errors": 0,
+          "bytes": 6424,
+          "connections": 803,
+          "missed": 0
+        },
+        {
+          "elapsed": 50.10218837100183,
+          "requests": 1003,
+          "errors": 0,
+          "bytes": 8024,
+          "connections": 1003,
+          "missed": 0
+        },
+        {
+          "elapsed": 60.10325867999927,
+          "requests": 1203,
+          "errors": 0,
+          "bytes": 9624,
+          "connections": 1203,
+          "missed": 0
+        },
+        {
+          "elapsed": 70.15220797800066,
+          "requests": 1404,
+          "errors": 0,
+          "bytes": 11232,
+          "connections": 1404,
+          "missed": 0
+        },
+        {
+          "elapsed": 80.15482259599958,
+          "requests": 1604,
+          "errors": 0,
+          "bytes": 12832,
+          "connections": 1604,
+          "missed": 0
+        },
+        {
+          "elapsed": 90.15755571499903,
+          "requests": 1804,
+          "errors": 0,
+          "bytes": 14432,
+          "connections": 1804,
+          "missed": 0
+        },
+        {
+          "elapsed": 100.2091465980011,
+          "requests": 2005,
+          "errors": 0,
+          "bytes": 16040,
+          "connections": 2005,
+          "missed": 0
+        },
+        {
+          "elapsed": 110.25329031599904,
+          "requests": 2206,
+          "errors": 0,
+          "bytes": 17648,
+          "connections": 2206,
+          "missed": 0
+        },
+        {
+          "elapsed": 120.26013776699983,
+          "requests": 2406,
+          "errors": 0,
+          "bytes": 19248,
+          "connections": 2406,
+          "missed": 0
+        },
+        {
+          "final": true,
+          "requests": 2416,
+          "errors": 0,
+          "bytes": 19328,
+          "connections": 2416,
+          "missed": 0
+        }
+      ]
+    },
+    {
+      "source": 3,
+      "kind": "egress",
+      "samples": [
+        {
+          "elapsed": 0.040387033001024975,
+          "requests": 1,
+          "errors": 0,
+          "bytes": 21,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 10.101026532000105,
+          "requests": 102,
+          "errors": 0,
+          "bytes": 2142,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 20.101212110999768,
+          "requests": 202,
+          "errors": 0,
+          "bytes": 4242,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 30.200884091998887,
+          "requests": 303,
+          "errors": 0,
+          "bytes": 6363,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 40.301438950999,
+          "requests": 404,
+          "errors": 0,
+          "bytes": 8484,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 50.40143088300101,
+          "requests": 505,
+          "errors": 0,
+          "bytes": 10605,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 60.50188138500016,
+          "requests": 606,
+          "errors": 0,
+          "bytes": 12726,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 70.5143110780009,
+          "requests": 706,
+          "errors": 0,
+          "bytes": 14826,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 80.60341175800204,
+          "requests": 807,
+          "errors": 0,
+          "bytes": 16947,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 90.60403024300103,
+          "requests": 907,
+          "errors": 0,
+          "bytes": 19047,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 100.70226401800028,
+          "requests": 1008,
+          "errors": 0,
+          "bytes": 21168,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 110.7118829960018,
+          "requests": 1108,
+          "errors": 0,
+          "bytes": 23268,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 120.80136574200151,
+          "requests": 1209,
+          "errors": 0,
+          "bytes": 25389,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "final": true,
+          "requests": 1213,
+          "errors": 0,
+          "bytes": 25473,
+          "connections": 1,
+          "missed": 0
+        }
+      ]
+    },
+    {
+      "source": 7,
+      "kind": "backend",
+      "samples": [
+        {
+          "elapsed": 0.035986709997814614,
+          "requests": 1,
+          "errors": 0,
+          "bytes": 8,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 10.051700480998988,
+          "requests": 202,
+          "errors": 0,
+          "bytes": 1616,
+          "connections": 202,
+          "missed": 0
+        },
+        {
+          "elapsed": 20.10062612099864,
+          "requests": 403,
+          "errors": 0,
+          "bytes": 3224,
+          "connections": 403,
+          "missed": 0
+        },
+        {
+          "elapsed": 30.101960887997848,
+          "requests": 603,
+          "errors": 0,
+          "bytes": 4824,
+          "connections": 603,
+          "missed": 0
+        },
+        {
+          "elapsed": 40.15113286400083,
+          "requests": 804,
+          "errors": 0,
+          "bytes": 6432,
+          "connections": 804,
+          "missed": 0
+        },
+        {
+          "elapsed": 50.151742521000415,
+          "requests": 1004,
+          "errors": 0,
+          "bytes": 8032,
+          "connections": 1004,
+          "missed": 0
+        },
+        {
+          "elapsed": 60.15306372499981,
+          "requests": 1204,
+          "errors": 0,
+          "bytes": 9632,
+          "connections": 1204,
+          "missed": 0
+        },
+        {
+          "elapsed": 70.15349119500024,
+          "requests": 1404,
+          "errors": 0,
+          "bytes": 11232,
+          "connections": 1404,
+          "missed": 0
+        },
+        {
+          "elapsed": 80.15653680799733,
+          "requests": 1604,
+          "errors": 0,
+          "bytes": 12832,
+          "connections": 1604,
+          "missed": 0
+        },
+        {
+          "elapsed": 90.20405381599994,
+          "requests": 1802,
+          "errors": 0,
+          "bytes": 14416,
+          "connections": 1802,
+          "missed": 3
+        },
+        {
+          "elapsed": 100.25346178199834,
+          "requests": 2003,
+          "errors": 0,
+          "bytes": 16024,
+          "connections": 2003,
+          "missed": 3
+        },
+        {
+          "elapsed": 110.30361758000072,
+          "requests": 2204,
+          "errors": 0,
+          "bytes": 17632,
+          "connections": 2204,
+          "missed": 3
+        },
+        {
+          "elapsed": 120.35365795699909,
+          "requests": 2405,
+          "errors": 0,
+          "bytes": 19240,
+          "connections": 2405,
+          "missed": 3
+        },
+        {
+          "final": true,
+          "requests": 2434,
+          "errors": 0,
+          "bytes": 19472,
+          "connections": 2434,
+          "missed": 3
+        }
+      ]
+    },
+    {
+      "source": 7,
+      "kind": "egress",
+      "samples": [
+        {
+          "elapsed": 0.0170159329973103,
+          "requests": 1,
+          "errors": 0,
+          "bytes": 21,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 10.101069122996705,
+          "requests": 102,
+          "errors": 0,
+          "bytes": 2142,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 20.200537275999523,
+          "requests": 203,
+          "errors": 0,
+          "bytes": 4263,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 30.201036477999878,
+          "requests": 303,
+          "errors": 0,
+          "bytes": 6363,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 40.301038858997345,
+          "requests": 404,
+          "errors": 0,
+          "bytes": 8484,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 50.40095092499905,
+          "requests": 505,
+          "errors": 0,
+          "bytes": 10605,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 60.50122199499674,
+          "requests": 606,
+          "errors": 0,
+          "bytes": 12726,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 70.50292281099973,
+          "requests": 706,
+          "errors": 0,
+          "bytes": 14826,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 80.50464613899749,
+          "requests": 806,
+          "errors": 0,
+          "bytes": 16926,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 90.60099225999875,
+          "requests": 907,
+          "errors": 0,
+          "bytes": 19047,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 100.700859605,
+          "requests": 1008,
+          "errors": 0,
+          "bytes": 21168,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 110.80096404899814,
+          "requests": 1109,
+          "errors": 0,
+          "bytes": 23289,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 120.80131056099708,
+          "requests": 1209,
+          "errors": 0,
+          "bytes": 25389,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "final": true,
+          "requests": 1260,
+          "errors": 0,
+          "bytes": 26460,
+          "connections": 1,
+          "missed": 0
+        }
+      ]
+    },
+    {
+      "source": 8,
+      "kind": "backend",
+      "samples": [
+        {
+          "elapsed": 0.035715227997570764,
+          "requests": 1,
+          "errors": 0,
+          "bytes": 8,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 10.051117623999744,
+          "requests": 202,
+          "errors": 0,
+          "bytes": 1616,
+          "connections": 202,
+          "missed": 0
+        },
+        {
+          "elapsed": 20.101230218999262,
+          "requests": 403,
+          "errors": 0,
+          "bytes": 3224,
+          "connections": 403,
+          "missed": 0
+        },
+        {
+          "elapsed": 30.10186861799957,
+          "requests": 603,
+          "errors": 0,
+          "bytes": 4824,
+          "connections": 603,
+          "missed": 0
+        },
+        {
+          "elapsed": 40.152297319000354,
+          "requests": 804,
+          "errors": 0,
+          "bytes": 6432,
+          "connections": 804,
+          "missed": 0
+        },
+        {
+          "elapsed": 50.202095344000554,
+          "requests": 1005,
+          "errors": 0,
+          "bytes": 8040,
+          "connections": 1005,
+          "missed": 0
+        },
+        {
+          "elapsed": 60.211048663997644,
+          "requests": 1205,
+          "errors": 0,
+          "bytes": 9640,
+          "connections": 1205,
+          "missed": 0
+        },
+        {
+          "elapsed": 70.25206711999999,
+          "requests": 1406,
+          "errors": 0,
+          "bytes": 11248,
+          "connections": 1406,
+          "missed": 0
+        },
+        {
+          "elapsed": 80.25327584600018,
+          "requests": 1606,
+          "errors": 0,
+          "bytes": 12848,
+          "connections": 1606,
+          "missed": 0
+        },
+        {
+          "elapsed": 90.25364536100096,
+          "requests": 1806,
+          "errors": 0,
+          "bytes": 14448,
+          "connections": 1806,
+          "missed": 0
+        },
+        {
+          "elapsed": 100.25374867299979,
+          "requests": 2006,
+          "errors": 0,
+          "bytes": 16048,
+          "connections": 2006,
+          "missed": 0
+        },
+        {
+          "elapsed": 110.25381905500035,
+          "requests": 2206,
+          "errors": 0,
+          "bytes": 17648,
+          "connections": 2206,
+          "missed": 0
+        },
+        {
+          "elapsed": 120.30246080299912,
+          "requests": 2407,
+          "errors": 0,
+          "bytes": 19256,
+          "connections": 2407,
+          "missed": 0
+        },
+        {
+          "final": true,
+          "requests": 2593,
+          "errors": 0,
+          "bytes": 20744,
+          "connections": 2593,
+          "missed": 0
+        }
+      ]
+    },
+    {
+      "source": 8,
+      "kind": "egress",
+      "samples": [
+        {
+          "elapsed": 0.015565219000563957,
+          "requests": 1,
+          "errors": 0,
+          "bytes": 21,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 10.10090256499825,
+          "requests": 102,
+          "errors": 0,
+          "bytes": 2142,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 20.200733968998975,
+          "requests": 203,
+          "errors": 0,
+          "bytes": 4263,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 30.200927384998067,
+          "requests": 303,
+          "errors": 0,
+          "bytes": 6363,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 40.30074773999877,
+          "requests": 404,
+          "errors": 0,
+          "bytes": 8484,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 50.400724125000124,
+          "requests": 505,
+          "errors": 0,
+          "bytes": 10605,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 60.40093071699812,
+          "requests": 605,
+          "errors": 0,
+          "bytes": 12705,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 70.40100403199904,
+          "requests": 705,
+          "errors": 0,
+          "bytes": 14805,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 80.40146413399998,
+          "requests": 805,
+          "errors": 0,
+          "bytes": 16905,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 90.40179526700013,
+          "requests": 905,
+          "errors": 0,
+          "bytes": 19005,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 100.50414721699781,
+          "requests": 1006,
+          "errors": 0,
+          "bytes": 21126,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 110.60072165199745,
+          "requests": 1107,
+          "errors": 0,
+          "bytes": 23247,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 120.70068583600005,
+          "requests": 1208,
+          "errors": 0,
+          "bytes": 25368,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 130.70990471999903,
+          "requests": 1308,
+          "errors": 0,
+          "bytes": 27468,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "final": true,
+          "requests": 1332,
+          "errors": 0,
+          "bytes": 27972,
+          "connections": 1,
+          "missed": 0
+        }
+      ]
+    },
+    {
+      "source": 9,
+      "kind": "backend",
+      "samples": [
+        {
+          "elapsed": 0.03539580699725775,
+          "requests": 1,
+          "errors": 0,
+          "bytes": 8,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 10.051422256998194,
+          "requests": 202,
+          "errors": 0,
+          "bytes": 1616,
+          "connections": 202,
+          "missed": 0
+        },
+        {
+          "elapsed": 20.101196756997524,
+          "requests": 403,
+          "errors": 0,
+          "bytes": 3224,
+          "connections": 403,
+          "missed": 0
+        },
+        {
+          "elapsed": 30.15380209399882,
+          "requests": 604,
+          "errors": 0,
+          "bytes": 4832,
+          "connections": 604,
+          "missed": 0
+        },
+        {
+          "elapsed": 40.201336771999195,
+          "requests": 805,
+          "errors": 0,
+          "bytes": 6440,
+          "connections": 805,
+          "missed": 0
+        },
+        {
+          "elapsed": 50.20221219099767,
+          "requests": 1005,
+          "errors": 0,
+          "bytes": 8040,
+          "connections": 1005,
+          "missed": 0
+        },
+        {
+          "elapsed": 60.20853003599768,
+          "requests": 1205,
+          "errors": 0,
+          "bytes": 9640,
+          "connections": 1205,
+          "missed": 0
+        },
+        {
+          "elapsed": 70.25255826899956,
+          "requests": 1406,
+          "errors": 0,
+          "bytes": 11248,
+          "connections": 1406,
+          "missed": 0
+        },
+        {
+          "elapsed": 80.25424431799911,
+          "requests": 1606,
+          "errors": 0,
+          "bytes": 12848,
+          "connections": 1606,
+          "missed": 0
+        },
+        {
+          "elapsed": 90.25481810999918,
+          "requests": 1806,
+          "errors": 0,
+          "bytes": 14448,
+          "connections": 1806,
+          "missed": 0
+        },
+        {
+          "elapsed": 100.26494354999886,
+          "requests": 2006,
+          "errors": 0,
+          "bytes": 16048,
+          "connections": 2006,
+          "missed": 0
+        },
+        {
+          "elapsed": 110.30408610899758,
+          "requests": 2207,
+          "errors": 0,
+          "bytes": 17656,
+          "connections": 2207,
+          "missed": 0
+        },
+        {
+          "elapsed": 120.3538094689975,
+          "requests": 2408,
+          "errors": 0,
+          "bytes": 19264,
+          "connections": 2408,
+          "missed": 0
+        },
+        {
+          "elapsed": 130.4026323529979,
+          "requests": 2609,
+          "errors": 0,
+          "bytes": 20872,
+          "connections": 2609,
+          "missed": 0
+        },
+        {
+          "final": true,
+          "requests": 2730,
+          "errors": 0,
+          "bytes": 21840,
+          "connections": 2730,
+          "missed": 0
+        }
+      ]
+    },
+    {
+      "source": 9,
+      "kind": "egress",
+      "samples": [
+        {
+          "elapsed": 0.016338440000254195,
+          "requests": 1,
+          "errors": 0,
+          "bytes": 21,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 10.100908036001783,
+          "requests": 102,
+          "errors": 0,
+          "bytes": 2142,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 20.200572019999527,
+          "requests": 203,
+          "errors": 0,
+          "bytes": 4263,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 30.200643050000508,
+          "requests": 303,
+          "errors": 0,
+          "bytes": 6363,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 40.30070066500048,
+          "requests": 404,
+          "errors": 0,
+          "bytes": 8484,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 50.40093137000076,
+          "requests": 505,
+          "errors": 0,
+          "bytes": 10605,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 60.401691916002164,
+          "requests": 605,
+          "errors": 0,
+          "bytes": 12705,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 70.50150353600111,
+          "requests": 706,
+          "errors": 0,
+          "bytes": 14826,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 80.50371586899928,
+          "requests": 806,
+          "errors": 0,
+          "bytes": 16926,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 90.6009861090024,
+          "requests": 907,
+          "errors": 0,
+          "bytes": 19047,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 100.70064990800165,
+          "requests": 1008,
+          "errors": 0,
+          "bytes": 21168,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 110.70093679999991,
+          "requests": 1108,
+          "errors": 0,
+          "bytes": 23268,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 120.80065551000007,
+          "requests": 1209,
+          "errors": 0,
+          "bytes": 25389,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "elapsed": 130.90079175400024,
+          "requests": 1310,
+          "errors": 0,
+          "bytes": 27510,
+          "connections": 1,
+          "missed": 0
+        },
+        {
+          "final": true,
+          "requests": 1395,
+          "errors": 0,
+          "bytes": 29295,
+          "connections": 1,
+          "missed": 0
+        }
+      ]
+    }
+  ],
+  "scope": "single-hop trusted HTTPS ingress across 12 running fixtures; alternating same-host/cross-host; encrypted fresh lifecycle; persistent HTTPS sessions; 75% one request,20%20 requests over10s,5%240 requests over120s; Poisson arrivals; 65520 source identities; 1% 1MiB responses and 99%8-byte responses; response-limited sessions skip overdue half-second slots while new-client arrivals remain open-loop; no endpoint retention"
+}

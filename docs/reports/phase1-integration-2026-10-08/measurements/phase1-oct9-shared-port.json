@@ -1,0 +1,19 @@
+{
+  "result": "passed",
+  "fixture_udp_port": 4791,
+  "reason": "isolate test-owned shared inbound IPsec policy from live product port 4789",
+  "independent_edges": 2,
+  "security_cases": [
+    "plaintext rejected",
+    "wrong edge rejected",
+    "replay rejected",
+    "damaged authentication rejected",
+    "both independent encrypted keys deliver",
+    "surviving edge delivers after peer retirement"
+  ],
+  "negative_scope": "combined installed host firewall and overlay filters; replay/authentication also incremented XFRM error counters",
+  "logs": {
+    "103": "\nrunning 1 test\nPING 10.251.250.3 (10.251.250.3) 1000(1028) bytes of data.\n1008 bytes from 10.251.250.3: icmp_seq=1 ttl=64 time=0.883 ms\n1008 bytes from 10.251.250.3: icmp_seq=2 ttl=64 time=0.536 ms\n1008 bytes from 10.251.250.3: icmp_seq=3 ttl=64 time=0.549 ms\n\n--- 10.251.250.3 ping statistics ---\n3 packets transmitted, 3 received, 0% packet loss, time 2045ms\nrtt min/avg/max/mdev = 0.536/0.656/0.883/0.160 ms\nPING 10.251.251.3 (10.251.251.3) 1000(1028) bytes of data.\n1008 bytes from 10.251.251.3: icmp_seq=1 ttl=64 time=0.707 ms\n1008 bytes from 10.251.251.3: icmp_seq=2 ttl=64 time=0.494 ms\n1008 bytes from 10.251.251.3: icmp_seq=3 ttl=64 time=0.333 ms\n\n--- 10.251.251.3 ping statistics ---\n3 packets transmitted, 3 received, 0% packet loss, time 2041ms\nrtt min/avg/max/mdev = 0.333/0.511/0.707/0.153 ms\nPING 10.251.251.3 (10.251.251.3) 1000(1028) bytes of data.\n1008 bytes from 10.251.251.3: icmp_seq=1 ttl=64 time=0.326 ms\n1008 bytes from 10.251.251.3: icmp_seq=2 ttl=64 time=0.576 ms\n1008 bytes from 10.251.251.3: icmp_seq=3 ttl=64 time=0.599 ms\n\n--- 10.251.251.3 ping statistics ---\n3 packets transmitted, 3 received, 0% packet loss, time 2034ms\nrtt min/avg/max/mdev = 0.326/0.500/0.599/0.123 ms\ntest commands::vxlan::endpoint_packet_tests::cross_host_fresh_endpoint_packet_proof ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 112 filtered out; finished in 22.02s\n\n",
+    "104": "\nrunning 1 test\nPING 10.251.250.1 (10.251.250.1) 1000(1028) bytes of data.\n1008 bytes from 10.251.250.1: icmp_seq=1 ttl=64 time=0.485 ms\n1008 bytes from 10.251.250.1: icmp_seq=2 ttl=64 time=0.349 ms\n1008 bytes from 10.251.250.1: icmp_seq=3 ttl=64 time=0.543 ms\n\n--- 10.251.250.1 ping statistics ---\n3 packets transmitted, 3 received, 0% packet loss, time 2035ms\nrtt min/avg/max/mdev = 0.349/0.459/0.543/0.081 ms\nPING 10.251.251.1 (10.251.251.1) 1000(1028) bytes of data.\n1008 bytes from 10.251.251.1: icmp_seq=1 ttl=64 time=0.299 ms\n1008 bytes from 10.251.251.1: icmp_seq=2 ttl=64 time=0.575 ms\n1008 bytes from 10.251.251.1: icmp_seq=3 ttl=64 time=0.638 ms\n\n--- 10.251.251.1 ping statistics ---\n3 packets transmitted, 3 received, 0% packet loss, time 2044ms\nrtt min/avg/max/mdev = 0.299/0.504/0.638/0.147 ms\nPING 10.251.251.1 (10.251.251.1) 1000(1028) bytes of data.\n1008 bytes from 10.251.251.1: icmp_seq=1 ttl=64 time=0.421 ms\n1008 bytes from 10.251.251.1: icmp_seq=2 ttl=64 time=0.428 ms\n1008 bytes from 10.251.251.1: icmp_seq=3 ttl=64 time=0.448 ms\n\n--- 10.251.251.1 ping statistics ---\n3 packets transmitted, 3 received, 0% packet loss, time 2039ms\nrtt min/avg/max/mdev = 0.421/0.432/0.448/0.011 ms\ntest commands::vxlan::endpoint_packet_tests::cross_host_fresh_endpoint_packet_proof ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 112 filtered out; finished in 22.20s\n\n"
+  }
+}

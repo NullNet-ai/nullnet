@@ -1,0 +1,26 @@
+{
+  "103": [
+    {
+      "port": 4789,
+      "returncode": 2,
+      "stderr": "Error: A VXLAN device with the specified VNI already exists.\n"
+    },
+    {
+      "port": 47890,
+      "returncode": 0,
+      "stderr": ""
+    }
+  ],
+  "104": [
+    {
+      "port": 4789,
+      "returncode": 2,
+      "stderr": "Error: A VXLAN device with the specified VNI already exists.\n"
+    },
+    {
+      "port": 47890,
+      "returncode": 0,
+      "stderr": ""
+    }
+  ]
+}

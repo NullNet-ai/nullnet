@@ -1,0 +1,19 @@
+Started nn-mixed-fresh-egress-mixed100-t60-pilot-08-backend.service - [systemd-run] /usr/bin/nsenter --net --target 23786 /usr/bin/python3 /tmp/soak-outbound.py --name p1-05.test --port 9005 --expected node=05 --rate 20 --duration 450.0 --hosts-file /var/lib/docker/containers/2afe4e7e395a42e4e6cae53932e99dba24da9b3b0da5b737088f63cbddb9e612/hosts.
+{"elapsed": 0.035715227997570764, "requests": 1, "errors": 0, "bytes": 8, "connections": 1, "missed": 0}
+{"elapsed": 10.051117623999744, "requests": 202, "errors": 0, "bytes": 1616, "connections": 202, "missed": 0}
+{"elapsed": 20.101230218999262, "requests": 403, "errors": 0, "bytes": 3224, "connections": 403, "missed": 0}
+{"elapsed": 30.10186861799957, "requests": 603, "errors": 0, "bytes": 4824, "connections": 603, "missed": 0}
+{"elapsed": 40.152297319000354, "requests": 804, "errors": 0, "bytes": 6432, "connections": 804, "missed": 0}
+{"elapsed": 50.202095344000554, "requests": 1005, "errors": 0, "bytes": 8040, "connections": 1005, "missed": 0}
+{"elapsed": 60.211048663997644, "requests": 1205, "errors": 0, "bytes": 9640, "connections": 1205, "missed": 0}
+{"elapsed": 70.25206711999999, "requests": 1406, "errors": 0, "bytes": 11248, "connections": 1406, "missed": 0}
+{"elapsed": 80.25327584600018, "requests": 1606, "errors": 0, "bytes": 12848, "connections": 1606, "missed": 0}
+{"elapsed": 90.25364536100096, "requests": 1806, "errors": 0, "bytes": 14448, "connections": 1806, "missed": 0}
+{"elapsed": 100.25374867299979, "requests": 2006, "errors": 0, "bytes": 16048, "connections": 2006, "missed": 0}
+{"elapsed": 110.25381905500035, "requests": 2206, "errors": 0, "bytes": 17648, "connections": 2206, "missed": 0}
+{"elapsed": 120.30246080299912, "requests": 2407, "errors": 0, "bytes": 19256, "connections": 2407, "missed": 0}
+Stopping nn-mixed-fresh-egress-mixed100-t60-pilot-08-backend.service - [systemd-run] /usr/bin/nsenter --net --target 23786 /usr/bin/python3 /tmp/soak-outbound.py --name p1-05.test --port 9005 --expected node=05 --rate 20 --duration 450.0 --hosts-file /var/lib/docker/containers/2afe4e7e395a42e4e6cae53932e99dba24da9b3b0da5b737088f63cbddb9e612/hosts...
+{"final": true, "requests": 2593, "errors": 0, "bytes": 20744, "connections": 2593, "missed": 0}
+nn-mixed-fresh-egress-mixed100-t60-pilot-08-backend.service: Deactivated successfully.
+Stopped nn-mixed-fresh-egress-mixed100-t60-pilot-08-backend.service - [systemd-run] /usr/bin/nsenter --net --target 23786 /usr/bin/python3 /tmp/soak-outbound.py --name p1-05.test --port 9005 --expected node=05 --rate 20 --duration 450.0 --hosts-file /var/lib/docker/containers/2afe4e7e395a42e4e6cae53932e99dba24da9b3b0da5b737088f63cbddb9e612/hosts.
+nn-mixed-fresh-egress-mixed100-t60-pilot-08-backend.service: Consumed 2.855s CPU time, 10M memory peak.

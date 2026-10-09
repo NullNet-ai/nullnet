@@ -1,0 +1,42 @@
+{
+  "label": "phase1-oct9-host-targets",
+  "result": "passed",
+  "cases": [
+    {
+      "status": 200,
+      "bytes": 1048576,
+      "target_host": "103",
+      "placement": "cross-host"
+    },
+    {
+      "status": 200,
+      "bytes": 1048576,
+      "target_host": "104",
+      "placement": "same-host"
+    }
+  ],
+  "graph": {
+    "proxies": [
+      "192.168.1.104"
+    ],
+    "nodes": [
+      {
+        "id": "p1-host-103.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-host-104.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      }
+    ],
+    "edges": []
+  }
+}

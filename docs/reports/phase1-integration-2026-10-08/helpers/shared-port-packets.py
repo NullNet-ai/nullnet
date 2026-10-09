@@ -20,15 +20,15 @@ if mode=='listen':
 elif mode=='send':
  device=json.loads(subprocess.check_output(['ip','-j','route','get','192.168.1.104'],text=True))[0]['dev']
  capture=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(0x0003));capture.bind((device,0));capture.settimeout(.1)
- for vni,subnet,mark,label in [(1959199,250,0,'plain-A'),(1959200,251,0,'plain-B'),(1959200,251,1959199,'wrong-edge-A-to-B'),(1959199,250,1959200,'wrong-edge-B-to-A'),(1959199,250,1959199,'encrypted-A'),(1959200,251,1959200,'encrypted-B')]:
+ for vni,subnet,mark,label in [(4097,250,0,'plain-A'),(4103,251,0,'plain-B'),(4103,251,4097,'wrong-edge-A-to-B'),(4097,250,4103,'wrong-edge-B-to-A'),(4097,250,4097,'encrypted-A'),(4103,251,4103,'encrypted-B')]:
   s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
   if mark:s.setsockopt(socket.SOL_SOCKET,socket.SO_MARK,0x4e800000|mark)
-  s.bind(('192.168.1.103',0));s.sendto(b'\x08\0\0\0'+vni.to_bytes(3,'big')+b'\0'+packet(subnet,label),('192.168.1.104',4789));s.close()
+  s.bind(('192.168.1.103',0));s.sendto(b'\x08\0\0\0'+vni.to_bytes(3,'big')+b'\0'+packet(subnet,label),('192.168.1.104',4791));s.close()
  captured=None;end=time.monotonic()+1
  while time.monotonic()<end:
   try:
    frame,address=capture.recvfrom(65535);ip=frame[14:];ihl=(ip[0]&15)*4
-   if address[2]==socket.PACKET_OUTGOING and ip[9]==50 and int.from_bytes(ip[ihl:ihl+4],'big')==(0x4e000000|(1959199<<1)):
+   if address[2]==socket.PACKET_OUTGOING and ip[9]==50 and int.from_bytes(ip[ihl:ihl+4],'big')==(0x4e000000|(4097<<1)):
     captured=ip[:int.from_bytes(ip[2:4],'big')]
   except socket.timeout:pass
  assert captured is not None,'did not capture fixture ESP packet'

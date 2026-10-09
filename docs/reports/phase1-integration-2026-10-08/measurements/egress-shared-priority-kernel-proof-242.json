@@ -1,0 +1,20 @@
+{
+  "103": {
+    "rules": "0:\tfrom all lookup 255\n1001:\tfrom 172.31.254.2 to 10.0.0.0/8 lookup 254 proto 242\n1001:\tfrom 172.31.254.3 to 10.0.0.0/8 lookup 254 proto 242\n1015:\tfrom 172.31.254.2 lookup 14097 proto 242\n1015:\tfrom 172.31.254.3 lookup 2107151 proto 242\n32766:\tfrom all lookup 254\n32767:\tfrom all lookup 253\n",
+    "routes": [
+      "9.9.9.9 from 172.31.254.2 dev nne0 table 14097 uid 0 \n    cache \n",
+      "9.9.9.9 from 172.31.254.3 dev nne1 table 2107151 uid 0 \n    cache \n"
+    ],
+    "internal_bypass": "10.9.9.9 from 172.31.254.3 dev nne0 uid 0 \n    cache \n",
+    "survivor_after_exact_delete": "9.9.9.9 from 172.31.254.3 dev nne1 table 2107151 uid 0 \n    cache \n"
+  },
+  "104": {
+    "rules": "0:\tfrom all lookup 255\n1001:\tfrom 172.31.254.2 to 10.0.0.0/8 lookup 254 proto 242\n1001:\tfrom 172.31.254.3 to 10.0.0.0/8 lookup 254 proto 242\n1015:\tfrom 172.31.254.2 lookup 14097 proto 242\n1015:\tfrom 172.31.254.3 lookup 2107151 proto 242\n32766:\tfrom all lookup 254\n32767:\tfrom all lookup 253\n",
+    "routes": [
+      "9.9.9.9 from 172.31.254.2 dev nne0 table 14097 uid 0 \n    cache \n",
+      "9.9.9.9 from 172.31.254.3 dev nne1 table 2107151 uid 0 \n    cache \n"
+    ],
+    "internal_bypass": "10.9.9.9 from 172.31.254.3 dev nne0 uid 0 \n    cache \n",
+    "survivor_after_exact_delete": "9.9.9.9 from 172.31.254.3 dev nne1 table 2107151 uid 0 \n    cache \n"
+  }
+}

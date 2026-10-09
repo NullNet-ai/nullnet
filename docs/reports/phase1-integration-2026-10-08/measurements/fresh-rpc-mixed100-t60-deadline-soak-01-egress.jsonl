@@ -1,0 +1,16 @@
+Started nn-mixed-fresh-rpc-mixed100-t60-deadline-soak-01-egress.service - [systemd-run] /usr/bin/nsenter --net --target 5210 /usr/bin/python3 /tmp/soak-outbound.py --name 198.18.240.103 --port 80 --expected source=192.168.1.104 --rate 10 --duration 451.0.
+{"elapsed": 0.03908902699913597, "requests": 1, "errors": 0, "bytes": 21, "connections": 1, "missed": 0}
+{"elapsed": 10.10170328499953, "requests": 102, "errors": 0, "bytes": 2142, "connections": 1, "missed": 0}
+{"elapsed": 20.20099189999746, "requests": 203, "errors": 0, "bytes": 4263, "connections": 1, "missed": 0}
+{"elapsed": 30.201496124998812, "requests": 303, "errors": 0, "bytes": 6363, "connections": 1, "missed": 0}
+{"elapsed": 40.3011849909999, "requests": 404, "errors": 0, "bytes": 8484, "connections": 1, "missed": 0}
+{"elapsed": 50.304262330999336, "requests": 504, "errors": 0, "bytes": 10584, "connections": 1, "missed": 0}
+{"elapsed": 60.40277091700045, "requests": 605, "errors": 0, "bytes": 12705, "connections": 1, "missed": 0}
+{"elapsed": 70.40374502999839, "requests": 705, "errors": 0, "bytes": 14805, "connections": 1, "missed": 0}
+{"elapsed": 80.41098757600048, "requests": 805, "errors": 0, "bytes": 16905, "connections": 1, "missed": 0}
+{"elapsed": 90.50345167199703, "requests": 906, "errors": 0, "bytes": 19026, "connections": 1, "missed": 0}
+{"elapsed": 100.603115255999, "requests": 1007, "errors": 0, "bytes": 21147, "connections": 1, "missed": 0}
+Stopping nn-mixed-fresh-rpc-mixed100-t60-deadline-soak-01-egress.service - [systemd-run] /usr/bin/nsenter --net --target 5210 /usr/bin/python3 /tmp/soak-outbound.py --name 198.18.240.103 --port 80 --expected source=192.168.1.104 --rate 10 --duration 451.0...
+{"final": true, "requests": 1099, "errors": 0, "bytes": 23079, "connections": 1, "missed": 0}
+nn-mixed-fresh-rpc-mixed100-t60-deadline-soak-01-egress.service: Deactivated successfully.
+Stopped nn-mixed-fresh-rpc-mixed100-t60-deadline-soak-01-egress.service - [systemd-run] /usr/bin/nsenter --net --target 5210 /usr/bin/python3 /tmp/soak-outbound.py --name 198.18.240.103 --port 80 --expected source=192.168.1.104 --rate 10 --duration 451.0.

@@ -1,0 +1,26 @@
+{
+  "fresh-only-same-long-c256-t1-n4032": {
+    "103": {
+      "peak_completed_not_retired": 0,
+      "setup_median_ms": null,
+      "teardown_median_ms": null
+    },
+    "104": {
+      "peak_completed_not_retired": 7375,
+      "setup_median_ms": 70.0,
+      "teardown_median_ms": 21227.0
+    }
+  },
+  "fresh-only-cross-long-c256-t1-n4032": {
+    "103": {
+      "peak_completed_not_retired": 3808,
+      "setup_median_ms": 85.0,
+      "teardown_median_ms": 14158.5
+    },
+    "104": {
+      "peak_completed_not_retired": 1087,
+      "setup_median_ms": 13.0,
+      "teardown_median_ms": 414.5
+    }
+  }
+}

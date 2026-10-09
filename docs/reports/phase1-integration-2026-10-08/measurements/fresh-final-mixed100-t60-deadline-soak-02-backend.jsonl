@@ -1,0 +1,20 @@
+Started nn-mixed-fresh-final-mixed100-t60-deadline-soak-02-backend.service - [systemd-run] /usr/bin/nsenter --net --target 5388 /usr/bin/python3 /tmp/soak-outbound.py --name p1-11.test --port 9011 --expected node=11 --rate 20 --duration 1410.0 --hosts-file /var/lib/docker/containers/c0bcdc792aa06a004905016d9cab77a25eecc2a34ca295004c4f1d02c9de4024/hosts.
+{"elapsed": 0.034780117002810584, "requests": 1, "errors": 0, "bytes": 8, "connections": 1, "missed": 0}
+{"elapsed": 10.051615956002934, "requests": 202, "errors": 0, "bytes": 1616, "connections": 202, "missed": 0}
+{"elapsed": 20.100918097999966, "requests": 403, "errors": 0, "bytes": 3224, "connections": 403, "missed": 0}
+{"elapsed": 30.1010894989995, "requests": 603, "errors": 0, "bytes": 4824, "connections": 603, "missed": 0}
+{"elapsed": 40.15243178899982, "requests": 804, "errors": 0, "bytes": 6432, "connections": 804, "missed": 0}
+{"elapsed": 50.20256888400036, "requests": 1005, "errors": 0, "bytes": 8040, "connections": 1005, "missed": 0}
+{"elapsed": 60.255588441003056, "requests": 1206, "errors": 0, "bytes": 9648, "connections": 1206, "missed": 0}
+{"elapsed": 70.30326056100239, "requests": 1407, "errors": 0, "bytes": 11256, "connections": 1407, "missed": 0}
+{"elapsed": 80.30346745000134, "requests": 1607, "errors": 0, "bytes": 12856, "connections": 1607, "missed": 0}
+{"elapsed": 90.30481821300054, "requests": 1807, "errors": 0, "bytes": 14456, "connections": 1807, "missed": 0}
+{"elapsed": 100.35260277099951, "requests": 2008, "errors": 0, "bytes": 16064, "connections": 2008, "missed": 0}
+{"elapsed": 110.35524196500046, "requests": 2208, "errors": 0, "bytes": 17664, "connections": 2208, "missed": 0}
+{"elapsed": 120.36126129200056, "requests": 2408, "errors": 0, "bytes": 19264, "connections": 2408, "missed": 0}
+{"elapsed": 130.40481120900222, "requests": 2609, "errors": 0, "bytes": 20872, "connections": 2609, "missed": 0}
+Stopping nn-mixed-fresh-final-mixed100-t60-deadline-soak-02-backend.service - [systemd-run] /usr/bin/nsenter --net --target 5388 /usr/bin/python3 /tmp/soak-outbound.py --name p1-11.test --port 9011 --expected node=11 --rate 20 --duration 1410.0 --hosts-file /var/lib/docker/containers/c0bcdc792aa06a004905016d9cab77a25eecc2a34ca295004c4f1d02c9de4024/hosts...
+{"final": true, "requests": 2685, "errors": 0, "bytes": 21480, "connections": 2685, "missed": 0}
+nn-mixed-fresh-final-mixed100-t60-deadline-soak-02-backend.service: Deactivated successfully.
+Stopped nn-mixed-fresh-final-mixed100-t60-deadline-soak-02-backend.service - [systemd-run] /usr/bin/nsenter --net --target 5388 /usr/bin/python3 /tmp/soak-outbound.py --name p1-11.test --port 9011 --expected node=11 --rate 20 --duration 1410.0 --hosts-file /var/lib/docker/containers/c0bcdc792aa06a004905016d9cab77a25eecc2a34ca295004c4f1d02c9de4024/hosts.
+nn-mixed-fresh-final-mixed100-t60-deadline-soak-02-backend.service: Consumed 2.927s CPU time, 10M memory peak.

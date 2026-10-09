@@ -1,0 +1,247 @@
+{
+  "103": {
+    "containers": {
+      "fb9d8d58342d970eede04b67f62742b32100f49d54888ce214fc94785bace342": {
+        "name": "/mystack_timestamp_server.1.s6h9m5fic0ybtix6n4wqjtsgu",
+        "pid": 2633
+      },
+      "e5907e11298d3149d270a2e1c1fae4bde0948f59ca60e50816123a8b96b48c2a": {
+        "name": "/nginx_nginx.1.zqmqj356x0wc7wnvl6ptsdstc",
+        "pid": 2830
+      },
+      "559e82a636d3b240bca534bc178525d0d27cecf25719ee9604a3c0334d18c2ac": {
+        "name": "/nginx_nginx.2.spdohr4209mjccfnlstn3vs0t",
+        "pid": 2743
+      },
+      "2f2e357ca4424894fea3d6b44089e816d67931c98d58cf234ccaa2e17e6d005e": {
+        "name": "/apache_httpd.1.7ozynk3mk0m3mlmssklo4q3gq",
+        "pid": 2832
+      },
+      "243ce1047d584b0a49e58925e0c6e87a1b2450979d82c30225b29e7c23333003": {
+        "name": "/nn-phase1-06",
+        "pid": 6143
+      },
+      "dfb811efcbc4349183ecee49ee53db869474bc90b9b9ad703ed4003c0a108dac": {
+        "name": "/nn-phase1-05",
+        "pid": 5958
+      },
+      "87eb4ca931f72f2704f22a7a28d591e3f109d50f9aa3c530c311e01e504a26d5": {
+        "name": "/nn-phase1-04",
+        "pid": 5759
+      },
+      "54f2ce52dd541e3c5aaa1805a1db10a69234747a6f02c0161dd565532528f9ca": {
+        "name": "/nn-phase1-03",
+        "pid": 5565
+      },
+      "c0bcdc792aa06a004905016d9cab77a25eecc2a34ca295004c4f1d02c9de4024": {
+        "name": "/nn-phase1-02",
+        "pid": 5388
+      },
+      "9d1f141d58b3032b3f2469ffe4822e04e8832b5ba3ce8686320ae20112cd6571": {
+        "name": "/nn-phase1-01",
+        "pid": 5210
+      },
+      "ba029525c799a69b7daafc59a5f1dad33e1d67c1ca2605f5cec9066c583bf8f9": {
+        "name": "/portainer",
+        "pid": 1613
+      }
+    },
+    "links": {
+      "lo": 1,
+      "ens18": 2,
+      "docker0": 3,
+      "docker_gwbridge": 4,
+      "veth792bd32": 6,
+      "veth2fce16d": 11,
+      "vethc27d110": 33,
+      "veth860c692": 41,
+      "veth574b463": 43,
+      "veth292bd35": 45,
+      "veth8440dcd": 115,
+      "veth4540704": 117,
+      "veth377d75a": 119,
+      "veth4871071": 121,
+      "veth7f07d85": 125,
+      "veth695f137": 127
+    },
+    "routes": [
+      {
+        "dst": "default",
+        "gateway": "192.168.1.1",
+        "dev": "ens18",
+        "protocol": "dhcp",
+        "prefsrc": "192.168.1.103",
+        "metric": 100,
+        "flags": []
+      },
+      {
+        "dst": "172.17.0.0/16",
+        "dev": "docker0",
+        "protocol": "kernel",
+        "scope": "link",
+        "prefsrc": "172.17.0.1",
+        "flags": []
+      },
+      {
+        "dst": "172.18.0.0/16",
+        "dev": "docker_gwbridge",
+        "protocol": "kernel",
+        "scope": "link",
+        "prefsrc": "172.18.0.1",
+        "flags": []
+      },
+      {
+        "dst": "192.168.1.0/24",
+        "dev": "ens18",
+        "protocol": "kernel",
+        "scope": "link",
+        "prefsrc": "192.168.1.103",
+        "metric": 100,
+        "flags": []
+      }
+    ]
+  },
+  "104": {
+    "containers": {
+      "7dddf021b25c097e03873955453ac81555b2d0bd60215e173994b86025762f1a": {
+        "name": "/mystack_actix-sample.1.slb59rucm3eifoj2jbpow7lhz",
+        "pid": 121513
+      },
+      "424df684c0b81a7fe9fc547a655ae2b5512af8bd514440275b380378b5162a2b": {
+        "name": "/mystack_fileserver.1.jco6gakfcm2bn0gg32wlwru2c",
+        "pid": 2072
+      },
+      "2e4eecb0421dee30fad96f054b51788675f9692958b445ba94af99d9bf57ff02": {
+        "name": "/apache_httpd.2.ravn53hrcb9jtkpwgwoxicyxx",
+        "pid": 2150
+      },
+      "e06981a65459c6247659b18884dd195d2ed2a8b34297220dd4865ac8ba5dad2d": {
+        "name": "/apache_httpd.3.vhb9xuu5ngiwggkmtx2m30nbv",
+        "pid": 2042
+      },
+      "84f55c089beb3ae88ad5aa2a34d509afaed0c4f7e24c0a1a5ed9d812120ca4e0": {
+        "name": "/nn-phase1-12",
+        "pid": 24568
+      },
+      "b2b48ac33821412f366b92ff6e88b58f2a29db621dbf8ebb490528e2c07c35cf": {
+        "name": "/nn-phase1-11",
+        "pid": 24379
+      },
+      "0f2aa4f93a61aa20d9224f28eb0aa7db3df3fecfb7d353d1d3ffb4501c87522b": {
+        "name": "/nn-phase1-10",
+        "pid": 24172
+      },
+      "de5c372e43a15513eaee289369fd958f93ffe8514de939f6cfb1fe2358681893": {
+        "name": "/nn-phase1-09",
+        "pid": 23978
+      },
+      "2afe4e7e395a42e4e6cae53932e99dba24da9b3b0da5b737088f63cbddb9e612": {
+        "name": "/nn-phase1-08",
+        "pid": 23786
+      },
+      "15f16a33a26dcc62d0bb51733c5c33c604154fa1f9855ae62b7400648d54a98f": {
+        "name": "/nn-phase1-07",
+        "pid": 23618
+      },
+      "2f94a8cc74a6361924e7f30dc48876fa2ea5ae91571185f6838a881cf0fb336e": {
+        "name": "/portainer",
+        "pid": 1490
+      }
+    },
+    "links": {
+      "lo": 1,
+      "ens18": 2,
+      "docker0": 3,
+      "br-6b6d418f4275": 4,
+      "docker_gwbridge": 5,
+      "br-edb8314bfac9": 6,
+      "vethc36fca7": 8,
+      "vethe2e2101": 19,
+      "veth4615f3e": 34,
+      "veth51be406": 36,
+      "veth438f21e": 38,
+      "veth8cae57d": 246,
+      "vethdb01909": 248,
+      "veth0322227": 250,
+      "veth223abca": 252,
+      "veth9a74e24": 254,
+      "veth406f9a5": 256,
+      "veth38a6f1b": 5731
+    },
+    "routes": [
+      {
+        "dst": "default",
+        "gateway": "192.168.1.1",
+        "dev": "ens18",
+        "protocol": "dhcp",
+        "prefsrc": "192.168.1.104",
+        "metric": 100,
+        "flags": []
+      },
+      {
+        "dst": "172.17.0.0/16",
+        "dev": "docker0",
+        "protocol": "kernel",
+        "scope": "link",
+        "prefsrc": "172.17.0.1",
+        "flags": []
+      },
+      {
+        "dst": "172.18.0.0/16",
+        "dev": "docker_gwbridge",
+        "protocol": "kernel",
+        "scope": "link",
+        "prefsrc": "172.18.0.1",
+        "flags": []
+      },
+      {
+        "dst": "172.30.195.0/24",
+        "dev": "br-6b6d418f4275",
+        "protocol": "kernel",
+        "scope": "link",
+        "prefsrc": "172.30.195.1",
+        "flags": [
+          "linkdown"
+        ]
+      },
+      {
+        "dst": "172.30.196.0/24",
+        "dev": "br-edb8314bfac9",
+        "protocol": "kernel",
+        "scope": "link",
+        "prefsrc": "172.30.196.1",
+        "flags": [
+          "linkdown"
+        ]
+      },
+      {
+        "dst": "192.168.1.0/24",
+        "dev": "ens18",
+        "protocol": "kernel",
+        "scope": "link",
+        "prefsrc": "192.168.1.104",
+        "metric": 100,
+        "flags": []
+      },
+      {
+        "dst": "198.18.80.0/20",
+        "gateway": "192.168.1.103",
+        "dev": "ens18",
+        "flags": []
+      },
+      {
+        "dst": "198.18.96.0/20",
+        "gateway": "192.168.1.103",
+        "dev": "ens18",
+        "flags": []
+      },
+      {
+        "dst": "198.19.0.0/16",
+        "gateway": "192.168.1.103",
+        "dev": "ens18",
+        "protocol": "bgp",
+        "flags": []
+      }
+    ]
+  }
+}

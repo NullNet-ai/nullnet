@@ -1,0 +1,18 @@
+Started nn-mixed-fresh-rpc-mixed100-t60-deadline-soak-08-egress.service - [systemd-run] /usr/bin/nsenter --net --target 23786 /usr/bin/python3 /tmp/soak-outbound.py --name 198.18.240.103 --port 80 --expected source=192.168.1.104 --rate 10 --duration 451.0.
+{"elapsed": 0.01560291400164715, "requests": 1, "errors": 0, "bytes": 21, "connections": 1, "missed": 0}
+{"elapsed": 10.101516940001602, "requests": 102, "errors": 0, "bytes": 2142, "connections": 1, "missed": 0}
+{"elapsed": 20.20091092599978, "requests": 203, "errors": 0, "bytes": 4263, "connections": 1, "missed": 0}
+{"elapsed": 30.300527560000774, "requests": 304, "errors": 0, "bytes": 6384, "connections": 1, "missed": 0}
+{"elapsed": 40.30081502900066, "requests": 404, "errors": 0, "bytes": 8484, "connections": 1, "missed": 0}
+{"elapsed": 50.400636713002314, "requests": 505, "errors": 0, "bytes": 10605, "connections": 1, "missed": 0}
+{"elapsed": 60.40945166500023, "requests": 605, "errors": 0, "bytes": 12705, "connections": 1, "missed": 0}
+{"elapsed": 70.50196863200108, "requests": 706, "errors": 0, "bytes": 14826, "connections": 1, "missed": 0}
+{"elapsed": 80.6027406050016, "requests": 807, "errors": 0, "bytes": 16947, "connections": 1, "missed": 0}
+{"elapsed": 90.70085250400007, "requests": 908, "errors": 0, "bytes": 19068, "connections": 1, "missed": 0}
+{"elapsed": 100.8009203440015, "requests": 1009, "errors": 0, "bytes": 21189, "connections": 1, "missed": 0}
+{"elapsed": 110.80101374900187, "requests": 1109, "errors": 0, "bytes": 23289, "connections": 1, "missed": 0}
+{"elapsed": 120.9008762960002, "requests": 1210, "errors": 0, "bytes": 25410, "connections": 1, "missed": 0}
+Stopping nn-mixed-fresh-rpc-mixed100-t60-deadline-soak-08-egress.service - [systemd-run] /usr/bin/nsenter --net --target 23786 /usr/bin/python3 /tmp/soak-outbound.py --name 198.18.240.103 --port 80 --expected source=192.168.1.104 --rate 10 --duration 451.0...
+{"final": true, "requests": 1231, "errors": 0, "bytes": 25851, "connections": 1, "missed": 0}
+nn-mixed-fresh-rpc-mixed100-t60-deadline-soak-08-egress.service: Deactivated successfully.
+Stopped nn-mixed-fresh-rpc-mixed100-t60-deadline-soak-08-egress.service - [systemd-run] /usr/bin/nsenter --net --target 23786 /usr/bin/python3 /tmp/soak-outbound.py --name 198.18.240.103 --port 80 --expected source=192.168.1.104 --rate 10 --duration 451.0.

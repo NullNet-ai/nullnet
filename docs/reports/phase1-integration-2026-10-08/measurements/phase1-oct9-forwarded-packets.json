@@ -1,0 +1,7 @@
+{
+  "result": "passed",
+  "scope": "forwarded source requires MASQUERADE on the VXLAN output interface",
+  "source": "198.19.254.2",
+  "destination": "10.251.250.3",
+  "output": "PING 10.251.250.3 (10.251.250.3) 56(84) bytes of data.\n64 bytes from 10.251.250.3: icmp_seq=1 ttl=63 time=0.727 ms\n64 bytes from 10.251.250.3: icmp_seq=2 ttl=63 time=0.534 ms\n64 bytes from 10.251.250.3: icmp_seq=3 ttl=63 time=0.547 ms\n\n--- 10.251.250.3 ping statistics ---\n3 packets transmitted, 3 received, 0% packet loss, time 2035ms\nrtt min/avg/max/mdev = 0.534/0.602/0.727/0.088 ms\n"
+}

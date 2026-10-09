@@ -1,5 +1,5 @@
 """Authenticated lab API helper; cookies remain in memory."""
-import http.cookiejar,json,ssl,urllib.request
+import http.cookiejar,json,ssl,time,urllib.request
 BASE='https://192.168.1.104:8080';STACK='nn-phase1'
 jar=http.cookiejar.CookieJar()
 op=urllib.request.build_opener(urllib.request.HTTPSHandler(context=ssl._create_unverified_context()),urllib.request.HTTPCookieProcessor(jar))
@@ -9,6 +9,13 @@ def api(path,data=None):
   body=r.read();return json.loads(body) if body else None
 
 def login():api('/api/auth/login',{'username':'admin','password':'admin'})
+def wait_registered():
+ deadline=time.monotonic()+60
+ while True:
+  services=api('/api/services/'+STACK)
+  if len(services)==12 and all(s['registered'] for s in services):return
+  assert time.monotonic()<deadline,'fixture registration timed out'
+  time.sleep(.2)
 if __name__=='__main__':
  login()
  services=[{'name':f'p1-{i:02d}.test','docker_container':f'nn-phase1-{i:02d}','host_ip':'192.168.1.103' if i<=6 else '192.168.1.104','port':9000+i,'timeout':1,'pausable':False} for i in range(1,13)]

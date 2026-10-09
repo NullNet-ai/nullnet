@@ -1,11 +1,11 @@
-import subprocess,concurrent.futures,shlex,time,json,pathlib
+import sys,subprocess,concurrent.futures,shlex,time,json,pathlib
 hosts=['103','104']
 def root(h,args):return subprocess.check_output(['ssh','debian@192.168.1.'+h,"printf '%s\\n' debian | sudo -S -p '' "+shlex.join(args)],text=True)
 for h in hosts:
  root(h,['rm','-f','/tmp/nn-layer1-cross-ready','/tmp/nn-layer1-cross-go','/tmp/nn-layer1-cross-retired','/tmp/nn-layer1-cross-survivor-go'])
 procs=[]
 for h,side,remote in [('103','s','104'),('104','c','103')]:
- command='NN_PHASE1_TEST_SIDE='+side+' NN_PHASE1_TEST_LOCAL=192.168.1.'+h+' NN_PHASE1_TEST_REMOTE=192.168.1.'+remote+' /tmp/nn-layer1-shared-packet-test cross_host_fresh_endpoint_packet_proof --ignored --nocapture > /tmp/nn-layer1-shared-cross-proof.log 2>&1'
+ command='NN_PHASE1_TEST_PORT=4791 NN_PHASE1_TEST_SIDE='+side+' NN_PHASE1_TEST_LOCAL=192.168.1.'+h+' NN_PHASE1_TEST_REMOTE=192.168.1.'+remote+' /tmp/nn-layer1-shared-packet-test cross_host_fresh_endpoint_packet_proof --ignored --nocapture > /tmp/nn-layer1-shared-cross-proof.log 2>&1'
  procs.append(subprocess.Popen(['ssh','debian@192.168.1.'+h,"printf '%s\\n' debian | sudo -S -p '' sh -c "+shlex.quote(command)]))
 def wait_file(path):
  end=time.monotonic()+40
@@ -16,8 +16,9 @@ def wait_file(path):
   time.sleep(.2)
  raise RuntimeError(path)
 print(wait_file('/tmp/nn-layer1-cross-ready'),flush=True)
+subprocess.run(['python3',str(pathlib.Path(__file__).with_name('forwarded-packet-proof.py'))]+sys.argv[1:],check=True)
 listeners=[]
-for subnet,id in [(250,1959199),(251,1959200)]:
+for subnet,id in [(250,4097),(251,4103)]:
  root('104',['rm','-f',f'/tmp/nn-layer1-security-ready-{subnet}',f'/tmp/nn-layer1-security-{subnet}.json'])
  cmd=shlex.join(['ip','netns','exec',f'ns_{id}_c','python3','/tmp/shared-port-packets.py','listen',str(subnet)])
  listeners.append(subprocess.Popen(['ssh','debian@192.168.1.104',"printf '%s\\n' debian | sudo -S -p '' "+cmd]))

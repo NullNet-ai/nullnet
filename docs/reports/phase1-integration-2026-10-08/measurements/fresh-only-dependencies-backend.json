@@ -1,0 +1,809 @@
+{
+  "label": "fresh-only-dependencies-backend",
+  "load": {
+    "unix_start": 1791555333.314884,
+    "unix_end": 1791555333.931321,
+    "count": 64,
+    "concurrency": 16,
+    "identities": 64,
+    "services": [
+      1
+    ],
+    "ok": 64,
+    "errors": 0,
+    "request_seconds": 0.6164190449999296,
+    "requests_per_second": 103.82547476288198,
+    "p50_ms": 25.761078999494202,
+    "p95_ms": 543.4823309988133
+  },
+  "graph_during": {
+    "proxies": [
+      "192.168.1.104"
+    ],
+    "nodes": [
+      {
+        "id": "p1-01.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-02.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-03.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-04.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-05.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-06.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-07.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-08.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-09.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-10.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-11.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-12.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 1,
+        "paused_replica_count": 0
+      }
+    ],
+    "edges": [
+      {
+        "from": "198.18.81.129",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 136,
+        "setup_ms": 14
+      },
+      {
+        "from": "198.18.81.130",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 132,
+        "setup_ms": 13
+      },
+      {
+        "from": "198.18.81.131",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 116,
+        "setup_ms": 15
+      },
+      {
+        "from": "198.18.81.132",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 222,
+        "setup_ms": 13
+      },
+      {
+        "from": "198.18.81.133",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 163,
+        "setup_ms": 13
+      },
+      {
+        "from": "198.18.81.134",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 123,
+        "setup_ms": 13
+      },
+      {
+        "from": "198.18.81.135",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 111,
+        "setup_ms": 10
+      },
+      {
+        "from": "198.18.81.136",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 112,
+        "setup_ms": 13
+      },
+      {
+        "from": "198.18.81.137",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 110,
+        "setup_ms": 15
+      },
+      {
+        "from": "198.18.81.138",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 137,
+        "setup_ms": 14
+      },
+      {
+        "from": "198.18.81.139",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 165,
+        "setup_ms": 15
+      },
+      {
+        "from": "198.18.81.140",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 102,
+        "setup_ms": 11
+      },
+      {
+        "from": "198.18.81.141",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 162,
+        "setup_ms": 10
+      },
+      {
+        "from": "198.18.81.142",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 160,
+        "setup_ms": 12
+      },
+      {
+        "from": "198.18.81.143",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 207,
+        "setup_ms": 10
+      },
+      {
+        "from": "198.18.81.144",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 129,
+        "setup_ms": 14
+      },
+      {
+        "from": "198.18.81.145",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 199,
+        "setup_ms": 8
+      },
+      {
+        "from": "198.18.81.146",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 169,
+        "setup_ms": 7
+      },
+      {
+        "from": "198.18.81.147",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 172,
+        "setup_ms": 7
+      },
+      {
+        "from": "198.18.81.148",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 107,
+        "setup_ms": 13
+      },
+      {
+        "from": "198.18.81.149",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 167,
+        "setup_ms": 13
+      },
+      {
+        "from": "198.18.81.150",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 170,
+        "setup_ms": 13
+      },
+      {
+        "from": "198.18.81.151",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 157,
+        "setup_ms": 13
+      },
+      {
+        "from": "198.18.81.152",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 208,
+        "setup_ms": 12
+      },
+      {
+        "from": "198.18.81.153",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 226,
+        "setup_ms": 14
+      },
+      {
+        "from": "198.18.81.154",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 198,
+        "setup_ms": 12
+      },
+      {
+        "from": "198.18.81.155",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 256,
+        "setup_ms": 13
+      },
+      {
+        "from": "198.18.81.156",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 105,
+        "setup_ms": 19
+      },
+      {
+        "from": "198.18.81.157",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 274,
+        "setup_ms": 19
+      },
+      {
+        "from": "198.18.81.158",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 151,
+        "setup_ms": 20
+      },
+      {
+        "from": "198.18.81.159",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 109,
+        "setup_ms": 19
+      },
+      {
+        "from": "198.18.81.160",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 161,
+        "setup_ms": 18
+      },
+      {
+        "from": "198.18.81.161",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 103,
+        "setup_ms": 12
+      },
+      {
+        "from": "198.18.81.162",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 125,
+        "setup_ms": 14
+      },
+      {
+        "from": "198.18.81.163",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 113,
+        "setup_ms": 14
+      },
+      {
+        "from": "198.18.81.164",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 168,
+        "setup_ms": 13
+      },
+      {
+        "from": "198.18.81.165",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 134,
+        "setup_ms": 13
+      },
+      {
+        "from": "198.18.81.166",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 122,
+        "setup_ms": 14
+      },
+      {
+        "from": "198.18.81.167",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 119,
+        "setup_ms": 15
+      },
+      {
+        "from": "198.18.81.168",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 176,
+        "setup_ms": 14
+      },
+      {
+        "from": "198.18.81.169",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 108,
+        "setup_ms": 10
+      },
+      {
+        "from": "198.18.81.170",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 126,
+        "setup_ms": 7
+      },
+      {
+        "from": "198.18.81.171",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 120,
+        "setup_ms": 6
+      },
+      {
+        "from": "198.18.81.172",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 114,
+        "setup_ms": 2
+      },
+      {
+        "from": "198.18.81.173",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 106,
+        "setup_ms": 16
+      },
+      {
+        "from": "198.18.81.174",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 117,
+        "setup_ms": 12
+      },
+      {
+        "from": "198.18.81.175",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 128,
+        "setup_ms": 9
+      },
+      {
+        "from": "198.18.81.176",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 127,
+        "setup_ms": 13
+      },
+      {
+        "from": "198.18.81.177",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 101,
+        "setup_ms": 15
+      },
+      {
+        "from": "198.18.81.178",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 118,
+        "setup_ms": 14
+      },
+      {
+        "from": "198.18.81.179",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 235,
+        "setup_ms": 14
+      },
+      {
+        "from": "198.18.81.180",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 173,
+        "setup_ms": 11
+      },
+      {
+        "from": "198.18.81.181",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 181,
+        "setup_ms": 10
+      },
+      {
+        "from": "198.18.81.182",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 271,
+        "setup_ms": 14
+      },
+      {
+        "from": "198.18.81.183",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 196,
+        "setup_ms": 13
+      },
+      {
+        "from": "198.18.81.184",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 243,
+        "setup_ms": 17
+      },
+      {
+        "from": "198.18.81.185",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 249,
+        "setup_ms": 15
+      },
+      {
+        "from": "198.18.81.186",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 166,
+        "setup_ms": 14
+      },
+      {
+        "from": "198.18.81.187",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 180,
+        "setup_ms": 18
+      },
+      {
+        "from": "198.18.81.188",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 259,
+        "setup_ms": 13
+      },
+      {
+        "from": "198.18.81.189",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 179,
+        "setup_ms": 10
+      },
+      {
+        "from": "198.18.81.190",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 190,
+        "setup_ms": 6
+      },
+      {
+        "from": "198.18.81.191",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 192,
+        "setup_ms": 5
+      },
+      {
+        "from": "198.18.81.192",
+        "via_proxy": "192.168.1.104",
+        "to": "p1-01.test",
+        "net_id": 242,
+        "setup_ms": 2
+      },
+      {
+        "from": "p1-01.test",
+        "to": "p1-02.test",
+        "net_id": 138,
+        "setup_ms": 43
+      },
+      {
+        "from": "p1-01.test",
+        "to": "p1-07.test",
+        "net_id": 237,
+        "setup_ms": 43
+      },
+      {
+        "from": "p1-02.test",
+        "to": "p1-04.test",
+        "net_id": 115,
+        "setup_ms": 44
+      },
+      {
+        "from": "p1-02.test",
+        "to": "p1-09.test",
+        "net_id": 206,
+        "setup_ms": 42
+      },
+      {
+        "from": "p1-03.test",
+        "to": "p1-10.test",
+        "net_id": 164,
+        "setup_ms": 42
+      },
+      {
+        "from": "p1-04.test",
+        "to": "p1-06.test",
+        "net_id": 224,
+        "setup_ms": 46
+      },
+      {
+        "from": "p1-04.test",
+        "to": "p1-12.test",
+        "net_id": 133,
+        "setup_ms": 42
+      },
+      {
+        "from": "p1-07.test",
+        "to": "p1-03.test",
+        "net_id": 121,
+        "setup_ms": 51
+      },
+      {
+        "from": "p1-07.test",
+        "to": "p1-08.test",
+        "net_id": 124,
+        "setup_ms": 49
+      },
+      {
+        "from": "p1-08.test",
+        "to": "p1-05.test",
+        "net_id": 205,
+        "setup_ms": 46
+      },
+      {
+        "from": "p1-09.test",
+        "to": "p1-11.test",
+        "net_id": 130,
+        "setup_ms": 48
+      }
+    ]
+  },
+  "graph_after": {
+    "proxies": [
+      "192.168.1.104"
+    ],
+    "nodes": [
+      {
+        "id": "p1-01.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-02.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-03.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-04.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-05.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-06.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-07.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-08.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-09.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-10.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-11.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      },
+      {
+        "id": "p1-12.test",
+        "registered": true,
+        "entry_point": true,
+        "replica_count": 1,
+        "active_replica_count": 0,
+        "paused_replica_count": 0
+      }
+    ],
+    "edges": []
+  },
+  "nodes": {
+    "103": {
+      "label": "fresh-only-dependencies-backend",
+      "before": {
+        "unix": 1791555331.041404,
+        "host_cpu_seconds": 1165.0,
+        "client_cpu": "usage_usec 7384924\nuser_usec 1066073\nsystem_usec 6318850\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "78892",
+        "conntrack_count": 4019,
+        "cursor": "s=67bfec5eb55c4e40a0a22a68ed50db40;i=2673053;b=b3e1ec89bbb944d1a75ab02384b5256f;m=4f86d27a1;t=65d68fa9cbc00;x=ec6b1233f3a38019"
+      },
+      "after": {
+        "unix": 1791555337.2568874,
+        "host_cpu_seconds": 1167.89,
+        "client_cpu": "usage_usec 8720606\nuser_usec 1305982\nsystem_usec 7414624\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "78892",
+        "conntrack_count": 5088
+      },
+      "host_cpu_seconds": 2.8900000000001,
+      "setups": 76,
+      "retirements": 76,
+      "lifecycle_errors": [],
+      "remaining_owned_links": [],
+      "server_retirements": 0,
+      "last_server_retirement_unix": null,
+      "last_retirement_unix": 1791555336.371149,
+      "unscoped_counts": {
+        "setups": 76,
+        "retirements": 76,
+        "server_retirements": 0
+      },
+      "scope": "Phase 1 fixture IDs; full unscoped records preserved on each host"
+    },
+    "104": {
+      "label": "fresh-only-dependencies-backend",
+      "before": {
+        "unix": 1791555331.0770164,
+        "host_cpu_seconds": 8086.93,
+        "client_cpu": "usage_usec 14143177\nuser_usec 2142924\nsystem_usec 12000253\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "316668",
+        "conntrack_count": 6033,
+        "cursor": "s=3d9af771a9944221b78bfb41a34fe8af;i=3b1347e;b=7dfc35bddf114d689033ea3d9613e5c1;m=4f86eb35e;t=65d68fa9f63b8;x=1e477d3da0a49b4c",
+        "server_cursor": "s=3d9af771a9944221b78bfb41a34fe8af;i=3b134ad;b=7dfc35bddf114d689033ea3d9613e5c1;m=4f8ea2618;t=65d68fb1ad672;x=5e6c3c3ac89e14eb"
+      },
+      "after": {
+        "unix": 1791555337.3001037,
+        "host_cpu_seconds": 8089.84,
+        "client_cpu": "usage_usec 15184868\nuser_usec 2346444\nsystem_usec 12838424\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "all_client_pid": "316668",
+        "conntrack_count": 6304
+      },
+      "host_cpu_seconds": 2.9099999999998545,
+      "setups": 74,
+      "retirements": 74,
+      "lifecycle_errors": [],
+      "remaining_owned_links": [],
+      "server_retirements": 75,
+      "last_server_retirement_unix": 1791555336.367852,
+      "last_retirement_unix": 1791555336.217084,
+      "unscoped_counts": {
+        "setups": 74,
+        "retirements": 74,
+        "server_retirements": 75
+      },
+      "scope": "Phase 1 fixture IDs; full unscoped records preserved on each host"
+    }
+  }
+}

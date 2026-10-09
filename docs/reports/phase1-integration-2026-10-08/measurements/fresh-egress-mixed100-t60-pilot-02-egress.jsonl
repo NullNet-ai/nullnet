@@ -1,0 +1,17 @@
+Started nn-mixed-fresh-egress-mixed100-t60-pilot-02-egress.service - [systemd-run] /usr/bin/nsenter --net --target 5388 /usr/bin/python3 /tmp/soak-outbound.py --name 198.18.240.103 --port 80 --expected source=192.168.1.104 --rate 10 --duration 450.0.
+{"elapsed": 0.040155787999538006, "requests": 1, "errors": 0, "bytes": 21, "connections": 1, "missed": 0}
+{"elapsed": 10.10176149900144, "requests": 102, "errors": 0, "bytes": 2142, "connections": 1, "missed": 0}
+{"elapsed": 20.201009314001567, "requests": 203, "errors": 0, "bytes": 4263, "connections": 1, "missed": 0}
+{"elapsed": 30.2023302589987, "requests": 303, "errors": 0, "bytes": 6363, "connections": 1, "missed": 0}
+{"elapsed": 40.30112314299913, "requests": 404, "errors": 0, "bytes": 8484, "connections": 1, "missed": 0}
+{"elapsed": 50.30643966500065, "requests": 504, "errors": 0, "bytes": 10584, "connections": 1, "missed": 0}
+{"elapsed": 60.40154383299887, "requests": 605, "errors": 0, "bytes": 12705, "connections": 1, "missed": 0}
+{"elapsed": 70.40394653700059, "requests": 705, "errors": 0, "bytes": 14805, "connections": 1, "missed": 0}
+{"elapsed": 80.40479412499917, "requests": 805, "errors": 0, "bytes": 16905, "connections": 1, "missed": 0}
+{"elapsed": 90.41531676500017, "requests": 905, "errors": 0, "bytes": 19005, "connections": 1, "missed": 0}
+{"elapsed": 100.50232182699983, "requests": 1006, "errors": 0, "bytes": 21126, "connections": 1, "missed": 0}
+{"elapsed": 110.5057967219982, "requests": 1106, "errors": 0, "bytes": 23226, "connections": 1, "missed": 0}
+Stopping nn-mixed-fresh-egress-mixed100-t60-pilot-02-egress.service - [systemd-run] /usr/bin/nsenter --net --target 5388 /usr/bin/python3 /tmp/soak-outbound.py --name 198.18.240.103 --port 80 --expected source=192.168.1.104 --rate 10 --duration 450.0...
+{"final": true, "requests": 1206, "errors": 0, "bytes": 25326, "connections": 1, "missed": 0}
+nn-mixed-fresh-egress-mixed100-t60-pilot-02-egress.service: Deactivated successfully.
+Stopped nn-mixed-fresh-egress-mixed100-t60-pilot-02-egress.service - [systemd-run] /usr/bin/nsenter --net --target 5388 /usr/bin/python3 /tmp/soak-outbound.py --name 198.18.240.103 --port 80 --expected source=192.168.1.104 --rate 10 --duration 450.0.
