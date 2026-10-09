@@ -377,6 +377,10 @@ async fn activate(endpoint: Arc<Endpoint>, params: &VxlanSetupParams) -> Result<
             p.br_net.ip(),
             p.br_net.prefix(),
         )?;
+        if endpoint.forwarding != endpoint.gateway {
+            // Docker's DNAT path needs an address on its MASQUERADE output device.
+            endpoint_io::add_address(&mut root.route, endpoint.forwarding, p.br_net.ip(), 32)?;
+        }
         if let Some(index) = endpoint.outer {
             endpoint_io::set_up(&mut root.route, index)?;
         }

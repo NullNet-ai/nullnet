@@ -148,6 +148,15 @@ async fn remove_groups(
     for request in requests {
         let result = handle.link().set(request).execute().await;
         if let Err(error) = result {
+            if matches!(&error, rtnetlink::Error::NetlinkError(e)
+                if e.code.map(std::num::NonZeroI32::get) == Some(-libc::ENODEV))
+            {
+                if groups.is_empty() {
+                    continue;
+                }
+                // Deleting a veth also removes its peer; rediscover the remaining groups.
+                return Box::pin(remove_groups(handle, groups, None)).await;
+            }
             // Finish both assigned and unassigned groups on partial failure.
             let mut cleanup = delete_group(handle, RETIRING_GROUP).await;
             for group in &groups {
