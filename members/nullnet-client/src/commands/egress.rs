@@ -173,25 +173,12 @@ const TABLE_OFFSET: u32 = 10_000;
 /// `ip rule` isn't one of ours.
 const MIN_NET_ID: u32 = 101;
 
-/// Per-edge routing table / rule-priority base, derived from the net id so
-/// concurrent edges don't collide and teardown can reconstruct them.
+/// Tables identify edges; source selectors let every edge share priorities.
+const STEER_PRIO_BASE: u32 = 1_000;
+const STEER_PROTOCOL: &str = "242";
+
 fn table_for(net_id: u32) -> u32 {
     TABLE_OFFSET + net_id
-}
-fn prio_base(net_id: u32) -> u32 {
-    // 16 priorities reserved per edge: internal bypasses then the catch-all.
-    // MUST stay below the `main` table rule (priority 32766): ip-rule evaluates
-    // in ascending priority order, so a higher number lets `main`'s default
-    // route match first and the egress steer never fires. 1000 + net_id*16
-    // keeps every edge's rules (net_id up to ~1900) under 32766.
-    1_000 + net_id * 16
-}
-
-/// Whether a steer for `net_id` can exist at all: the pool never hands out an
-/// id below [`MIN_NET_ID`], and `install_steer` refuses one whose priority band
-/// would reach `main`. Bounds what `purge_stale_steers` may claim as ours.
-fn steerable(net_id: u32) -> bool {
-    net_id >= MIN_NET_ID && prio_base(net_id) + 15 < 32_766
 }
 
 /// Initiator side: steer `container_ip`'s external traffic into the overlay
@@ -204,24 +191,12 @@ pub(crate) fn install_steer(
     snat_src: Ipv4Addr,
     container_ip: Ipv4Addr,
 ) -> bool {
-    // The 16-priority band (base..=base+15) MUST stay below main's rule (32766)
-    // or the catch-all lands above main and its default route wins — the steer
-    // silently never fires. net_id is bounded only by the (2M-wide) NET ID pool,
-    // so guard here and fail loud instead of installing rules that can't match.
-    if !steerable(net_id) {
-        eprintln!(
-            "[egress] net_id {net_id} exceeds steer priority range (base {} >= main 32766); refusing steer",
-            prio_base(net_id)
-        );
-        return false;
-    }
-
     if !remove_steer(net_id, br_dev, snat_src, container_ip) {
         return false;
     }
 
     let table = table_for(net_id).to_string();
-    let base = prio_base(net_id);
+    let base = STEER_PRIO_BASE;
     let cip = container_ip.to_string();
     let mut ok = true;
 
@@ -232,7 +207,19 @@ pub(crate) fn install_steer(
         ok &= privileged_ok(
             "ip rule add internal bypass",
             &[
-                "ip", "rule", "add", "from", &cip, "to", range, "lookup", "main", "priority", &prio,
+                "ip",
+                "rule",
+                "add",
+                "from",
+                &cip,
+                "to",
+                range,
+                "lookup",
+                "main",
+                "priority",
+                &prio,
+                "protocol",
+                STEER_PROTOCOL,
             ],
         );
     }
@@ -241,7 +228,17 @@ pub(crate) fn install_steer(
     ok &= privileged_ok(
         "ip rule add egress catch-all",
         &[
-            "ip", "rule", "add", "from", &cip, "lookup", &table, "priority", &catch_all,
+            "ip",
+            "rule",
+            "add",
+            "from",
+            &cip,
+            "lookup",
+            &table,
+            "priority",
+            &catch_all,
+            "protocol",
+            STEER_PROTOCOL,
         ],
     );
     // The egress table's only route: default via the proxy overlay IP.
@@ -301,22 +298,14 @@ pub(crate) fn remove_steer(
     container_ip: Ipv4Addr,
 ) -> bool {
     let table = table_for(net_id).to_string();
-    let base = prio_base(net_id);
     let cip = container_ip.to_string();
-    let Some(rules) = privileged_output(&["ip", "rule", "show"]) else {
+    let Some(rules) = privileged_output(&["ip", "-N", "rule", "show"]) else {
         return false;
     };
     let mut ok = true;
-    for priority in rules
-        .lines()
-        .filter_map(|line| line.split_once(':')?.0.trim().parse::<u32>().ok())
-    {
-        if (base..base + 16).contains(&priority) {
-            ok &= privileged_ok(
-                "remove egress rule",
-                &["ip", "rule", "del", "priority", &priority.to_string()],
-            );
-        }
+    for rule in owned_steer_rules(&rules, Some((net_id, container_ip))) {
+        let args: Vec<&str> = rule.iter().map(String::as_str).collect();
+        ok &= privileged_ok("remove egress rule", &args);
     }
     ok &= Command::new("ip")
         .args(["route", "flush", "table", &table])
@@ -356,19 +345,17 @@ pub(crate) fn remove_steer(
 /// bridges they leave by.
 pub(crate) fn purge_stale_steers() {
     remove_local_forwards(None);
-    let mut tables = 0usize;
-    for net_id in stale_steer_net_ids() {
-        let table = table_for(net_id).to_string();
-        let base = prio_base(net_id);
-        for i in 0..16u32 {
-            // Most of the band is legitimately absent — a steer only ever uses
-            // the internal bypasses plus the catch-all — so the misses are the
-            // expected case, not something to spell out on every startup.
-            let _ = privileged_quiet(&["ip", "rule", "del", "priority", &(base + i).to_string()]);
-        }
-        let _ = privileged(&["ip", "route", "flush", "table", &table]);
-        tables += 1;
+    let rules = privileged_output(&["ip", "-N", "rule", "show"]).unwrap_or_default();
+    let ids = parse_steer_net_ids(&rules);
+    for rule in owned_steer_rules(&rules, None) {
+        let args: Vec<&str> = rule.iter().map(String::as_str).collect();
+        let _ = privileged_quiet(&args);
     }
+    for net_id in &ids {
+        let table = table_for(*net_id).to_string();
+        let _ = privileged(&["ip", "route", "flush", "table", &table]);
+    }
+    let tables = ids.len();
 
     let mut snats = 0usize;
     for spec in stale_overlay_snat_rules() {
@@ -382,29 +369,117 @@ pub(crate) fn purge_stale_steers() {
     println!("[egress] purge: dropped {tables} stale steer table(s), {snats} SNAT rule(s)");
 }
 
-/// Net ids whose steer table is still referenced by an `ip rule`. A steer's
-/// internal-bypass rules use `lookup main`, so the catch-all is what identifies
-/// the band — a partial install missing it is left for `install_steer` to heal.
-fn stale_steer_net_ids() -> Vec<u32> {
-    parse_steer_net_ids(&privileged_output(&["ip", "rule", "show"]).unwrap_or_default())
+struct SteerRule<'a> {
+    priority: u32,
+    source: Ipv4Addr,
+    destination: Option<&'a str>,
+    table: &'a str,
+    protocol: Option<&'a str>,
+}
+
+fn parse_steer_rules(out: &str) -> Vec<SteerRule<'_>> {
+    out.lines()
+        .filter_map(|line| {
+            let (priority, rest) = line.split_once(':')?;
+            let words: Vec<_> = rest.split_whitespace().collect();
+            let field = |key| words.windows(2).find(|w| w[0] == key).map(|w| w[1]);
+            let source = field("from")?;
+            let source = source.strip_suffix("/32").unwrap_or(source).parse().ok()?;
+            Some(SteerRule {
+                priority: priority.trim().parse().ok()?,
+                source,
+                destination: field("to"),
+                table: match field("lookup")? {
+                    "254" => "main",
+                    table => table,
+                },
+                protocol: field("proto"),
+            })
+        })
+        .collect()
+}
+
+fn steer_id(rule: &SteerRule<'_>) -> Option<u32> {
+    let id = rule.table.parse::<u32>().ok()?.checked_sub(TABLE_OFFSET)?;
+    if !(MIN_NET_ID..=2_097_151).contains(&id) || rule.destination.is_some() {
+        return None;
+    }
+    let current = rule.protocol == Some(STEER_PROTOCOL) && rule.priority == STEER_PRIO_BASE + 15;
+    let legacy =
+        rule.protocol.is_none() && rule.priority == 1_000 + id * 16 + 15 && rule.priority < 32_766;
+    (current || legacy).then_some(id)
 }
 
 fn parse_steer_net_ids(out: &str) -> Vec<u32> {
-    let mut ids: Vec<u32> = out
-        .lines()
-        .filter_map(|line| {
-            let table: u32 = line
-                .split_whitespace()
-                .skip_while(|t| *t != "lookup")
-                .nth(1)?
-                .parse()
-                .ok()?;
-            table.checked_sub(TABLE_OFFSET).filter(|id| steerable(*id))
-        })
-        .collect();
+    let mut ids: Vec<_> = parse_steer_rules(out).iter().filter_map(steer_id).collect();
     ids.sort_unstable();
     ids.dedup();
     ids
+}
+
+fn owned_steer_rules(out: &str, edge: Option<(u32, Ipv4Addr)>) -> Vec<Vec<String>> {
+    let rules = parse_steer_rules(out);
+    let legacy: Vec<_> = rules
+        .iter()
+        .filter_map(|r| {
+            (r.protocol.is_none())
+                .then(|| steer_id(r).map(|id| (id, r.source)))
+                .flatten()
+        })
+        .collect();
+    rules
+        .iter()
+        .filter(|rule| {
+            if edge.is_some_and(|(_, source)| source != rule.source) {
+                return false;
+            }
+            let bypass = rule.table == "main"
+                && rule
+                    .destination
+                    .is_some_and(|d| INTERNAL_RANGES.contains(&d));
+            if rule.protocol == Some(STEER_PROTOCOL) {
+                if bypass {
+                    return INTERNAL_RANGES
+                        .iter()
+                        .position(|d| Some(*d) == rule.destination)
+                        .is_some_and(|i| rule.priority == STEER_PRIO_BASE + i as u32);
+                }
+                return steer_id(rule)
+                    .is_some_and(|id| edge.is_none_or(|(expected, _)| id == expected));
+            }
+            legacy.iter().any(|(id, source)| {
+                if *source != rule.source || edge.is_some_and(|(expected, _)| *id != expected) {
+                    return false;
+                }
+                if bypass {
+                    return INTERNAL_RANGES
+                        .iter()
+                        .position(|d| Some(*d) == rule.destination)
+                        .is_some_and(|i| rule.priority == 1_000 + id * 16 + i as u32);
+                }
+                steer_id(rule) == Some(*id)
+            })
+        })
+        .map(|rule| {
+            let mut args = vec![
+                "ip".into(),
+                "rule".into(),
+                "del".into(),
+                "priority".into(),
+                rule.priority.to_string(),
+                "from".into(),
+                rule.source.to_string(),
+            ];
+            if let Some(destination) = rule.destination {
+                args.extend(["to".into(), destination.into()]);
+            }
+            args.extend(["lookup".into(), rule.table.into()]);
+            if let Some(protocol) = rule.protocol {
+                args.extend(["protocol".into(), protocol.into()]);
+            }
+            args
+        })
+        .collect()
 }
 
 /// `-D`-ready specs for SNAT rules that send a source into one of our overlay
@@ -718,7 +793,7 @@ mod purge_tests {
     /// rule pointing at a low-numbered table.
     const RULE_SHOW: &str = "\
 0:\tfrom all lookup local
-2616:\tfrom 172.17.0.3 to 10.0.0.0/8 lookup main
+2617:\tfrom 172.17.0.3 to 10.0.0.0/8 lookup main
 2631:\tfrom 172.17.0.3 lookup 10101
 2647:\tfrom 172.17.0.9 lookup 10102
 30000:\tfrom 10.9.0.0/24 lookup 42
@@ -737,22 +812,29 @@ mod purge_tests {
     #[test]
     fn net_ids_come_from_our_table_range_only() {
         // `main`/`local`/`default` aren't numbers; table 42 is below our offset
-        // and table 20000 is above the largest id `install_steer` accepts —
-        // both are the operator's, and flushing either would break their routing
+        // and table 20000 has an unrelated priority/protocol. Both belong
+        // to the operator, and flushing either would break their routing
         assert_eq!(parse_steer_net_ids(RULE_SHOW), vec![101, 102]);
     }
 
     #[test]
-    fn steerable_matches_what_install_steer_accepts() {
-        assert!(!super::steerable(super::MIN_NET_ID - 1));
-        assert!(super::steerable(super::MIN_NET_ID));
-        // the band must stay clear of main's rule at 32766
-        let last = (0..40_000u32)
-            .filter(|id| super::steerable(*id))
-            .max()
-            .unwrap();
-        assert!(super::prio_base(last) + 15 < 32_766);
-        assert!(!super::steerable(last + 1));
+    fn shared_priorities_keep_edges_and_partial_cleanup_separate() {
+        let rules = "1001: from 172.17.0.3 to 10.0.0.0/8 lookup main proto 242\n\
+1015: from 172.17.0.3 lookup 14097 proto 242\n\
+1001: from 172.17.0.9 to 10.0.0.0/8 lookup main proto 242\n\
+1015: from 172.17.0.9 lookup 2107151 proto 242\n\
+1015: from 172.17.0.7 lookup 20000 proto 4\n\
+1001: from 172.17.0.8 to 10.0.0.0/8 lookup main proto 242\n";
+        assert_eq!(parse_steer_net_ids(rules), vec![4097, 2_097_151]);
+        let edge = super::owned_steer_rules(rules, Some((4097, "172.17.0.3".parse().unwrap())));
+        assert_eq!(edge.len(), 2);
+        assert!(edge.iter().all(|r| r.contains(&"172.17.0.3".into())));
+        assert_eq!(super::owned_steer_rules(rules, None).len(), 5);
+        assert_eq!(
+            super::owned_steer_rules(&rules.replace("lookup main", "lookup 254"), None).len(),
+            5
+        );
+        assert_eq!(super::owned_steer_rules(RULE_SHOW, None).len(), 3);
     }
 
     #[test]
