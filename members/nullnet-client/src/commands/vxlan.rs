@@ -696,6 +696,9 @@ mod endpoint_packet_tests {
     #[ignore = "requires coordinated execution on both lab hosts"]
     async fn cross_host_fresh_endpoint_packet_proof() {
         let side = std::env::var("NN_PHASE1_TEST_SIDE").unwrap();
+        let port = std::env::var("NN_PHASE1_TEST_PORT")
+            .map(|port| port.parse().unwrap())
+            .unwrap_or(crate::DEFAULT_VXLAN_DSTPORT);
         let local_ip = std::env::var("NN_PHASE1_TEST_LOCAL")
             .unwrap()
             .parse()
@@ -708,7 +711,7 @@ mod endpoint_packet_tests {
         let handle = RtNetLinkHandle::new().unwrap();
         let offset = if side == "s" { 1 } else { 3 };
         let mut endpoints = Vec::new();
-        for (id, subnet, key) in [(1_959_199, 250, "42"), (1_959_200, 251, "43")] {
+        for (id, subnet, key) in [(4_097, 250, "42"), (4_103, 251, "43")] {
             let name = format!("ns_{id}_{side}");
             let namespace = super::super::endpoint_namespace::create(&name)
                 .await
@@ -723,7 +726,7 @@ mod endpoint_packet_tests {
                 local_ip,
                 remote_ip,
                 key_hex: key.repeat(32),
-                dstport: crate::DEFAULT_VXLAN_DSTPORT,
+                dstport: port,
                 encrypted: true,
                 docker_container: Some(name),
             });

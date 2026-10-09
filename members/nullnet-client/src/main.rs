@@ -52,7 +52,7 @@ pub const TAP_NAME: &str = "nullnet0";
 /// Shared VXLAN dstport for a tunnel that doesn't need a dedicated one — must
 /// match nullnet-server's `DEFAULT_VXLAN_DSTPORT` (net_id_pool.rs) and the
 /// eBPF firewall's `VXLAN_PORT` constant (ebpf/src/main.rs).
-pub const DEFAULT_VXLAN_DSTPORT: u16 = 4789;
+pub const DEFAULT_VXLAN_DSTPORT: u16 = 47890;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {

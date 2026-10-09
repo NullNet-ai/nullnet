@@ -75,8 +75,8 @@ impl NetIdPool {
     }
 }
 
-/// Shared VXLAN UDP socket; edge marks select independent encryption keys.
-pub(crate) const DEFAULT_VXLAN_DSTPORT: u16 = 4789;
+/// Dedicated shared port avoids Docker Swarm VNI collisions on UDP 4789.
+pub(crate) const DEFAULT_VXLAN_DSTPORT: u16 = 47890;
 
 /// Generate a fresh random 32-byte AES-256 key for one tunnel. Called once
 /// per net_id allocation; the same bytes are sent to both endpoints so they

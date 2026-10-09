@@ -26,7 +26,7 @@ use network_types::{
 // Structural allowlist (nullnet's own plumbing, both directions — not user policy):
 //   - ARP                          (next-hop resolution)
 //   - TCP to/from SERVER_IP:PORT   (nullnet control plane / gRPC)
-//   - UDP 4789/9999 to/from a peer (nullnet data plane: VXLAN / forward)
+//   - UDP 47890/9999 to/from a peer (nullnet data plane: VXLAN / forward)
 //   - ESP (proto 50) to/from a peer: cross-host VXLAN tunnels are wrapped in
 //     kernel IPsec/ESP (see nullnet-client's commands/vxlan.rs); ESP is
 //     portless like ICMP, so it's scoped to known peers instead of a port check
@@ -45,7 +45,7 @@ use network_types::{
 //     configured allowlist + CT returns.
 //   - strict node: both directions obey the configured allowlist + CT returns.
 
-const VXLAN_PORT: u16 = 4789;
+const VXLAN_PORT: u16 = 47890;
 const FORWARD_PORT: u16 = 9999;
 
 const PROTO_TCP: u8 = 6;
