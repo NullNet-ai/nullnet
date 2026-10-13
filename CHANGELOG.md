@@ -13,6 +13,8 @@ All Nullnet releases with the relative changes are documented in this file.
 - Per-service egress/ingress traffic filters: arbitrary AND/OR/group combinations of Country, Organization, Src IP (ingress), and Dst IP (egress) conditions, evaluated via `rpn-predicate-interpreter` — replaces the country-only egress/ingress policy ([#171](https://github.com/NullNet-ai/nullnet/pull/171) — fixes [#143](https://github.com/NullNet-ai/nullnet/issues/143))
 - Persist ingress and egress sessions to SQLite and show the full history on the Sessions page, filterable by status, service, direction, and policy verdict, with its own retention window ([#170](https://github.com/NullNet-ai/nullnet/pull/170) — fixes [#156](https://github.com/NullNet-ai/nullnet/issues/156))
 ### Changed
+- Reduce fresh-edge cleanup work, batch conntrack scans, and share TC classifier infrastructure while preserving dedicated encrypted endpoints (PR pending).
+- Keep active backend chains visible to conntrack so liveness tracking does not release endpoints that still carry traffic (PR pending).
 - Prevent Docker Swarm VNI collisions and keep source-scoped egress routing valid for the full network-ID range (PR pending).
 - Create fresh dedicated VXLAN endpoints without bridges, with native TC/encryption setup and verified device-event bypass (PR pending).
 - Improve routing performance and capped-network balancing, reduce storage contention, and harden tunnel setup, teardown, and recovery under concurrent load ([#199](https://github.com/NullNet-ai/nullnet/pull/199))
