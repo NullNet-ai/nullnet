@@ -12,6 +12,7 @@ pub(super) type EndpointSockets = Arc<Mutex<(EndpointIo, Option<EndpointIo>)>>;
 
 #[derive(Clone)]
 pub(super) struct Cleanup {
+    pub retirements: Vec<Arc<Retirement>>,
     pub root_names: Vec<String>,
     pub io: EndpointSockets,
     pub namespace: Option<Arc<EndpointNamespace>>,
@@ -20,15 +21,98 @@ pub(super) struct Cleanup {
     pub crypto_id: Option<u32>,
 }
 
-pub(super) async fn cleanup_batch(cleanups: Vec<Cleanup>) -> io::Result<()> {
-    for cleanup in &cleanups {
-        if let Some(id) = cleanup.crypto_id {
-            super::native_xfrm::remove(id).await?;
-        }
-    }
+pub(super) struct Retirement {
+    pub io: EndpointSockets,
+    pub classifier: Arc<super::endpoint_tc::Ownership>,
+    pub retired: Mutex<bool>,
+    pub forwarding: u32,
+    pub gateway: u32,
+    pub inner: Option<u32>,
+    pub subnet: ipnetwork::Ipv4Network,
+    pub gateway_address: ipnetwork::Ipv4Network,
+    pub client_side: bool,
+}
+
+pub(super) async fn retire_batch(retirements: Vec<Arc<Retirement>>) -> io::Result<()> {
     super::native_netlink::blocking(move || {
+        let mut result = Ok(());
+        for r in retirements {
+            let mut retired = r.retired.lock().unwrap();
+            if *retired {
+                continue;
+            }
+            let mut endpoint_result = r.classifier.revoke();
+            let (root, target) = &mut *r.io.lock().unwrap();
+            let base = u32::from(r.subnet.ip()) & !7;
+            for offset in if r.client_side { [1, 2] } else { [3, 4] } {
+                record(
+                    &mut endpoint_result,
+                    remove_peer_route(
+                        &mut root.route,
+                        Ipv4Addr::from(base + offset),
+                        r.forwarding,
+                        r.gateway_address.ip(),
+                    ),
+                );
+            }
+            record(
+                &mut endpoint_result,
+                remove_address(
+                    &mut root.route,
+                    r.gateway,
+                    r.gateway_address.ip(),
+                    r.gateway_address.prefix(),
+                ),
+            );
+            if r.forwarding != r.gateway {
+                record(
+                    &mut endpoint_result,
+                    remove_address(&mut root.route, r.forwarding, r.gateway_address.ip(), 32),
+                );
+            }
+            if let (Some(index), Some(target)) = (r.inner, target) {
+                record(
+                    &mut endpoint_result,
+                    remove_address(&mut target.route, index, r.subnet.ip(), r.subnet.prefix()),
+                );
+            }
+            *retired = endpoint_result.is_ok();
+            record(&mut result, endpoint_result);
+        }
+        result
+    })
+    .await
+}
+
+fn record(result: &mut io::Result<()>, next: io::Result<()>) {
+    if let Err(error) = next {
+        *result = Err(error);
+    }
+}
+
+fn absent(result: io::Result<Vec<u8>>) -> io::Result<()> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(e)
+            if matches!(
+                e.raw_os_error(),
+                Some(libc::ENODEV | libc::ENOENT | libc::EADDRNOTAVAIL | libc::ESRCH)
+            ) =>
+        {
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+pub(super) async fn clear_flows_batch(cleanups: Vec<Cleanup>) -> io::Result<()> {
+    super::native_netlink::blocking(move || {
+        let mut result = Ok(());
         let root_ips: Vec<_> = cleanups.iter().flat_map(|c| c.root_ips).collect();
-        cleanups[0].io.lock().unwrap().0.clear_flows(&root_ips)?;
+        record(
+            &mut result,
+            cleanups[0].io.lock().unwrap().0.clear_flows(&root_ips),
+        );
         let mut namespaces: HashMap<usize, (EndpointSockets, Vec<Ipv4Addr>)> = HashMap::new();
         for cleanup in cleanups {
             if let Some(namespace) = &cleanup.namespace {
@@ -40,9 +124,12 @@ pub(super) async fn cleanup_batch(cleanups: Vec<Cleanup>) -> io::Result<()> {
             }
         }
         for (io, ips) in namespaces.into_values() {
-            io.lock().unwrap().1.as_mut().unwrap().clear_flows(&ips)?;
+            record(
+                &mut result,
+                io.lock().unwrap().1.as_mut().unwrap().clear_flows(&ips),
+            );
         }
-        Ok(())
+        result
     })
     .await
 }
@@ -150,15 +237,27 @@ pub(super) fn add_address(
     ip: Ipv4Addr,
     prefix: u8,
 ) -> io::Result<()> {
-    let body = [
+    route.request(20, CREATE, &address_message(index, ip, prefix))?;
+    Ok(())
+}
+
+fn address_message(index: u32, ip: Ipv4Addr, prefix: u8) -> Vec<u8> {
+    [
         vec![2, prefix, 0, 0],
         index.to_ne_bytes().to_vec(),
         attr(1, &ip.octets()),
         attr(2, &ip.octets()),
     ]
-    .concat();
-    route.request(20, CREATE, &body)?;
-    Ok(())
+    .concat()
+}
+
+fn remove_address(
+    route: &mut NativeSocket,
+    index: u32,
+    ip: Ipv4Addr,
+    prefix: u8,
+) -> io::Result<()> {
+    absent(route.request(21, REQUEST, &address_message(index, ip, prefix)))
 }
 
 pub(super) fn synchronize(route: &mut NativeSocket, name: &str, index: u32) -> io::Result<()> {
@@ -242,6 +341,7 @@ mod tests {
             .await
             .unwrap();
             cleanups.push(Cleanup {
+                retirements: Vec::new(),
                 root_names: Vec::new(),
                 io: Arc::new(Mutex::new(io)),
                 namespace: Some(namespace.clone()),
@@ -253,8 +353,8 @@ mod tests {
                 crypto_id: None,
             });
         }
-        cleanup_batch(cleanups.clone()).await.unwrap();
-        cleanup_batch(cleanups).await.unwrap();
+        clear_flows_batch(cleanups.clone()).await.unwrap();
+        clear_flows_batch(cleanups).await.unwrap();
         for prefix in [Vec::new(), vec!["netns", "exec", name]] {
             let mut command = if prefix.is_empty() {
                 Command::new("conntrack")
@@ -324,16 +424,25 @@ pub(super) fn peer_route(
     index: u32,
     source: Ipv4Addr,
 ) -> io::Result<()> {
-    route.request(
-        24,
-        CREATE,
-        &[
-            vec![2, 32, 0, 0, 254, 4, 253, 1, 0, 0, 0, 0],
-            attr(1, &destination.octets()),
-            attr(4, &index.to_ne_bytes()),
-            attr(7, &source.octets()),
-        ]
-        .concat(),
-    )?;
+    route.request(24, CREATE, &peer_route_message(destination, index, source))?;
     Ok(())
+}
+
+fn remove_peer_route(
+    route: &mut NativeSocket,
+    destination: Ipv4Addr,
+    index: u32,
+    source: Ipv4Addr,
+) -> io::Result<()> {
+    absent(route.request(25, REQUEST, &peer_route_message(destination, index, source)))
+}
+
+fn peer_route_message(destination: Ipv4Addr, index: u32, source: Ipv4Addr) -> Vec<u8> {
+    [
+        vec![2, 32, 0, 0, 254, 4, 253, 1, 0, 0, 0, 0],
+        attr(1, &destination.octets()),
+        attr(4, &index.to_ne_bytes()),
+        attr(7, &source.octets()),
+    ]
+    .concat()
 }

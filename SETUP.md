@@ -428,6 +428,10 @@ available; results cannot overwrite a configuration edited since activation.
 
 VXLAN edges create fresh dedicated interfaces and use fixed TC redirects;
 Nullnet shares UDP 47890, separate from Docker Swarm’s UDP 4789. Egress policy rules use priorities 1000–1015 and protocol 242; reserve these for Nullnet.
+Reserve TC blocks 7801–7832 and interface names `nn-tc-0` through `nn-tc-15`
+for Nullnet's shared classifiers. These down dummy interfaces carry no traffic;
+each edge still has dedicated interfaces and encryption keys. Startup removes
+stale holders using their reserved name, group, and device type before rebuilding the classifiers.
 `br_<id>_<side>` is the gateway interface name, not a Linux bridge. Startup
 keeps routed overlay traffic allowed by owned interface groups while preserving
 the host's existing FORWARD policy. Pooling and policy multiplexing are deferred.

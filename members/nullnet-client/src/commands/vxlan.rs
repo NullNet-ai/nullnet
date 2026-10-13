@@ -93,6 +93,7 @@ struct Endpoint {
     transport: u32,
     forwarding: u32,
     io: endpoint_io::EndpointSockets,
+    retirement: Arc<endpoint_io::Retirement>,
 }
 
 async fn lock(id: u32) -> OwnedMutexGuard<()> {
@@ -249,7 +250,7 @@ async fn create_endpoint(
         }
     }
     let encrypted = params.encrypted && params.local_ip != params.remote_ip;
-    super::endpoint_tc::install(
+    let classifier = super::endpoint_tc::install(
         forwarding,
         outer,
         params.br_net.ip(),
@@ -279,6 +280,18 @@ async fn create_endpoint(
     .handle_err(location!())?;
     let mut params = params.clone();
     params.key_hex.clear();
+    let io = Arc::new(StdMutex::new(io));
+    let retirement = Arc::new(endpoint_io::Retirement {
+        io: io.clone(),
+        classifier,
+        retired: StdMutex::new(false),
+        forwarding,
+        gateway,
+        inner,
+        subnet: params.ns_net,
+        gateway_address: params.br_net,
+        client_side: client,
+    });
     Ok(Endpoint {
         params,
         namespace,
@@ -289,7 +302,8 @@ async fn create_endpoint(
         inner,
         transport,
         forwarding,
-        io: Arc::new(StdMutex::new(io)),
+        io,
+        retirement,
     })
 }
 
@@ -482,6 +496,18 @@ pub(crate) async fn teardown(
             destroy_endpoint(&handle, endpoint, _guard.clone()).await?;
         } else {
             // A failed creation can leave a group before endpoint ownership was recorded.
+            let peers = ENDPOINTS
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|e| e.params.vxlan_id == id && e.params.local_ip == e.params.remote_ip)
+                .map(|e| e.retirement.clone())
+                .collect::<Vec<_>>();
+            let retirement = if peers.is_empty() {
+                Ok(())
+            } else {
+                endpoint_io::retire_batch(peers).await
+            };
             super::vxlan_cleanup::remove(
                 &handle,
                 link_group(id, ns_name.ends_with("_c")),
@@ -492,6 +518,7 @@ pub(crate) async fn teardown(
             super::native_xfrm::remove(id)
                 .await
                 .handle_err(location!())?;
+            retirement.handle_err(location!())?;
         }
         cache.remove_overlay(&ns_name);
         Ok(())
@@ -514,6 +541,7 @@ async fn destroy_endpoint(
         ),
         guard,
         Some(endpoint_io::Cleanup {
+            retirements: retirements(&endpoint.params),
             root_names: [
                 Some(endpoint.transport_name.clone()),
                 Some(endpoint.forwarding_name.clone()),
@@ -536,8 +564,22 @@ async fn destroy_endpoint(
     Ok(())
 }
 
+fn retirements(params: &VxlanSetupParams) -> Vec<Arc<endpoint_io::Retirement>> {
+    ENDPOINTS
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|e| {
+            e.params.ns_name == params.ns_name
+                || (params.local_ip == params.remote_ip && e.params.vxlan_id == params.vxlan_id)
+        })
+        .map(|e| e.retirement.clone())
+        .collect()
+}
+
 async fn destroy_links(handle: &Handle, params: &VxlanSetupParams) -> Result<(), Error> {
     use rtnetlink::packet_route::link::LinkAttribute;
+    let retirement = endpoint_io::retire_batch(retirements(params)).await;
     let mut request = handle.link().del(0);
     request
         .message_mut()
@@ -546,7 +588,7 @@ async fn destroy_links(handle: &Handle, params: &VxlanSetupParams) -> Result<(),
             params.vxlan_id,
             params.br_name.ends_with("_c"),
         )));
-    match request.execute().await {
+    let deletion = match request.execute().await {
         Ok(()) => Ok(()),
         Err(rtnetlink::Error::NetlinkError(e))
             if e.code.map(std::num::NonZeroI32::get) == Some(-libc::ENODEV) =>
@@ -554,7 +596,9 @@ async fn destroy_links(handle: &Handle, params: &VxlanSetupParams) -> Result<(),
             Ok(())
         }
         Err(e) => Err(e).handle_err(location!()),
-    }
+    };
+    deletion?;
+    retirement.handle_err(location!())
 }
 
 // helpers -----------------------------------------------------------------------------------------
@@ -661,6 +705,60 @@ fn decode_key(hex: &str) -> Result<[u8; 32], Error> {
 #[cfg(test)]
 mod endpoint_packet_tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires root and an isolated root network namespace"]
+    async fn partial_same_host_teardown_retires_the_existing_peer_before_deletion() {
+        let root = RtNetLinkHandle::new().unwrap();
+        let cache = BridgeIpCache::new();
+        let params = VxlanSetupParams {
+            vxlan_id: 1959100,
+            ns_name: "ns_1959100_s".into(),
+            ns_net: Ipv4Network::new("10.250.11.1".parse().unwrap(), 29).unwrap(),
+            br_name: "br_1959100_s".into(),
+            br_net: Ipv4Network::new("10.250.11.2".parse().unwrap(), 29).unwrap(),
+            local_ip: "192.0.2.1".parse().unwrap(),
+            remote_ip: "192.0.2.1".parse().unwrap(),
+            key_hex: "42".repeat(32),
+            dstport: crate::DEFAULT_VXLAN_DSTPORT,
+            encrypted: true,
+            docker_container: None,
+        };
+        setup(&root, &params, &cache).await.unwrap();
+        let endpoint = ENDPOINTS
+            .lock()
+            .unwrap()
+            .get(&params.ns_name)
+            .unwrap()
+            .clone();
+        teardown(
+            &root,
+            &VxlanTeardownParams {
+                vxlan_id: params.vxlan_id,
+                ns_name: "ns_1959100_c".into(),
+            },
+            &cache,
+        )
+        .await
+        .unwrap();
+        assert!(*endpoint.retirement.retired.lock().unwrap());
+        assert!(
+            get_link_by_name(&root.handle, &params.br_name)
+                .await
+                .is_err()
+        );
+        teardown(
+            &root,
+            &VxlanTeardownParams {
+                vxlan_id: params.vxlan_id,
+                ns_name: params.ns_name.clone(),
+            },
+            &cache,
+        )
+        .await
+        .unwrap();
+        assert!(!ENDPOINTS.lock().unwrap().contains_key(&params.ns_name));
+    }
 
     async fn cross_ping(params: &VxlanSetupParams, side: &str) -> Result<(), Error> {
         let destination = Ipv4Addr::new(

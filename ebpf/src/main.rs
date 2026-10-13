@@ -2,6 +2,7 @@
 #![no_main]
 
 mod device_events;
+mod endpoint_tc;
 
 use aya_ebpf::{
     bindings::{TC_ACT_OK, TC_ACT_SHOT},

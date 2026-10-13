@@ -162,6 +162,7 @@ pub(crate) async fn cleanup_network(
     // XFRM policy while its VXLAN is still up would briefly let that tunnel's
     // packets onto the wire unencrypted.
     native_xfrm::purge().await.handle_err(location!())?;
+    endpoint_tc::initialize().await.handle_err(location!())?;
     purge_stale_xfrm();
     crate::host_mappings::purge_stale_mappings();
     egress::purge_stale_steers();

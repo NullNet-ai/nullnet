@@ -59,6 +59,7 @@ pub(super) async fn remove_with_cleanup(
                     }
                 }
                 let mut result = Ok(());
+                let mut flow_cleanups = Vec::with_capacity(batch.len());
                 let mut offset = 0;
                 while offset < batch.len() {
                     // Keep RTNL deletion batches small while setup is active.
@@ -76,22 +77,44 @@ pub(super) async fn remove_with_cleanup(
                         .iter()
                         .map(|(_, _, _, cleanup)| cleanup.as_ref().map(|c| c.root_names.clone()))
                         .collect();
+                    let complete = names.is_some();
                     let names = names.map(|names| names.into_iter().flatten().collect());
-                    result = remove_groups(&handle, groups, names).await;
-                    if result.is_err() {
-                        break;
+                    let cleanups: Vec<_> = batch[offset..end]
+                        .iter()
+                        .filter_map(|(_, _, _, c)| c.clone())
+                        .collect();
+                    if !cleanups.is_empty()
+                        && let Err(error) = super::endpoint_io::retire_batch(
+                            cleanups
+                                .iter()
+                                .flat_map(|c| c.retirements.clone())
+                                .collect(),
+                        )
+                        .await
+                    {
+                        result = Err(error.to_string());
+                    }
+                    match remove_groups(&handle, groups, names, complete).await {
+                        Ok(()) => {
+                            for cleanup in &cleanups {
+                                if let Some(id) = cleanup.crypto_id
+                                    && let Err(error) = super::native_xfrm::remove(id).await
+                                {
+                                    result = Err(error.to_string());
+                                }
+                            }
+                            flow_cleanups.extend(cleanups);
+                        }
+                        Err(error) => result = Err(error),
                     }
                     offset = end;
                     tokio::task::yield_now().await;
                 }
-                if result.is_ok() {
-                    let cleanups: Vec<_> =
-                        batch.iter().filter_map(|(_, _, _, c)| c.clone()).collect();
-                    if !cleanups.is_empty() {
-                        result = super::endpoint_io::cleanup_batch(cleanups)
-                            .await
-                            .map_err(|e| e.to_string());
-                    }
+                // Scan each conntrack table once before releasing any batch identities.
+                if !flow_cleanups.is_empty()
+                    && let Err(error) = super::endpoint_io::clear_flows_batch(flow_cleanups).await
+                {
+                    result = Err(error.to_string());
                 }
                 for (_, _guard, response, _) in batch.drain(..) {
                     let _ = response.send(result.clone());
@@ -112,6 +135,7 @@ async fn remove_groups(
     handle: &Handle,
     groups: HashSet<u32>,
     names: Option<HashSet<String>>,
+    complete: bool,
 ) -> Result<(), String> {
     if groups.len() == 1 {
         return delete_group(handle, *groups.iter().next().unwrap()).await;
@@ -151,11 +175,11 @@ async fn remove_groups(
             if matches!(&error, rtnetlink::Error::NetlinkError(e)
                 if e.code.map(std::num::NonZeroI32::get) == Some(-libc::ENODEV))
             {
-                if groups.is_empty() {
+                if complete {
                     continue;
                 }
                 // Deleting a veth also removes its peer; rediscover the remaining groups.
-                return Box::pin(remove_groups(handle, groups, None)).await;
+                return Box::pin(remove_groups(handle, groups, None, false)).await;
             }
             // Finish both assigned and unassigned groups on partial failure.
             let mut cleanup = delete_group(handle, RETIRING_GROUP).await;
@@ -208,6 +232,7 @@ mod tests {
             &handle,
             HashSet::from([110, 111]),
             Some(HashSet::from(["nnct_a".into(), "nnct_b".into()])),
+            true,
         )
         .await
         .unwrap();
@@ -227,6 +252,7 @@ mod tests {
             &handle,
             HashSet::from([110, 111]),
             Some(HashSet::from(["nnct_a".into(), "nnct_missing".into()])),
+            false,
         )
         .await
         .unwrap();
@@ -267,5 +293,61 @@ mod tests {
         setup.abort();
         assert!(setup.await.unwrap_err().is_cancelled());
         assert_eq!(ACTIVE_SETUPS.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires root and an isolated root network namespace"]
+    async fn complete_inventory_handles_a_deleted_veth_peer_without_discovery() {
+        let (connection, handle, _) = rtnetlink::new_connection().unwrap();
+        tokio::spawn(connection);
+        handle
+            .link()
+            .add(
+                rtnetlink::LinkVeth::new("nnct_left", "nnct_right")
+                    .link_group(110)
+                    .set_info_data(rtnetlink::packet_route::link::InfoData::Veth(
+                        rtnetlink::packet_route::link::InfoVeth::Peer(
+                            LinkUnspec::new_with_name("nnct_right")
+                                .link_group(111)
+                                .build(),
+                        ),
+                    ))
+                    .build(),
+            )
+            .execute()
+            .await
+            .unwrap();
+        for (name, group) in [("nnct_survivor", 111), ("nnct_foreign", 42)] {
+            handle
+                .link()
+                .add(rtnetlink::LinkDummy::new(name).link_group(group).build())
+                .execute()
+                .await
+                .unwrap();
+        }
+        delete_group(&handle, 110).await.unwrap();
+        remove_groups(
+            &handle,
+            HashSet::from([110, 111]),
+            Some(HashSet::from([
+                "nnct_left".into(),
+                "nnct_right".into(),
+                "nnct_survivor".into(),
+            ])),
+            true,
+        )
+        .await
+        .unwrap();
+        let links: Vec<_> = handle.link().get().execute().try_collect().await.unwrap();
+        assert!(!links.iter().any(|link| {
+            link.attributes
+                .iter()
+                .any(|a| matches!(a, LinkAttribute::Group(110 | 111 | RETIRING_GROUP)))
+        }));
+        assert!(
+            links
+                .iter()
+                .any(|link| link.attributes.contains(&LinkAttribute::Group(42)))
+        );
     }
 }

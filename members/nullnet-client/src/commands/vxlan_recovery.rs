@@ -68,6 +68,19 @@ fn owned_transport(link: &LinkMessage, links: &[LinkMessage]) -> bool {
         matches!(a, LinkAttribute::Link(parent) if links.iter().any(|p| p.header.index == *parent && (marked(p) || attached_to_owned_bridge(p))))))
 }
 
+fn classifier_holder(link: &LinkMessage) -> bool {
+    name(link).is_some_and(super::endpoint_tc::holder_name)
+        && link.attributes.iter().any(|a| {
+            matches!(a,
+            LinkAttribute::Group(group) if *group == super::endpoint_tc::HOLDER_GROUP)
+        })
+        && link.attributes.iter().any(|a| {
+            matches!(a,
+            LinkAttribute::LinkInfo(info) if info.iter().any(|i|
+                matches!(i, LinkInfo::Kind(InfoKind::Dummy))))
+        })
+}
+
 pub(super) async fn recover(handle: &Handle) -> Result<(), String> {
     let links: Vec<LinkMessage> = handle
         .link()
@@ -78,7 +91,7 @@ pub(super) async fn recover(handle: &Handle) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let owned: Vec<_> = links
         .iter()
-        .filter(|link| owned(link) || owned_transport(link, &links))
+        .filter(|link| owned(link) || owned_transport(link, &links) || classifier_holder(link))
         .collect();
     for link in &owned {
         handle
@@ -118,6 +131,18 @@ mod tests {
             handle
                 .link()
                 .add(LinkBridge::new(name).build())
+                .execute()
+                .await
+                .unwrap();
+        }
+        for (name, group) in [
+            ("nn-tc-0", super::super::endpoint_tc::HOLDER_GROUP),
+            ("nn-tc-foreign", super::super::endpoint_tc::HOLDER_GROUP),
+            ("nn-tc-1", 42),
+        ] {
+            handle
+                .link()
+                .add(rtnetlink::LinkDummy::new(name).link_group(group).build())
                 .execute()
                 .await
                 .unwrap();
@@ -186,10 +211,21 @@ mod tests {
             "p1legacy",
             "br_1959201_s",
             "p1retiring",
+            "nn-tc-0",
         ] {
-            assert!(!remaining.iter().any(|link| super::name(link) == Some(name)));
+            assert!(
+                !remaining.iter().any(|link| super::name(link) == Some(name)),
+                "owned interface remained: {name}"
+            );
         }
-        for name in ["docker0", "br_operator", "vethabcdef0", "vethfedcba0"] {
+        for name in [
+            "docker0",
+            "br_operator",
+            "vethabcdef0",
+            "vethfedcba0",
+            "nn-tc-foreign",
+            "nn-tc-1",
+        ] {
             assert!(remaining.iter().any(|link| super::name(link) == Some(name)));
         }
     }
