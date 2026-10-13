@@ -667,25 +667,25 @@ async fn handle_vxlan_setup(
             return Err("gateway forwarding installation failed").handle_err(location!());
         }
     } else if let Some(host_mapping) = &message.host_mapping {
-        host_mappings_state.record_vxlan(
-            vxlan_id,
-            host_mapping.clone(),
-            message.docker_container.clone(),
-        );
-        // Backend names stay on their trigger address until both endpoints
-        // are ready; publishing early lets container ARP bypass NFQUEUE.
-        if message.dnat_port.is_none()
-            && add_host_mapping(host_mapping, message.docker_container.as_deref()).is_err()
-        {
-            fire_event(
-                &grpc,
-                AgentEventKind::HostMappingFailed(AgentHostMappingFailed {
-                    hostname: host_mapping.name.clone(),
-                    ip: host_mapping.ip.clone(),
-                    docker_container: message.docker_container.clone(),
-                }),
+        // Backend DNAT keeps the trigger address so each new flow remains
+        // visible to root conntrack; direct overlay resolution bypasses it.
+        if message.dnat_port.is_none() {
+            host_mappings_state.record_vxlan(
+                vxlan_id,
+                host_mapping.clone(),
+                message.docker_container.clone(),
             );
-            return Err("host mapping installation failed").handle_err(location!());
+            if add_host_mapping(host_mapping, message.docker_container.as_deref()).is_err() {
+                fire_event(
+                    &grpc,
+                    AgentEventKind::HostMappingFailed(AgentHostMappingFailed {
+                        hostname: host_mapping.name.clone(),
+                        ip: host_mapping.ip.clone(),
+                        docker_container: message.docker_container.clone(),
+                    }),
+                );
+                return Err("host mapping installation failed").handle_err(location!());
+            }
         }
 
         // Install scoped DNAT before acknowledging local setup. NetReady
