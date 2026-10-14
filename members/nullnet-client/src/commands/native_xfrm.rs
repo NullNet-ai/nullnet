@@ -295,7 +295,7 @@ pub(super) async fn purge() -> io::Result<()> {
                 .any(|(kind, value)| *kind == 21 && owned_mark(value));
             let templated = attributes.iter().any(|(kind, value)| {
                 *kind == 5
-                    && value.chunks_exact(64).any(|template| {
+                    && value.as_chunks::<64>().0.iter().any(|template| {
                         template[20] == 50
                             && u32::from_be_bytes(template[16..20].try_into().unwrap())
                                 & 0xff80_0000

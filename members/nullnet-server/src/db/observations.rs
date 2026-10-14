@@ -1,3 +1,5 @@
+#![allow(clippy::redundant_field_names)]
+
 use super::AsyncSqlite;
 use diesel::prelude::*;
 use diesel::sql_types::{BigInt, Bool, Nullable, Text};
