@@ -668,12 +668,32 @@ impl NullnetGrpcImpl {
                 }
                 Some((max, network))
             });
+            if let Some((_, (_, client_net, server_net, net_id, _, _, setup_ms))) = &reuse {
+                let geo = client_ip.parse::<Ipv4Addr>().ok().and_then(|v4| {
+                    self.orchestrator.ensure_geo(v4);
+                    self.orchestrator.geo_get(v4)
+                });
+                self.orchestrator
+                    .sessions
+                    .open_ingress(
+                        &stack,
+                        service_name,
+                        *net_id,
+                        client_ip,
+                        &client_net.to_string(),
+                        &server_net.to_string(),
+                        proxy_ip,
+                        *setup_ms,
+                        geo,
+                    )
+                    .await;
+            }
             drop(services);
             reuse
         } else {
             None
         };
-        if let Some((max, (upstream, client_net, server_net, net_id, _, _, setup_ms))) = reused {
+        if let Some((max, (upstream, _, _, net_id, _, _, _))) = reused {
             self.orchestrator
                 .events
                 .emit(Event::max_networks_limit_enforced(
@@ -684,28 +704,6 @@ impl NullnetGrpcImpl {
                 ))
                 .await;
 
-            // Reusing a network still starts a session for *this* client: it
-            // gets its own client entry and its own teardown, so it needs its
-            // own history row. `setup_edge` — where a session is normally
-            // recorded — never runs here, because no edge is built.
-            let geo = client_ip.parse::<Ipv4Addr>().ok().and_then(|v4| {
-                self.orchestrator.ensure_geo(v4);
-                self.orchestrator.geo_get(v4)
-            });
-            self.orchestrator
-                .sessions
-                .open_ingress(
-                    &stack,
-                    service_name,
-                    net_id,
-                    client_ip,
-                    &client_net.to_string(),
-                    &server_net.to_string(),
-                    proxy_ip,
-                    setup_ms,
-                    geo,
-                )
-                .await;
             return Ok(upstream);
         }
 
@@ -2105,12 +2103,7 @@ async fn run_net_chain_setup(
         Err("NET chain setup failed").handle_err(location!())?;
     }
 
-    drop(services_mut);
-
-    if let Some(history) = backend_history {
-        orchestrator.persist_backend_session(history).await;
-    }
-
+    // Queue ingress history before a concurrent teardown can publish its close.
     // Past the unwind check, so every branch is up and these sessions are real.
     for edge in &successful {
         let (Some(ingress), Some(proxy_ip)) = (&edge.ingress, edge.client.is_proxy()) else {
@@ -2147,6 +2140,11 @@ async fn run_net_chain_setup(
                 geo,
             )
             .await;
+    }
+
+    drop(services_mut);
+    if let Some(history) = backend_history {
+        orchestrator.persist_backend_session(history).await;
     }
 
     Ok(ChainOutcome::Built(
@@ -2291,48 +2289,9 @@ async fn setup_edge(
             .await;
     }
 
-    // One AES-256 key per tunnel, handed identically to both
-    // endpoints below (skipped when encryption is globally
-    // disabled). A dedicated per-tunnel UDP dstport is only
-    // needed so the two hosts' XFRM policies can tell this
-    // tunnel apart from other concurrent *encrypted* tunnels
-    // between the same host pair — same-host tunnels (MACsec on
-    // a veth, no XFRM) and unencrypted ones (no XFRM either) fall
-    // back to the shared default port instead. The 40k-entry pool
-    // is also scoped per host pair (see `Orchestrator::allocate_vxlan_port`),
-    // not global, so it only actually caps concurrent encrypted
-    // tunnels between the same two hosts.
     let encrypted = *ENCRYPTION_ENABLED;
     let encryption_key = if encrypted { generate_key() } else { [0u8; 32] };
-    let needs_dedicated_port =
-        *NET_TYPE == Net::Vxlan && encrypted && server_ethernet != client_ethernet;
-    let dstport = if needs_dedicated_port {
-        match orchestrator
-            .allocate_vxlan_port(net_id, server_ethernet, client_ethernet)
-            .await
-        {
-            Some(port) => Some(u32::from(port)),
-            None => {
-                eprintln!("UDP port pool exhausted");
-                orchestrator
-                    .events
-                    .emit(Event::udp_port_pool_exhausted(
-                        server_name.clone(),
-                        client_ethernet.to_string(),
-                    ))
-                    .await;
-                orchestrator.free_net_id(net_id).await;
-                if let Some(stack_map) = services.write().await.get_mut(stack)
-                    && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
-                {
-                    reg.remove_pending_client_if(&client, &reservation);
-                }
-                return EdgeOutcome::Failed;
-            }
-        }
-    } else {
-        None
-    };
+    let dstport = None;
 
     let orch = orchestrator.clone();
     let cd = client_docker.clone();
@@ -2827,6 +2786,12 @@ impl NullnetGrpc for NullnetGrpcImpl {
                 e.dst_port,
                 e.error_message,
             ),
+            AgentEventKind::VxlanEnvironmentFailed(e) => {
+                Event::vxlan_environment_failed(e.error_message)
+            }
+            AgentEventKind::DeviceEventBypassChanged(e) => {
+                Event::device_event_bypass_changed(e.available, e.detail)
+            }
             AgentEventKind::GatewayForwardInstallFailed(e) => {
                 Event::gateway_forward_install_failed(e.vxlan_id, e.br_net)
             }

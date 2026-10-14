@@ -13,7 +13,9 @@
 //! pipeline works with zero config. This same cache is intended to back the
 //! future per-service country egress policy.
 
-use nullnet_libipinfo::{ApiFields, IpInfoHandler, IpInfoProvider};
+use nullnet_libipinfo::IpInfoHandler;
+#[cfg(not(test))]
+use nullnet_libipinfo::{ApiFields, IpInfoProvider};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
@@ -105,7 +107,10 @@ impl std::fmt::Debug for GeoCache {
 
 impl GeoCache {
     pub(crate) fn from_env() -> Self {
+        #[cfg(not(test))]
         let (handler, cache_empty) = build_handler();
+        #[cfg(test)]
+        let (handler, cache_empty) = (None, false);
         Self {
             handler: handler.map(Arc::new),
             cache: Arc::new(Mutex::new(HashMap::new())),
@@ -174,6 +179,7 @@ impl GeoCache {
 
 /// Read a JSON-field-name env override, leaked to `'static` (ApiFields needs
 /// `&'static str`). Leaks once at startup — the mapping lives for the whole run.
+#[cfg(not(test))]
 fn leak_env(var: &str, default: &'static str) -> &'static str {
     match std::env::var(var) {
         Ok(v) if !v.trim().is_empty() => Box::leak(v.trim().to_string().into_boxed_str()),
@@ -186,6 +192,7 @@ fn leak_env(var: &str, default: &'static str) -> &'static str {
 /// `IPINFO_FIELD_{COUNTRY,ASN,ORG}` vars map its JSON response fields. Unset →
 /// libipinfo's free db-ip.com fallback. Returns `(handler, is_api)`; `is_api`
 /// drives whether empty lookups are cached (see `GeoCache::cache_empty`).
+#[cfg(not(test))]
 fn build_handler() -> (Option<IpInfoHandler>, bool) {
     let (providers, is_api) = match std::env::var("IPINFO_API_URL") {
         Ok(url) if !url.trim().is_empty() => {
@@ -225,4 +232,19 @@ fn build_handler() -> (Option<IpInfoHandler>, bool) {
         }
     };
     (handler, is_api)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unit_test_geo_never_starts_external_provider_work() {
+        let cache = GeoCache::from_env();
+        assert!(cache.handler.is_none());
+        let ip = Ipv4Addr::new(1, 1, 1, 1);
+        cache.ensure(ip);
+        assert!(cache.lookup_now(ip).await.is_none());
+        assert!(cache.inflight.lock().unwrap().is_empty());
+    }
 }

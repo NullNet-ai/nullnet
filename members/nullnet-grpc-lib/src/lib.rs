@@ -22,6 +22,7 @@ use tonic::transport::{Channel, ClientTlsConfig};
 // limit overloads setup during large bursts even with corrected h2 accounting.
 const MAX_IN_FLIGHT_UNARY: usize = 32;
 const MAX_IN_FLIGHT_LIFECYCLE: usize = 8;
+const MAX_IN_FLIGHT_POLICY: usize = 32;
 
 /// Why a `proxy` lookup failed.
 #[derive(Debug)]
@@ -38,6 +39,7 @@ pub struct NullnetGrpcInterface {
     client: NullnetGrpcClient<Channel>,
     unary_slots: Arc<Semaphore>,
     lifecycle_slots: Arc<Semaphore>,
+    policy_slots: Arc<Semaphore>,
 }
 
 impl NullnetGrpcInterface {
@@ -69,6 +71,7 @@ impl NullnetGrpcInterface {
                     client: NullnetGrpcClient::new(channel),
                     unary_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_UNARY)),
                     lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
+                    policy_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_POLICY)),
                 });
             }
 
@@ -80,17 +83,20 @@ impl NullnetGrpcInterface {
         }
     }
 
+    async fn admitted<T>(
+        slots: &Semaphore,
+        request: impl Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+    ) -> Result<tonic::Response<T>, tonic::Status> {
+        let _permit = slots.acquire().await.expect("RPC limiter stays open");
+        request.await
+    }
+
     // Streams stay independent so setup acknowledgements can always progress.
     async fn unary<T>(
         &self,
         request: impl Future<Output = Result<tonic::Response<T>, tonic::Status>>,
     ) -> Result<tonic::Response<T>, tonic::Status> {
-        let _permit = self
-            .unary_slots
-            .acquire()
-            .await
-            .expect("RPC limiter stays open");
-        request.await
+        Self::admitted(&self.unary_slots, request).await
     }
 
     // Renewals and closes must progress while cold setups occupy unary slots.
@@ -98,12 +104,7 @@ impl NullnetGrpcInterface {
         &self,
         request: impl Future<Output = Result<tonic::Response<T>, tonic::Status>>,
     ) -> Result<tonic::Response<T>, tonic::Status> {
-        let _permit = self
-            .lifecycle_slots
-            .acquire()
-            .await
-            .expect("RPC limiter stays open");
-        request.await
+        Self::admitted(&self.lifecycle_slots, request).await
     }
 
     #[allow(clippy::missing_errors_doc)]
@@ -311,7 +312,8 @@ impl NullnetGrpcInterface {
         service_name: String,
         client_ip: String,
     ) -> Result<bool, String> {
-        self.unary(
+        Self::admitted(
+            &self.policy_slots,
             self.client
                 .clone()
                 .check_ingress(Request::new(IngressPolicyCheck {
@@ -386,6 +388,7 @@ mod admission_tests {
             ),
             unary_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_UNARY)),
             lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
+            policy_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_POLICY)),
         };
         let _busy = interface
             .unary_slots
@@ -415,6 +418,7 @@ mod admission_tests {
             ),
             unary_slots: Arc::new(Semaphore::new(2)),
             lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
+            policy_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_POLICY)),
         };
         let (entered, mut received) = mpsc::unbounded_channel();
         let mut calls = tokio::task::JoinSet::new();
@@ -442,5 +446,34 @@ mod admission_tests {
             .await;
         assert!(result.is_err());
         assert_eq!(interface.unary_slots.available_permits(), 2);
+    }
+    #[tokio::test]
+    async fn ingress_policy_progresses_when_setup_admission_is_full() {
+        let interface = NullnetGrpcInterface {
+            client: NullnetGrpcClient::new(
+                Channel::from_static("http://127.0.0.1:1").connect_lazy(),
+            ),
+            unary_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_UNARY)),
+            lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
+            policy_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_POLICY)),
+        };
+        let _busy = interface
+            .unary_slots
+            .acquire_many(MAX_IN_FLIGHT_UNARY as u32)
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            interface.check_ingress("backend".into(), "198.18.81.1".into()),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "ingress policy was queued behind cold setup"
+        );
+        assert!(
+            result.unwrap().is_err(),
+            "the intentionally absent server should reject the call"
+        );
     }
 }

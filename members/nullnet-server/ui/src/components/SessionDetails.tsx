@@ -30,8 +30,8 @@ export default function SessionDetails({ sessions, onFocus }: { sessions: Sessio
         ['Status', <SessionStatus session={s} />],
         ['Net', <SessionNet session={s} />],
         ['Started', timestamp(s.started_at)],
-        ['Ended', s.ended_at == null ? '—' : timestamp(s.ended_at)],
-        [s.detail.attempts != null ? 'Attempts' : 'Duration', s.detail.attempts ?? duration(s.started_at, s.ended_at ?? now)],
+        [s.detail.recording_interrupted ? 'Recording stopped' : 'Ended', s.ended_at == null ? '—' : timestamp(s.ended_at)],
+        [s.detail.attempts != null ? 'Attempts' : 'Duration', s.detail.attempts ?? (s.detail.recording_interrupted ? 'unknown' : duration(s.started_at, s.ended_at ?? now))],
       ];
       if (s.direction !== 'backend') fields.splice(2, 0, ['Peer', <SessionPeer session={s} />]);
       return <div key={s.id} style={{ padding: '10px 12px', border: '1px solid var(--gb)', borderRadius: 6, marginBottom: 8, opacity: s.ended_at == null ? 1 : 0.75 }}>

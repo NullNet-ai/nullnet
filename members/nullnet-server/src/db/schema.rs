@@ -142,6 +142,7 @@ diesel::table! {
         started_at -> BigInt,
         last_seen -> BigInt,
         ended_at -> Nullable<BigInt>,
+        history_token -> Nullable<Text>,
     }
 }
 

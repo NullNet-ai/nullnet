@@ -8,6 +8,7 @@ WorkingDirectory=/root/nullnet/members/nullnet-client
 EnvironmentFile=/root/nullnet/members/nullnet-client/.env
 ExecStart=/root/nullnet/target/release/nullnet-client
 Restart=always
+LimitNOFILE=524288
 
 [Install]
 WantedBy=multi-user.target

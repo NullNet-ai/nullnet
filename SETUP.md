@@ -142,6 +142,11 @@ Run the setup scripts as root. The supplied systemd services also run as root; p
   ```
   An active session is never pruned, however old. Sessions still marked active are closed
   at startup, since the state they described died with the previous process.
+  History writes run independently of networking, in ordered batches. Database failures
+  retain accepted updates for retry; Events reports failures and recovery. If the bounded
+  buffer fills, new history updates are dropped until the accepted prefix drains, and
+  affected open rows become **history interrupted** (their actual end time is unknown).
+  Normal shutdown drains for up to five seconds; forced termination can lose queued history.
 
 - Upgrade server, proxy and clients together: VXLAN backend/egress packet release uses
   an acknowledged `NetReady` command after both endpoints finish setup. Nullnet reserves
@@ -388,6 +393,20 @@ Run the setup scripts as root. The supplied systemd services also run as root; p
   It also keeps NetworkManager and udev hotplug helpers from managing Nullnet-owned
   interfaces, avoiding competing network-configuration work during tunnel bursts.
 
+The client also filters owned-device kernel uevents and link/address/route/neighbor
+notifications before delivery to udev, NetworkManager, OVS, Avahi and the desktop
+portal. Docker/foreign devices, netlink replies and dumps pass. This early socket
+filtering is separate from udev rules, which run after event queueing. Root needs
+`CAP_SYS_PTRACE` to duplicate consumer sockets, alongside its existing BPF privileges.
+The client mounts bpffs if needed and pins its filters under
+`/sys/fs/bpf/nullnet-device-events-v1`. It reconciles new consumer sockets every
+second; existing foreign filters are preserved and reduced coverage appears in
+Events. A three-second lease makes filters pass all notifications after client
+exit; pinned filters resume on client restart. Inactive filters remain attached
+until their consumer closes its socket, so shutdown never removes a replacement
+filter installed by that consumer. Set `NULLNET_DEVICE_EVENT_BYPASS=false` in the
+client `.env` to disable filtering. Other subscribers and namespaces are untouched.
+
 On upgrades, deploy the server, proxy and all clients from the same revision.
 Client startup cleans stale Nullnet network state while preserving Docker interfaces;
 routine container restarts are unnecessary. Containers already damaged by an older
@@ -406,3 +425,15 @@ restarts and session retention; `SESSION_RETENTION_DAYS` still controls session
 details. Stop observation to restore the saved config and review added/unused
 backends. Applying updates only backend lists. Completed observations remain
 available; results cannot overwrite a configuration edited since activation.
+
+VXLAN edges create fresh dedicated interfaces and use fixed TC redirects;
+Nullnet shares UDP 47890, separate from Docker Swarm’s UDP 4789. Egress policy rules use priorities 1000–1015 and protocol 242; reserve these for Nullnet.
+Reserve TC blocks 7801–7832 and interface names `nn-tc-0` through `nn-tc-15`
+for Nullnet's shared classifiers. These down dummy interfaces carry no traffic;
+each edge still has dedicated interfaces and encryption keys. Startup removes
+stale holders using their reserved name, group, and device type before rebuilding the classifiers.
+`br_<id>_<side>` is the gateway interface name, not a Linux bridge. Startup
+keeps routed overlay traffic allowed by owned interface groups while preserving
+the host's existing FORWARD policy. Pooling and policy multiplexing are deferred.
+
+The client and proxy services set `LimitNOFILE=524288`: fresh endpoints retain netlink sockets, and each proxied connection needs downstream and upstream sockets. Update both installed units and run `systemctl daemon-reload` when upgrading.

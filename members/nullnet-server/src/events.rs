@@ -1,4 +1,6 @@
 mod persistence;
+#[cfg(test)]
+pub(crate) const PERSISTENCE_QUEUE_CAPACITY: usize = persistence::QUEUE_CAPACITY;
 
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -58,6 +60,19 @@ pub(crate) enum Event {
     #[serde(rename = "event_persistence_recovered")]
     PersistenceRecovered {
         queued_events: usize,
+        timestamp: u64,
+    },
+    SessionPersistenceOverflow {
+        dropped_updates: u64,
+        timestamp: u64,
+    },
+    SessionPersistenceFailed {
+        error_message: String,
+        queued_updates: usize,
+        timestamp: u64,
+    },
+    SessionPersistenceRecovered {
+        queued_updates: usize,
         timestamp: u64,
     },
     NodeConnected {
@@ -246,13 +261,6 @@ pub(crate) enum Event {
         error_message: String,
         timestamp: u64,
     },
-    /// The dedicated-UDP-port pool for encrypted cross-host tunnels ran dry; the
-    /// edge that needed one failed. Mirrors [`Self::NetIdPoolExhausted`].
-    UdpPortPoolExhausted {
-        service: String,
-        client_ip: String,
-        timestamp: u64,
-    },
 
     // --- Client error events ---
     VxlanSetupFailed {
@@ -323,6 +331,15 @@ pub(crate) enum Event {
     GatewayForwardInstallFailed {
         vxlan_id: u32,
         br_net: String,
+        timestamp: u64,
+    },
+    VxlanEnvironmentFailed {
+        error_message: String,
+        timestamp: u64,
+    },
+    DeviceEventBypassChanged {
+        available: bool,
+        detail: String,
         timestamp: u64,
     },
     FirewallRulesLoadFailed {
@@ -530,6 +547,9 @@ pub(crate) enum Event {
 impl Event {
     pub(crate) fn kind(&self) -> &'static str {
         match self {
+            Self::SessionPersistenceOverflow { .. } => "session_persistence_overflow",
+            Self::SessionPersistenceFailed { .. } => "session_persistence_failed",
+            Self::SessionPersistenceRecovered { .. } => "session_persistence_recovered",
             Self::PersistenceOverflow { .. } => "event_persistence_overflow",
             Self::PersistenceFailed { .. } => "event_persistence_failed",
             Self::PersistenceRecovered { .. } => "event_persistence_recovered",
@@ -563,7 +583,6 @@ impl Event {
             Self::ProxyChainSetupFailed { .. } => "proxy_chain_setup_failed",
             Self::BackendTriggerSetupBailed { .. } => "backend_trigger_setup_bailed",
             Self::FileWatchFailed { .. } => "file_watch_failed",
-            Self::UdpPortPoolExhausted { .. } => "udp_port_pool_exhausted",
             Self::BackendTriggerSetupTimedOut { .. } => "backend_trigger_setup_timed_out",
             Self::EgressSteerSetupTimedOut { .. } => "egress_steer_setup_timed_out",
             Self::EgressSteerInstallFailed { .. } => "egress_steer_install_failed",
@@ -591,6 +610,8 @@ impl Event {
             Self::BackendTriggerSendFailed { .. } => "backend_trigger_send_failed",
             Self::EgressTriggerSendFailed { .. } => "egress_trigger_send_failed",
             Self::GatewayForwardInstallFailed { .. } => "gateway_forward_install_failed",
+            Self::VxlanEnvironmentFailed { .. } => "vxlan_environment_failed",
+            Self::DeviceEventBypassChanged { .. } => "device_event_bypass_changed",
             Self::FirewallRulesLoadFailed { .. } => "firewall_rules_load_failed",
             Self::ContainerSuspendFailed { .. } => "container_suspend_failed",
             Self::ContainerResumeFailed { .. } => "container_resume_failed",
@@ -617,6 +638,13 @@ impl Event {
 
     pub(crate) fn severity(&self) -> Severity {
         match self {
+            Self::VxlanEnvironmentFailed { .. } => Severity::Error,
+            Self::DeviceEventBypassChanged {
+                available: true, ..
+            } => Severity::Info,
+            Self::DeviceEventBypassChanged {
+                available: false, ..
+            } => Severity::Warning,
             Self::UiTlsCertificateUnavailable {
                 using_self_signed, ..
             } => {
@@ -626,7 +654,8 @@ impl Event {
                     Severity::Error
                 }
             }
-            Self::PersistenceRecovered { .. }
+            Self::SessionPersistenceRecovered { .. }
+            | Self::PersistenceRecovered { .. }
             | Self::NodeConnected { .. }
             | Self::ServiceRegistered { .. }
             | Self::SetupStarted { .. }
@@ -663,7 +692,9 @@ impl Event {
             | Self::ProxyClientNotInet { .. }
             | Self::ProxyDisconnected { .. } => Severity::Warning,
 
-            Self::PersistenceOverflow { .. }
+            Self::SessionPersistenceOverflow { .. }
+            | Self::SessionPersistenceFailed { .. }
+            | Self::PersistenceOverflow { .. }
             | Self::PersistenceFailed { .. }
             | Self::SetupTimeout { .. }
             | Self::EdgePromotionLost { .. }
@@ -672,7 +703,6 @@ impl Event {
             | Self::ConntrackFlushFailed { .. }
             | Self::CertificateCredentialsStoreFailed { .. }
             | Self::NetIdPoolExhausted { .. }
-            | Self::UdpPortPoolExhausted { .. }
             | Self::FileWatchFailed { .. }
             | Self::BackendTriggerSetupTimedOut { .. }
             | Self::EgressSteerSetupTimedOut { .. }
@@ -1109,6 +1139,21 @@ impl Event {
         }
     }
 
+    pub(crate) fn vxlan_environment_failed(error_message: String) -> Self {
+        Self::VxlanEnvironmentFailed {
+            error_message,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn device_event_bypass_changed(available: bool, detail: String) -> Self {
+        Self::DeviceEventBypassChanged {
+            available,
+            detail,
+            timestamp: now_secs(),
+        }
+    }
+
     pub(crate) fn firewall_rules_load_failed(path: String, error_message: String) -> Self {
         Self::FirewallRulesLoadFailed {
             path,
@@ -1335,14 +1380,6 @@ impl Event {
         }
     }
 
-    pub(crate) fn udp_port_pool_exhausted(service: String, client_ip: String) -> Self {
-        Self::UdpPortPoolExhausted {
-            service,
-            client_ip,
-            timestamp: now_secs(),
-        }
-    }
-
     pub(crate) fn proxy_connected(ip: String) -> Self {
         Self::ProxyConnected {
             ip,
@@ -1496,6 +1533,10 @@ impl EventStore {
     pub(crate) fn attach_db(&self, db: Db) {
         self.writer
             .get_or_init(|| persistence::Writer::start(db, self.tx.clone()));
+    }
+
+    pub(crate) fn publish_storage_failure(&self, event: Event) {
+        let _ = self.tx.send(event);
     }
 
     pub(crate) async fn emit(&self, event: Event) {

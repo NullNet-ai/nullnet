@@ -13,6 +13,9 @@ const SEVERITY_COLOR: Record<Severity, string> = {
 };
 
 const KIND_LABELS: Record<string, string> = {
+  session_persistence_overflow: 'session_persistence_overflow',
+  session_persistence_failed: 'session_persistence_failed',
+  session_persistence_recovered: 'session_persistence_recovered',
   event_persistence_overflow: 'event_persistence_overflow',
   event_persistence_failed: 'event_persistence_failed',
   event_persistence_recovered: 'event_persistence_recovered',
@@ -45,7 +48,6 @@ const KIND_LABELS: Record<string, string> = {
   net_id_pool_exhausted: 'net_id_pool_exhausted',
   proxy_chain_setup_failed: 'proxy_chain_setup_failed',
   backend_trigger_setup_bailed: 'backend_trigger_setup_bailed',
-  udp_port_pool_exhausted: 'udp_port_pool_exhausted',
   file_watch_failed: 'file_watch_failed',
   port_mapping_conflict: 'port_mapping_conflict',
   // Client error
@@ -62,6 +64,8 @@ const KIND_LABELS: Record<string, string> = {
   backend_trigger_send_failed: 'backend_trigger_send_failed',
   egress_trigger_send_failed: 'egress_trigger_send_failed',
   gateway_forward_install_failed: 'gateway_forward_install_failed',
+  device_event_bypass_changed: 'device_event_bypass_changed',
+  vxlan_environment_failed: 'vxlan_environment_failed',
   firewall_rules_load_failed: 'firewall_rules_load_failed',
   container_suspend_failed: 'container_suspend_failed',
   container_resume_failed: 'container_resume_failed',
@@ -105,6 +109,12 @@ const ALL_KINDS = Object.keys(KIND_LABELS);
 
 function eventDetail(e: EventJson): string {
   switch (e.type) {
+    case 'session_persistence_overflow':
+      return `${e.dropped_updates} session updates lost · history recording interrupted`;
+    case 'session_persistence_failed':
+      return `${e.queued_updates} session updates queued · networking continues · ${e.error_message}`;
+    case 'session_persistence_recovered':
+      return `Session persistence recovered · ${e.queued_updates} updates draining`;
     case 'event_persistence_overflow':
       return `${e.dropped_events} events dropped because persistence could not keep up`;
     case 'event_persistence_failed':
@@ -158,7 +168,6 @@ function eventDetail(e: EventJson): string {
     case 'max_networks_limit_enforced':
       return `${e.service} · proxy ${e.proxy_ip} · net ${e.net_id} · limit ${e.limit}`;
     case 'net_id_pool_exhausted':
-    case 'udp_port_pool_exhausted':
     case 'proxy_chain_setup_failed':
       return `${e.service} · ${e.client_ip}`;
     case 'backend_trigger_setup_bailed':
@@ -192,6 +201,10 @@ function eventDetail(e: EventJson): string {
       return `${e.service_name} → ${e.dst_ip}:${e.dst_port} · ${e.error_message}`;
     case 'gateway_forward_install_failed':
       return `vxlan ${e.vxlan_id} · ${e.br_net}`;
+    case 'vxlan_environment_failed':
+      return e.error_message;
+    case 'device_event_bypass_changed':
+      return `Device-event bypass ${e.available ? 'active' : 'unavailable'}: ${e.detail}`;
     case 'firewall_rules_load_failed':
       return `${e.path} · ${e.error_message}`;
     case 'container_suspend_failed':

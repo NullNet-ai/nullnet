@@ -551,6 +551,8 @@ message AgentEvent {
     AgentUdpUpstreamConnectFailed udp_upstream_connect_failed = 36;
     // Proxy info events
     AgentProxyRequestRouted       proxy_request_routed       = 37;
+    AgentDeviceEventBypassChanged device_event_bypass_changed = 38;
+    AgentVxlanEnvironmentFailed vxlan_environment_failed = 39;
   }
 }
 
@@ -591,3 +593,7 @@ message AgentTcpListenerBindFailed  { uint32 listen_port = 1; string service_nam
 message AgentUdpListenerBindFailed  { uint32 listen_port = 1; string service_name = 2; string error_message = 3; }
 message AgentTcpUpstreamConnectFailed { string service_name = 1; string client_ip = 2; string error_message = 3; }
 message AgentUdpUpstreamConnectFailed { string service_name = 1; string client_ip = 2; string error_message = 3; }
+
+message AgentDeviceEventBypassChanged { bool available = 1; string detail = 2; }
+
+message AgentVxlanEnvironmentFailed { string error_message = 1; }

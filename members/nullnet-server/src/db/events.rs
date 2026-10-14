@@ -311,8 +311,9 @@ mod tests {
             live.recv().await.unwrap(),
             Event::PersistenceFailed { .. }
         ));
+        let attempts = crate::events::PERSISTENCE_QUEUE_CAPACITY + 1024;
         let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            for i in 0..6000 {
+            for i in 0..attempts {
                 store.emit(Event::node_connected(format!("test-{i}"))).await;
             }
         })
@@ -327,7 +328,7 @@ mod tests {
             "event persistence failure blocked its producers"
         );
         let rows = repo
-            .query(None, None, None, None, None, 10_000)
+            .query(None, None, None, None, None, (attempts + 1024) as i64)
             .await
             .unwrap();
         let persisted = rows.iter().filter(|r| r.kind == "node_connected").count() as u64;
@@ -343,7 +344,7 @@ mod tests {
         assert!(lost > 0);
         assert_eq!(
             persisted + lost,
-            6001,
+            (attempts + 1) as u64,
             "every accepted or dropped event must be accounted for"
         );
     }

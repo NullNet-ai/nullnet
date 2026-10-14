@@ -4,6 +4,9 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
+    /// Run only device-event filter reconciliation for diagnostics.
+    #[arg(long)]
+    pub device_event_bypass_only: bool,
     /// Maximum Transmission Unit (bytes)
     #[arg(long, default_value_t = 42500)]
     pub mtu: u16,

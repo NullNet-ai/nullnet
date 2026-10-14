@@ -1,4 +1,4 @@
-//! Durable ingress/egress/backend session history behind the UI's Sessions page.
+//! Asynchronous ingress/egress/backend history, independent of network lifecycle.
 //!
 //! Structurally the twin of [`crate::events::EventStore`]: a handle held by the
 //! orchestrator, backed by the `sessions` DB table once [`SessionStore::attach_db`]
@@ -21,7 +21,10 @@
 //! * **backend** — one row per trigger chain, from its initiator to its first
 //!   destination, closed when the chain expires or is torn down.
 
-use crate::db::{Db, SessionGeo};
+mod persistence;
+
+use crate::db::{Db, NewSessionRow, SessionGeo, SessionMutation};
+use crate::events::EventStore;
 use crate::geo::GeoInfo;
 use serde::Serialize;
 use serde_json::json;
@@ -30,6 +33,7 @@ use std::net::IpAddr;
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 pub(crate) const INGRESS: &str = "ingress";
 pub(crate) const EGRESS: &str = "egress";
@@ -77,6 +81,36 @@ fn geo_of(info: Option<GeoInfo>) -> SessionGeo {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn row(
+    direction: &str,
+    stack: &str,
+    service: &str,
+    net_id: u32,
+    peer_ip: &str,
+    geo: SessionGeo,
+    blocked: bool,
+    detail: String,
+    timestamp: i64,
+) -> NewSessionRow {
+    NewSessionRow {
+        direction: direction.into(),
+        stack: stack.into(),
+        service: service.into(),
+        net_id: net_id as i32,
+        peer_ip: peer_ip.into(),
+        country_code: geo.country_code,
+        asn: geo.asn,
+        org: geo.org,
+        blocked,
+        detail,
+        started_at: timestamp,
+        last_seen: timestamp,
+        ended_at: None,
+        history_token: None,
+    }
+}
+
 /// One persisted session as the history endpoint serves it: the queryable
 /// columns, plus the direction-specific `detail` object re-inflated (mirrors
 /// how `EventStore::query` re-inflates an event's `payload`). Distinct from
@@ -113,9 +147,11 @@ pub(crate) struct SessionPage {
     pub(crate) next_before_id: Option<i64>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct SessionStore {
     db: Arc<OnceLock<Db>>,
+    writer: Arc<OnceLock<persistence::Writer>>,
+    events: EventStore,
     /// Live denial bursts, keyed by `(stack, service, peer_ip)`. Denials arrive
     /// per HTTP request and per UDP datagram, so this is what keeps a flood
     /// from turning into one DB write per packet.
@@ -131,24 +167,51 @@ impl std::fmt::Debug for SessionStore {
 }
 
 impl SessionStore {
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
-        Self::default()
+        Self::with_events(EventStore::new())
+    }
+
+    pub(crate) fn with_events(events: EventStore) -> Self {
+        Self {
+            db: Arc::new(OnceLock::new()),
+            writer: Arc::new(OnceLock::new()),
+            events,
+            blocked_bursts: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn submit(&self, mutation: SessionMutation) -> bool {
+        self.writer
+            .get()
+            .is_some_and(|writer| writer.submit(mutation))
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn flush(&self) {
+        if let Some(writer) = self.writer.get() {
+            writer.flush().await;
+        }
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        if let Some(writer) = self.writer.get() {
+            writer.shutdown().await;
+        }
     }
 
     /// Wire in DB-backed persistence. A no-op after the first call.
     pub(crate) fn attach_db(&self, db: Db) {
-        let _ = self.db.set(db);
+        self.db.get_or_init(|| {
+            self.writer
+                .get_or_init(|| persistence::Writer::start(db.clone(), self.events.clone()));
+            db
+        });
     }
 
-    /// Close whatever the previous process left marked live. Called once at
-    /// startup, before anything can open a new row.
+    /// Queue stale-row closure before any history from this process.
     pub(crate) async fn close_stale_on_startup(&self) {
-        let Some(db) = self.db.get() else { return };
-        match db.sessions().close_all_open(now_secs()).await {
-            Ok(0) => {}
-            Ok(n) => println!("Sessions: closed {n} row(s) left open by the previous run"),
-            Err(e) => eprintln!("Sessions: failed to close stale rows: {e:?}"),
-        }
+        self.submit(SessionMutation::CloseAll(now_secs()));
     }
 
     /// Record a new ingress session. Paired with [`Self::close_ingress`] on the
@@ -166,7 +229,6 @@ impl SessionStore {
         setup_ms: u128,
         geo: Option<GeoInfo>,
     ) {
-        let Some(db) = self.db.get() else { return };
         let detail = json!({
             "client_net": client_net,
             "server_net": server_net,
@@ -175,23 +237,17 @@ impl SessionStore {
             "setup_ms": setup_ms,
         })
         .to_string();
-        if let Err(e) = db
-            .sessions()
-            .open(
-                INGRESS,
-                stack,
-                service,
-                net_id,
-                client_ip,
-                &geo_of(geo),
-                false,
-                &detail,
-                now_secs(),
-            )
-            .await
-        {
-            eprintln!("Sessions: failed to open ingress session net {net_id}: {e:?}");
-        }
+        self.submit(SessionMutation::Open(row(
+            INGRESS,
+            stack,
+            service,
+            net_id,
+            client_ip,
+            geo_of(geo),
+            false,
+            detail,
+            now_secs(),
+        )));
     }
 
     /// Persist the trigger's first hop; the row belongs to this chain generation.
@@ -202,8 +258,7 @@ impl SessionStore {
         net_id: u32,
         destination: &str,
         setup_ms: Option<u128>,
-    ) -> Option<i64> {
-        let db = self.db.get()?;
+    ) -> Option<Uuid> {
         let detail = json!({
             "node_ip": key.1.to_string(),
             "container": key.2,
@@ -211,35 +266,28 @@ impl SessionStore {
             "setup_ms": setup_ms,
         })
         .to_string();
-        match db
-            .sessions()
-            .open(
-                BACKEND,
-                stack,
-                &key.0,
-                net_id,
-                destination,
-                &SessionGeo::default(),
-                false,
-                &detail,
-                now_secs(),
-            )
-            .await
-        {
-            Ok(id) => Some(id),
-            Err(e) => {
-                eprintln!("Sessions: failed to open backend session net {net_id}: {e:?}");
-                None
-            }
-        }
+        let token = Uuid::new_v4();
+        let mut row = row(
+            BACKEND,
+            stack,
+            &key.0,
+            net_id,
+            destination,
+            SessionGeo::default(),
+            false,
+            detail,
+            now_secs(),
+        );
+        row.history_token = Some(token.to_string());
+        self.submit(SessionMutation::Open(row)).then_some(token)
     }
 
-    pub(crate) async fn close_backend(&self, id: Option<i64>) {
-        let (Some(db), Some(id)) = (self.db.get(), id) else {
-            return;
-        };
-        if let Err(e) = db.sessions().close_backend(id, now_secs()).await {
-            eprintln!("Sessions: failed to close backend session {id}: {e:?}");
+    pub(crate) async fn close_backend(&self, id: Option<Uuid>) {
+        if let Some(token) = id {
+            self.submit(SessionMutation::CloseBackend {
+                token,
+                timestamp: now_secs(),
+            });
         }
     }
 
@@ -260,7 +308,9 @@ impl SessionStore {
         peer_ip: &str,
         geo: Option<GeoInfo>,
     ) {
-        let Some(db) = self.db.get() else { return };
+        if self.writer.get().is_none() {
+            return;
+        }
         let now = now_secs();
 
         let burst = {
@@ -301,25 +351,29 @@ impl SessionStore {
             (burst.started_at, burst.attempts)
         };
 
-        let detail = json!({ "attempts": burst.1 }).to_string();
-        if let Err(e) = db
-            .sessions()
-            .record_blocked_ingress(stack, service, peer_ip, &geo_of(geo), &detail, burst.0, now)
-            .await
-        {
-            eprintln!("Sessions: failed to record denied ingress from {peer_ip}: {e:?}");
-        }
+        let mut row = row(
+            INGRESS,
+            stack,
+            service,
+            0,
+            peer_ip,
+            geo_of(geo),
+            true,
+            json!({ "attempts": burst.1 }).to_string(),
+            burst.0,
+        );
+        row.last_seen = now;
+        row.ended_at = Some(now);
+        self.submit(SessionMutation::Blocked(row));
     }
 
     pub(crate) async fn close_ingress(&self, net_id: u32, service: &str, client_ip: &str) {
-        let Some(db) = self.db.get() else { return };
-        if let Err(e) = db
-            .sessions()
-            .close_ingress(net_id, service, client_ip, now_secs())
-            .await
-        {
-            eprintln!("Sessions: failed to close ingress session net {net_id}: {e:?}");
-        }
+        self.submit(SessionMutation::CloseIngress {
+            net_id,
+            service: service.to_owned(),
+            peer: client_ip.to_owned(),
+            timestamp: now_secs(),
+        });
     }
 
     /// Record one external destination on a live egress edge. Called on every
@@ -350,47 +404,6 @@ impl SessionStore {
         active: bool,
         geo: Option<GeoInfo>,
     ) {
-        let Some(db) = self.db.get() else { return };
-        let geo = geo_of(geo);
-        let repo = db.sessions();
-        let touched = match repo
-            .touch(EGRESS, net_id, dst_ip, &geo, blocked, last_seen)
-            .await
-        {
-            Ok(n) => n > 0,
-            Err(e) => {
-                eprintln!("Sessions: failed to update egress destination {dst_ip}: {e:?}");
-                return;
-            }
-        };
-        if touched {
-            // A row that was running ends *now*, not at its last new connection:
-            // `last_seen` is when a connection last started, so a destination
-            // held open for an hour by one connection would otherwise close
-            // with a zero-length duration.
-            if !active && let Err(e) = repo.close_egress_dst(net_id, dst_ip, now_secs()).await {
-                eprintln!("Sessions: failed to close egress destination {dst_ip}: {e:?}");
-            }
-            return;
-        }
-        // No open row. A destination that is *active* is starting a new period
-        // and gets a new row. One reported closed is either a report we have
-        // already ended — fold it in, as denied ingress does, or a denied
-        // destination would leave one row per flush behind — or one whose
-        // start we never saw, which is written already ended.
-        if !active {
-            match repo
-                .extend_ended_egress_dst(net_id, dst_ip, blocked, last_seen)
-                .await
-            {
-                Ok(0) => {}
-                Ok(_) => return,
-                Err(e) => {
-                    eprintln!("Sessions: failed to extend egress destination {dst_ip}: {e:?}");
-                    return;
-                }
-            }
-        }
         let detail = json!({
             "node_ip": node_ip,
             "container": container,
@@ -398,30 +411,31 @@ impl SessionStore {
             "setup_ms": setup_ms,
         })
         .to_string();
-        if let Err(e) = repo
-            .open(
-                EGRESS, stack, service, net_id, dst_ip, &geo, blocked, &detail, last_seen,
-            )
-            .await
-        {
-            eprintln!("Sessions: failed to open egress destination {dst_ip}: {e:?}");
-            return;
-        }
-        // Nothing ever ran on this one — it is written already ended, at the
-        // moment it was contacted.
-        if !active && let Err(e) = repo.close_egress_dst(net_id, dst_ip, last_seen).await {
-            eprintln!("Sessions: failed to close egress destination {dst_ip}: {e:?}");
-        }
+        self.submit(SessionMutation::Egress {
+            row: row(
+                EGRESS,
+                stack,
+                service,
+                net_id,
+                dst_ip,
+                geo_of(geo),
+                blocked,
+                detail,
+                last_seen,
+            ),
+            active,
+            timestamp: now_secs(),
+        });
     }
 
     /// End every destination row still open on the edge holding `net_id`.
     /// The backstop, not the usual path: a destination normally ends when the
     /// client reports its last connection to that host gone.
     pub(crate) async fn close_egress_edge(&self, net_id: u32) {
-        let Some(db) = self.db.get() else { return };
-        if let Err(e) = db.sessions().close_egress_edge(net_id, now_secs()).await {
-            eprintln!("Sessions: failed to close egress edge net {net_id}: {e:?}");
-        }
+        self.submit(SessionMutation::CloseEgress {
+            net_id,
+            timestamp: now_secs(),
+        });
     }
 
     /// Most-recent-first page of `stack`'s sessions. Returns an empty page (not
@@ -548,6 +562,7 @@ mod tests {
             )
             .await;
         store.close_ingress(10, "web", "1.2.3.4").await;
+        store.flush().await;
         let page = store
             .query("s1", None, None, None, None, None, None, None, 10)
             .await;
@@ -571,6 +586,7 @@ mod tests {
             .record_blocked_ingress("s1", "web", "5.6.7.8", None)
             .await;
 
+        store.flush().await;
         let page = store
             .query("s1", None, None, None, None, None, None, None, 10)
             .await;

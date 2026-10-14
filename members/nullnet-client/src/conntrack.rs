@@ -372,6 +372,8 @@ pub struct OpenFlows<K: Eq + std::hash::Hash + Clone> {
     /// Owners whose liveness evidence we destroyed ourselves, and until when.
     /// See `suppress_for`.
     suppressed: std::collections::HashMap<K, std::time::Instant>,
+    revisions: std::collections::HashMap<K, u64>,
+    next_revision: u64,
 }
 
 /// The open flows an owner has to one destination.
@@ -419,7 +421,30 @@ impl<K: Eq + std::hash::Hash + Clone> OpenFlows<K> {
             per_owner: std::collections::HashMap::new(),
             owner_of: std::collections::HashMap::new(),
             suppressed: std::collections::HashMap::new(),
+            revisions: std::collections::HashMap::new(),
+            next_revision: 0,
         }
+    }
+
+    fn revision(&self, owner: &K) -> u64 {
+        self.revisions.get(owner).copied().unwrap_or(0)
+    }
+
+    fn changed(&mut self, owner: &K) {
+        self.next_revision = self.next_revision.wrapping_add(1);
+        self.revisions.insert(owner.clone(), self.next_revision);
+    }
+
+    fn reconcile_at(
+        &mut self,
+        owner: K,
+        revision: u64,
+        flows: impl IntoIterator<Item = Flow>,
+    ) -> Change<K> {
+        if self.revision(&owner) != revision {
+            return Change::none();
+        }
+        self.reconcile(owner, flows)
     }
 
     /// Is this owner's emptiness currently untrustworthy?
@@ -437,6 +462,7 @@ impl<K: Eq + std::hash::Hash + Clone> OpenFlows<K> {
     /// A `NEW` is also first-hand evidence that the owner is alive, so it ends
     /// any suppression: we know something real again.
     pub fn insert(&mut self, owner: K, flow: Flow) -> Change<K> {
+        self.changed(&owner);
         self.suppressed.remove(&owner);
         let by_dst = self.per_owner.entry(owner.clone()).or_default();
         let owner_was_empty = by_dst.is_empty();
@@ -464,6 +490,7 @@ impl<K: Eq + std::hash::Hash + Clone> OpenFlows<K> {
         let Some(owner) = self.owner_of.remove(flow) else {
             return Change::none();
         };
+        self.changed(&owner);
         let Some(by_dst) = self.per_owner.get_mut(&owner) else {
             return Change::none();
         };
@@ -515,6 +542,7 @@ impl<K: Eq + std::hash::Hash + Clone> OpenFlows<K> {
     /// the owner genuinely went idle across a policy reload, its edge lives
     /// longer than strictly necessary — the safe direction to be wrong in.
     pub fn suppress_for(&mut self, owner: K, window: std::time::Duration) {
+        self.changed(&owner);
         self.suppressed
             .insert(owner, std::time::Instant::now() + window);
     }
@@ -524,6 +552,7 @@ impl<K: Eq + std::hash::Hash + Clone> OpenFlows<K> {
     /// Used both as the periodic drift backstop (netlink drops events under
     /// churn) and as the immediate follow-up to a flush we issued.
     pub fn reconcile(&mut self, owner: K, flows: impl IntoIterator<Item = Flow>) -> Change<K> {
+        self.changed(&owner);
         let old = self.per_owner.remove(&owner);
         let was_active = old.is_some();
         let old_dsts: std::collections::HashSet<Ipv4Addr> = old
@@ -963,31 +992,78 @@ tcp      6 100 ESTABLISHED src=172.17.0.2 dst=2.2.2.2 sport=2 dport=80 \
         );
     }
 
+    #[test]
+    fn snapshot_cannot_erase_a_new_flow_or_revive_a_destroyed_one() {
+        let mut sets = OpenFlows::new();
+        let connection = flow(1000, [8, 8, 8, 8], 443);
+        let revision = sets.revision(&"container");
+        sets.insert("container", connection);
+        assert_eq!(sets.reconcile_at("container", revision, []).owner, None);
+        assert_eq!(sets.flow_count(&"container"), 1);
+        let revision = sets.revision(&"container");
+        sets.remove(&connection);
+        assert_eq!(
+            sets.reconcile_at("container", revision, [connection]).owner,
+            None
+        );
+        assert_eq!(sets.flow_count(&"container"), 0);
+    }
+
+    #[test]
+    fn snapshot_preserves_reopened_tuple_and_policy_flush_suppression() {
+        let mut sets = OpenFlows::new();
+        let connection = flow(1000, [8, 8, 8, 8], 53);
+        sets.insert("container", connection);
+        let revision = sets.revision(&"container");
+        sets.remove(&connection);
+        sets.insert("container", connection);
+        assert_eq!(sets.reconcile_at("container", revision, []).owner, None);
+        assert_eq!(sets.flow_count(&"container"), 1);
+        let revision = sets.revision(&"container");
+        sets.suppress_for("container", Duration::from_secs(10));
+        sets.reconcile_at("container", revision, [connection]);
+        assert!(sets.is_suppressed(&"container"));
+    }
+
+    #[test]
+    fn busy_foreign_owner_does_not_prevent_snapshot_drift_repair() {
+        let mut sets = OpenFlows::new();
+        sets.insert("quiet", flow(1000, [8, 8, 8, 8], 443));
+        let revision = sets.revision(&"quiet");
+        sets.insert("busy", flow(1001, [1, 1, 1, 1], 443));
+        assert_eq!(
+            sets.reconcile_at("quiet", revision, []).owner,
+            Some(Transition::Idle("quiet"))
+        );
+        assert_eq!(sets.flow_count(&"busy"), 1);
+    }
+
     /// Live check that `dump_flows` parses real `conntrack -L` output. The unit
     /// test above uses a hand-written line; this proves the real format matches.
     #[test]
     #[ignore = "needs root and network"]
     fn live_dump_flows_sees_a_real_connection() {
-        use std::io::Write;
-        use std::net::TcpStream;
+        use std::net::{TcpListener, TcpStream};
 
         let rt = tokio::runtime::Runtime::new().expect("runtime");
-        let mut stream = TcpStream::connect("1.1.1.1:80").expect("connect");
-        let _ = stream.write_all(b"GET / HTTP/1.1\r\nHost: one.one.one.one\r\n\r\n");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let remote = listener.local_addr().unwrap();
+        let stream = TcpStream::connect(remote).expect("connect");
+        let (_accepted, _) = listener.accept().unwrap();
         let local = match stream.local_addr().expect("local") {
             std::net::SocketAddr::V4(a) => a,
             std::net::SocketAddr::V6(_) => panic!("expected IPv4"),
         };
 
         let flows = rt
-            .block_on(dump_flows(*local.ip()))
+            .block_on(dump_flows(Some(*local.ip())))
             .expect("dump succeeded");
         println!("dump returned {} flow(s) for {}", flows.len(), local.ip());
         assert!(
             flows
                 .iter()
-                .any(|f| f.src_port == local.port() && f.dst_port == 80),
-            "our live connection {}:{} -> 1.1.1.1:80 must appear in the dump, got {flows:?}",
+                .any(|f| f.src_port == local.port() && f.dst_port == remote.port()),
+            "our live connection {}:{} -> {remote} must appear in the dump, got {flows:?}",
             local.ip(),
             local.port()
         );
@@ -1018,23 +1094,17 @@ tcp      6 100 ESTABLISHED src=172.17.0.2 dst=2.2.2.2 sport=2 dport=80 \
 /// How often to re-dump conntrack and correct drift from dropped events.
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Dump the live flows conntrack currently holds for one container bridge IP.
-///
-/// Uses the `conntrack` CLI, the same one `egress_policy` already shells out to
-/// for flushes. A second netlink dump socket would be tidier but this runs on a
-/// slow cadence and only as a correctness backstop, so the subprocess cost is
-/// not worth avoiding.
-pub async fn dump_flows(bridge_ip: Ipv4Addr) -> Option<Vec<Flow>> {
-    let out = tokio::process::Command::new("conntrack")
-        .args(["-L", "-s", &bridge_ip.to_string()])
-        .output()
-        .await
-        .ok()?;
-    // Exit 1 just means "no entries matched"; anything else is a real failure,
-    // and guessing "empty" from a failed dump would reap every live edge.
-    match out.status.code() {
-        Some(0) | Some(1) => {}
-        _ => return None,
+/// Dump IPv4 flows once; an optional source filter serves the live parser test.
+async fn dump_flows(source: Option<Ipv4Addr>) -> Option<Vec<Flow>> {
+    let mut command = tokio::process::Command::new("conntrack");
+    command.args(["-L", "-f", "ipv4"]);
+    if let Some(source) = source {
+        command.args(["-s", &source.to_string()]);
+    }
+    let out = command.output().await.ok()?;
+    // An empty listing succeeds; exit 1 also covers failed netlink requests.
+    if !out.status.success() {
+        return None;
     }
     Some(
         String::from_utf8_lossy(&out.stdout)
@@ -1066,33 +1136,15 @@ fn parse_conntrack_line(line: &str) -> Option<Flow> {
     })
 }
 
-/// Re-dump one container's flows and replace both sets from that one dump.
-///
-/// Takes **every** address the container owns, not one. Swarm gives each task
-/// an overlay address *and* a `docker_gwbridge` one, and its outbound flows are
-/// sourced from the gwbridge address while `docker inspect` advertises the
-/// overlay. Reconciling per address would let the dump for the quiet interface
-/// replace the flows seen on the busy one and report a live container idle.
-///
-/// One dump set serves both liveness sets: which one a flow belongs to is
-/// decided by its destination, not by a second query.
-pub async fn reconcile_container(
+/// Reconcile one owner's union from the shared snapshot; newer events win.
+async fn reconcile_container(
     sets: &LivenessSets,
     grpc: &NullnetGrpcInterface,
     container: &str,
-    bridge_ips: &[Ipv4Addr],
+    flows: &[Flow],
+    egress_revision: u64,
+    trigger_revisions: &[(u16, u64)],
 ) {
-    let mut flows: Vec<Flow> = Vec::new();
-    for ip in bridge_ips {
-        // A failed dump is not an empty one. Reconciling from partial data
-        // looks exactly like the container going quiet, which is the one
-        // reading that costs a live edge.
-        let Some(mut found) = dump_flows(*ip).await else {
-            return;
-        };
-        flows.append(&mut found);
-    }
-
     // Egress holds external destinations only — the NFQUEUE rule that fills it
     // matches `! --match-set nullnet_internal_dsts dst`. Reconciling from the
     // raw dump would seed the set with the container's internal flows, and the
@@ -1102,7 +1154,7 @@ pub async fn reconcile_container(
         .egress
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .reconcile(container.to_string(), external);
+        .reconcile_at(container.to_string(), egress_revision, external);
     // Repairs the destination half of the drift too: a dropped DESTROY would
     // otherwise leave that destination's session reading live for as long as
     // the edge carries any other one.
@@ -1114,13 +1166,13 @@ pub async fn reconcile_container(
 
     // One bucket per trigger port this container actually owns. A port it does
     // not own is someone else's chain and must not be attributed here.
-    for port in watched_ports(&sets.owners, container) {
+    for &(port, revision) in trigger_revisions {
         let on_port = flows.iter().copied().filter(|f| f.dst_port == port);
         let transition = sets
             .triggers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .reconcile((container.to_string(), port), on_port);
+            .reconcile_at((container.to_string(), port), revision, on_port);
         if let Some(Transition::Idle((c, p))) = transition.owner
             && let Some(service) = service_for(&sets.owners, &c, p)
         {
@@ -1142,21 +1194,42 @@ pub fn spawn_reconcile_task(
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(RECONCILE_INTERVAL).await;
-            // Walk the cache, not the sets: a container whose every event was
-            // dropped has no entry in either to walk from, and that is exactly
-            // the drift this exists to repair.
-            // Group the cache by container first: a multi-homed container
-            // appears under several addresses and must be reconciled once,
-            // from the union of their dumps.
-            let mut by_container: std::collections::HashMap<String, Vec<Ipv4Addr>> =
-                std::collections::HashMap::new();
-            for ip in cache.all_ips() {
-                if let Some(container) = cache.get(ip) {
-                    by_container.entry(container).or_default().push(ip);
+            let addresses = cache.owned_ips();
+            let containers: std::collections::HashSet<_> = addresses.values().cloned().collect();
+            let mut revisions = std::collections::HashMap::new();
+            for container in &containers {
+                let egress = sets
+                    .egress
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .revision(container);
+                let ports = watched_ports(&sets.owners, container);
+                let triggers = sets
+                    .triggers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let ports: Vec<_> = ports
+                    .into_iter()
+                    .map(|port| (port, triggers.revision(&(container.clone(), port))))
+                    .collect();
+                revisions.insert(container.clone(), (egress, ports));
+            }
+            // A failed snapshot must never be interpreted as every owner idle.
+            let Some(flows) = dump_flows(None).await else {
+                continue;
+            };
+            let mut by_container: std::collections::HashMap<String, Vec<Flow>> = containers
+                .into_iter()
+                .map(|container| (container, Vec::new()))
+                .collect();
+            for flow in flows {
+                if let Some(container) = addresses.get(&flow.src_ip) {
+                    by_container.get_mut(container).unwrap().push(flow);
                 }
             }
-            for (container, ips) in by_container {
-                reconcile_container(&sets, &grpc, &container, &ips).await;
+            for (container, flows) in by_container {
+                let (egress, triggers) = &revisions[&container];
+                reconcile_container(&sets, &grpc, &container, &flows, *egress, triggers).await;
             }
         }
     });

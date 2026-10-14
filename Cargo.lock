@@ -3191,6 +3191,7 @@ dependencies = [
  "nullnet-liberror 0.1.1 (git+https://github.com/NullNet-ai/libguard.git?branch=nullnet-liberror-print)",
  "rtnetlink",
  "serde",
+ "sha2 0.10.9",
  "tokio",
  "tun-rs",
 ]

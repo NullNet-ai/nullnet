@@ -7,9 +7,8 @@
 //! returns. ICMP is always allowed (both directions). Everything else is an
 //! server-decided allow: explicit port lists plus TCP/UDP proxy listen ports
 //! (→ `ALLOW_PORTS` map). On the egress-gateway host all outbound is
-//! additionally allowed and tracked. Peers are added/removed from the `PEERS` map,
-//! and each VXLAN tunnel's per-tunnel dstport (paired with its specific peer) from
-//! the `VXLAN_PORTS` map, by the control channel as edges come and go.
+//! additionally allowed and tracked. The control channel updates the refcounted
+//! `PEERS` map as edges come and go.
 //!
 //! Loading: raise the memlock rlimit, `EbpfLoader` with `set_global`, ensure a
 //! clsact qdisc, load+attach each `SchedClassifier` to its hook, then populate
@@ -65,7 +64,6 @@ pub struct Firewall {
     bpf: Ebpf,
     pub peers: Arc<FirewallPeers>,
     pub allow_ports: Arc<Mutex<FirewallAllowPorts>>,
-    pub vxlan_ports: Arc<FirewallVxlanPorts>,
 }
 
 /// Refcounted peer allowlist backing the `PEERS` BPF map. Multiple edges can
@@ -137,57 +135,6 @@ impl FirewallPeers {
     }
 }
 
-/// Live per-tunnel VXLAN dstport -> peer allowlist backing the `VXLAN_PORTS`
-/// BPF map, added/removed by the control channel alongside `FirewallPeers` as
-/// VXLAN edges come and go. Maps port -> the specific peer it was allocated
-/// to (not just a marker), so the eBPF side can reject a packet that reuses a
-/// live port but claims a *different* concurrent tunnel's peer IP. Unlike
-/// peers (which can be shared by multiple edges), the server's `UdpPortPool`
-/// guarantees a dstport belongs to at most one live tunnel at a time, so this
-/// needs no refcounting — just insert on setup, remove on teardown, keyed by
-/// `vxlan_id` so a re-point to a different port doesn't leak the old one.
-pub struct FirewallVxlanPorts {
-    inner: Mutex<PortInner>,
-}
-
-struct PortInner {
-    map: AyaHashMap<MapData, u16, u32>,
-    by_id: HashMap<u32, u16>,
-}
-
-impl FirewallVxlanPorts {
-    fn new(map: AyaHashMap<MapData, u16, u32>) -> Self {
-        Self {
-            inner: Mutex::new(PortInner {
-                map,
-                by_id: HashMap::new(),
-            }),
-        }
-    }
-
-    /// Allow data-plane traffic on `port` for tunnel `vxlan_id`, scoped to
-    /// `peer` — the eBPF side checks this port's packets against the actual
-    /// peer address, not just "any known peer," so a different concurrent
-    /// tunnel's peer can't satisfy this one's port.
-    pub fn add(&self, vxlan_id: u32, port: u16, peer: Ipv4Addr) {
-        let mut inner = self.inner.lock().unwrap();
-        if let Some(old_port) = inner.by_id.insert(vxlan_id, port)
-            && old_port != port
-        {
-            let _ = inner.map.remove(&old_port);
-        }
-        let _ = inner.map.insert(port, u32::from(peer), 0);
-    }
-
-    /// Drop tunnel `vxlan_id`'s dstport allowance.
-    pub fn remove(&self, vxlan_id: u32) {
-        let mut inner = self.inner.lock().unwrap();
-        if let Some(port) = inner.by_id.remove(&vxlan_id) {
-            let _ = inner.map.remove(&port);
-        }
-    }
-}
-
 pub fn enable(iface: &str, cfg: &FirewallConfig) -> Result<Firewall, Error> {
     use aya::EbpfLoader;
     use aya::programs::{TcAttachType, tc};
@@ -234,18 +181,10 @@ pub fn enable(iface: &str, cfg: &FirewallConfig) -> Result<Firewall, Error> {
         .try_into()
         .handle_err(location!())?;
 
-    let vxlan_ports_map: AyaHashMap<MapData, u16, u32> = bpf
-        .take_map("VXLAN_PORTS")
-        .ok_or("VXLAN_PORTS map not found in bytecode")
-        .handle_err(location!())?
-        .try_into()
-        .handle_err(location!())?;
-
     Ok(Firewall {
         bpf,
         allow_ports: Arc::new(Mutex::new(allow_ports)),
         peers: Arc::new(FirewallPeers::new(peers_map)),
-        vxlan_ports: Arc::new(FirewallVxlanPorts::new(vxlan_ports_map)),
     })
 }
 

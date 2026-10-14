@@ -61,7 +61,7 @@ export default function SessionRows({ sessions, refresh, stackedNet = false }: {
             style={{ ...mono, fontSize: 10, color: 'var(--t2)' }}
             title={s.ended_at != null ? formatTimestampFull(s.ended_at) : undefined}
           >
-            {s.ended_at != null ? formatTimestamp(s.ended_at) : '—'}
+            {s.detail.recording_interrupted || s.ended_at == null ? '—' : formatTimestamp(s.ended_at)}
           </td>
           {/* A denied connection never ran, so its elapsed time says
               nothing — how many times the peer tried does. */}
@@ -75,7 +75,7 @@ export default function SessionRows({ sessions, refresh, stackedNet = false }: {
           >
             {attempts != null
               ? `${attempts} attempt${attempts === 1 ? '' : 's'}`
-              : duration(s.started_at, s.ended_at ?? now)}
+              : s.detail.recording_interrupted ? 'unknown' : duration(s.started_at, s.ended_at ?? now)}
           </td>
           <td>
             {active && s.direction === 'ingress' && (

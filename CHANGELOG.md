@@ -13,6 +13,10 @@ All Nullnet releases with the relative changes are documented in this file.
 - Per-service egress/ingress traffic filters: arbitrary AND/OR/group combinations of Country, Organization, Src IP (ingress), and Dst IP (egress) conditions, evaluated via `rpn-predicate-interpreter` — replaces the country-only egress/ingress policy ([#171](https://github.com/NullNet-ai/nullnet/pull/171) — fixes [#143](https://github.com/NullNet-ai/nullnet/issues/143))
 - Persist ingress and egress sessions to SQLite and show the full history on the Sessions page, filterable by status, service, direction, and policy verdict, with its own retention window ([#170](https://github.com/NullNet-ai/nullnet/pull/170) — fixes [#156](https://github.com/NullNet-ai/nullnet/issues/156))
 ### Changed
+- Reduce fresh-edge cleanup work, batch conntrack scans, and share TC classifier infrastructure while preserving dedicated encrypted endpoints ([#201](https://github.com/NullNet-ai/nullnet/pull/201)).
+- Keep active backend chains visible to conntrack so liveness tracking does not release endpoints that still carry traffic ([#201](https://github.com/NullNet-ai/nullnet/pull/201)).
+- Prevent Docker Swarm VNI collisions and keep source-scoped egress routing valid for the full network-ID range ([#201](https://github.com/NullNet-ai/nullnet/pull/201)).
+- Create fresh dedicated VXLAN endpoints without bridges, with native TC/encryption setup and verified device-event bypass ([#201](https://github.com/NullNet-ai/nullnet/pull/201)).
 - Improve routing performance and capped-network balancing, reduce storage contention, and harden tunnel setup, teardown, and recovery under concurrent load ([#199](https://github.com/NullNet-ai/nullnet/pull/199))
 - Simplify the dashboard to linked session, service, and node count cards ([#194](https://github.com/NullNet-ai/nullnet/pull/194))
 - Unify live and historical session views ([#191](https://github.com/NullNet-ai/nullnet/pull/191))
@@ -25,6 +29,9 @@ All Nullnet releases with the relative changes are documented in this file.
 - Install BPF linker as a prebuilt binary rather than compiling it from source ([#158](https://github.com/NullNet-ai/nullnet/pull/158))
 ### Removed
 ### Fixed
+- Keep teardown control-channel backpressure outside topology locks ([#199](https://github.com/NullNet-ai/nullnet/pull/199))
+- Decouple session history writes from network setup and teardown with bounded asynchronous persistence and visible failure recovery ([#199](https://github.com/NullNet-ai/nullnet/pull/199))
+- Index open session-history lookups to avoid scanning closed sessions ([#199](https://github.com/NullNet-ai/nullnet/pull/199))
 - Route same-host egress directly with container-scoped forwarding and NAT ([#197](https://github.com/NullNet-ai/nullnet/pull/197))
 - Track container overlay addresses when deciding whether backend connections are idle ([#196](https://github.com/NullNet-ai/nullnet/pull/196))
 - Make backend and egress trigger claims atomic, preserve liveness during setup, and report setup failures instead of transient packet-wait timeouts ([#186](https://github.com/NullNet-ai/nullnet/pull/186))
