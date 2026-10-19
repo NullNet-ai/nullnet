@@ -23,6 +23,8 @@ use tonic::transport::{Channel, ClientTlsConfig};
 const MAX_IN_FLIGHT_UNARY: usize = 32;
 const MAX_IN_FLIGHT_LIFECYCLE: usize = 8;
 const MAX_IN_FLIGHT_POLICY: usize = 32;
+// Diagnostic bursts must not consume routing admission.
+const MAX_IN_FLIGHT_EVENTS: usize = 8;
 
 /// Why a `proxy` lookup failed.
 #[derive(Debug)]
@@ -40,6 +42,7 @@ pub struct NullnetGrpcInterface {
     unary_slots: Arc<Semaphore>,
     lifecycle_slots: Arc<Semaphore>,
     policy_slots: Arc<Semaphore>,
+    event_slots: Arc<Semaphore>,
 }
 
 impl NullnetGrpcInterface {
@@ -72,6 +75,7 @@ impl NullnetGrpcInterface {
                     unary_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_UNARY)),
                     lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
                     policy_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_POLICY)),
+                    event_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_EVENTS)),
                 });
             }
 
@@ -328,10 +332,13 @@ impl NullnetGrpcInterface {
 
     #[allow(clippy::missing_errors_doc)]
     pub async fn report_event(&self, event: AgentEvent) -> Result<(), String> {
-        self.unary(self.client.clone().report_event(Request::new(event)))
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        Self::admitted(
+            &self.event_slots,
+            self.client.clone().report_event(Request::new(event)),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 
     /// Subscribe to certificate changes: the returned stream yields the full
@@ -389,6 +396,7 @@ mod admission_tests {
             unary_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_UNARY)),
             lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
             policy_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_POLICY)),
+            event_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_EVENTS)),
         };
         let _busy = interface
             .unary_slots
@@ -411,6 +419,37 @@ mod admission_tests {
     }
 
     #[tokio::test]
+    async fn event_reporting_progresses_when_setup_admission_is_full() {
+        let interface = NullnetGrpcInterface {
+            client: NullnetGrpcClient::new(
+                Channel::from_static("http://127.0.0.1:1").connect_lazy(),
+            ),
+            unary_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_UNARY)),
+            lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
+            policy_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_POLICY)),
+            event_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_EVENTS)),
+        };
+        let _busy = interface
+            .unary_slots
+            .acquire_many(MAX_IN_FLIGHT_UNARY as u32)
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            interface.report_event(AgentEvent { event: None }),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "event reporting was queued behind setup admission"
+        );
+        assert!(
+            result.unwrap().is_err(),
+            "the intentionally absent server should reject the call"
+        );
+    }
+
+    #[tokio::test]
     async fn clones_share_admission_and_cancellation_releases_capacity() {
         let interface = NullnetGrpcInterface {
             client: NullnetGrpcClient::new(
@@ -419,6 +458,7 @@ mod admission_tests {
             unary_slots: Arc::new(Semaphore::new(2)),
             lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
             policy_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_POLICY)),
+            event_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_EVENTS)),
         };
         let (entered, mut received) = mpsc::unbounded_channel();
         let mut calls = tokio::task::JoinSet::new();
@@ -456,6 +496,7 @@ mod admission_tests {
             unary_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_UNARY)),
             lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
             policy_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_POLICY)),
+            event_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_EVENTS)),
         };
         let _busy = interface
             .unary_slots

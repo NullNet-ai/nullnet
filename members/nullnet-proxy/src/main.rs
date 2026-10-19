@@ -14,8 +14,8 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentEvent, AgentProxyClientNotInet, AgentProxyRequestRouted, AgentTlsCertificateInvalid,
-    AgentUpstreamLookupFailed, ProxyRequest, agent_event::Event as AgentEventKind,
+    AgentEvent, AgentProxyClientNotInet, AgentTlsCertificateInvalid, AgentUpstreamLookupFailed,
+    ProxyRequest, agent_event::Event as AgentEventKind,
 };
 use nullnet_liberror::{ErrorHandler, Location, location};
 use pingora_core::listeners::tls::TlsSettings;
@@ -379,25 +379,6 @@ impl ProxyHttp for NullnetProxy {
         println!("upstream: {upstream}\n");
 
         let latency_ms = init_t.elapsed().as_millis() as u64;
-        let server = self.server.clone();
-        let svc = service_name.clone();
-        let cip = client_ip.clone();
-        let uip = upstream.ip().to_string();
-        tokio::spawn(async move {
-            let _ = server
-                .report_event(AgentEvent {
-                    event: Some(AgentEventKind::ProxyRequestRouted(
-                        AgentProxyRequestRouted {
-                            service_name: svc,
-                            client_ip: cip,
-                            upstream_ip: uip,
-                            latency_ms,
-                        },
-                    )),
-                })
-                .await;
-        });
-
         println!("TOTAL VLANS SETUP TIME: {} ms\n", latency_ms);
 
         Ok(Box::new(HttpPeer::new(upstream, false, String::new())))
