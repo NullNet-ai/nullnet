@@ -220,12 +220,6 @@ pub(crate) enum Event {
         client_ip: String,
         timestamp: u64,
     },
-    StickySessionReused {
-        service: String,
-        client_ip: String,
-        proxy_ip: String,
-        timestamp: u64,
-    },
     StaleSessionEvicted {
         service: String,
         client_ip: String,
@@ -495,15 +489,6 @@ pub(crate) enum Event {
         timestamp: u64,
     },
 
-    // --- Proxy info events ---
-    ProxyRequestRouted {
-        service_name: String,
-        client_ip: String,
-        upstream_ip: String,
-        latency_ms: u64,
-        timestamp: u64,
-    },
-
     // --- Certificate events ---
     UiTlsCertificateActive {
         domain: String,
@@ -576,7 +561,6 @@ impl Event {
             Self::AllReplicasRemoved { .. } => "all_replicas_removed",
             Self::ServiceReachabilityToggled { .. } => "service_reachability_toggled",
             Self::ProxyClientTimedOut { .. } => "proxy_client_timed_out",
-            Self::StickySessionReused { .. } => "sticky_session_reused",
             Self::StaleSessionEvicted { .. } => "stale_session_evicted",
             Self::MaxNetworksLimitEnforced { .. } => "max_networks_limit_enforced",
             Self::NetIdPoolExhausted { .. } => "net_id_pool_exhausted",
@@ -627,7 +611,6 @@ impl Event {
             Self::UdpListenerBindFailed { .. } => "udp_listener_bind_failed",
             Self::TcpUpstreamConnectFailed { .. } => "tcp_upstream_connect_failed",
             Self::UdpUpstreamConnectFailed { .. } => "udp_upstream_connect_failed",
-            Self::ProxyRequestRouted { .. } => "proxy_request_routed",
             Self::UiTlsCertificateActive { .. } => "ui_tls_certificate_active",
             Self::UiTlsCertificateUnavailable { .. } => "ui_tls_certificate_unavailable",
             Self::CertificateInstalled { .. } => "certificate_installed",
@@ -669,12 +652,10 @@ impl Event {
             | Self::ConfigStackRemoved { .. }
             | Self::ServiceUnregistered { .. }
             | Self::ServiceReachabilityToggled { .. }
-            | Self::StickySessionReused { .. }
             | Self::VxlanSetupCompleted { .. }
             | Self::VlanSetupCompleted { .. }
             | Self::ControlChannelEstablished { .. }
             | Self::ServicesListUpdated { .. }
-            | Self::ProxyRequestRouted { .. }
             | Self::ProxyConnected { .. }
             | Self::UiTlsCertificateActive { .. }
             | Self::CertificateInstalled { .. }
@@ -944,19 +925,6 @@ impl Event {
         Self::ProxyClientTimedOut {
             service,
             client_ip,
-            timestamp: now_secs(),
-        }
-    }
-
-    pub(crate) fn sticky_session_reused(
-        service: String,
-        client_ip: String,
-        proxy_ip: String,
-    ) -> Self {
-        Self::StickySessionReused {
-            service,
-            client_ip,
-            proxy_ip,
             timestamp: now_secs(),
         }
     }
@@ -1293,21 +1261,6 @@ impl Event {
             service_name,
             client_ip,
             error_message,
-            timestamp: now_secs(),
-        }
-    }
-
-    pub(crate) fn proxy_request_routed(
-        service_name: String,
-        client_ip: String,
-        upstream_ip: String,
-        latency_ms: u64,
-    ) -> Self {
-        Self::ProxyRequestRouted {
-            service_name,
-            client_ip,
-            upstream_ip,
-            latency_ms,
             timestamp: now_secs(),
         }
     }

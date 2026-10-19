@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Layout from '../components/Layout';
 import { apiFetch } from '../lib/apiFetch';
+import { EVENT_KIND_GROUPS, isSupportedEventKind } from '../lib/eventKinds';
 import { formatTimestamp, formatTimestampFull } from '../lib/time';
 import type { EventJson, EventsPage, Severity } from '../types';
 
@@ -11,101 +12,6 @@ const SEVERITY_COLOR: Record<Severity, string> = {
   warning: 'var(--amber)',
   error: 'var(--red, #f87171)',
 };
-
-const KIND_LABELS: Record<string, string> = {
-  session_persistence_overflow: 'session_persistence_overflow',
-  session_persistence_failed: 'session_persistence_failed',
-  session_persistence_recovered: 'session_persistence_recovered',
-  event_persistence_overflow: 'event_persistence_overflow',
-  event_persistence_failed: 'event_persistence_failed',
-  event_persistence_recovered: 'event_persistence_recovered',
-  // Server events
-  node_connected: 'node_connected',
-  node_disconnected: 'node_disconnected',
-  service_registered: 'service_registered',
-  service_unregistered: 'service_unregistered',
-  service_declaration_skipped: 'service_declaration_skipped',
-  setup_started: 'setup_started',
-  setup_ack: 'setup_ack',
-  setup_timeout: 'setup_timeout',
-  egress_reservation_reclaimed: 'egress_reservation_reclaimed',
-  edge_promotion_lost: 'edge_promotion_lost',
-  chain_owner_lost: 'chain_owner_lost',
-  session_created: 'session_created',
-  session_torn_down: 'session_torn_down',
-  net_teardown_unconfirmed: 'net_teardown_unconfirmed',
-  observation_changed: 'observation_changed',
-  config_reloaded: 'config_reloaded',
-  config_stack_removed: 'config_stack_removed',
-  route_conflict: 'route_conflict',
-  service_name_conflict: 'service_name_conflict',
-  all_replicas_removed: 'all_replicas_removed',
-  service_reachability_toggled: 'service_reachability_toggled',
-  proxy_client_timed_out: 'proxy_client_timed_out',
-  sticky_session_reused: 'sticky_session_reused',
-  stale_session_evicted: 'stale_session_evicted',
-  max_networks_limit_enforced: 'max_networks_limit_enforced',
-  net_id_pool_exhausted: 'net_id_pool_exhausted',
-  proxy_chain_setup_failed: 'proxy_chain_setup_failed',
-  backend_trigger_setup_bailed: 'backend_trigger_setup_bailed',
-  file_watch_failed: 'file_watch_failed',
-  port_mapping_conflict: 'port_mapping_conflict',
-  // Client error
-  vxlan_setup_failed: 'vxlan_setup_failed',
-  vlan_setup_failed: 'vlan_setup_failed',
-  vxlan_teardown_failed: 'vxlan_teardown_failed',
-  vlan_teardown_failed: 'vlan_teardown_failed',
-  dnat_install_failed: 'dnat_install_failed',
-  dnat_removal_failed: 'dnat_removal_failed',
-  host_mapping_failed: 'host_mapping_failed',
-  control_channel_closed: 'control_channel_closed',
-  control_channel_ack_failed: 'control_channel_ack_failed',
-  services_list_update_failed: 'services_list_update_failed',
-  backend_trigger_send_failed: 'backend_trigger_send_failed',
-  egress_trigger_send_failed: 'egress_trigger_send_failed',
-  gateway_forward_install_failed: 'gateway_forward_install_failed',
-  device_event_bypass_changed: 'device_event_bypass_changed',
-  vxlan_environment_failed: 'vxlan_environment_failed',
-  firewall_rules_load_failed: 'firewall_rules_load_failed',
-  container_suspend_failed: 'container_suspend_failed',
-  container_resume_failed: 'container_resume_failed',
-  backend_trigger_setup_timed_out: 'backend_trigger_setup_timed_out',
-  egress_steer_setup_timed_out: 'egress_steer_setup_timed_out',
-  egress_steer_install_failed: 'egress_steer_install_failed',
-  nfqueue_bind_failed: 'nfqueue_bind_failed',
-  conntrack_subscribe_failed: 'conntrack_subscribe_failed',
-  mss_clamp_install_failed: 'mss_clamp_install_failed',
-  egress_policy_check_failed: 'egress_policy_check_failed',
-  conntrack_flush_failed: 'conntrack_flush_failed',
-  // Client info
-  vxlan_setup_completed: 'vxlan_setup_completed',
-  vlan_setup_completed: 'vlan_setup_completed',
-  control_channel_established: 'control_channel_established',
-  services_list_updated: 'services_list_updated',
-  // Proxy error
-  upstream_lookup_failed: 'upstream_lookup_failed',
-  upstream_ip_parse_failed: 'upstream_ip_parse_failed',
-  proxy_client_not_inet: 'proxy_client_not_inet',
-  tls_certificate_invalid: 'tls_certificate_invalid',
-  tcp_listener_bind_failed: 'tcp_listener_bind_failed',
-  udp_listener_bind_failed: 'udp_listener_bind_failed',
-  tcp_upstream_connect_failed: 'tcp_upstream_connect_failed',
-  udp_upstream_connect_failed: 'udp_upstream_connect_failed',
-  // Proxy info
-  proxy_request_routed: 'proxy_request_routed',
-  proxy_connected: 'proxy_connected',
-  proxy_disconnected: 'proxy_disconnected',
-  // Certificate
-  ui_tls_certificate_active: 'ui_tls_certificate_active',
-  ui_tls_certificate_unavailable: 'ui_tls_certificate_unavailable',
-  certificate_installed: 'certificate_installed',
-  certificate_renewed: 'certificate_renewed',
-  certificate_removed: 'certificate_removed',
-  certificate_renewal_failed: 'certificate_renewal_failed',
-  certificate_credentials_store_failed: 'certificate_credentials_store_failed',
-};
-
-const ALL_KINDS = Object.keys(KIND_LABELS);
 
 function eventDetail(e: EventJson): string {
   switch (e.type) {
@@ -162,7 +68,6 @@ function eventDetail(e: EventJson): string {
       return `${e.service} · ${e.stack} · ${e.reachable ? 'reachable' : 'unreachable'}`;
     case 'proxy_client_timed_out':
       return `${e.service} · ${e.client_ip}`;
-    case 'sticky_session_reused':
     case 'stale_session_evicted':
       return `${e.service} · ${e.client_ip} via ${e.proxy_ip}`;
     case 'max_networks_limit_enforced':
@@ -262,8 +167,6 @@ function eventDetail(e: EventJson): string {
     case 'certificate_credentials_store_failed':
       return `${e.domain} · ${e.error_message}`;
     // Proxy info
-    case 'proxy_request_routed':
-      return `${e.service_name} · ${e.client_ip} → ${e.upstream_ip} · ${e.latency_ms}ms`;
     case 'proxy_connected':
     case 'proxy_disconnected':
       return e.ip;
@@ -287,12 +190,14 @@ async function fetchEventsPage(
   params.set('limit', String(PAGE_SIZE));
   const res = await apiFetch(`/api/events?${params.toString()}`);
   if (!res.ok) throw new Error(`GET /api/events failed: ${res.status}`);
-  return res.json();
+  const page = await res.json() as EventsPage;
+  return { ...page, events: page.events.filter(event => isSupportedEventKind(event.type)) };
 }
 
 export default function Events() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const kindFilter = searchParams.get('kind') ?? '';
+  const requestedKind = searchParams.get('kind') ?? '';
+  const kindFilter = isSupportedEventKind(requestedKind) ? requestedKind : '';
   const severityFilter = (searchParams.get('severity') ?? '') as Severity | '';
 
   function setKindFilter(kind: string) {
@@ -377,8 +282,8 @@ export default function Events() {
 
     es.onmessage = (ev) => {
       try {
-        const event: EventJson = JSON.parse(ev.data);
-        if (!pausedRef.current) {
+        const event = JSON.parse(ev.data) as EventJson;
+        if (isSupportedEventKind(event.type) && !pausedRef.current) {
           setEvents(prev => {
             const next = [...prev, event];
             return next.length > MAX_EVENTS ? next.slice(next.length - MAX_EVENTS) : next;
@@ -465,8 +370,12 @@ export default function Events() {
                 }}
               >
                 <option value="" style={{ background: 'var(--bg)', color: 'var(--t0)' }}>All types</option>
-                {ALL_KINDS.map(k => (
-                  <option key={k} value={k} style={{ background: 'var(--bg)', color: 'var(--t0)' }}>{KIND_LABELS[k]}</option>
+                {EVENT_KIND_GROUPS.map(group => (
+                  <optgroup key={group.label} label={group.label}>
+                    {group.kinds.map(kind => (
+                      <option key={kind} value={kind} style={{ background: 'var(--bg)', color: 'var(--t0)' }}>{kind}</option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
 

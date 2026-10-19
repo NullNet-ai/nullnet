@@ -578,15 +578,6 @@ impl NullnetGrpcImpl {
             if intact {
                 println!("'{client_ip}' ---> '{service_name}' is already set up");
 
-                self.orchestrator
-                    .events
-                    .emit(Event::sticky_session_reused(
-                        service_name.to_string(),
-                        client_ip.to_string(),
-                        proxy_ip.to_string(),
-                    ))
-                    .await;
-
                 // update the latest timestamp for this client since it's being used again
                 let mut services_mut = self.services.write().await;
                 if let Some(stack_map) = services_mut.get_mut(&stack)
@@ -2868,12 +2859,8 @@ impl NullnetGrpc for NullnetGrpcImpl {
             AgentEventKind::UdpUpstreamConnectFailed(e) => {
                 Event::udp_upstream_connect_failed(e.service_name, e.client_ip, e.error_message)
             }
-            AgentEventKind::ProxyRequestRouted(e) => Event::proxy_request_routed(
-                e.service_name,
-                e.client_ip,
-                e.upstream_ip,
-                e.latency_ms,
-            ),
+            // Older proxies may still report this routine success event.
+            AgentEventKind::ProxyRequestRouted(_) => return Ok(Response::new(Empty {})),
         };
         self.orchestrator.events.emit(event).await;
         Ok(Response::new(Empty {}))
@@ -2886,6 +2873,29 @@ mod proxy_presence_tests {
     use std::time::Duration;
     use tokio_stream::StreamExt;
     use tonic::transport::server::TcpConnectInfo;
+
+    #[tokio::test]
+    async fn legacy_proxy_request_routed_event_is_ignored() {
+        let server = NullnetGrpcImpl::new_for_test(StackMap::new());
+        let mut events = server.orchestrator.events.subscribe();
+        server
+            .report_event(Request::new(AgentEvent {
+                event: Some(AgentEventKind::ProxyRequestRouted(
+                    nullnet_grpc_lib::nullnet_grpc::AgentProxyRequestRouted {
+                        service_name: "service".into(),
+                        client_ip: "198.18.0.1".into(),
+                        upstream_ip: "10.0.0.1".into(),
+                        latency_ms: 1,
+                    },
+                )),
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
 
     #[tokio::test]
     async fn idle_proxy_presence_survives_overlapping_streams() {

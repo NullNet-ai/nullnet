@@ -168,7 +168,6 @@ export type EventJson =
   | WithSeverity & { type: 'all_replicas_removed'; service: string; stack: string; ip: string }
   | WithSeverity & { type: 'service_reachability_toggled'; service: string; stack: string; reachable: boolean }
   | WithSeverity & { type: 'proxy_client_timed_out'; service: string; client_ip: string }
-  | WithSeverity & { type: 'sticky_session_reused'; service: string; client_ip: string; proxy_ip: string }
   | WithSeverity & { type: 'stale_session_evicted'; service: string; client_ip: string; proxy_ip: string }
   | WithSeverity & { type: 'max_networks_limit_enforced'; service: string; proxy_ip: string; net_id: number; limit: number }
   | WithSeverity & { type: 'net_id_pool_exhausted'; service: string; client_ip: string }
@@ -218,7 +217,6 @@ export type EventJson =
   | WithSeverity & { type: 'tcp_upstream_connect_failed'; service_name: string; client_ip: string; error_message: string }
   | WithSeverity & { type: 'udp_upstream_connect_failed'; service_name: string; client_ip: string; error_message: string }
   // Proxy info events
-  | WithSeverity & { type: 'proxy_request_routed'; service_name: string; client_ip: string; upstream_ip: string; latency_ms: number }
   | WithSeverity & { type: 'proxy_connected'; ip: string }
   | WithSeverity & { type: 'proxy_disconnected'; ip: string }
   // Certificate events
