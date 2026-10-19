@@ -9,13 +9,13 @@ use crate::services::input::StackMap;
 use crate::sessions::SessionStore;
 use nullnet_grpc_lib::nullnet_grpc::{
     ContainerResume, ContainerSuspend, EgressPolicyChanged, MsgId, NetMessage, NetReady,
-    net_message,
+    PolicyHeartbeat, PolicyTransport, net_message,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tonic::{Request, Status, Streaming};
@@ -162,6 +162,8 @@ pub struct Orchestrator {
     /// their acks are still outstanding. Lets tests wait for the pool to reach
     /// steady state instead of racing the detached free task.
     inflight_teardowns: Arc<AtomicUsize>,
+    policy_generation: Arc<AtomicU64>,
+    policy_epoch: Arc<[u8; 16]>,
     pub(crate) events: EventStore,
     pub(crate) sessions: SessionStore,
 }
@@ -178,6 +180,8 @@ impl Orchestrator {
             backend_sessions: Arc::new(RwLock::new(HashMap::new())),
             geo: GeoCache::from_env(),
             inflight_teardowns: Arc::new(AtomicUsize::new(0)),
+            policy_generation: Arc::new(AtomicU64::new(1)),
+            policy_epoch: Arc::new(*Uuid::new_v4().as_bytes()),
             sessions: SessionStore::with_events(events.clone()),
             events,
         }
@@ -195,7 +199,15 @@ impl Orchestrator {
             .handle_err(location!())?
             .ip();
 
-        self.clients.write().await.insert(client_ip, outbound);
+        outbound
+            .send(Ok(self.policy_heartbeat()))
+            .await
+            .handle_err(location!())?;
+        self.clients
+            .write()
+            .await
+            .insert(client_ip, outbound.clone());
+        self.policy_heartbeats(client_ip, outbound);
         self.events
             .emit(Event::node_connected(client_ip.to_string()))
             .await;
@@ -348,6 +360,7 @@ impl Orchestrator {
             dstport,
             encrypted,
             EgressRole::Intercept,
+            None,
         );
         let init_res = self.send_net_setup(
             initiator_ip,
@@ -360,6 +373,7 @@ impl Orchestrator {
             dstport,
             encrypted,
             EgressRole::Steer,
+            None,
         );
         let (proxy_ok, init_ok) = tokio::join!(proxy_res, init_res);
 
@@ -971,6 +985,7 @@ impl Orchestrator {
         dstport: Option<u32>,
         encrypted: bool,
         egress: EgressRole,
+        policy_transport: Option<PolicyTransport>,
     ) -> Option<Ipv4Addr> {
         self.send_control(dest, |msg_id| {
             NET_TYPE.setup(
@@ -985,6 +1000,7 @@ impl Orchestrator {
                 dstport,
                 encrypted,
                 egress,
+                policy_transport,
             )
         })
         .await
@@ -1095,6 +1111,51 @@ impl Orchestrator {
         self.net_id_pool.lock().await.allocate()
     }
 
+    pub(crate) fn policy_transport(&self, net_id: u32) -> PolicyTransport {
+        PolicyTransport {
+            id: 0x20_0000 + net_id,
+            encryption_key: generate_key().to_vec(),
+            peer_container: false,
+            generation: self.policy_generation.fetch_add(1, Ordering::Relaxed),
+        }
+    }
+
+    fn policy_heartbeat(&self) -> NetMessage {
+        NetMessage {
+            message: Some(net_message::Message::PolicyHeartbeat(PolicyHeartbeat {
+                server_epoch: self.policy_epoch.to_vec(),
+            })),
+        }
+    }
+
+    fn policy_heartbeats(&self, ip: IpAddr, outbound: OutboundStream) {
+        let clients = self.clients.clone();
+        let epoch = self.policy_epoch.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(500));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                if !clients
+                    .read()
+                    .await
+                    .get(&ip)
+                    .is_some_and(|current| current.same_channel(&outbound))
+                {
+                    break;
+                }
+                let message = NetMessage {
+                    message: Some(net_message::Message::PolicyHeartbeat(PolicyHeartbeat {
+                        server_epoch: epoch.to_vec(),
+                    })),
+                };
+                if outbound.send(Ok(message)).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
     /// Release a `net_id` that was allocated but never dispatched to either
     /// endpoint (e.g. a follow-up allocation failed). No teardown messages
     /// are sent — nothing was ever set up on either client.
@@ -1149,6 +1210,19 @@ impl Orchestrator {
         server_docker: Option<String>,
         net_id: u32,
     ) {
+        self.send_net_teardown_kind(client, client_docker, server, server_docker, net_id, false)
+            .await;
+    }
+
+    pub(crate) async fn send_net_teardown_kind(
+        &self,
+        client: IpAddr,
+        client_docker: Option<String>,
+        server: IpAddr,
+        server_docker: Option<String>,
+        net_id: u32,
+        policy: bool,
+    ) {
         let mut acks = Vec::new();
         for (dest, remote, side, docker) in [
             (client, server, "c", client_docker),
@@ -1162,8 +1236,16 @@ impl Orchestrator {
                 let msg_id = Uuid::new_v4().to_string();
                 self.pending.lock().await.insert(msg_id.clone(), tx);
 
-                let message =
-                    NET_TYPE.teardown(net_id, side, docker, dest, remote, None, msg_id.clone());
+                let message = NET_TYPE.teardown(
+                    net_id,
+                    side,
+                    docker,
+                    dest,
+                    remote,
+                    None,
+                    msg_id.clone(),
+                    policy,
+                );
 
                 acks.push((dest, msg_id, rx, outbound, message));
             }
@@ -1502,6 +1584,24 @@ mod teardown_ack_tests {
         orch.send_net_teardown(a, None, b, None, id).await;
 
         assert_eq!(orch.net_ids_in_use().await, 0);
+    }
+}
+
+#[cfg(test)]
+mod policy_group_tests {
+    use super::*;
+
+    #[test]
+    fn every_overflow_edge_gets_a_distinct_group_and_key() {
+        let orchestrator = Orchestrator::new();
+        let first = orchestrator.policy_transport(101);
+        let second = orchestrator.policy_transport(102);
+
+        assert_eq!(first.id, 0x20_0000 + 101);
+        assert_eq!(second.id, 0x20_0000 + 102);
+        assert_ne!(first.id, second.id);
+        assert_ne!(first.encryption_key, second.encryption_key);
+        assert_ne!(first.generation, second.generation);
     }
 }
 

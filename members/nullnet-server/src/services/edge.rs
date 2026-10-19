@@ -15,6 +15,7 @@ pub(crate) struct RegisteredEdge {
     /// proxy). Drives the `egress_steer`/`egress_intercept` markers on the two
     /// `VxlanSetup` messages instead of DNAT.
     pub(crate) egress: bool,
+    pub(crate) policy: bool,
 }
 
 impl RegisteredEdge {
@@ -33,6 +34,7 @@ impl RegisteredEdge {
             server_docker,
             backend_entry_port: None,
             egress: false,
+            policy: false,
         }
     }
 }

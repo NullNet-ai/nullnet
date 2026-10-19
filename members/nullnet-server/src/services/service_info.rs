@@ -578,12 +578,13 @@ impl RegisteredServiceInfo {
                     && let Some(ci) = replica.clients.clients_mut().remove(client)
                 {
                     orchestrator
-                        .send_net_teardown(
+                        .send_net_teardown_kind(
                             ci.client_ip(),
                             ci.docker_container().cloned(),
                             replica.ip,
                             replica.docker_container.clone(),
                             ci.net_id(),
+                            ci.policy(),
                         )
                         .await;
                 }
@@ -667,6 +668,14 @@ impl RegisteredServiceInfo {
             .iter()
             .flat_map(|r| r.clients.clients().keys())
             .filter(|c| c.is_proxy().is_some())
+            .count()
+    }
+
+    pub(crate) fn dedicated_proxy_networks_count(&self) -> usize {
+        self.replicas
+            .iter()
+            .flat_map(|r| r.clients.clients().iter())
+            .filter(|(client, info)| client.is_proxy().is_some() && !info.policy())
             .count()
     }
 
