@@ -256,6 +256,12 @@ Run the setup scripts as root. The supplied systemd services also run as root; p
 - `timeout` controls proxy-reachability: when present the service is a proxy-reachable entry point
   with that per-client idle timeout in seconds (`0` disables the timeout); omit it to keep the
   service off the proxy (backend-only)
+- `max_networks` caps dedicated ingress networks for a proxy-reachable service. Below the cap,
+  existing dedicated VXLAN behavior is unchanged. Encrypted VXLAN overflow multiplexes one policy
+  group and encryption key per client IP over a shared VXLAN; repeat connections from that IP reuse
+  its group. Same-host overflow uses the same isolation policy with direct eBPF redirection and no
+  VXLAN hairpin. Keep this cap low when cold-connection throughput matters: a high cap retains the
+  dedicated device lifecycle before multiplexing starts.
 - `proxy_dependencies` is a list of independent dep chains walked when the service is reached via a
   `Proxy` RPC from nullnet-proxy; each inner array is one linear branch and all branches are brought
   up in parallel
