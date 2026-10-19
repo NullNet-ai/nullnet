@@ -86,9 +86,43 @@ pub(crate) async fn control_channel(
     );
 
     let lifecycle = lifecycle::LifecycleTasks::default();
-    while let Ok(Some(message)) = inbound.message().await.inspect_err(|error| {
-        eprintln!("Control channel from server failed: {error:?}");
-    }) {
+    let mut heartbeat_watch = tokio::time::interval(std::time::Duration::from_millis(500));
+    let mut heartbeat_valid = None;
+    loop {
+        let message = tokio::select! {
+            message = inbound.message() => match message {
+                Ok(Some(message)) => message,
+                Ok(None) => break,
+                Err(error) => {
+                    eprintln!("Control channel from server failed: {error:?}");
+                    break;
+                }
+            },
+            _ = heartbeat_watch.tick() => {
+                let current = crate::commands::policy::heartbeat_valid();
+                if heartbeat_valid.is_some()
+                    && current != heartbeat_valid
+                    && let Some(valid) = current
+                {
+                    if valid {
+                        println!("Policy control heartbeat restored");
+                    } else {
+                        fire_event(
+                            &server,
+                            AgentEventKind::VxlanEnvironmentFailed(
+                                nullnet_grpc_lib::nullnet_grpc::AgentVxlanEnvironmentFailed {
+                                    error_message:
+                                        "Policy transport blocked: control heartbeat expired"
+                                            .into(),
+                                },
+                            ),
+                        );
+                    }
+                }
+                heartbeat_valid = current;
+                continue;
+            }
+        };
         let rtnetlink_handle = rtnetlink_handle.clone();
         let peers = peers.clone();
         let outbound = outbound.clone();
@@ -96,6 +130,11 @@ pub(crate) async fn control_channel(
         let server = server.clone();
         let firewall_peers = firewall_peers.clone();
         match message.message {
+            Some(net_message::Message::PolicyHeartbeat(heartbeat)) => {
+                crate::commands::policy::heartbeat(&heartbeat.server_epoch)
+                    .await
+                    .handle_err(location!())?;
+            }
             Some(net_message::Message::VlanSetup(vlan_setup)) => {
                 tokio::spawn(async move {
                     let _ = handle_vlan_setup(
@@ -171,7 +210,15 @@ pub(crate) async fn control_channel(
             Some(net_message::Message::NetReady(ready)) => {
                 let triggers_state = triggers_state.clone();
                 lifecycle.spawn(ready.net_id, async move {
-                    if let Err(error) = crate::commands::vxlan::ready(ready.net_id).await {
+                    let policy = match crate::commands::policy::ready(ready.net_id).await {
+                        Ok(policy) => policy,
+                        Err(error) => {
+                            eprintln!("Policy readiness for {} failed: {error}", ready.net_id);
+                            return;
+                        }
+                    };
+                    if !policy && let Err(error) = crate::commands::vxlan::ready(ready.net_id).await
+                    {
                         eprintln!("Endpoint readiness for {} failed: {error:?}", ready.net_id);
                         fire_event(
                             &server,
@@ -206,7 +253,7 @@ pub(crate) async fn control_channel(
                     if !published {
                         return;
                     }
-                    if triggers_state.mark_ready(ready.net_id) {
+                    if policy || triggers_state.mark_ready(ready.net_id) {
                         ack_control(&outbound, ready.msg_id, &server, "net_ready").await;
                     } else {
                         fire_event(
@@ -248,6 +295,10 @@ pub(crate) async fn control_channel(
             None => {}
         }
     }
+
+    crate::commands::policy::disable()
+        .await
+        .handle_err(location!())?;
 
     fire_event(
         &server,
@@ -446,6 +497,7 @@ async fn handle_vxlan_setup(
     sets: LivenessSets,
     bridge_cache: BridgeIpCache,
 ) -> Result<(), Error> {
+    let policy_message = message.policy_transport.is_some().then(|| message.clone());
     let egress_steer = message.egress_steer.unwrap_or(false);
     let egress_intercept = message.egress_intercept.unwrap_or(false);
     let msg_id = &message
@@ -501,7 +553,9 @@ async fn handle_vxlan_setup(
 
     // allow this peer's data-plane (VXLAN underlay) traffic through the host
     // firewall before the tunnel comes up, so the first packets aren't dropped.
-    firewall_peers.add(NetId::Vxlan(vxlan_id), remote_ip);
+    if local_ip != remote_ip {
+        firewall_peers.add(NetId::Vxlan(vxlan_id), remote_ip);
+    }
 
     // setup VXLAN on this machine (optionally attaching a Docker container)
     let init_t = std::time::Instant::now();
@@ -526,8 +580,13 @@ async fn handle_vxlan_setup(
             message.docker_container.clone()
         },
     };
-    let setup_result =
-        crate::commands::vxlan::setup(&rtnetlink_handle, &vxlan_params, &bridge_cache).await;
+    let setup_result = if let Some(policy_message) = &policy_message {
+        crate::commands::policy::setup(policy_message, &rtnetlink_handle, &bridge_cache)
+            .await
+            .handle_err(location!())
+    } else {
+        crate::commands::vxlan::setup(&rtnetlink_handle, &vxlan_params, &bridge_cache).await
+    };
     let error_code = if setup_result.is_err() { -1 } else { 0 };
     if let Err(e) = &setup_result {
         fire_event(
@@ -666,7 +725,9 @@ async fn handle_vxlan_setup(
             );
             return Err("gateway forwarding installation failed").handle_err(location!());
         }
-    } else if let Some(host_mapping) = &message.host_mapping {
+    } else if policy_message.is_none()
+        && let Some(host_mapping) = &message.host_mapping
+    {
         // Backend DNAT keeps the trigger address so each new flow remains
         // visible to root conntrack; direct overlay resolution bypasses it.
         if message.dnat_port.is_none() {
@@ -789,9 +850,22 @@ async fn handle_vxlan_teardown(
     bridge_cache: BridgeIpCache,
 ) {
     let ack_id = message.msg_id.clone();
+    let policy_cleanup_ok = if message.policy {
+        match crate::commands::policy::retire(&message.ns_name).await {
+            Ok(_) => true,
+            Err(error) => {
+                eprintln!("Policy revocation failed: {error}");
+                false
+            }
+        }
+    } else {
+        true
+    };
     // reverse egress steering/interception if this was an egress edge
-    let mut local_cleanup_ok = true;
-    if let Some(rec) = egress_state.take(message.vxlan_id) {
+    let mut local_cleanup_ok = policy_cleanup_ok;
+    if !message.policy
+        && let Some(rec) = egress_state.take(message.vxlan_id)
+    {
         match rec {
             EgressRecord::Local => {
                 local_cleanup_ok = egress::remove_local_forwards(Some(message.vxlan_id));
@@ -820,8 +894,9 @@ async fn handle_vxlan_teardown(
     // DNAT — its teardown runs via EgressState below — so skip DNAT removal for
     // it. Only real backend DNAT ports (>0) go through `dnat::remove`; otherwise
     // we'd fire a bogus `iptables -D --dport 0` and a false removal-failed event.
-    if let Some((container, port, overlay_ip, container_ip)) =
-        triggers_state.remove_by_vxlan(message.vxlan_id)
+    if !message.policy
+        && let Some((container, port, overlay_ip, container_ip)) =
+            triggers_state.remove_by_vxlan(message.vxlan_id)
         && port != crate::triggers::EGRESS_TRIGGER_PORT
     {
         // Second of the two flushes per trigger-edge lifecycle. Without
@@ -864,8 +939,11 @@ async fn handle_vxlan_teardown(
         vxlan_id,
         ns_name: ns_name.clone(),
     };
-    let teardown_result =
-        crate::commands::vxlan::teardown(&rtnetlink_handle, &vxlan_params, &bridge_cache).await;
+    let teardown_result = if message.policy {
+        Ok(())
+    } else {
+        crate::commands::vxlan::teardown(&rtnetlink_handle, &vxlan_params, &bridge_cache).await
+    };
     if !local_cleanup_ok || teardown_result.is_err() {
         fire_event(
             &grpc,

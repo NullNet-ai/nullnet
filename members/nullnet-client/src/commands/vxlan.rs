@@ -369,6 +369,7 @@ async fn activate(endpoint: Arc<Endpoint>, params: &VxlanSetupParams) -> Result<
         } else {
             super::native_xfrm::install_port(
                 params.vxlan_id,
+                0,
                 params.local_ip,
                 params.remote_ip,
                 key,

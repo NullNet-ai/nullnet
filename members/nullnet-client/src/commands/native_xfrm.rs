@@ -9,6 +9,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 const MARK_PREFIX: u32 = 0x4e80_0000;
 const SPI_PREFIX: u32 = 0x4e00_0000;
+const POLICY_INDEX_PREFIX: u32 = 0x4e00_0000;
 const REPLAY_WINDOW: u32 = 4096;
 type Peer = (Ipv4Addr, Ipv4Addr, u16);
 type Owners = Arc<AsyncMutex<HashSet<u32>>>;
@@ -18,6 +19,7 @@ static EDGES: LazyLock<Mutex<HashMap<u32, Edge>>> = LazyLock::new(|| Mutex::new(
 #[derive(Clone, Copy)]
 struct Edge {
     id: u32,
+    generation: u32,
     local: Ipv4Addr,
     remote: Ipv4Addr,
     port: u16,
@@ -31,6 +33,20 @@ impl Edge {
     }
     fn spi(self, direction: u32) -> u32 {
         SPI_PREFIX | (self.id << 1) | direction
+    }
+    fn policy_index(self) -> u32 {
+        if self.generation == 0 {
+            0
+        } else {
+            POLICY_INDEX_PREFIX | (self.id << 3) | 1
+        }
+    }
+    fn policy_priority(self) -> u32 {
+        if self.generation == 0 {
+            0
+        } else {
+            u32::MAX - self.generation
+        }
     }
     fn owners(self) -> Owners {
         PEERS
@@ -70,13 +86,7 @@ fn mark_attribute(mark: u32) -> Vec<u8> {
     attr(21, &[mark.to_ne_bytes(), u32::MAX.to_ne_bytes()].concat())
 }
 
-fn state(
-    socket: &mut NativeSocket,
-    edge: Edge,
-    direction: u32,
-    key: &[u8; 32],
-    delete: bool,
-) -> io::Result<()> {
+fn state_message(edge: Edge, direction: u32, key: &[u8; 32], delete: bool) -> (u16, u16, Vec<u8>) {
     let inbound = direction != edge.direction();
     let (source, destination) = if inbound {
         (edge.remote, edge.local)
@@ -92,7 +102,7 @@ fn state(
         if !inbound {
             body.extend(mark_attribute(edge.mark()));
         }
-        return missing_ok(socket.request(17, REQUEST, &body));
+        return (17, REQUEST, body);
     }
     let mut body = vec![0; 224];
     body[56..80].copy_from_slice(&identity(destination, spi));
@@ -122,8 +132,7 @@ fn state(
     } else {
         body.extend(mark_attribute(edge.mark()));
     }
-    socket.request(16, CREATE, &body)?;
-    Ok(())
+    (16, CREATE, body)
 }
 
 fn policy_mark(edge: Edge, inbound: bool) -> Vec<u8> {
@@ -137,7 +146,7 @@ fn policy_mark(edge: Edge, inbound: bool) -> Vec<u8> {
     }
 }
 
-fn policy(socket: &mut NativeSocket, edge: Edge, inbound: bool, delete: bool) -> io::Result<()> {
+fn policy_message(edge: Edge, inbound: bool, delete: bool) -> (u16, u16, Vec<u8>) {
     let (source, destination) = if inbound {
         (edge.remote, edge.local)
     } else {
@@ -146,12 +155,17 @@ fn policy(socket: &mut NativeSocket, edge: Edge, inbound: bool, delete: bool) ->
     let direction = u8::from(!inbound);
     let mut body = selector(source, destination, edge.port);
     if delete {
-        body.extend([0, 0, 0, 0, direction, 0, 0, 0]);
+        body.extend(if inbound { 0 } else { edge.policy_index() }.to_ne_bytes());
+        body.extend([direction, 0, 0, 0]);
         body.extend(policy_mark(edge, inbound));
-        return missing_ok(socket.request(20, REQUEST, &body));
+        return (20, REQUEST, body);
     }
     body.extend(lifetime());
     body.resize(168, 0);
+    if !inbound {
+        body[152..156].copy_from_slice(&edge.policy_priority().to_ne_bytes());
+        body[156..160].copy_from_slice(&edge.policy_index().to_ne_bytes());
+    }
     body[160] = direction;
     let mut template = identity(
         destination,
@@ -169,7 +183,36 @@ fn policy(socket: &mut NativeSocket, edge: Edge, inbound: bool, delete: bool) ->
     template.extend([255; 12]);
     body.extend(attr(5, &template));
     body.extend(policy_mark(edge, inbound));
-    socket.request(19, CREATE, &body)?;
+    (19, CREATE, body)
+}
+
+fn policy(socket: &mut NativeSocket, edge: Edge, inbound: bool, delete: bool) -> io::Result<()> {
+    let (kind, flags, body) = policy_message(edge, inbound, delete);
+    let result = socket.request(kind, flags, &body);
+    if delete {
+        missing_ok(result)
+    } else {
+        result.map(drop)
+    }
+}
+
+fn batch(
+    socket: &mut NativeSocket,
+    messages: &[(u16, u16, Vec<u8>)],
+    delete: bool,
+) -> io::Result<()> {
+    let requests: Vec<_> = messages
+        .iter()
+        .map(|(kind, flags, body)| (*kind, *flags, body.as_slice()))
+        .collect();
+    for result in socket.requests(&requests)? {
+        match result {
+            Ok(()) => {}
+            Err(error)
+                if delete && matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {}
+            Err(error) => return Err(error),
+        }
+    }
     Ok(())
 }
 
@@ -179,6 +222,7 @@ pub(super) fn mark(id: u32) -> u32 {
 
 pub(super) async fn install_port(
     id: u32,
+    generation: u32,
     local: Ipv4Addr,
     remote: Ipv4Addr,
     key: [u8; 32],
@@ -186,6 +230,7 @@ pub(super) async fn install_port(
 ) -> io::Result<()> {
     let edge = Edge {
         id,
+        generation,
         local,
         remote,
         port,
@@ -208,9 +253,15 @@ pub(super) async fn install_port(
     drop(owners);
     blocking(move || {
         let mut socket = NativeSocket::new(libc::NETLINK_XFRM as _)?;
-        state(&mut socket, edge, edge.direction(), &key, false)?;
-        state(&mut socket, edge, 1 - edge.direction(), &key, false)?;
-        policy(&mut socket, edge, false, false)
+        batch(
+            &mut socket,
+            &[
+                state_message(edge, edge.direction(), &key, false),
+                state_message(edge, 1 - edge.direction(), &key, false),
+                policy_message(edge, false, false),
+            ],
+            false,
+        )
     })
     .await
 }
@@ -220,17 +271,25 @@ pub(super) async fn remove(id: u32) -> io::Result<()> {
     let Some(edge) = edge else {
         return Ok(());
     };
-    blocking(move || {
+    let mut first_error = blocking(move || {
         let mut socket = NativeSocket::new(libc::NETLINK_XFRM as _)?;
-        policy(&mut socket, edge, false, true)?;
-        state(&mut socket, edge, edge.direction(), &[0; 32], true)?;
-        state(&mut socket, edge, 1 - edge.direction(), &[0; 32], true)
+        Ok(batch(
+            &mut socket,
+            &[
+                policy_message(edge, false, true),
+                state_message(edge, edge.direction(), &[0; 32], true),
+                state_message(edge, 1 - edge.direction(), &[0; 32], true),
+            ],
+            true,
+        )
+        .err())
     })
     .await?;
     let owners = edge.owners();
     let mut owners = owners.lock().await;
-    if owners.contains(&id) && owners.len() == 1 {
-        blocking(move || {
+    if owners.contains(&id)
+        && owners.len() == 1
+        && let Err(error) = blocking(move || {
             policy(
                 &mut NativeSocket::new(libc::NETLINK_XFRM as _)?,
                 edge,
@@ -238,11 +297,17 @@ pub(super) async fn remove(id: u32) -> io::Result<()> {
                 true,
             )
         })
-        .await?;
+        .await
+    {
+        first_error.get_or_insert(error);
     }
-    owners.remove(&id);
-    EDGES.lock().unwrap().remove(&id);
-    Ok(())
+    if let Some(error) = first_error {
+        Err(error)
+    } else {
+        owners.remove(&id);
+        EDGES.lock().unwrap().remove(&id);
+        Ok(())
+    }
 }
 
 fn missing_ok(result: io::Result<Vec<u8>>) -> io::Result<()> {
@@ -261,6 +326,7 @@ mod tests {
     fn both_hosts_derive_the_same_directional_identity() {
         let a = Edge {
             id: 101,
+            generation: 7,
             port: 4790,
             local: Ipv4Addr::new(192, 0, 2, 1),
             remote: Ipv4Addr::new(192, 0, 2, 2),
@@ -273,11 +339,16 @@ mod tests {
         assert_eq!(a.spi(a.direction()), b.spi(1 - b.direction()));
         assert_ne!(a.spi(0), a.spi(1));
         assert_eq!(a.mark(), b.mark());
+        assert_eq!(a.policy_index() & 7, 1);
+        assert_eq!(a.policy_index() & 0xfe00_0000, POLICY_INDEX_PREFIX);
+        assert_eq!(a.policy_priority(), u32::MAX - 7);
         assert_eq!(selector(a.local, a.remote, a.port).len(), 56);
         assert_eq!(
             &selector(a.local, a.remote, a.port)[32..36],
             &[0x12, 0xb6, 0xff, 0xff]
         );
+        assert_eq!(Edge { generation: 0, ..a }.policy_index(), 0);
+        assert_eq!(Edge { generation: 0, ..a }.policy_priority(), 0);
     }
 }
 

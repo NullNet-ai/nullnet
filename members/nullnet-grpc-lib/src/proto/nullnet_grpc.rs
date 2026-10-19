@@ -21,7 +21,7 @@ pub struct NetType {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NetMessage {
-    #[prost(oneof = "net_message::Message", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
+    #[prost(oneof = "net_message::Message", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
     pub message: ::core::option::Option<net_message::Message>,
 }
 /// Nested message and enum types in `NetMessage`.
@@ -48,7 +48,25 @@ pub mod net_message {
         EgressPolicyChanged(super::EgressPolicyChanged),
         #[prost(message, tag = "8")]
         NetReady(super::NetReady),
+        #[prost(message, tag = "9")]
+        PolicyHeartbeat(super::PolicyHeartbeat),
     }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PolicyHeartbeat {
+    #[prost(bytes = "vec", tag = "1")]
+    pub server_epoch: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PolicyTransport {
+    #[prost(uint32, tag = "1")]
+    pub id: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub encryption_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bool, tag = "3")]
+    pub peer_container: bool,
+    #[prost(uint64, tag = "4")]
+    pub generation: u64,
 }
 /// Both endpoints are prepared; the initiator may release held packets.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -176,6 +194,8 @@ pub struct VxlanSetup {
     /// SA/policy or MACsec (see nullnet-client's commands/vxlan.rs).
     #[prost(bool, tag = "16")]
     pub encrypted: bool,
+    #[prost(message, optional, tag = "17")]
+    pub policy_transport: ::core::option::Option<PolicyTransport>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VxlanTeardown {
@@ -201,6 +221,8 @@ pub struct VxlanTeardown {
     /// timer instead.
     #[prost(message, optional, tag = "8")]
     pub msg_id: ::core::option::Option<MsgId>,
+    #[prost(bool, tag = "9")]
+    pub policy: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MsgId {

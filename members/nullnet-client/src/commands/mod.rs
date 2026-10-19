@@ -16,8 +16,10 @@ mod native_xfrm;
 mod netlink;
 pub(crate) mod nfqueue;
 mod ovs;
+pub(crate) mod policy;
 pub(crate) mod vxlan;
 mod vxlan_cleanup;
+pub(crate) mod vxlan_environment;
 mod vxlan_recovery;
 
 pub(crate) async fn setup_br0(rtnetlink_handle: &RtNetLinkHandle) {
@@ -151,6 +153,9 @@ pub(crate) async fn cleanup_network(
     egress::init();
     install_overlay_forwarding().handle_err(location!())?;
     let mss_error = install_mss_clamp();
+    policy::recover(&rtnetlink_handle.handle)
+        .await
+        .handle_err(location!())?;
     vxlan_recovery::recover(&rtnetlink_handle.handle)
         .await
         .handle_err(location!())?;
@@ -171,31 +176,27 @@ pub(crate) async fn cleanup_network(
 
 // Preserve routed overlay traffic without changing the host's FORWARD policy.
 fn install_overlay_forwarding() -> std::io::Result<()> {
-    for direction in ["--src-group", "--dst-group"] {
-        let rule = [
-            "FORWARD",
-            "-m",
-            "devgroup",
-            direction,
-            "0x4e000000/0xffc00000",
-            "-j",
-            "ACCEPT",
-        ];
-        let check = std::process::Command::new("iptables")
-            .args(["-w", "-C"])
-            .args(rule)
-            .output()?;
-        if check.status.success() {
-            continue;
-        }
-        let installed = std::process::Command::new("iptables")
-            .args(["-w", "-I"])
-            .args(rule)
-            .output()?;
-        if !installed.status.success() {
-            return Err(std::io::Error::other(
-                String::from_utf8_lossy(&installed.stderr).into_owned(),
-            ));
+    for group in ["0x4e000000/0xffc00000", "0x4e700000/0xffffffff"] {
+        for direction in ["--src-group", "--dst-group"] {
+            let rule = [
+                "FORWARD", "-m", "devgroup", direction, group, "-j", "ACCEPT",
+            ];
+            let check = std::process::Command::new("iptables")
+                .args(["-w", "-C"])
+                .args(rule)
+                .output()?;
+            if check.status.success() {
+                continue;
+            }
+            let installed = std::process::Command::new("iptables")
+                .args(["-w", "-I"])
+                .args(rule)
+                .output()?;
+            if !installed.status.success() {
+                return Err(std::io::Error::other(
+                    String::from_utf8_lossy(&installed.stderr).into_owned(),
+                ));
+            }
         }
     }
     Ok(())
@@ -206,6 +207,8 @@ fn install_overlay_forwarding() -> std::io::Result<()> {
 /// the VXLAN maximum (see nullnet-server's `net_id_pool`).
 const XFRM_SPI_MIN: u32 = 1_000 + 101;
 const XFRM_SPI_MAX: u32 = 1_000 + 2_097_151;
+const POLICY_SPI_MIN: u32 = 0x4e40_0000;
+const POLICY_SPI_MAX: u32 = 0x4e7f_ffff;
 
 /// Delete IPsec state/policy pairs left behind by a previous run.
 ///
@@ -302,9 +305,9 @@ fn parse_src_dst(line: &str) -> Option<(String, String)> {
 fn parse_our_spi(line: &str) -> Option<String> {
     let raw = line.split_whitespace().skip_while(|t| *t != "spi").nth(1)?;
     let value = u32::from_str_radix(raw.strip_prefix("0x")?, 16).ok()?;
-    (XFRM_SPI_MIN..=XFRM_SPI_MAX)
-        .contains(&value)
-        .then(|| raw.to_string())
+    ((XFRM_SPI_MIN..=XFRM_SPI_MAX).contains(&value)
+        || (POLICY_SPI_MIN..=POLICY_SPI_MAX).contains(&value))
+    .then(|| raw.to_string())
 }
 
 fn privileged_output(args: &[&str]) -> Option<String> {

@@ -130,7 +130,19 @@ message NetMessage {
     // Egress country-policy changed on the server (fire-and-forget)
     EgressPolicyChanged egress_policy_changed = 7;
     NetReady net_ready = 8;
+    PolicyHeartbeat policy_heartbeat = 9;
   }
+}
+
+message PolicyHeartbeat {
+  bytes server_epoch = 1;
+}
+
+message PolicyTransport {
+  uint32 id = 1;
+  bytes encryption_key = 2;
+  bool peer_container = 3;
+  uint64 generation = 4;
 }
 
 // Both endpoints are prepared; the initiator may release held packets.
@@ -226,6 +238,7 @@ message VxlanSetup {
   // `encryption_key` and sets up a bare vxlan/veth link with no XFRM
   // SA/policy or MACsec (see nullnet-client's commands/vxlan.rs).
   bool encrypted = 16;
+  PolicyTransport policy_transport = 17;
 }
 
 message VxlanTeardown {
@@ -243,6 +256,7 @@ message VxlanTeardown {
   // predates this field simply never acks, and the server frees on its grace
   // timer instead.
   optional MsgId msg_id = 8;
+  bool policy = 9;
 }
 
 message MsgId {
