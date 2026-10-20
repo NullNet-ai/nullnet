@@ -37,6 +37,7 @@ export const EVENT_KIND_GROUPS = defineEventKindGroups([
       'edge_promotion_lost',
       'egress_reservation_reclaimed',
       'file_watch_failed',
+      'ingress_congestion_control_changed',
       'max_networks_limit_enforced',
       'net_id_pool_exhausted',
       'net_teardown_unconfirmed',

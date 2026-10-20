@@ -72,6 +72,10 @@ function eventDetail(e: EventJson): string {
       return `${e.service} · ${e.client_ip} via ${e.proxy_ip}`;
     case 'max_networks_limit_enforced':
       return `${e.service} · proxy ${e.proxy_ip} · net ${e.net_id} · limit ${e.limit}`;
+    case 'ingress_congestion_control_changed':
+      return e.active
+        ? `${e.node_ip} · congestion multiplexing activated`
+        : `${e.node_ip} · congestion multiplexing deactivated`;
     case 'net_id_pool_exhausted':
     case 'proxy_chain_setup_failed':
       return `${e.service} · ${e.client_ip}`;

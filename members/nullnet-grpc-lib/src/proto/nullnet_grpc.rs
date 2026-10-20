@@ -293,6 +293,16 @@ pub struct ProxyRequest {
     pub client_ip: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub service_name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "3")]
+    pub routing_arrivals: u64,
+    #[prost(uint64, tag = "4")]
+    pub routing_completions: u64,
+    #[prost(uint32, tag = "5")]
+    pub routing_waiters: u32,
+    #[prost(uint64, tag = "6")]
+    pub routing_wait_us: u64,
+    #[prost(uint64, tag = "7")]
+    pub routing_epoch: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Upstream {

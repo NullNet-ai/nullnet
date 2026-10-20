@@ -2,6 +2,7 @@ mod auth;
 mod cert;
 mod cert_renewal;
 mod certs;
+mod congestion;
 mod crypto;
 mod db;
 mod env;

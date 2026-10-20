@@ -309,6 +309,11 @@ message HostMapping {
 message ProxyRequest {
   string client_ip = 1;
   string service_name = 2;
+  uint64 routing_arrivals = 3;
+  uint64 routing_completions = 4;
+  uint32 routing_waiters = 5;
+  uint64 routing_wait_us = 6;
+  uint64 routing_epoch = 7;
 }
 
 message Upstream {

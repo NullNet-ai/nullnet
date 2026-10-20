@@ -1,3 +1,4 @@
+use crate::congestion::{CongestionController, ProxyLoad, RateTransition};
 use crate::env::{
     EGRESS_ALLOW_TCP_PORTS, EGRESS_ALLOW_UDP_PORTS, ENCRYPTION_ENABLED, INGRESS_ALLOW_TCP_PORTS,
     INGRESS_ALLOW_UDP_PORTS, NET_TYPE, PROXY_IP,
@@ -68,6 +69,7 @@ pub(crate) struct NullnetGrpcImpl {
     /// [`NullnetGrpcImpl::handle_proxy_request`].
     inflight_proxy: Arc<StdMutex<HashMap<ProxyKey, Arc<tokio::sync::Mutex<()>>>>>,
     dedicated_admissions: Arc<StdMutex<HashMap<(String, String), usize>>>,
+    congestion: Arc<CongestionController>,
     /// Fires whenever a config save/delete changes timeout-relevant state;
     /// `check_timeouts` is its only consumer.
     config_changed: Arc<Notify>,
@@ -88,6 +90,21 @@ type ProxyKey = (String, String, IpAddr);
 struct DedicatedAdmission {
     counts: Arc<StdMutex<HashMap<(String, String), usize>>>,
     key: (String, String),
+}
+
+struct ProxyReplica {
+    ip: IpAddr,
+    port: u16,
+    docker: Option<String>,
+}
+
+struct ProxyChainRequest<'a> {
+    stack: &'a str,
+    service_name: &'a str,
+    proxy_ip: IpAddr,
+    client_ip: &'a str,
+    replica: &'a ProxyReplica,
+    policy: bool,
 }
 
 impl Drop for DedicatedAdmission {
@@ -434,6 +451,7 @@ impl NullnetGrpcImpl {
             http_routes: http_routes_rx,
             inflight_proxy: Arc::new(StdMutex::new(HashMap::new())),
             dedicated_admissions: Arc::new(StdMutex::new(HashMap::new())),
+            congestion: Arc::new(CongestionController::default()),
             config_changed: config_changed_for_state,
             port_mappings_changed: port_mappings_changed_for_state,
             http_routes_changed: http_routes_changed_for_state,
@@ -470,6 +488,18 @@ impl NullnetGrpcImpl {
             .ip();
 
         let req = request.into_inner();
+        if req.routing_arrivals > 0 {
+            self.congestion.observe_proxy(
+                proxy_ip,
+                ProxyLoad {
+                    epoch: req.routing_epoch,
+                    arrivals: req.routing_arrivals,
+                    completions: req.routing_completions,
+                    waiters: req.routing_waiters,
+                    wait_us: req.routing_wait_us,
+                },
+            );
+        }
 
         let client_ip: IpAddr = req.client_ip.parse().handle_err(location!())?;
         let service_name = req.service_name;
@@ -676,20 +706,7 @@ impl NullnetGrpcImpl {
             };
         }
 
-        let policy_eligible =
-            max_networks.is_some() && *NET_TYPE == Net::Vxlan && *ENCRYPTION_ENABLED;
-        let mut dedicated_admission = if policy_eligible {
-            self.dedicated_admission(
-                &stack,
-                service_name,
-                dedicated_count,
-                max_networks.expect("checked above"),
-            )
-        } else {
-            None
-        };
-        let mut policy_overflow = policy_eligible && dedicated_admission.is_none();
-
+        let policy_eligible = *NET_TYPE == Net::Vxlan && *ENCRYPTION_ENABLED;
         // Non-VXLAN configurations retain the existing bounded reuse behavior.
         let reused = if max_networks.is_some() && !policy_eligible {
             let mut services = self.services.write().await;
@@ -768,19 +785,64 @@ impl NullnetGrpcImpl {
         // repair — and the request that triggered it still deserves an
         // upstream. Bounded at one attempt so a teardown loop cannot spin here.
         for attempt in 0..2 {
+            let replica = self.pick_proxy_replica(&stack, service_name).await?;
+            let mut dedicated_admission = max_networks.and_then(|max| {
+                self.dedicated_admission(&stack, service_name, dedicated_count, max)
+            });
+            let hard_cap_allows_dedicated = max_networks.is_none() || dedicated_admission.is_some();
+            let adaptive_decision = (policy_eligible && hard_cap_allows_dedicated)
+                .then(|| self.congestion.allow_dedicated(proxy_ip, replica.ip));
+            if let Some(decision) = &adaptive_decision {
+                for transition in &decision.transitions {
+                    let (host, active) = match transition {
+                        RateTransition::Activated { host } => {
+                            println!(
+                                "Ingress congestion control activated for {host}: new encrypted ingress multiplexed"
+                            );
+                            (*host, true)
+                        }
+                        RateTransition::Recovered { host } => {
+                            println!(
+                                "Ingress congestion control recovered for {host}: dedicated setup rate unrestricted"
+                            );
+                            (*host, false)
+                        }
+                    };
+                    self.orchestrator
+                        .events
+                        .emit(Event::ingress_congestion_control_changed(
+                            host.to_string(),
+                            active,
+                        ))
+                        .await;
+                }
+            }
+            let adaptive_overflow = adaptive_decision.is_some_and(|decision| !decision.dedicated);
+            if adaptive_overflow {
+                drop(dedicated_admission.take());
+            }
+            let policy_overflow =
+                policy_eligible && (!hard_cap_allows_dedicated || adaptive_overflow);
             match self
                 .new_proxy_chain(
-                    &stack,
-                    service_name,
-                    proxy_ip,
-                    client_ip,
-                    policy_overflow,
+                    ProxyChainRequest {
+                        stack: &stack,
+                        service_name,
+                        proxy_ip,
+                        client_ip,
+                        replica: &replica,
+                        policy: policy_overflow,
+                    },
                     dedicated_admission.take(),
                 )
                 .await
             {
                 Ok(Some(response)) => {
-                    if policy_overflow {
+                    if policy_eligible && !policy_overflow {
+                        self.congestion
+                            .record_dedicated_completion(proxy_ip, replica.ip);
+                    }
+                    if policy_overflow && !adaptive_overflow {
                         let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
                         if let Some(net_id) = self
                             .services
@@ -823,13 +885,7 @@ impl NullnetGrpcImpl {
                         let Some(current) = current else {
                             break;
                         };
-                        dedicated_admission = self.dedicated_admission(
-                            &stack,
-                            service_name,
-                            current,
-                            max_networks.expect("checked above"),
-                        );
-                        policy_overflow = dedicated_admission.is_none();
+                        dedicated_count = current;
                     }
                 }
                 Ok(None) => {
@@ -958,39 +1014,21 @@ impl NullnetGrpcImpl {
 
     async fn new_proxy_chain(
         &self,
-        stack: &str,
-        service_name: &str,
-        proxy_ip: IpAddr,
-        client_ip: &str,
-        policy: bool,
+        request: ProxyChainRequest<'_>,
         admission: Option<DedicatedAdmission>,
     ) -> Result<Option<Response<Upstream>>, Error> {
-        let guard = self.services.read().await;
-        let stack_map = guard
-            .get(stack)
-            .ok_or("Stack not found")
-            .handle_err(location!())?;
-        let reg = match stack_map.get(service_name) {
-            Some(ServiceInfo::Registered(reg)) => reg,
-            _ => Err("Service is not registered").handle_err(location!())?,
-        };
-        let replica = reg
-            .pick_replica_least_clients()
-            .ok_or("Service has no replicas")
-            .handle_err(location!())?;
-        let service_ip = replica.ip();
-        let service_port = replica.port();
-        let service_docker = replica.docker_container().map(String::from);
-        drop(guard);
-
-        let key = (service_name.to_string(), client_ip.to_string(), proxy_ip);
+        let key = (
+            request.service_name.to_string(),
+            request.client_ip.to_string(),
+            request.proxy_ip,
+        );
         let outcome = self
             .setup_proxy_chain(
-                stack,
+                request.stack,
                 &key,
-                service_ip,
-                service_docker.as_deref(),
-                policy,
+                request.replica.ip,
+                request.replica.docker.as_deref(),
+                request.policy,
                 admission,
             )
             .await?;
@@ -1005,8 +1043,33 @@ impl NullnetGrpcImpl {
 
         Ok(Some(Response::new(Upstream {
             ip: upstream_ip.to_string(),
-            port: u32::from(service_port),
+            port: u32::from(request.replica.port),
         })))
+    }
+
+    async fn pick_proxy_replica(
+        &self,
+        stack: &str,
+        service_name: &str,
+    ) -> Result<ProxyReplica, Error> {
+        let guard = self.services.read().await;
+        let stack_map = guard
+            .get(stack)
+            .ok_or("Stack not found")
+            .handle_err(location!())?;
+        let reg = match stack_map.get(service_name) {
+            Some(ServiceInfo::Registered(reg)) => reg,
+            _ => Err("Service is not registered").handle_err(location!())?,
+        };
+        let replica = reg
+            .pick_replica_least_clients()
+            .ok_or("Service has no replicas")
+            .handle_err(location!())?;
+        Ok(ProxyReplica {
+            ip: replica.ip(),
+            port: replica.port(),
+            docker: replica.docker_container().map(String::from),
+        })
     }
 
     async fn proxy_branches(
@@ -2677,6 +2740,7 @@ impl NullnetGrpcImpl {
             http_routes,
             inflight_proxy: Arc::new(StdMutex::new(HashMap::new())),
             dedicated_admissions: Arc::new(StdMutex::new(HashMap::new())),
+            congestion: Arc::new(CongestionController::default()),
             config_changed: Arc::new(Notify::new()),
             port_mappings_changed: Arc::new(Notify::new()),
             http_routes_changed: Arc::new(Notify::new()),

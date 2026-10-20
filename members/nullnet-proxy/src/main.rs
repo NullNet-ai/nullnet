@@ -318,6 +318,7 @@ impl ProxyHttp for NullnetProxy {
         let proxy_req = ProxyRequest {
             client_ip: client_ip.clone(),
             service_name: service_name.clone(),
+            ..Default::default()
         };
         println!("{proxy_req:?}");
         let upstream = match self.get_or_add_upstream(proxy_req).await {

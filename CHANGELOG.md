@@ -13,6 +13,7 @@ All Nullnet releases with the relative changes are documented in this file.
 - Per-service egress/ingress traffic filters: arbitrary AND/OR/group combinations of Country, Organization, Src IP (ingress), and Dst IP (egress) conditions, evaluated via `rpn-predicate-interpreter` — replaces the country-only egress/ingress policy ([#171](https://github.com/NullNet-ai/nullnet/pull/171) — fixes [#143](https://github.com/NullNet-ai/nullnet/issues/143))
 - Persist ingress and egress sessions to SQLite and show the full history on the Sessions page, filterable by status, service, direction, and policy verdict, with its own retention window ([#170](https://github.com/NullNet-ai/nullnet/pull/170) — fixes [#156](https://github.com/NullNet-ai/nullnet/issues/156))
 ### Changed
+- Adapt encrypted ingress multiplexing, with or without a configured hard cap, to sustained RPC admission congestion by pausing dedicated setups and additively probing recovery per host.
 - Multiplex encrypted ingress overflow by client-IP policy group, with a unique key per group and direct same-host isolation.
 - Keep routine successful proxy requests out of Events, isolate diagnostic event RPC admission from routing, and group event filters by scope ([#204](https://github.com/NullNet-ai/nullnet/pull/204)).
 - Reduce fresh-edge cleanup work, batch conntrack scans, and share TC classifier infrastructure while preserving dedicated encrypted endpoints ([#201](https://github.com/NullNet-ai/nullnet/pull/201)).

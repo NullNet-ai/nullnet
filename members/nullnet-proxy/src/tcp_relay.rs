@@ -72,6 +72,7 @@ async fn handle_connection(
     let proxy_req = ProxyRequest {
         client_ip: client_ip.clone(),
         service_name: entry.service_name.clone(),
+        ..Default::default()
     };
     // Ingress country policy: an explicit deny closes the connection. A check
     // error is logged and allowed through (upstream lookup fails anyway if the

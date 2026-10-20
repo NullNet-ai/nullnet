@@ -233,6 +233,11 @@ pub(crate) enum Event {
         limit: u32,
         timestamp: u64,
     },
+    IngressCongestionControlChanged {
+        node_ip: String,
+        active: bool,
+        timestamp: u64,
+    },
     NetIdPoolExhausted {
         service: String,
         client_ip: String,
@@ -563,6 +568,7 @@ impl Event {
             Self::ProxyClientTimedOut { .. } => "proxy_client_timed_out",
             Self::StaleSessionEvicted { .. } => "stale_session_evicted",
             Self::MaxNetworksLimitEnforced { .. } => "max_networks_limit_enforced",
+            Self::IngressCongestionControlChanged { .. } => "ingress_congestion_control_changed",
             Self::NetIdPoolExhausted { .. } => "net_id_pool_exhausted",
             Self::ProxyChainSetupFailed { .. } => "proxy_chain_setup_failed",
             Self::BackendTriggerSetupBailed { .. } => "backend_trigger_setup_bailed",
@@ -628,6 +634,8 @@ impl Event {
             Self::DeviceEventBypassChanged {
                 available: false, ..
             } => Severity::Warning,
+            Self::IngressCongestionControlChanged { active: true, .. } => Severity::Warning,
+            Self::IngressCongestionControlChanged { active: false, .. } => Severity::Info,
             Self::UiTlsCertificateUnavailable {
                 using_self_signed, ..
             } => {
@@ -953,6 +961,14 @@ impl Event {
             proxy_ip,
             net_id,
             limit,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn ingress_congestion_control_changed(node_ip: String, active: bool) -> Self {
+        Self::IngressCongestionControlChanged {
+            node_ip,
+            active,
             timestamp: now_secs(),
         }
     }
