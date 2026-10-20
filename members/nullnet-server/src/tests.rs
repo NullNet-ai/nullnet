@@ -1782,13 +1782,13 @@ async fn multi_replica_first_step_container_disconnect() {
 
 // ===========================================================================
 // max_networks: A→B, max_networks=1, timeout=1.
-// The first ingress edge is dedicated; later edges use unique policy groups.
+// The first ingress edges are dedicated; later edges share a host-pair transport.
 // ===========================================================================
 
 const MAX_NETWORKS: &str = "max_networks";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn max_networks_assigns_one_policy_group_per_concurrent_overflow() {
+async fn max_networks_shares_transport_across_concurrent_overflow() {
     let config: ServicesToml = toml::from_str(
         r#"[[services]]
 name = "A"
@@ -1862,12 +1862,20 @@ proxy_dependencies = [["B"]]
             .map(|group| group.id)
             .collect::<HashSet<_>>()
             .len(),
-        190
+        1
     );
     assert_eq!(
         groups
             .iter()
             .map(|group| group.encryption_key.clone())
+            .collect::<HashSet<_>>()
+            .len(),
+        1
+    );
+    assert_eq!(
+        groups
+            .iter()
+            .map(|group| group.generation)
             .collect::<HashSet<_>>()
             .len(),
         190

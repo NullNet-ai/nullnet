@@ -49,6 +49,9 @@ use network_types::{
 
 const VXLAN_PORT: u16 = 47890;
 const FORWARD_PORT: u16 = 9999;
+const POLICY_PORT: u16 = 4791;
+const POLICY_MARK: u32 = 0x4e80_0000;
+const POLICY_MARK_MASK: u32 = 0xffc0_0000;
 
 const PROTO_TCP: u8 = 6;
 const PROTO_UDP: u8 = 17;
@@ -159,6 +162,16 @@ fn try_firewall(ctx: &TcContext, is_egress: bool) -> Result<i32, ()> {
                 IpProto::Esp => (PROTO_ESP, 0u16, 0u16),
                 _ => return Ok(TC_ACT_SHOT),
             };
+
+            let mark = unsafe { (*ctx.skb.skb).mark };
+            if !is_egress
+                && proto == PROTO_UDP
+                && dst_port == POLICY_PORT
+                && mark & POLICY_MARK_MASK == POLICY_MARK
+                && (is_peer(src) || is_peer(dst))
+            {
+                return Ok(TC_ACT_OK);
+            }
 
             let key = ct_key(src, dst, src_port, dst_port, proto);
             if ct_hit(&key) || base_allow(is_egress, proto, src, dst, src_port, dst_port) {

@@ -2496,18 +2496,25 @@ async fn setup_edge(
     }
 
     let encrypted = *ENCRYPTION_ENABLED;
-    let policy_transport = policy.then(|| orchestrator.policy_transport(net_id));
+    let policy_transport =
+        policy.then(|| orchestrator.policy_transport(client_ethernet, server_ethernet));
+    let xfrm_transport =
+        (!policy && encrypted && *NET_TYPE == Net::Vxlan && client_ethernet != server_ethernet)
+            .then(|| orchestrator.xfrm_transport(client_ethernet, server_ethernet, false));
     let encryption_key = if let Some(transport) = &policy_transport {
         transport
             .encryption_key
             .as_slice()
             .try_into()
             .expect("policy keys are generated as 32 bytes")
+    } else if let Some((_, key)) = xfrm_transport {
+        key
     } else if encrypted {
         generate_key()
     } else {
         [0u8; 32]
     };
+    let xfrm_transport_id = xfrm_transport.map(|(id, _)| id);
     let dstport = None;
     let server_policy = policy_transport.clone().map(|mut transport| {
         transport.peer_container = client_docker.is_some();
@@ -2529,6 +2536,7 @@ async fn setup_edge(
         (cd, sd),
         None,
         encryption_key,
+        xfrm_transport_id,
         dstport,
         encrypted,
         server_egress,
@@ -2545,6 +2553,7 @@ async fn setup_edge(
         (cd, sd),
         backend_entry_port,
         encryption_key,
+        xfrm_transport_id,
         dstport,
         encrypted,
         client_egress,

@@ -175,17 +175,13 @@ pub struct VxlanSetup {
     /// internet (kernel ip_forward + MASQUERADE); the Cilium egress-gateway model.
     #[prost(bool, optional, tag = "13")]
     pub egress_intercept: ::core::option::Option<bool>,
-    /// Per-tunnel AES-256 key (32 raw bytes), generated once by the server and
-    /// sent identically to both endpoints. Used as the XFRM/ESP SA key that
-    /// encrypts this tunnel's traffic at the kernel level. Meaningless
-    /// (placeholder zero bytes) when `encrypted` is false.
+    /// AES-256 key sent identically to both endpoints. Cross-host VXLANs share
+    /// one XFRM/ESP carrier per host pair; same-host MACsec remains per edge.
+    /// Meaningless (placeholder zero bytes) when `encrypted` is false.
     #[prost(bytes = "vec", tag = "14")]
     pub encryption_key: ::prost::alloc::vec::Vec<u8>,
-    /// Per-tunnel VXLAN UDP destination port (replaces the IANA-standard 4789
-    /// default). Each tunnel gets a distinct port so an XFRM policy — which
-    /// selects by src/dst IP and port, not by VNI — can tell concurrent
-    /// tunnels between the same host pair apart. Allocated regardless of
-    /// `encrypted`, for simplicity.
+    /// VXLAN UDP destination port (replaces the IANA-standard 4789 default).
+    /// XFRM policies select by outer host pair, destination port, and mark.
     #[prost(uint32, tag = "15")]
     pub dstport: u32,
     /// Whether this tunnel is encrypted, mirroring the server's ENCRYPTION_ENABLED
@@ -196,6 +192,9 @@ pub struct VxlanSetup {
     pub encrypted: bool,
     #[prost(message, optional, tag = "17")]
     pub policy_transport: ::core::option::Option<PolicyTransport>,
+    /// Shared cross-host XFRM carrier. Absent means legacy per-edge transport.
+    #[prost(uint32, optional, tag = "18")]
+    pub xfrm_transport_id: ::core::option::Option<u32>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VxlanTeardown {

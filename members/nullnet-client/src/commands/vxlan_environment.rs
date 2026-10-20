@@ -62,6 +62,30 @@ async fn reconcile() -> Result<bool, String> {
             changed = true;
         }
     }
+    let routed = [
+        "-p",
+        "udp",
+        "--dport",
+        "4791",
+        "-m",
+        "mark",
+        "--mark",
+        "0x80000000/0x80000000",
+        "-m",
+        "comment",
+        "--comment",
+        "nullnet-policy-xfrm-route",
+        "-j",
+        "ACCEPT",
+    ];
+    let present = iptables(&[&["-C", "OUTPUT"][..], &routed].concat())
+        .await?
+        .status
+        .success();
+    if !present {
+        checked(&[&["-I", "OUTPUT", "1"][..], &routed].concat()).await?;
+        changed = true;
+    }
     Ok(changed)
 }
 

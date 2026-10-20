@@ -561,6 +561,7 @@ async fn handle_vxlan_setup(
     let init_t = std::time::Instant::now();
     let vxlan_params = crate::commands::vxlan::VxlanSetupParams {
         vxlan_id,
+        xfrm_transport_id: message.xfrm_transport_id.unwrap_or(vxlan_id),
         ns_name: ns_name.clone(),
         ns_net,
         br_name: br_name.clone(),

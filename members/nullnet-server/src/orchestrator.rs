@@ -8,20 +8,21 @@ use crate::services::changes::{apply_changes, detect_node_disconnect_changes};
 use crate::services::input::StackMap;
 use crate::sessions::SessionStore;
 use nullnet_grpc_lib::nullnet_grpc::{
-    ContainerResume, ContainerSuspend, EgressPolicyChanged, MsgId, NetMessage, NetReady,
+    ContainerResume, ContainerSuspend, EgressPolicyChanged, MsgId, Net, NetMessage, NetReady,
     PolicyHeartbeat, PolicyTransport, net_message,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tonic::{Request, Status, Streaming};
 use uuid::Uuid;
 
 type OutboundStream = mpsc::Sender<Result<NetMessage, Status>>;
+type XfrmTransportMap = HashMap<(IpAddr, IpAddr, bool), (u32, [u8; 32])>;
 
 /// Initiator replica identity keying an egress edge: (node IP, docker container).
 /// One edge per initiator replica multiplexes all of its external destinations.
@@ -162,6 +163,8 @@ pub struct Orchestrator {
     /// their acks are still outstanding. Lets tests wait for the pool to reach
     /// steady state instead of racing the detached free task.
     inflight_teardowns: Arc<AtomicUsize>,
+    xfrm_transports: Arc<StdMutex<XfrmTransportMap>>,
+    xfrm_transport_id: Arc<AtomicU32>,
     policy_generation: Arc<AtomicU64>,
     policy_epoch: Arc<[u8; 16]>,
     pub(crate) events: EventStore,
@@ -180,6 +183,8 @@ impl Orchestrator {
             backend_sessions: Arc::new(RwLock::new(HashMap::new())),
             geo: GeoCache::from_env(),
             inflight_teardowns: Arc::new(AtomicUsize::new(0)),
+            xfrm_transports: Arc::new(StdMutex::new(HashMap::new())),
+            xfrm_transport_id: Arc::new(AtomicU32::new(0x20_0000)),
             policy_generation: Arc::new(AtomicU64::new(1)),
             policy_epoch: Arc::new(*Uuid::new_v4().as_bytes()),
             sessions: SessionStore::with_events(events.clone()),
@@ -343,7 +348,12 @@ impl Orchestrator {
         };
 
         let encrypted = *ENCRYPTION_ENABLED;
-        let encryption_key = if encrypted { generate_key() } else { [0u8; 32] };
+        let xfrm_transport = (encrypted && *NET_TYPE == Net::Vxlan && initiator_ip != proxy_ip)
+            .then(|| self.xfrm_transport(initiator_ip, proxy_ip, false));
+        let encryption_key = xfrm_transport
+            .map(|(_, key)| key)
+            .unwrap_or_else(|| if encrypted { generate_key() } else { [0u8; 32] });
+        let xfrm_transport_id = xfrm_transport.map(|(id, _)| id);
         let dstport = None;
 
         // Gateway is the server side (Intercept -> forward/MASQUERADE); initiator
@@ -357,6 +367,7 @@ impl Orchestrator {
             dockers.clone(),
             None,
             encryption_key,
+            xfrm_transport_id,
             dstport,
             encrypted,
             EgressRole::Intercept,
@@ -370,6 +381,7 @@ impl Orchestrator {
             dockers,
             None,
             encryption_key,
+            xfrm_transport_id,
             dstport,
             encrypted,
             EgressRole::Steer,
@@ -982,6 +994,7 @@ impl Orchestrator {
         docker_containers: (Option<String>, Option<String>),
         dnat_port: Option<u32>,
         encryption_key: [u8; 32],
+        xfrm_transport_id: Option<u32>,
         dstport: Option<u32>,
         encrypted: bool,
         egress: EgressRole,
@@ -997,6 +1010,7 @@ impl Orchestrator {
                 docker_containers,
                 dnat_port,
                 encryption_key,
+                xfrm_transport_id,
                 dstport,
                 encrypted,
                 egress,
@@ -1111,10 +1125,35 @@ impl Orchestrator {
         self.net_id_pool.lock().await.allocate()
     }
 
-    pub(crate) fn policy_transport(&self, net_id: u32) -> PolicyTransport {
+    pub(crate) fn xfrm_transport(
+        &self,
+        first: IpAddr,
+        second: IpAddr,
+        policy: bool,
+    ) -> (u32, [u8; 32]) {
+        let hosts = if first < second {
+            (first, second, policy)
+        } else {
+            (second, first, policy)
+        };
+        *self
+            .xfrm_transports
+            .lock()
+            .unwrap()
+            .entry(hosts)
+            .or_insert_with(|| {
+                (
+                    self.xfrm_transport_id.fetch_add(1, Ordering::Relaxed),
+                    generate_key(),
+                )
+            })
+    }
+
+    pub(crate) fn policy_transport(&self, first: IpAddr, second: IpAddr) -> PolicyTransport {
+        let (id, encryption_key) = self.xfrm_transport(first, second, true);
         PolicyTransport {
-            id: 0x20_0000 + net_id,
-            encryption_key: generate_key().to_vec(),
+            id,
+            encryption_key: encryption_key.to_vec(),
             peer_container: false,
             generation: self.policy_generation.fetch_add(1, Ordering::Relaxed),
         }
@@ -1591,17 +1630,27 @@ mod teardown_ack_tests {
 mod policy_group_tests {
     use super::*;
 
-    #[test]
-    fn every_overflow_edge_gets_a_distinct_group_and_key() {
-        let orchestrator = Orchestrator::new();
-        let first = orchestrator.policy_transport(101);
-        let second = orchestrator.policy_transport(102);
+    fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+    }
 
-        assert_eq!(first.id, 0x20_0000 + 101);
-        assert_eq!(second.id, 0x20_0000 + 102);
-        assert_ne!(first.id, second.id);
-        assert_ne!(first.encryption_key, second.encryption_key);
+    #[test]
+    fn overflow_edges_share_host_pair_transport_but_not_generation() {
+        let orchestrator = Orchestrator::new();
+        let host_a = ip(192, 0, 2, 1);
+        let host_b = ip(192, 0, 2, 2);
+        let host_c = ip(192, 0, 2, 3);
+        let first = orchestrator.policy_transport(host_a, host_b);
+        let second = orchestrator.policy_transport(host_b, host_a);
+        let other = orchestrator.policy_transport(host_a, host_c);
+        let dedicated = orchestrator.xfrm_transport(host_a, host_b, false);
+
+        assert_eq!(first.id, second.id);
+        assert_eq!(first.encryption_key, second.encryption_key);
         assert_ne!(first.generation, second.generation);
+        assert_ne!(first.id, other.id);
+        assert_ne!(first.encryption_key, other.encryption_key);
+        assert_ne!(first.id, dedicated.0);
     }
 }
 
