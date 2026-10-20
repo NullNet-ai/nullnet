@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 const PRESSURE_WINDOW: Duration = Duration::from_secs(1);
-const COMPLETION_HISTORY: Duration = Duration::from_secs(5);
+const COMPLETION_HISTORY: Duration = Duration::from_secs(10);
 const RECOVERY_QUIET: Duration = Duration::from_secs(5);
 const CONGESTED_WINDOWS: u8 = 2;
 const RECOVERY_WINDOWS: u8 = 2;
@@ -128,7 +128,6 @@ impl ProxyPressure {
 
 struct HostRate {
     rate: Option<f64>,
-    additive_step: f64,
     tokens: f64,
     last_refill: Instant,
     last_denied: Option<Instant>,
@@ -152,7 +151,6 @@ impl HostRate {
     fn new(now: Instant) -> Self {
         Self {
             rate: None,
-            additive_step: 1.0,
             tokens: 0.0,
             last_refill: now,
             last_denied: None,
@@ -172,16 +170,32 @@ impl HostRate {
         }
     }
 
-    fn completion_rate(&mut self, now: Instant) -> f64 {
+    fn record_completion(&mut self, now: Instant) {
         self.trim_completions(now);
-        let elapsed = self
+        if self
             .completions
-            .front()
-            .map_or(Duration::from_secs(1), |first| {
-                now.duration_since(*first).max(Duration::from_secs(1))
-            })
-            .min(COMPLETION_HISTORY);
-        self.completions.len() as f64 / elapsed.as_secs_f64()
+            .back()
+            .is_some_and(|last| now.duration_since(*last) > RECOVERY_QUIET)
+        {
+            self.completions.clear();
+        }
+        self.completions.push_back(now);
+    }
+
+    fn sustained_completions(&mut self, now: Instant) -> bool {
+        self.trim_completions(now);
+        self.completions.front().is_some_and(|first| {
+            now.duration_since(*first) >= RECOVERY_QUIET
+                && self
+                    .completions
+                    .back()
+                    .is_some_and(|last| now.duration_since(*last) <= RECOVERY_QUIET)
+        })
+    }
+
+    fn denied(&mut self, now: Instant) {
+        self.last_denied = Some(now);
+        self.completions.clear();
     }
 
     fn apply(
@@ -204,31 +218,28 @@ impl HostRate {
         match pressure.trend {
             Trend::Congested => {
                 let activating = self.rate.is_none();
-                if activating {
-                    let measured = self.completion_rate(now);
-                    self.additive_step = (measured * 0.05).max(1.0);
-                }
                 self.rate = Some(0.0);
                 self.tokens = 0.0;
                 self.last_refill = now;
-                self.last_denied = Some(now);
+                self.denied(now);
                 self.healthy_windows = 0;
                 if activating {
                     return Some(RateTransition::Activated { host });
                 }
             }
             Trend::Healthy => {
-                if let Some(rate) = &mut self.rate {
+                if self.rate.is_some() {
                     self.healthy_windows = self.healthy_windows.saturating_add(1);
                     if self.healthy_windows < RECOVERY_WINDOWS {
                         return None;
                     }
-                    *rate += self.additive_step;
-                    if self
+                    *self.rate.as_mut().expect("rate is active") += 1.0;
+                    let recovered = self
                         .last_denied
                         .is_some_and(|last| now.duration_since(last) >= RECOVERY_QUIET)
                         && self.tokens >= BUCKET_BURST
-                    {
+                        && self.sustained_completions(now);
+                    if recovered {
                         self.rate = None;
                         self.tokens = 0.0;
                         return Some(RateTransition::Recovered { host });
@@ -330,7 +341,7 @@ impl CongestionController {
             for host in &hosts[..host_count] {
                 let rate = state.hosts.get_mut(host).expect("host rate exists");
                 if rate.rate.is_some() && rate.tokens < 1.0 {
-                    rate.last_denied = Some(now);
+                    rate.denied(now);
                 }
             }
         }
@@ -359,8 +370,7 @@ impl CongestionController {
                 .hosts
                 .entry(host)
                 .or_insert_with(|| HostRate::new(now));
-            rate.completions.push_back(now);
-            rate.trim_completions(now);
+            rate.record_completion(now);
             if proxy == destination {
                 break;
             }
@@ -562,10 +572,6 @@ mod tests {
     fn congestion_pauses_dedicated_setups_then_additively_probes() {
         let start = Instant::now();
         let mut rate = HostRate::new(start);
-        for i in 0..100 {
-            rate.completions
-                .push_back(start + Duration::from_millis(i * 10));
-        }
         let proxy = ip(1);
         assert_eq!(
             rate.apply(
@@ -627,7 +633,7 @@ mod tests {
             },
             start + Duration::from_secs(6),
         );
-        assert_eq!(rate.rate, Some(5.0));
+        assert_eq!(rate.rate, Some(1.0));
         rate.apply(
             ip(2),
             proxy,
@@ -656,7 +662,7 @@ mod tests {
             },
             start + Duration::from_secs(9),
         );
-        assert_eq!(rate.rate, Some(5.0));
+        assert_eq!(rate.rate, Some(1.0));
         rate.tokens = 1.0;
         rate.last_refill = start + Duration::from_secs(12);
         assert_eq!(
@@ -671,8 +677,10 @@ mod tests {
             ),
             None
         );
-        assert_eq!(rate.rate, Some(10.0));
+        assert_eq!(rate.rate, Some(2.0));
         rate.tokens = BUCKET_BURST;
+        rate.record_completion(start + Duration::from_secs(8));
+        rate.record_completion(start + Duration::from_secs(13));
         assert_eq!(
             rate.apply(
                 ip(2),
@@ -686,5 +694,30 @@ mod tests {
             Some(RateTransition::Recovered { host: ip(2) })
         );
         assert_eq!(rate.rate, None);
+    }
+
+    #[test]
+    fn idle_time_does_not_remove_the_probe_limit() {
+        let start = Instant::now();
+        let mut rate = HostRate::new(start);
+        rate.rate = Some(1.0);
+        rate.tokens = BUCKET_BURST;
+        rate.last_denied = Some(start);
+        rate.healthy_windows = RECOVERY_WINDOWS - 1;
+        rate.record_completion(start + Duration::from_secs(1));
+
+        assert_eq!(
+            rate.apply(
+                ip(2),
+                ip(1),
+                PressureView {
+                    sequence: 1,
+                    trend: Trend::Healthy,
+                },
+                start + Duration::from_secs(15),
+            ),
+            None
+        );
+        assert_eq!(rate.rate, Some(2.0));
     }
 }
