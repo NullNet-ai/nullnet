@@ -801,6 +801,16 @@ impl NullnetGrpcImpl {
                             );
                             (*host, true)
                         }
+                        RateTransition::RecoveryStarted { host } => {
+                            println!(
+                                "Ingress congestion recovery started for {host}: dedicated setup probing enabled"
+                            );
+                            self.orchestrator
+                                .events
+                                .emit(Event::ingress_congestion_recovery_started(host.to_string()))
+                                .await;
+                            continue;
+                        }
                         RateTransition::Recovered { host } => {
                             println!(
                                 "Ingress congestion control recovered for {host}: dedicated setup rate unrestricted"
@@ -1870,6 +1880,10 @@ impl NullnetGrpcImpl {
 
     pub(crate) fn match_index(&self) -> &Arc<RwLock<MatchIndex>> {
         &self.match_index
+    }
+
+    pub(crate) fn congestion(&self) -> &Arc<CongestionController> {
+        &self.congestion
     }
 
     pub(crate) fn orchestrator(&self) -> &Orchestrator {

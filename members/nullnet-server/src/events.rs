@@ -238,6 +238,10 @@ pub(crate) enum Event {
         active: bool,
         timestamp: u64,
     },
+    IngressCongestionRecoveryStarted {
+        node_ip: String,
+        timestamp: u64,
+    },
     NetIdPoolExhausted {
         service: String,
         client_ip: String,
@@ -569,6 +573,7 @@ impl Event {
             Self::StaleSessionEvicted { .. } => "stale_session_evicted",
             Self::MaxNetworksLimitEnforced { .. } => "max_networks_limit_enforced",
             Self::IngressCongestionControlChanged { .. } => "ingress_congestion_control_changed",
+            Self::IngressCongestionRecoveryStarted { .. } => "ingress_congestion_recovery_started",
             Self::NetIdPoolExhausted { .. } => "net_id_pool_exhausted",
             Self::ProxyChainSetupFailed { .. } => "proxy_chain_setup_failed",
             Self::BackendTriggerSetupBailed { .. } => "backend_trigger_setup_bailed",
@@ -636,6 +641,7 @@ impl Event {
             } => Severity::Warning,
             Self::IngressCongestionControlChanged { active: true, .. } => Severity::Warning,
             Self::IngressCongestionControlChanged { active: false, .. } => Severity::Info,
+            Self::IngressCongestionRecoveryStarted { .. } => Severity::Info,
             Self::UiTlsCertificateUnavailable {
                 using_self_signed, ..
             } => {
@@ -969,6 +975,13 @@ impl Event {
         Self::IngressCongestionControlChanged {
             node_ip,
             active,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn ingress_congestion_recovery_started(node_ip: String) -> Self {
+        Self::IngressCongestionRecoveryStarted {
+            node_ip,
             timestamp: now_secs(),
         }
     }
