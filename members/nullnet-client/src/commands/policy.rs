@@ -990,6 +990,13 @@ mod tests {
             .unwrap();
         heartbeat(&[1; 16]).await.unwrap();
         let handle = RtNetLinkHandle::new().unwrap();
+        super::super::xfrm_shards::recover(&handle.handle)
+            .await
+            .unwrap();
+        recover(&handle.handle).await.unwrap();
+        super::super::initialize_policy_shards(&handle)
+            .await
+            .unwrap();
         let cache = BridgeIpCache::new();
         let keys = if side == "s" {
             [0x42, 0x43, 0x44]
@@ -1058,6 +1065,9 @@ mod tests {
             assert!(retire(&format!("ns_{net_id}_{side}")).await.unwrap());
         }
         destroy_all(&handle).await.unwrap();
+        super::super::xfrm_shards::recover(&handle.handle)
+            .await
+            .unwrap();
         for message in messages {
             super::super::endpoint_namespace::remove(&message.ns_name)
                 .await
