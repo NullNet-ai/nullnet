@@ -1,8 +1,8 @@
 use crate::net_id_pool::DEFAULT_VXLAN_DSTPORT;
 use ipnetwork::Ipv4Network;
 use nullnet_grpc_lib::nullnet_grpc::{
-    HostMapping, MsgId, Net, NetMessage, VlanSetup, VlanTeardown, VxlanSetup, VxlanTeardown,
-    net_message,
+    HostMapping, MsgId, Net, NetMessage, PolicyTransport, VlanSetup, VlanTeardown, VxlanSetup,
+    VxlanTeardown, net_message,
 };
 use nullnet_liberror::{ErrorHandler, Location, location};
 use std::net::{IpAddr, Ipv4Addr};
@@ -34,9 +34,11 @@ pub(crate) trait NetExt {
         docker_containers: (Option<String>, Option<String>),
         dnat_port: Option<u32>,
         encryption_key: [u8; 32],
+        xfrm_transport_id: Option<u32>,
         dstport: Option<u32>,
         encrypted: bool,
         egress: EgressRole,
+        policy_transport: Option<PolicyTransport>,
     ) -> Option<(Ipv4Addr, NetMessage)>;
 
     #[allow(clippy::too_many_arguments)]
@@ -49,6 +51,7 @@ pub(crate) trait NetExt {
         remote_ip: IpAddr,
         dstport: Option<u16>,
         msg_id: String,
+        policy: bool,
     ) -> NetMessage;
 }
 
@@ -63,9 +66,11 @@ impl NetExt for Net {
         docker_containers: (Option<String>, Option<String>),
         dnat_port: Option<u32>,
         encryption_key: [u8; 32],
+        xfrm_transport_id: Option<u32>,
         dstport: Option<u32>,
         encrypted: bool,
         egress: EgressRole,
+        policy_transport: Option<PolicyTransport>,
     ) -> Option<(Ipv4Addr, NetMessage)> {
         match self {
             Net::Vlan => vlan_setup(
@@ -86,9 +91,11 @@ impl NetExt for Net {
                 docker_containers,
                 dnat_port,
                 encryption_key,
+                xfrm_transport_id,
                 dstport.unwrap_or(u32::from(DEFAULT_VXLAN_DSTPORT)),
                 encrypted,
                 egress,
+                policy_transport,
             ),
         }
     }
@@ -102,6 +109,7 @@ impl NetExt for Net {
         remote_ip: IpAddr,
         dstport: Option<u16>,
         msg_id: String,
+        policy: bool,
     ) -> NetMessage {
         let msg_id = Some(MsgId { id: msg_id });
         match self {
@@ -121,6 +129,7 @@ impl NetExt for Net {
                     remote_ip: remote_ip.to_string(),
                     dstport: u32::from(dstport.unwrap_or(DEFAULT_VXLAN_DSTPORT)),
                     msg_id,
+                    policy,
                 })),
             },
         }
@@ -186,9 +195,11 @@ fn vxlan_setup(
     docker_containers: (Option<String>, Option<String>),
     dnat_port: Option<u32>,
     encryption_key: [u8; 32],
+    xfrm_transport_id: Option<u32>,
     dstport: u32,
     encrypted: bool,
     egress: EgressRole,
+    policy_transport: Option<PolicyTransport>,
 ) -> Option<(Ipv4Addr, NetMessage)> {
     // Map vxlan_id to a /29 block within 10.0.0.0/8.
     // Each ID gets 8 IPs (6 usable), with 4 IPs used for ns/br server/client.
@@ -269,6 +280,8 @@ fn vxlan_setup(
                 egress_steer,
                 egress_intercept,
                 encrypted,
+                policy_transport,
+                xfrm_transport_id,
             })),
         },
     ))
@@ -320,9 +333,11 @@ mod tests {
             (None, None),
             None,
             key,
+            None,
             4789,
             false,
             EgressRole::None,
+            None,
         )
         .unwrap();
         let (client_addr, _) = vxlan_setup(
@@ -334,9 +349,11 @@ mod tests {
             (None, None),
             None,
             key,
+            None,
             4789,
             false,
             EgressRole::None,
+            None,
         )
         .unwrap();
 

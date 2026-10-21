@@ -2,6 +2,7 @@ mod auth;
 mod cert;
 mod cert_renewal;
 mod certs;
+mod congestion;
 mod crypto;
 mod db;
 mod env;
@@ -111,6 +112,7 @@ async fn main() -> Result<(), Error> {
         services: nullnet.services().clone(),
         routes: nullnet.routes().clone(),
         match_index: nullnet.match_index().clone(),
+        congestion: nullnet.congestion().clone(),
         events: nullnet.orchestrator().events.clone(),
         sessions: nullnet.orchestrator().sessions.clone(),
         orchestrator: nullnet.orchestrator().clone(),

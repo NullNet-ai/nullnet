@@ -130,7 +130,19 @@ message NetMessage {
     // Egress country-policy changed on the server (fire-and-forget)
     EgressPolicyChanged egress_policy_changed = 7;
     NetReady net_ready = 8;
+    PolicyHeartbeat policy_heartbeat = 9;
   }
+}
+
+message PolicyHeartbeat {
+  bytes server_epoch = 1;
+}
+
+message PolicyTransport {
+  uint32 id = 1;
+  bytes encryption_key = 2;
+  bool peer_container = 3;
+  uint64 generation = 4;
 }
 
 // Both endpoints are prepared; the initiator may release held packets.
@@ -210,22 +222,21 @@ message VxlanSetup {
   // Set on the gateway's edge: forward tunnelled external-bound packets to the
   // internet (kernel ip_forward + MASQUERADE); the Cilium egress-gateway model.
   optional bool egress_intercept = 13;
-  // Per-tunnel AES-256 key (32 raw bytes), generated once by the server and
-  // sent identically to both endpoints. Used as the XFRM/ESP SA key that
-  // encrypts this tunnel's traffic at the kernel level. Meaningless
-  // (placeholder zero bytes) when `encrypted` is false.
+  // AES-256 key sent identically to both endpoints. Cross-host VXLANs share
+  // one XFRM/ESP carrier per host pair; same-host MACsec remains per edge.
+  // Meaningless (placeholder zero bytes) when `encrypted` is false.
   bytes encryption_key = 14;
-  // Per-tunnel VXLAN UDP destination port (replaces the IANA-standard 4789
-  // default). Each tunnel gets a distinct port so an XFRM policy — which
-  // selects by src/dst IP and port, not by VNI — can tell concurrent
-  // tunnels between the same host pair apart. Allocated regardless of
-  // `encrypted`, for simplicity.
+  // VXLAN UDP destination port (replaces the IANA-standard 4789 default).
+  // XFRM policies select by outer host pair, destination port, and mark.
   uint32 dstport = 15;
   // Whether this tunnel is encrypted, mirroring the server's ENCRYPTION_ENABLED
   // env var at the time this edge was set up. When false, the client skips
   // `encryption_key` and sets up a bare vxlan/veth link with no XFRM
   // SA/policy or MACsec (see nullnet-client's commands/vxlan.rs).
   bool encrypted = 16;
+  PolicyTransport policy_transport = 17;
+  // Shared cross-host XFRM carrier. Absent means legacy per-edge transport.
+  optional uint32 xfrm_transport_id = 18;
 }
 
 message VxlanTeardown {
@@ -243,6 +254,7 @@ message VxlanTeardown {
   // predates this field simply never acks, and the server frees on its grace
   // timer instead.
   optional MsgId msg_id = 8;
+  bool policy = 9;
 }
 
 message MsgId {
@@ -295,6 +307,11 @@ message HostMapping {
 message ProxyRequest {
   string client_ip = 1;
   string service_name = 2;
+  uint64 routing_arrivals = 3;
+  uint64 routing_completions = 4;
+  uint32 routing_waiters = 5;
+  uint64 routing_wait_us = 6;
+  uint64 routing_epoch = 7;
 }
 
 message Upstream {

@@ -96,6 +96,81 @@ impl NativeSocket {
             .collect())
     }
 
+    pub(super) fn requests(
+        &mut self,
+        requests: &[(u16, u16, &[u8])],
+    ) -> io::Result<Vec<io::Result<()>>> {
+        let mut sequences = Vec::with_capacity(requests.len());
+        let mut message = Vec::new();
+        for (kind, flags, body) in requests {
+            self.sequence = self.sequence.wrapping_add(1);
+            sequences.push(self.sequence);
+            let len = 16 + body.len();
+            message.extend_from_slice(&(len as u32).to_ne_bytes());
+            message.extend_from_slice(&kind.to_ne_bytes());
+            message.extend_from_slice(&flags.to_ne_bytes());
+            message.extend_from_slice(&self.sequence.to_ne_bytes());
+            message.extend_from_slice(&0u32.to_ne_bytes());
+            message.extend_from_slice(body);
+            message.resize((message.len() + 3) & !3, 0);
+        }
+        if message.is_empty() {
+            return Ok(Vec::new());
+        }
+        if self.socket.send(&message, 0)? != message.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "short netlink batch write",
+            ));
+        }
+        let mut replies: Vec<Option<io::Result<()>>> = std::iter::repeat_with(|| None)
+            .take(requests.len())
+            .collect();
+        let mut remaining = replies.len();
+        while remaining != 0 {
+            let (data, sender) = self.socket.recv_from_full()?;
+            if sender.port_number() != 0 {
+                continue;
+            }
+            let mut offset = 0;
+            while offset < data.len() {
+                if data.len() - offset < 16 {
+                    return Err(io::Error::other("truncated netlink header"));
+                }
+                let header = &data[offset..offset + 16];
+                let len = u32::from_ne_bytes(header[..4].try_into().unwrap()) as usize;
+                if len < 16 || len > data.len() - offset {
+                    return Err(io::Error::other("invalid netlink message length"));
+                }
+                let kind = u16::from_ne_bytes(header[4..6].try_into().unwrap());
+                let sequence = u32::from_ne_bytes(header[8..12].try_into().unwrap());
+                if let Some(index) = sequences.iter().position(|value| *value == sequence)
+                    && replies[index].is_none()
+                    && matches!(kind, 2 | 3)
+                {
+                    let payload = &data[offset + 16..offset + len];
+                    let result = if kind == 3 {
+                        Ok(())
+                    } else {
+                        let code = payload
+                            .get(..4)
+                            .ok_or_else(|| io::Error::other("truncated netlink ACK"))?;
+                        let error = i32::from_ne_bytes(code.try_into().unwrap());
+                        if error == 0 {
+                            Ok(())
+                        } else {
+                            Err(io::Error::from_raw_os_error(-error))
+                        }
+                    };
+                    replies[index] = Some(result);
+                    remaining -= 1;
+                }
+                offset += (len + 3) & !3;
+            }
+        }
+        Ok(replies.into_iter().map(Option::unwrap).collect())
+    }
+
     pub(super) fn dump(&mut self, kind: u16, body: &[u8]) -> io::Result<Vec<Vec<u8>>> {
         self.exchange(kind, REQUEST | 0x300, body)
     }

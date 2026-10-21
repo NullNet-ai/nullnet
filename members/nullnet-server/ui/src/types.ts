@@ -28,6 +28,42 @@ export interface HostedServiceJson {
 export interface NodeJson {
   ip: string;
   hosted_services: HostedServiceJson[];
+  ingress_groups: {
+    dedicated: number;
+    multiplexed: number;
+  };
+  ingress_control: {
+    state: IngressControlState;
+    state_age_ms: number | null;
+    rate_per_sec: number | null;
+    tokens: number | null;
+    token_capacity: number;
+    last_token_shortage_age_ms: number | null;
+    source_proxy: string | null;
+    recent_states: IngressStateJson[];
+  };
+  pressure_age_ms: number | null;
+  pressure_windows: PressureWindowJson[];
+}
+
+export type IngressControlState = 'normal' | 'multiplexing' | 'recovery';
+
+export interface IngressStateJson {
+  state: IngressControlState;
+  age_ms: number;
+  source_proxy: string;
+}
+
+export interface PressureWindowJson {
+  age_ms: number;
+  duration_ms: number;
+  arrivals: number;
+  completions: number;
+  arrivals_per_sec: number;
+  completions_per_sec: number;
+  waiters: number;
+  mean_wait_us: number;
+  trend: 'healthy' | 'growing' | 'neutral';
 }
 
 export interface SessionJson {
@@ -170,6 +206,8 @@ export type EventJson =
   | WithSeverity & { type: 'proxy_client_timed_out'; service: string; client_ip: string }
   | WithSeverity & { type: 'stale_session_evicted'; service: string; client_ip: string; proxy_ip: string }
   | WithSeverity & { type: 'max_networks_limit_enforced'; service: string; proxy_ip: string; net_id: number; limit: number }
+  | WithSeverity & { type: 'ingress_congestion_control_changed'; node_ip: string; active: boolean }
+  | WithSeverity & { type: 'ingress_congestion_recovery_started'; node_ip: string }
   | WithSeverity & { type: 'net_id_pool_exhausted'; service: string; client_ip: string }
   | WithSeverity & { type: 'proxy_chain_setup_failed'; service: string; client_ip: string }
   | WithSeverity & { type: 'backend_trigger_setup_bailed'; service: string; port: number }

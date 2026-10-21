@@ -11,7 +11,14 @@ use crate::nullnet_grpc::{
     ProxyConnectionEnd, ProxyRequest, ServiceReport, ServicesListResponse, Upstream,
 };
 pub use proto::*;
-use std::{future::Future, path::Path, sync::Arc};
+use std::{
+    future::Future,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 use tokio::sync::{Semaphore, mpsc};
 use tonic::Request;
 pub use tonic::Streaming;
@@ -43,6 +50,48 @@ pub struct NullnetGrpcInterface {
     lifecycle_slots: Arc<Semaphore>,
     policy_slots: Arc<Semaphore>,
     event_slots: Arc<Semaphore>,
+    proxy_metrics: Arc<ProxyMetrics>,
+}
+
+struct ProxyMetrics {
+    epoch: u64,
+    arrivals: AtomicU64,
+    completions: AtomicU64,
+    waiters: AtomicU64,
+}
+
+impl Default for ProxyMetrics {
+    fn default() -> Self {
+        static NEXT_EPOCH: AtomicU64 = AtomicU64::new(0);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        Self {
+            epoch: u64::try_from(timestamp)
+                .unwrap_or(u64::MAX)
+                .wrapping_add(NEXT_EPOCH.fetch_add(1, Ordering::Relaxed)),
+            arrivals: AtomicU64::new(0),
+            completions: AtomicU64::new(0),
+            waiters: AtomicU64::new(0),
+        }
+    }
+}
+
+struct CounterGuard<'a>(&'a AtomicU64);
+
+impl Drop for CounterGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+struct WaiterGuard<'a>(&'a AtomicU64);
+
+impl Drop for WaiterGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl NullnetGrpcInterface {
@@ -76,6 +125,7 @@ impl NullnetGrpcInterface {
                     lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
                     policy_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_POLICY)),
                     event_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_EVENTS)),
+                    proxy_metrics: Arc::new(ProxyMetrics::default()),
                 });
             }
 
@@ -136,17 +186,33 @@ impl NullnetGrpcInterface {
     }
 
     #[allow(clippy::missing_errors_doc)]
-    pub async fn proxy(&self, message: ProxyRequest) -> Result<Upstream, ProxyLookupError> {
-        self.unary(self.client.clone().proxy(Request::new(message)))
+    pub async fn proxy(&self, mut message: ProxyRequest) -> Result<Upstream, ProxyLookupError> {
+        self.proxy_metrics.arrivals.fetch_add(1, Ordering::Relaxed);
+        let _completed = CounterGuard(&self.proxy_metrics.completions);
+        self.proxy_metrics.waiters.fetch_add(1, Ordering::Relaxed);
+        let waiting = WaiterGuard(&self.proxy_metrics.waiters);
+        let started = std::time::Instant::now();
+        let permit = self
+            .unary_slots
+            .acquire()
             .await
-            .map(tonic::Response::into_inner)
-            .map_err(|e| {
-                if e.code() == tonic::Code::NotFound {
-                    ProxyLookupError::UnknownService
-                } else {
-                    ProxyLookupError::Failed(e.to_string())
-                }
-            })
+            .expect("RPC limiter stays open");
+        drop(waiting);
+        let remaining = self.proxy_metrics.waiters.load(Ordering::Relaxed);
+        message.routing_arrivals = self.proxy_metrics.arrivals.load(Ordering::Relaxed);
+        message.routing_completions = self.proxy_metrics.completions.load(Ordering::Relaxed);
+        message.routing_waiters = u32::try_from(remaining).unwrap_or(u32::MAX);
+        message.routing_wait_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        message.routing_epoch = self.proxy_metrics.epoch;
+        let result = self.client.clone().proxy(Request::new(message)).await;
+        drop(permit);
+        result.map(tonic::Response::into_inner).map_err(|e| {
+            if e.code() == tonic::Code::NotFound {
+                ProxyLookupError::UnknownService
+            } else {
+                ProxyLookupError::Failed(e.to_string())
+            }
+        })
     }
 
     /// Report that a front connection through the proxy has closed.
@@ -387,6 +453,19 @@ impl NullnetGrpcInterface {
 mod admission_tests {
     use super::*;
 
+    #[test]
+    fn proxy_metric_guards_account_for_cancellation() {
+        let metrics = ProxyMetrics::default();
+        metrics.waiters.store(1, Ordering::Relaxed);
+        {
+            let _completed = CounterGuard(&metrics.completions);
+            let _waiting = WaiterGuard(&metrics.waiters);
+        }
+        assert_eq!(metrics.waiters.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.completions.load(Ordering::Relaxed), 1);
+        assert_ne!(metrics.epoch, ProxyMetrics::default().epoch);
+    }
+
     #[tokio::test]
     async fn liveness_progresses_when_setup_admission_is_full() {
         let interface = NullnetGrpcInterface {
@@ -397,6 +476,7 @@ mod admission_tests {
             lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
             policy_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_POLICY)),
             event_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_EVENTS)),
+            proxy_metrics: Arc::new(ProxyMetrics::default()),
         };
         let _busy = interface
             .unary_slots
@@ -428,6 +508,7 @@ mod admission_tests {
             lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
             policy_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_POLICY)),
             event_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_EVENTS)),
+            proxy_metrics: Arc::new(ProxyMetrics::default()),
         };
         let _busy = interface
             .unary_slots
@@ -459,6 +540,7 @@ mod admission_tests {
             lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
             policy_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_POLICY)),
             event_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_EVENTS)),
+            proxy_metrics: Arc::new(ProxyMetrics::default()),
         };
         let (entered, mut received) = mpsc::unbounded_channel();
         let mut calls = tokio::task::JoinSet::new();
@@ -497,6 +579,7 @@ mod admission_tests {
             lifecycle_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_LIFECYCLE)),
             policy_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_POLICY)),
             event_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_EVENTS)),
+            proxy_metrics: Arc::new(ProxyMetrics::default()),
         };
         let _busy = interface
             .unary_slots

@@ -1,3 +1,4 @@
+use crate::congestion::CongestionController;
 use crate::db::Db;
 use crate::events::EventStore;
 use crate::orchestrator::Orchestrator;
@@ -42,6 +43,7 @@ pub(crate) struct AppState {
     /// directly — see `nullnet_grpc_impl::NullnetGrpcImpl`'s field docs.
     pub(crate) match_index: Arc<RwLock<MatchIndex>>,
     pub(crate) orchestrator: Orchestrator,
+    pub(crate) congestion: Arc<CongestionController>,
     pub(crate) events: EventStore,
     /// Persisted ingress/egress session history behind the Sessions page.
     pub(crate) sessions: SessionStore,

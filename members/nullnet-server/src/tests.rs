@@ -1782,13 +1782,13 @@ async fn multi_replica_first_step_container_disconnect() {
 
 // ===========================================================================
 // max_networks: A→B, max_networks=1, timeout=1.
-// Two proxy clients on the same proxy: second reuses the first's network.
+// The first ingress edges are dedicated; later edges share a host-pair transport.
 // ===========================================================================
 
 const MAX_NETWORKS: &str = "max_networks";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn max_networks_balances_shared_networks_under_concurrent_requests() {
+async fn max_networks_shares_transport_across_concurrent_overflow() {
     let config: ServicesToml = toml::from_str(
         r#"[[services]]
 name = "A"
@@ -1808,7 +1808,7 @@ proxy_dependencies = [["B"]]
         8080,
     )
     .await;
-    server.orchestrator().register_fake_client(proxy).await;
+    let proxy_log = server.orchestrator().register_recording_client(proxy).await;
     for i in 1..=10 {
         setup_proxy_chain(&server, "A", proxy, &format!("10.0.0.{i}")).await;
     }
@@ -1824,7 +1824,7 @@ proxy_dependencies = [["B"]]
     while let Some(result) = requests.join_next().await {
         result.unwrap();
     }
-    assert_net_ids_in_use(&server, 11).await;
+    assert_net_ids_in_use(&server, 201).await;
     let guard = server.services().read().await;
     let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] else {
         panic!("A should be registered");
@@ -1835,8 +1835,53 @@ proxy_dependencies = [["B"]]
             *users.entry(ci.net_id()).or_default() += 1;
         }
     }
-    assert_eq!(users.len(), 10);
-    assert!(users.values().all(|count| *count == 20), "{users:?}");
+    assert_eq!(users.len(), 200);
+    assert!(users.values().all(|count| *count == 1), "{users:?}");
+    let policy_clients = reg
+        .replicas()
+        .iter()
+        .flat_map(|replica| replica.clients().values())
+        .filter(|info| info.policy())
+        .count();
+    assert_eq!(policy_clients, 190);
+    assert_eq!(reg.dedicated_proxy_networks_count(), 10);
+    drop(guard);
+
+    let messages = proxy_log.lock().await;
+    let groups: Vec<_> = messages
+        .iter()
+        .filter_map(|message| match &message.message {
+            Some(net_message::Message::VxlanSetup(setup)) => setup.policy_transport.as_ref(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(groups.len(), 190);
+    assert_eq!(
+        groups
+            .iter()
+            .map(|group| group.id)
+            .collect::<HashSet<_>>()
+            .len(),
+        1
+    );
+    assert_eq!(
+        groups
+            .iter()
+            .map(|group| group.encryption_key.clone())
+            .collect::<HashSet<_>>()
+            .len(),
+        1
+    );
+    assert_eq!(
+        groups
+            .iter()
+            .map(|group| group.generation)
+            .collect::<HashSet<_>>()
+            .len(),
+        190
+    );
+    drop(messages);
+    let guard = server.services().read().await;
     let ServiceInfo::Registered(dep) = &stack_view(&guard)["B"] else {
         panic!("B should be registered");
     };
@@ -1852,11 +1897,58 @@ proxy_dependencies = [["B"]]
     );
 }
 
+#[tokio::test]
+async fn max_networks_reuses_one_overflow_group_for_the_same_client_ip() {
+    let services = load_fixture(MAX_NETWORKS).await;
+    let server = NullnetGrpcImpl::new_for_test(services);
+    let proxy = ip(5, 5, 5, 5);
+    register_services(
+        &server,
+        &HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]),
+        8080,
+    )
+    .await;
+    let proxy_log = server.orchestrator().register_recording_client(proxy).await;
+
+    setup_proxy_chain(&server, "A", proxy, "10.0.0.1").await;
+    setup_proxy_chain(&server, "A", proxy, "10.0.0.2").await;
+    setup_proxy_chain(&server, "A", proxy, "10.0.0.2").await;
+
+    assert_net_ids_in_use(&server, 3).await;
+    let guard = server.services().read().await;
+    let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] else {
+        panic!("A should be registered");
+    };
+    assert_eq!(reg.client_count(), 2);
+    assert_eq!(
+        reg.replicas()
+            .iter()
+            .flat_map(|replica| replica.clients().values())
+            .filter(|info| info.policy())
+            .count(),
+        1
+    );
+    drop(guard);
+
+    let messages = proxy_log.lock().await;
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| matches!(
+                &message.message,
+                Some(net_message::Message::VxlanSetup(setup))
+                    if setup.policy_transport.is_some()
+            ))
+            .count(),
+        1
+    );
+}
+
 /// Full lifecycle:
 ///   1. First client creates network (2 net IDs: proxy→A, A→B)
-///   2. Second client reuses (still 2 net IDs, but A has 2 proxy clients)
-///   3. First client times out (net stays up, A has 1 proxy client)
-///   4. Second client times out (net torn down, 0 net IDs)
+///   2. Second client gets a policy group (3 IDs including the dependency)
+///   3. First client times out (policy edge and dependency survive)
+///   4. Second client times out (all edges are torn down)
 #[tokio::test]
 async fn max_networks_reuse_lifecycle() {
     let services = load_fixture(MAX_NETWORKS).await;
@@ -1884,14 +1976,14 @@ async fn max_networks_reuse_lifecycle() {
         assert_eq!(reg_b.client_count(), 1, "B should have 1 dep client (A→B)");
     }
 
-    // 2. Second proxy client on same proxy — should reuse (max_networks=1)
+    // 2. Second proxy client on the same proxy — policy overflow.
     //    Separate the two clients by 2s (>> the 1s timeout) so at step 3 C1 is
     //    comfortably expired while C2 is comfortably alive. Timeouts use real
     //    `Instant` (not tokio's pausable clock), so wide margins are needed to
     //    survive wall-clock jitter on loaded CI runners.
     tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
     setup_proxy_chain(&server, "A", proxy1, "10.0.0.2").await;
-    assert_net_ids_in_use(&server, 2).await; // no new net IDs allocated
+    assert_net_ids_in_use(&server, 3).await;
 
     {
         let guard = server.services().read().await;
@@ -1900,7 +1992,7 @@ async fn max_networks_reuse_lifecycle() {
             panic!("A should be registered");
         };
         assert_eq!(reg_a.client_count(), 2, "A should have 2 proxy clients");
-        // Both clients share the same net_id
+        // Every overflow connection is its own policy group and net id.
         let net_ids: HashSet<u32> = reg_a
             .replicas()
             .iter()
@@ -1908,8 +2000,8 @@ async fn max_networks_reuse_lifecycle() {
             .collect();
         assert_eq!(
             net_ids.len(),
-            1,
-            "both clients should share the same net_id"
+            2,
+            "overflow clients must not share a policy group"
         );
 
         let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
@@ -1950,7 +2042,7 @@ async fn max_networks_reuse_lifecycle() {
             "B dep edge should survive (active_chains > 0)"
         );
     }
-    // Net IDs still in use (shared network not torn down)
+    // The policy ingress edge and shared dependency remain.
     assert_net_ids_in_use(&server, 2).await;
 
     // 4. Second client times out — network should be torn down.
@@ -1982,8 +2074,7 @@ async fn max_networks_reuse_lifecycle() {
     assert_net_ids_in_use(&server, 0).await;
 }
 
-/// Proxy disconnect tears down both clients sharing a net_id at once.
-/// The shared network should be torn down exactly once (dedup).
+/// Proxy disconnect tears down both the dedicated and policy ingress edges.
 #[tokio::test]
 async fn max_networks_proxy_disconnect() {
     let services = load_fixture(MAX_NETWORKS).await;
@@ -1996,7 +2087,7 @@ async fn max_networks_proxy_disconnect() {
 
     setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
     setup_proxy_chain(&server, "A", proxy1, "10.0.0.2").await;
-    assert_net_ids_in_use(&server, 2).await;
+    assert_net_ids_in_use(&server, 3).await;
 
     {
         let guard = server.services().read().await;
@@ -4421,12 +4512,10 @@ async fn an_ingress_session_opens_and_closes_a_row() {
     assert!(rows[0].ended_at.is_some(), "should have been closed");
 }
 
-/// `max_networks` multiplexes several external clients onto one net_id. Each is
-/// its own session, so each needs its own row closed — the teardown dedupes by
-/// net_id and skips while the id is still shared, which for a while closed only
-/// one of them and left the rest reading as live forever.
+/// The dedicated client and each overflow policy group have separate sessions.
+/// Expiring either must close exactly its own row.
 #[tokio::test]
-async fn clients_sharing_a_net_id_each_close_their_own_row() {
+async fn max_networks_overflow_closes_each_client_session() {
     let services = load_fixture(MAX_NETWORKS).await;
     let server = NullnetGrpcImpl::new_for_test(services);
     let db = attach_session_db(&server).await;
@@ -4446,11 +4535,10 @@ async fn clients_sharing_a_net_id_each_close_their_own_row() {
     let rows = session_rows(&server, &db).await;
     assert_eq!(rows.len(), 2, "one row per client, got {rows:?}");
     let net_ids: HashSet<i32> = rows.iter().map(|r| r.net_id).collect();
-    assert_eq!(net_ids.len(), 1, "both clients share one net_id");
+    assert_eq!(net_ids.len(), 2, "overflow has its own policy group");
     assert!(rows.iter().all(|r| r.ended_at.is_none()));
 
-    // First client expires; the network stays up for the second, so the
-    // per-net_id teardown is skipped — the row must close regardless.
+    // First client expires while the overflow client remains active.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     crate::timeout::reap_ingress_timeouts(server.services(), server.orchestrator()).await;
 

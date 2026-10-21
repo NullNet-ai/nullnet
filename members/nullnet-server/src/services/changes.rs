@@ -279,12 +279,13 @@ async fn teardown_chain(
                 ci.docker_container().cloned(),
                 replica_ip,
                 replica_docker,
+                ci.policy(),
             )
         })
         .collect();
 
     // For each proxy chain, walk and tear down its dependency edges
-    for (_, _, _, _, replica_ip, replica_docker) in &proxy_teardowns {
+    for (_, _, _, _, replica_ip, replica_docker, _) in &proxy_teardowns {
         teardown_dep_chain(
             name,
             *replica_ip,
@@ -298,7 +299,7 @@ async fn teardown_chain(
     // Remove client entries first, then tear down proxy→service networks
     // only if no other client still shares the same net_id.
     if let Some(ServiceInfo::Registered(reg)) = services.get_mut(name) {
-        for (client, _, _, _, _, _) in &proxy_teardowns {
+        for (client, _, _, _, _, _, _) in &proxy_teardowns {
             reg.remove_client(client);
         }
     }
@@ -308,7 +309,7 @@ async fn teardown_chain(
     // another. The network teardown below is per-net_id and stays deduped; a
     // row is per-client, and leaving one open would both read as permanently
     // live and let a later reuse of that net id land on it.
-    for (client, _, net_id, _, _, _) in &proxy_teardowns {
+    for (client, _, net_id, _, _, _, _) in &proxy_teardowns {
         // Keyed on the client's name — the external peer the row was opened
         // under, not the tunnel's near end (which is the shared proxy host).
         orchestrator
@@ -318,7 +319,9 @@ async fn teardown_chain(
     }
 
     let mut torn_down_net_ids = HashSet::new();
-    for (_, client_ip, net_id, client_docker, service_ip, service_docker) in &proxy_teardowns {
+    for (_, client_ip, net_id, client_docker, service_ip, service_docker, policy) in
+        &proxy_teardowns
+    {
         if !torn_down_net_ids.insert(*net_id) {
             continue; // already handled this net_id
         }
@@ -329,12 +332,13 @@ async fn teardown_chain(
         };
         if !shared {
             orchestrator
-                .send_net_teardown(
+                .send_net_teardown_kind(
                     *client_ip,
                     client_docker.clone(),
                     *service_ip,
                     service_docker.clone(),
                     *net_id,
+                    *policy,
                 )
                 .await;
             orchestrator

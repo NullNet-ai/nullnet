@@ -141,6 +141,7 @@ pub(crate) struct ClientInfo {
     latest: Instant,
     created_at: SystemTime,
     docker_container: Option<String>,
+    policy: bool,
     /// Set while the edge is reserved but not yet built. Everything that walks
     /// the graph — teardown, intactness, idle reaping — has to treat a
     /// reservation as *not an edge*, or it decrements a refcount it never
@@ -169,6 +170,7 @@ impl ClientInfo {
             latest: Instant::now(),
             created_at: SystemTime::now(),
             docker_container,
+            policy: false,
             pending: None,
         }
     }
@@ -176,7 +178,7 @@ impl ClientInfo {
     /// Reserve the slot for an edge that is about to be built. The refcount is
     /// taken here, not on promotion: between the two the task holds no lock,
     /// and a slot sitting at zero is one any teardown walk would collect.
-    pub(crate) fn reservation(client_ip: IpAddr) -> Self {
+    pub(crate) fn reservation(client_ip: IpAddr, policy: bool) -> Self {
         Self {
             client_ip,
             client_net: Ipv4Addr::UNSPECIFIED,
@@ -188,12 +190,21 @@ impl ClientInfo {
             latest: Instant::now(),
             created_at: SystemTime::now(),
             docker_container: None,
+            policy,
             pending: Some(Arc::new(Notify::new())),
         }
     }
 
     pub(crate) fn is_pending(&self) -> bool {
         self.pending.is_some()
+    }
+
+    pub(crate) fn set_policy(&mut self) {
+        self.policy = true;
+    }
+
+    pub(crate) fn policy(&self) -> bool {
+        self.policy
     }
 
     pub(crate) fn client_ip(&self) -> IpAddr {

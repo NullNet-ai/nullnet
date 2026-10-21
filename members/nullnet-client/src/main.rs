@@ -139,6 +139,13 @@ async fn main() -> Result<(), Error> {
         setup_br0(&rtnetlink_handle).await;
     }
 
+    if net_type.net() == Net::Vxlan {
+        commands::initialize_policy_shards(&rtnetlink_handle).await?;
+        commands::vxlan_environment::start(grpc_server.clone())
+            .await
+            .handle_err(location!())?;
+    }
+
     print_info(net_type.net());
 
     // bring up the host-NIC eBPF default-deny firewall. Must happen before the

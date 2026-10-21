@@ -1,3 +1,4 @@
+use crate::congestion::{CongestionController, ProxyLoad, RateTransition};
 use crate::env::{
     EGRESS_ALLOW_TCP_PORTS, EGRESS_ALLOW_UDP_PORTS, ENCRYPTION_ENABLED, INGRESS_ALLOW_TCP_PORTS,
     INGRESS_ALLOW_UDP_PORTS, NET_TYPE, PROXY_IP,
@@ -67,6 +68,8 @@ pub(crate) struct NullnetGrpcImpl {
     /// are serialized rather than each building the same chain. See
     /// [`NullnetGrpcImpl::handle_proxy_request`].
     inflight_proxy: Arc<StdMutex<HashMap<ProxyKey, Arc<tokio::sync::Mutex<()>>>>>,
+    dedicated_admissions: Arc<StdMutex<HashMap<(String, String), usize>>>,
+    congestion: Arc<CongestionController>,
     /// Fires whenever a config save/delete changes timeout-relevant state;
     /// `check_timeouts` is its only consumer.
     config_changed: Arc<Notify>,
@@ -83,6 +86,40 @@ pub(crate) struct NullnetGrpcImpl {
 /// Identity of a proxy request: the same `(service, client, proxy)` triple that
 /// keys the resulting `Client` entry, so one key ⇔ one proxy session.
 type ProxyKey = (String, String, IpAddr);
+
+struct DedicatedAdmission {
+    counts: Arc<StdMutex<HashMap<(String, String), usize>>>,
+    key: (String, String),
+}
+
+struct ProxyReplica {
+    ip: IpAddr,
+    port: u16,
+    docker: Option<String>,
+}
+
+struct ProxyChainRequest<'a> {
+    stack: &'a str,
+    service_name: &'a str,
+    proxy_ip: IpAddr,
+    client_ip: &'a str,
+    replica: &'a ProxyReplica,
+    policy: bool,
+}
+
+impl Drop for DedicatedAdmission {
+    fn drop(&mut self) {
+        let mut counts = self
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = counts.get_mut(&self.key).expect("admission is registered");
+        *count -= 1;
+        if *count == 0 {
+            counts.remove(&self.key);
+        }
+    }
+}
 
 /// Build the live TCP/UDP port→service table from the current `StackMap`.
 /// `Http` services are excluded — they stay on Host-header routing.
@@ -413,6 +450,8 @@ impl NullnetGrpcImpl {
             port_mappings: port_mappings_rx,
             http_routes: http_routes_rx,
             inflight_proxy: Arc::new(StdMutex::new(HashMap::new())),
+            dedicated_admissions: Arc::new(StdMutex::new(HashMap::new())),
+            congestion: Arc::new(CongestionController::default()),
             config_changed: config_changed_for_state,
             port_mappings_changed: port_mappings_changed_for_state,
             http_routes_changed: http_routes_changed_for_state,
@@ -449,6 +488,18 @@ impl NullnetGrpcImpl {
             .ip();
 
         let req = request.into_inner();
+        if req.routing_arrivals > 0 {
+            self.congestion.observe_proxy(
+                proxy_ip,
+                ProxyLoad {
+                    epoch: req.routing_epoch,
+                    arrivals: req.routing_arrivals,
+                    completions: req.routing_completions,
+                    waiters: req.routing_waiters,
+                    wait_us: req.routing_wait_us,
+                },
+            );
+        }
 
         let client_ip: IpAddr = req.client_ip.parse().handle_err(location!())?;
         let service_name = req.service_name;
@@ -526,6 +577,29 @@ impl NullnetGrpcImpl {
         result
     }
 
+    fn dedicated_admission(
+        &self,
+        stack: &str,
+        service: &str,
+        current: usize,
+        max: u32,
+    ) -> Option<DedicatedAdmission> {
+        let key = (stack.to_string(), service.to_string());
+        let mut counts = self
+            .dedicated_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inflight = counts.get(&key).copied().unwrap_or_default();
+        if current + inflight >= max as usize {
+            return None;
+        }
+        *counts.entry(key.clone()).or_default() += 1;
+        Some(DedicatedAdmission {
+            counts: self.dedicated_admissions.clone(),
+            key,
+        })
+    }
+
     async fn proxy_request_locked(
         &self,
         service_name: &str,
@@ -534,25 +608,30 @@ impl NullnetGrpcImpl {
     ) -> Result<Upstream, Error> {
         println!("Received proxy request for '{service_name}'");
 
-        let (stack, service_info) = {
+        let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
+        let stack = {
             let guard = self.services.read().await;
-            let stack = find_service_stack(&guard, service_name)
+            find_service_stack(&guard, service_name)
                 .ok_or("Service not found in any stack")
                 .handle_err(location!())?
-                .to_string();
-            let si = guard[&stack][service_name].clone();
-            (stack, si)
+                .to_string()
         };
-
-        if service_info.timeout().is_none() {
-            Err("Service is not a configured entry point").handle_err(location!())?;
-        }
-
-        let ServiceInfo::Registered(mut registered) = service_info else {
-            Err("Service is not registered").handle_err(location!())?
+        let (existing, replica, mut max_networks, mut dedicated_count) = {
+            let guard = self.services.read().await;
+            let service_info = &guard[&stack][service_name];
+            if service_info.timeout().is_none() {
+                Err("Service is not a configured entry point").handle_err(location!())?;
+            }
+            let ServiceInfo::Registered(reg) = service_info else {
+                Err("Service is not registered").handle_err(location!())?
+            };
+            (
+                reg.is_client_setup(&proxy_client),
+                reg.client_replica(&proxy_client),
+                reg.max_networks(),
+                reg.dedicated_proxy_networks_count(),
+            )
         };
-
-        let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
 
         // Sticky session: reuse the network this client is already on — but only
         // while the dependency chain built alongside it is still complete.
@@ -565,8 +644,8 @@ impl NullnetGrpcImpl {
         // path below rebuild entry and chain together: repairing just the missing
         // edges here would double-count `active_chains` on the edges still up,
         // since teardown decrements once per branch per proxy client.
-        if let Some(upstream) = registered.is_client_setup(&proxy_client) {
-            let intact = match registered.client_replica(&proxy_client) {
+        if let Some(upstream) = existing {
+            let intact = match replica {
                 Some((replica_ip, replica_docker)) => {
                     self.services.read().await.get(&stack).is_some_and(|sm| {
                         dep_chain_intact(service_name, replica_ip, replica_docker.as_deref(), sm)
@@ -616,17 +695,20 @@ impl NullnetGrpcImpl {
 
             // The eviction dropped this client and may have freed its network, so
             // the snapshot the max-networks check below reads has to be re-taken.
-            let guard = self.services.read().await;
-            let Some(ServiceInfo::Registered(reg)) =
-                guard.get(&stack).and_then(|sm| sm.get(service_name))
-            else {
-                Err("Service is not registered").handle_err(location!())?
+            (max_networks, dedicated_count) = {
+                let guard = self.services.read().await;
+                let Some(ServiceInfo::Registered(reg)) =
+                    guard.get(&stack).and_then(|sm| sm.get(service_name))
+                else {
+                    Err("Service is not registered").handle_err(location!())?
+                };
+                (reg.max_networks(), reg.dedicated_proxy_networks_count())
             };
-            registered = reg.clone();
         }
 
-        // Select and attach under one lock so concurrent clients see current usage.
-        let reused = if registered.max_networks().is_some() {
+        let policy_eligible = *NET_TYPE == Net::Vxlan && *ENCRYPTION_ENABLED;
+        // Non-VXLAN configurations retain the existing bounded reuse behavior.
+        let reused = if max_networks.is_some() && !policy_eligible {
             let mut services = self.services.write().await;
             let reuse = services.get_mut(&stack).and_then(|stack_map| {
                 let ServiceInfo::Registered(reg) = stack_map.get_mut(service_name)? else {
@@ -703,12 +785,119 @@ impl NullnetGrpcImpl {
         // repair — and the request that triggered it still deserves an
         // upstream. Bounded at one attempt so a teardown loop cannot spin here.
         for attempt in 0..2 {
+            let replica = self.pick_proxy_replica(&stack, service_name).await?;
+            let mut dedicated_admission = max_networks.and_then(|max| {
+                self.dedicated_admission(&stack, service_name, dedicated_count, max)
+            });
+            let hard_cap_allows_dedicated = max_networks.is_none() || dedicated_admission.is_some();
+            let adaptive_decision = (policy_eligible && hard_cap_allows_dedicated)
+                .then(|| self.congestion.allow_dedicated(proxy_ip, replica.ip));
+            if let Some(decision) = &adaptive_decision {
+                for transition in &decision.transitions {
+                    let (host, active) = match transition {
+                        RateTransition::Activated { host } => {
+                            println!(
+                                "Ingress congestion control activated for {host}: new encrypted ingress multiplexed"
+                            );
+                            (*host, true)
+                        }
+                        RateTransition::RecoveryStarted { host } => {
+                            println!(
+                                "Ingress congestion recovery started for {host}: dedicated setup probing enabled"
+                            );
+                            self.orchestrator
+                                .events
+                                .emit(Event::ingress_congestion_recovery_started(host.to_string()))
+                                .await;
+                            continue;
+                        }
+                        RateTransition::Recovered { host } => {
+                            println!(
+                                "Ingress congestion control recovered for {host}: dedicated setup rate unrestricted"
+                            );
+                            (*host, false)
+                        }
+                    };
+                    self.orchestrator
+                        .events
+                        .emit(Event::ingress_congestion_control_changed(
+                            host.to_string(),
+                            active,
+                        ))
+                        .await;
+                }
+            }
+            let adaptive_overflow = adaptive_decision.is_some_and(|decision| !decision.dedicated);
+            if adaptive_overflow {
+                drop(dedicated_admission.take());
+            }
+            let policy_overflow =
+                policy_eligible && (!hard_cap_allows_dedicated || adaptive_overflow);
             match self
-                .new_proxy_chain(&stack, service_name, proxy_ip, client_ip)
+                .new_proxy_chain(
+                    ProxyChainRequest {
+                        stack: &stack,
+                        service_name,
+                        proxy_ip,
+                        client_ip,
+                        replica: &replica,
+                        policy: policy_overflow,
+                    },
+                    dedicated_admission.take(),
+                )
                 .await
             {
-                Ok(Some(response)) => return Ok(response.into_inner()),
-                Ok(None) if attempt == 0 => {}
+                Ok(Some(response)) => {
+                    if policy_eligible && !policy_overflow {
+                        self.congestion
+                            .record_dedicated_completion(proxy_ip, replica.ip);
+                    }
+                    if policy_overflow && !adaptive_overflow {
+                        let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
+                        if let Some(net_id) = self
+                            .services
+                            .read()
+                            .await
+                            .get(&stack)
+                            .and_then(|map| map.get(service_name))
+                            .and_then(|info| match info {
+                                ServiceInfo::Registered(reg) => reg.client_net_id(&proxy_client),
+                                ServiceInfo::Unregistered(_) => None,
+                            })
+                        {
+                            self.orchestrator
+                                .events
+                                .emit(Event::max_networks_limit_enforced(
+                                    service_name.to_string(),
+                                    proxy_ip.to_string(),
+                                    net_id,
+                                    max_networks.expect("checked above"),
+                                ))
+                                .await;
+                        }
+                    }
+                    return Ok(response.into_inner());
+                }
+                Ok(None) if attempt == 0 => {
+                    if policy_eligible {
+                        let current = self
+                            .services
+                            .read()
+                            .await
+                            .get(&stack)
+                            .and_then(|map| map.get(service_name))
+                            .and_then(|info| match info {
+                                ServiceInfo::Registered(reg) => {
+                                    Some(reg.dedicated_proxy_networks_count())
+                                }
+                                ServiceInfo::Unregistered(_) => None,
+                            });
+                        let Some(current) = current else {
+                            break;
+                        };
+                        dedicated_count = current;
+                    }
+                }
                 Ok(None) => {
                     self.orchestrator
                         .events
@@ -833,39 +1022,24 @@ impl NullnetGrpcImpl {
         }))
     }
 
-    pub(crate) async fn new_proxy_chain(
+    async fn new_proxy_chain(
         &self,
-        stack: &str,
-        service_name: &str,
-        proxy_ip: IpAddr,
-        client_ip: &str,
+        request: ProxyChainRequest<'_>,
+        admission: Option<DedicatedAdmission>,
     ) -> Result<Option<Response<Upstream>>, Error> {
-        let guard = self.services.read().await;
-        let stack_map = guard
-            .get(stack)
-            .ok_or("Stack not found")
-            .handle_err(location!())?;
-        let reg = match stack_map.get(service_name) {
-            Some(ServiceInfo::Registered(reg)) => reg,
-            _ => Err("Service is not registered").handle_err(location!())?,
-        };
-        let replica = reg
-            .pick_replica_least_clients()
-            .ok_or("Service has no replicas")
-            .handle_err(location!())?;
-        let service_ip = replica.ip();
-        let service_port = replica.port();
-        let service_docker = replica.docker_container().map(String::from);
-        drop(guard);
-
+        let key = (
+            request.service_name.to_string(),
+            request.client_ip.to_string(),
+            request.proxy_ip,
+        );
         let outcome = self
             .setup_proxy_chain(
-                stack,
-                service_name,
-                proxy_ip,
-                client_ip,
-                service_ip,
-                service_docker.as_deref(),
+                request.stack,
+                &key,
+                request.replica.ip,
+                request.replica.docker.as_deref(),
+                request.policy,
+                admission,
             )
             .await?;
 
@@ -879,8 +1053,33 @@ impl NullnetGrpcImpl {
 
         Ok(Some(Response::new(Upstream {
             ip: upstream_ip.to_string(),
-            port: u32::from(service_port),
+            port: u32::from(request.replica.port),
         })))
+    }
+
+    async fn pick_proxy_replica(
+        &self,
+        stack: &str,
+        service_name: &str,
+    ) -> Result<ProxyReplica, Error> {
+        let guard = self.services.read().await;
+        let stack_map = guard
+            .get(stack)
+            .ok_or("Stack not found")
+            .handle_err(location!())?;
+        let reg = match stack_map.get(service_name) {
+            Some(ServiceInfo::Registered(reg)) => reg,
+            _ => Err("Service is not registered").handle_err(location!())?,
+        };
+        let replica = reg
+            .pick_replica_least_clients()
+            .ok_or("Service has no replicas")
+            .handle_err(location!())?;
+        Ok(ProxyReplica {
+            ip: replica.ip(),
+            port: replica.port(),
+            docker: replica.docker_container().map(String::from),
+        })
     }
 
     async fn proxy_branches(
@@ -929,29 +1128,34 @@ impl NullnetGrpcImpl {
         Ok(registered.backend_branch(service_name, service_ip, service_docker, port, stack_map))
     }
 
-    pub(crate) async fn setup_proxy_chain(
+    async fn setup_proxy_chain(
         &self,
         stack: &str,
-        service_name: &str,
-        proxy_ip: IpAddr,
-        client_ip: &str,
+        key: &ProxyKey,
         service_ip: IpAddr,
         service_docker: Option<&str>,
+        policy: bool,
+        admission: Option<DedicatedAdmission>,
     ) -> Result<ChainOutcome, Error> {
+        let (service_name, client_ip, proxy_ip) = key;
         let branches = self
             .proxy_branches(stack, service_name, service_ip, service_docker)
             .await?;
 
-        let entry = RegisteredEdge::new(
-            proxy_ip,
-            Client::new(client_ip.to_string(), Some(proxy_ip)),
+        let mut entry = RegisteredEdge::new(
+            *proxy_ip,
+            Client::new(client_ip.clone(), Some(*proxy_ip)),
             None,
             service_ip,
             Client::new(service_name.to_string(), None),
             service_docker.map(String::from),
         );
+        entry.policy = policy;
 
-        match self.net_chain_setup(stack, Some(entry), branches).await? {
+        match self
+            .net_chain_setup_with_admission(stack, entry, branches, admission)
+            .await?
+        {
             ChainOutcome::Built(None) => {
                 Err("No valid upstream IP found after NET chain setup").handle_err(location!())
             }
@@ -1305,7 +1509,7 @@ impl NullnetGrpcImpl {
         );
         // An invalidated owner unwinds its increments instead of retaining a hold.
         let built = matches!(
-            self.net_chain_setup_owned(stack, None, vec![branch], owner)
+            self.net_chain_setup_owned(stack, None, vec![branch], owner, None)
                 .await?,
             ChainOutcome::Built(_)
         );
@@ -1678,6 +1882,10 @@ impl NullnetGrpcImpl {
         &self.match_index
     }
 
+    pub(crate) fn congestion(&self) -> &Arc<CongestionController> {
+        &self.congestion
+    }
+
     pub(crate) fn orchestrator(&self) -> &Orchestrator {
         &self.orchestrator
     }
@@ -1773,13 +1981,14 @@ impl NullnetGrpcImpl {
     #[allow(clippy::too_many_lines)]
     /// Detached wrapper around [`run_net_chain_setup`] — see its docs for why
     /// the chain must not be able to die with its caller.
-    pub(crate) async fn net_chain_setup(
+    async fn net_chain_setup_with_admission(
         &self,
         stack: &str,
-        entry: Option<RegisteredEdge>,
+        entry: RegisteredEdge,
         branches: Vec<ChainBranch>,
+        admission: Option<DedicatedAdmission>,
     ) -> Result<ChainOutcome, Error> {
-        self.net_chain_setup_owned(stack, entry, branches, None)
+        self.net_chain_setup_owned(stack, Some(entry), branches, None, admission)
             .await
     }
 
@@ -1789,6 +1998,7 @@ impl NullnetGrpcImpl {
         entry: Option<RegisteredEdge>,
         branches: Vec<ChainBranch>,
         owner: Option<(BackendKey, uuid::Uuid)>,
+        admission: Option<DedicatedAdmission>,
     ) -> Result<ChainOutcome, Error> {
         let services = self.services.clone();
         let orchestrator = self.orchestrator.clone();
@@ -1796,7 +2006,16 @@ impl NullnetGrpcImpl {
         let (tx, rx) = oneshot::channel();
         tokio::spawn(async move {
             let _ = tx.send(
-                run_net_chain_setup(services, orchestrator, stack, entry, branches, owner).await,
+                run_net_chain_setup(
+                    services,
+                    orchestrator,
+                    stack,
+                    entry,
+                    branches,
+                    owner,
+                    admission,
+                )
+                .await,
             );
         });
         rx.await.handle_err(location!())?
@@ -1909,6 +2128,7 @@ async fn run_net_chain_setup(
     entry: Option<RegisteredEdge>,
     branches: Vec<ChainBranch>,
     owner: Option<(BackendKey, uuid::Uuid)>,
+    admission: Option<DedicatedAdmission>,
 ) -> Result<ChainOutcome, Error> {
     let mut join_set_outer = JoinSet::new();
 
@@ -1930,6 +2150,8 @@ async fn run_net_chain_setup(
                 EdgeTarget::Fixed(server_ethernet, edge.server_docker),
                 edge.backend_entry_port,
                 edge.egress,
+                edge.policy,
+                admission,
             )
             .await;
             match outcome {
@@ -1980,6 +2202,8 @@ async fn run_net_chain_setup(
                     EdgeTarget::Dependency,
                     entry_port,
                     false,
+                    false,
+                    None,
                 )
                 .await;
                 match outcome {
@@ -2158,6 +2382,8 @@ async fn setup_edge(
     target: EdgeTarget,
     backend_entry_port: Option<u32>,
     egress: bool,
+    policy: bool,
+    mut admission: Option<DedicatedAdmission>,
 ) -> EdgeOutcome {
     let init_time = std::time::Instant::now();
     // Egress edges steer on the initiator (client) side and intercept on the
@@ -2208,7 +2434,7 @@ async fn setup_edge(
                         ip,
                         docker.as_deref(),
                         client.clone(),
-                        ClientInfo::reservation(client_ethernet),
+                        ClientInfo::reservation(client_ethernet, policy),
                     ) {
                         return EdgeOutcome::Failed;
                     }
@@ -2236,6 +2462,9 @@ async fn setup_edge(
         // interval and not the whole request.
         let _ = tokio::time::timeout(EDGE_CLAIM_POLL, waiting_on.notified()).await;
     };
+
+    // The pending client now occupies the dedicated slot in service state.
+    drop(admission.take());
 
     // The reservation protects the target while its shared resume completes.
     if let Some(resume) = server_resume
@@ -2281,8 +2510,34 @@ async fn setup_edge(
     }
 
     let encrypted = *ENCRYPTION_ENABLED;
-    let encryption_key = if encrypted { generate_key() } else { [0u8; 32] };
+    let policy_transport =
+        policy.then(|| orchestrator.policy_transport(client_ethernet, server_ethernet));
+    let xfrm_transport =
+        (!policy && encrypted && *NET_TYPE == Net::Vxlan && client_ethernet != server_ethernet)
+            .then(|| orchestrator.xfrm_transport(client_ethernet, server_ethernet, false));
+    let encryption_key = if let Some(transport) = &policy_transport {
+        transport
+            .encryption_key
+            .as_slice()
+            .try_into()
+            .expect("policy keys are generated as 32 bytes")
+    } else if let Some((_, key)) = xfrm_transport {
+        key
+    } else if encrypted {
+        generate_key()
+    } else {
+        [0u8; 32]
+    };
+    let xfrm_transport_id = xfrm_transport.map(|(id, _)| id);
     let dstport = None;
+    let server_policy = policy_transport.clone().map(|mut transport| {
+        transport.peer_container = client_docker.is_some();
+        transport
+    });
+    let client_policy = policy_transport.map(|mut transport| {
+        transport.peer_container = server_docker.is_some();
+        transport
+    });
 
     let orch = orchestrator.clone();
     let cd = client_docker.clone();
@@ -2295,9 +2550,11 @@ async fn setup_edge(
         (cd, sd),
         None,
         encryption_key,
+        xfrm_transport_id,
         dstport,
         encrypted,
         server_egress,
+        server_policy,
     );
     let orch2 = orchestrator.clone();
     let cd = client_docker.clone();
@@ -2310,9 +2567,11 @@ async fn setup_edge(
         (cd, sd),
         backend_entry_port,
         encryption_key,
+        xfrm_transport_id,
         dstport,
         encrypted,
         client_egress,
+        client_policy,
     );
 
     let (server_ok, client_ok) = tokio::join!(server_res, client_res);
@@ -2320,10 +2579,15 @@ async fn setup_edge(
     // Local steering must not release packets into an unfinished peer.
     let activate = *NET_TYPE == Net::Vxlan
         && (backend_entry_port.is_some() || client_egress == EgressRole::Steer);
-    if server_ok.is_none()
-        || client_ok.is_none()
-        || (activate && !orchestrator.send_net_ready(client_ethernet, net_id).await)
-    {
+    let ready = if server_ok.is_none() || client_ok.is_none() {
+        false
+    } else if policy {
+        orchestrator.send_net_ready(server_ethernet, net_id).await
+            && orchestrator.send_net_ready(client_ethernet, net_id).await
+    } else {
+        !activate || orchestrator.send_net_ready(client_ethernet, net_id).await
+    };
+    if !ready {
         if client.is_proxy().is_some() {
             orchestrator
                 .events
@@ -2332,12 +2596,13 @@ async fn setup_edge(
         }
         // rollback
         orchestrator
-            .send_net_teardown(
+            .send_net_teardown_kind(
                 client_ethernet,
                 client_docker.clone(),
                 server_ethernet,
                 server_docker.clone(),
                 net_id,
+                policy,
             )
             .await;
         // remove placeholder
@@ -2380,7 +2645,7 @@ async fn setup_edge(
                 .pending_notify(&client)
                 .is_some_and(|current| Arc::ptr_eq(&current, &reservation)) =>
         {
-            let ci = ClientInfo::new(
+            let mut ci = ClientInfo::new(
                 client_ethernet,
                 net_ip_client,
                 net_ip_server,
@@ -2388,6 +2653,9 @@ async fn setup_edge(
                 setup_ms,
                 client_docker.clone(),
             );
+            if policy {
+                ci.set_policy();
+            }
             reg.add_client_to_replica(
                 server_ethernet,
                 server_docker.as_deref(),
@@ -2418,12 +2686,13 @@ async fn setup_edge(
             ))
             .await;
         orchestrator
-            .send_net_teardown(
+            .send_net_teardown_kind(
                 client_ethernet,
                 client_docker,
                 server_ethernet,
                 server_docker,
                 net_id,
+                policy,
             )
             .await;
         return EdgeOutcome::Failed;
@@ -2493,6 +2762,8 @@ impl NullnetGrpcImpl {
             port_mappings,
             http_routes,
             inflight_proxy: Arc::new(StdMutex::new(HashMap::new())),
+            dedicated_admissions: Arc::new(StdMutex::new(HashMap::new())),
+            congestion: Arc::new(CongestionController::default()),
             config_changed: Arc::new(Notify::new()),
             port_mappings_changed: Arc::new(Notify::new()),
             http_routes_changed: Arc::new(Notify::new()),

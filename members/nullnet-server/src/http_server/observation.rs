@@ -337,6 +337,7 @@ port = 8003
             services: Arc::new(RwLock::new(services)),
             routes: Arc::new(RwLock::new(routes)),
             match_index: Arc::new(RwLock::new(index)),
+            congestion: Arc::default(),
             events: orchestrator.events.clone(),
             sessions: orchestrator.sessions.clone(),
             orchestrator,
@@ -535,7 +536,7 @@ port = 8003
         );
         assert_ne!(a.is_ok(), b.is_ok());
         let Json(started) = a.or(b).unwrap();
-        stop_handler(
+        let _ = stop_handler(
             admin(),
             Path(("mesh".into(), started.id)),
             State(state.clone()),
@@ -662,7 +663,7 @@ port = 8003
                 .status(),
             StatusCode::FORBIDDEN
         );
-        start_handler(admin(), Path("mesh".into()), State(state.clone()))
+        let _ = start_handler(admin(), Path("mesh".into()), State(state.clone()))
             .await
             .unwrap();
         let body = serde_json::from_value(

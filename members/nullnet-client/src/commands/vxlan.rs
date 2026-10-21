@@ -34,6 +34,7 @@ fn link_group(vxlan_id: u32, client_side: bool) -> u32 {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct VxlanSetupParams {
     pub(crate) vxlan_id: u32,
+    pub(crate) xfrm_transport_id: u32,
     pub(crate) ns_name: String,
     pub(crate) ns_net: Ipv4Network,
     pub(crate) br_name: String,
@@ -254,7 +255,7 @@ async fn create_endpoint(
         forwarding,
         outer,
         params.br_net.ip(),
-        encrypted.then_some(params.vxlan_id),
+        encrypted.then_some(params.xfrm_transport_id),
     )
     .await
     .handle_err(location!())?;
@@ -369,10 +370,12 @@ async fn activate(endpoint: Arc<Endpoint>, params: &VxlanSetupParams) -> Result<
         } else {
             super::native_xfrm::install_port(
                 params.vxlan_id,
-                params.local_ip,
-                params.remote_ip,
+                params.xfrm_transport_id,
+                0,
+                (params.local_ip, params.remote_ip),
                 key,
                 params.dstport,
+                0,
             )
             .await
             .handle_err(location!())?;
@@ -713,6 +716,7 @@ mod endpoint_packet_tests {
         let cache = BridgeIpCache::new();
         let params = VxlanSetupParams {
             vxlan_id: 1959100,
+            xfrm_transport_id: 1959100,
             ns_name: "ns_1959100_s".into(),
             ns_net: Ipv4Network::new("10.250.11.1".parse().unwrap(), 29).unwrap(),
             br_name: "br_1959100_s".into(),
@@ -817,6 +821,7 @@ mod endpoint_packet_tests {
             cache.test_namespace(name.clone(), namespace);
             endpoints.push(VxlanSetupParams {
                 vxlan_id: id,
+                xfrm_transport_id: id,
                 ns_name: name.clone(),
                 ns_net: Ipv4Network::new(Ipv4Addr::new(10, 251, subnet, offset), 29).unwrap(),
                 br_name: format!("br_{id}_{side}"),
@@ -912,6 +917,7 @@ mod endpoint_packet_tests {
                 }
                 let params = VxlanSetupParams {
                     vxlan_id: id,
+                    xfrm_transport_id: id,
                     ns_name: name.clone(),
                     ns_net: Ipv4Network::new(
                         Ipv4Addr::new(10, 250, case as u8, endpoint_offset),

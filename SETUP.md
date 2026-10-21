@@ -256,6 +256,16 @@ Run the setup scripts as root. The supplied systemd services also run as root; p
 - `timeout` controls proxy-reachability: when present the service is a proxy-reachable entry point
   with that per-client idle timeout in seconds (`0` disables the timeout); omit it to keep the
   service off the proxy (backend-only)
+- `max_networks` is an optional hard cap on dedicated ingress networks for a proxy-reachable
+  service. Independently of that setting, encrypted VXLAN ingress switches new clients to
+  multiplexing when the proxy's RPC backlog and slot-wait time grow for consecutive windows. A
+  host-scoped controller first pauses dedicated setups, then additively admits one more probe per
+  healthy window; renewed congestion immediately returns the rate to zero. Stable queues do not
+  activate it, and only sustained successful probes under traffic remove the limit (idle time does
+  not count as recovery). Multiplexed clients get one policy
+  generation per client IP over a shared VXLAN. Cross-host groups share a persistent host-pair IPsec
+  transport; packet metadata and endpoint maps preserve per-client isolation. Same-host multiplexing
+  uses the same isolation policy with direct eBPF redirection and no VXLAN hairpin.
 - `proxy_dependencies` is a list of independent dep chains walked when the service is reached via a
   `Proxy` RPC from nullnet-proxy; each inner array is one linear branch and all branches are brought
   up in parallel

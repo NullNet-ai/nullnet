@@ -108,6 +108,7 @@ async fn handle_datagram(
     let proxy_req = ProxyRequest {
         client_ip: src.ip().to_string(),
         service_name: entry.service_name.clone(),
+        ..Default::default()
     };
     // Ingress country policy: an explicit deny drops the datagram (no session).
     // A check error is logged and allowed through.

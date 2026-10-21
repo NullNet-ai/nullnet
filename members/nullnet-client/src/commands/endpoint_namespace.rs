@@ -15,6 +15,10 @@ pub(crate) struct EndpointNamespace {
 }
 
 impl EndpointNamespace {
+    pub(crate) async fn root() -> io::Result<Arc<Self>> {
+        Self::open(File::open("/proc/self/ns/net")?, None).await
+    }
+
     pub(crate) fn validate(&self) -> io::Result<()> {
         if let Some(process) = &self.process {
             let mut poll = libc::pollfd {

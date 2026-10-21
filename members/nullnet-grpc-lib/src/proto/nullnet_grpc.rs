@@ -21,7 +21,7 @@ pub struct NetType {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NetMessage {
-    #[prost(oneof = "net_message::Message", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
+    #[prost(oneof = "net_message::Message", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
     pub message: ::core::option::Option<net_message::Message>,
 }
 /// Nested message and enum types in `NetMessage`.
@@ -48,7 +48,25 @@ pub mod net_message {
         EgressPolicyChanged(super::EgressPolicyChanged),
         #[prost(message, tag = "8")]
         NetReady(super::NetReady),
+        #[prost(message, tag = "9")]
+        PolicyHeartbeat(super::PolicyHeartbeat),
     }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PolicyHeartbeat {
+    #[prost(bytes = "vec", tag = "1")]
+    pub server_epoch: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PolicyTransport {
+    #[prost(uint32, tag = "1")]
+    pub id: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub encryption_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bool, tag = "3")]
+    pub peer_container: bool,
+    #[prost(uint64, tag = "4")]
+    pub generation: u64,
 }
 /// Both endpoints are prepared; the initiator may release held packets.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -157,17 +175,13 @@ pub struct VxlanSetup {
     /// internet (kernel ip_forward + MASQUERADE); the Cilium egress-gateway model.
     #[prost(bool, optional, tag = "13")]
     pub egress_intercept: ::core::option::Option<bool>,
-    /// Per-tunnel AES-256 key (32 raw bytes), generated once by the server and
-    /// sent identically to both endpoints. Used as the XFRM/ESP SA key that
-    /// encrypts this tunnel's traffic at the kernel level. Meaningless
-    /// (placeholder zero bytes) when `encrypted` is false.
+    /// AES-256 key sent identically to both endpoints. Cross-host VXLANs share
+    /// one XFRM/ESP carrier per host pair; same-host MACsec remains per edge.
+    /// Meaningless (placeholder zero bytes) when `encrypted` is false.
     #[prost(bytes = "vec", tag = "14")]
     pub encryption_key: ::prost::alloc::vec::Vec<u8>,
-    /// Per-tunnel VXLAN UDP destination port (replaces the IANA-standard 4789
-    /// default). Each tunnel gets a distinct port so an XFRM policy — which
-    /// selects by src/dst IP and port, not by VNI — can tell concurrent
-    /// tunnels between the same host pair apart. Allocated regardless of
-    /// `encrypted`, for simplicity.
+    /// VXLAN UDP destination port (replaces the IANA-standard 4789 default).
+    /// XFRM policies select by outer host pair, destination port, and mark.
     #[prost(uint32, tag = "15")]
     pub dstport: u32,
     /// Whether this tunnel is encrypted, mirroring the server's ENCRYPTION_ENABLED
@@ -176,6 +190,11 @@ pub struct VxlanSetup {
     /// SA/policy or MACsec (see nullnet-client's commands/vxlan.rs).
     #[prost(bool, tag = "16")]
     pub encrypted: bool,
+    #[prost(message, optional, tag = "17")]
+    pub policy_transport: ::core::option::Option<PolicyTransport>,
+    /// Shared cross-host XFRM carrier. Absent means legacy per-edge transport.
+    #[prost(uint32, optional, tag = "18")]
+    pub xfrm_transport_id: ::core::option::Option<u32>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VxlanTeardown {
@@ -201,6 +220,8 @@ pub struct VxlanTeardown {
     /// timer instead.
     #[prost(message, optional, tag = "8")]
     pub msg_id: ::core::option::Option<MsgId>,
+    #[prost(bool, tag = "9")]
+    pub policy: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MsgId {
@@ -271,6 +292,16 @@ pub struct ProxyRequest {
     pub client_ip: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub service_name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "3")]
+    pub routing_arrivals: u64,
+    #[prost(uint64, tag = "4")]
+    pub routing_completions: u64,
+    #[prost(uint32, tag = "5")]
+    pub routing_waiters: u32,
+    #[prost(uint64, tag = "6")]
+    pub routing_wait_us: u64,
+    #[prost(uint64, tag = "7")]
+    pub routing_epoch: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Upstream {
