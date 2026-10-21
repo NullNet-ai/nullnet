@@ -41,8 +41,8 @@ pub(crate) struct PressureWindowSnapshot {
     pub(crate) duration: Duration,
     pub(crate) arrivals: u64,
     pub(crate) completions: u64,
-    pub(crate) waiters: u32,
-    pub(crate) mean_wait_us: u64,
+    pub(crate) pending: u32,
+    pub(crate) mean_latency_us: u64,
     pub(crate) trend: PressureTrend,
 }
 
@@ -73,8 +73,10 @@ pub(crate) struct HostStatusSnapshot {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct NodeCongestionSnapshot {
-    pub(crate) pressure_age: Option<Duration>,
-    pub(crate) windows: Vec<PressureWindowSnapshot>,
+    pub(crate) proxy_pressure_age: Option<Duration>,
+    pub(crate) proxy_windows: Vec<PressureWindowSnapshot>,
+    pub(crate) setup_pressure_age: Option<Duration>,
+    pub(crate) setup_windows: Vec<PressureWindowSnapshot>,
     pub(crate) control: Option<HostStatusSnapshot>,
 }
 
@@ -84,8 +86,8 @@ struct PressureWindow {
     duration: Duration,
     arrivals: u64,
     completions: u64,
-    waiters: u32,
-    mean_wait_us: u64,
+    pending: u32,
+    mean_latency_us: u64,
     trend: PressureTrend,
 }
 
@@ -95,13 +97,23 @@ struct PressureView {
     trend: Trend,
 }
 
-struct ProxyPressure {
+#[derive(Clone, Copy)]
+struct LoadSample {
+    epoch: u64,
+    arrivals: u64,
+    completions: u64,
+    pending: u32,
+}
+
+struct Pressure {
     window_started: Instant,
-    start: ProxyLoad,
-    last: ProxyLoad,
-    wait_sum: u128,
-    samples: u64,
-    previous_wait_mean: Option<u64>,
+    start: LoadSample,
+    last: LoadSample,
+    latency_sum: u128,
+    latency_samples: u64,
+    previous_latency_mean: Option<u64>,
+    stalled_is_growing: bool,
+    carry_boundary_latency: bool,
     congested_windows: u8,
     sequence: u64,
     trend: Trend,
@@ -109,15 +121,23 @@ struct ProxyPressure {
     history: VecDeque<PressureWindow>,
 }
 
-impl ProxyPressure {
-    fn new(now: Instant, sample: ProxyLoad) -> Self {
+impl Pressure {
+    fn new(
+        now: Instant,
+        sample: LoadSample,
+        latency_us: Option<u64>,
+        stalled_is_growing: bool,
+        carry_boundary_latency: bool,
+    ) -> Self {
         Self {
             window_started: now,
             start: sample,
             last: sample,
-            wait_sum: u128::from(sample.wait_us),
-            samples: 1,
-            previous_wait_mean: None,
+            latency_sum: latency_us.map_or(0, u128::from),
+            latency_samples: u64::from(latency_us.is_some()),
+            previous_latency_mean: None,
+            stalled_is_growing,
+            carry_boundary_latency,
             congested_windows: 0,
             sequence: 0,
             trend: Trend::Neutral,
@@ -126,18 +146,26 @@ impl ProxyPressure {
         }
     }
 
-    fn reset(&mut self, now: Instant, sample: ProxyLoad) {
+    fn reset(&mut self, now: Instant, sample: LoadSample, latency_us: Option<u64>) {
         let sequence = self.sequence.saturating_add(1);
+        let stalled_is_growing = self.stalled_is_growing;
+        let carry_boundary_latency = self.carry_boundary_latency;
         let history =
             std::mem::replace(&mut self.history, VecDeque::with_capacity(PRESSURE_HISTORY));
-        *self = Self::new(now, sample);
+        *self = Self::new(
+            now,
+            sample,
+            latency_us,
+            stalled_is_growing,
+            carry_boundary_latency,
+        );
         self.sequence = sequence;
         self.history = history;
     }
 
-    fn observe(&mut self, now: Instant, sample: ProxyLoad) {
+    fn observe(&mut self, now: Instant, sample: LoadSample, latency_us: Option<u64>) {
         if sample.epoch != self.last.epoch {
-            self.reset(now, sample);
+            self.reset(now, sample, latency_us);
             return;
         }
         if sample.arrivals < self.last.arrivals || sample.completions < self.last.completions {
@@ -145,25 +173,34 @@ impl ProxyPressure {
         }
         self.last = sample;
         self.last_observed = now;
-        self.wait_sum += u128::from(sample.wait_us);
-        self.samples += 1;
+        if let Some(latency_us) = latency_us {
+            self.latency_sum += u128::from(latency_us);
+            self.latency_samples += 1;
+        }
         if now.duration_since(self.window_started) < PRESSURE_WINDOW {
             return;
         }
 
         let arrivals = self.last.arrivals - self.start.arrivals;
         let completions = self.last.completions - self.start.completions;
-        let wait_mean = u64::try_from(self.wait_sum / u128::from(self.samples)).unwrap_or(u64::MAX);
-        let wait_rising = self
-            .previous_wait_mean
-            .is_none_or(|previous| wait_mean > previous);
-        let wait_not_rising = self.previous_wait_mean.is_none_or(|previous| {
-            wait_mean <= previous.saturating_add(previous / 10).saturating_add(100)
+        let latency_mean = if self.latency_samples == 0 {
+            self.previous_latency_mean.unwrap_or_default()
+        } else {
+            u64::try_from(self.latency_sum / u128::from(self.latency_samples)).unwrap_or(u64::MAX)
+        };
+        let latency_rising = self
+            .previous_latency_mean
+            .is_none_or(|previous| latency_mean > previous);
+        let latency_not_rising = self.previous_latency_mean.is_none_or(|previous| {
+            latency_mean <= previous.saturating_add(previous / 10).saturating_add(100)
         });
-        let growing =
-            arrivals > completions && self.last.waiters > self.start.waiters && wait_rising;
-        let healthy =
-            arrivals <= completions && self.last.waiters <= self.start.waiters && wait_not_rising;
+        let stalled = self.stalled_is_growing && arrivals > completions && completions == 0;
+        let growing = arrivals > completions
+            && self.last.pending > self.start.pending
+            && (latency_rising || stalled);
+        let healthy = arrivals <= completions
+            && self.last.pending <= self.start.pending
+            && latency_not_rising;
 
         let display_trend = if growing {
             PressureTrend::Growing
@@ -197,16 +234,20 @@ impl ProxyPressure {
             duration: now.duration_since(self.window_started),
             arrivals,
             completions,
-            waiters: self.last.waiters,
-            mean_wait_us: wait_mean,
+            pending: self.last.pending,
+            mean_latency_us: latency_mean,
             trend: display_trend,
         });
-        self.previous_wait_mean = Some(wait_mean);
+        self.previous_latency_mean = Some(latency_mean);
         self.window_started = now;
         self.start = sample;
         self.last = sample;
-        self.wait_sum = u128::from(sample.wait_us);
-        self.samples = 1;
+        self.latency_sum = if self.carry_boundary_latency {
+            latency_us.map_or(0, u128::from)
+        } else {
+            0
+        };
+        self.latency_samples = u64::from(self.carry_boundary_latency && latency_us.is_some());
     }
 
     fn view(&self) -> PressureView {
@@ -214,6 +255,84 @@ impl ProxyPressure {
             sequence: self.sequence,
             trend: self.trend,
         }
+    }
+
+    fn current_window(&self, now: Instant) -> Option<PressureWindow> {
+        let arrivals = self.last.arrivals - self.start.arrivals;
+        let completions = self.last.completions - self.start.completions;
+        if arrivals == 0 && completions == 0 && self.last.pending == self.start.pending {
+            return None;
+        }
+        let elapsed = now.duration_since(self.window_started);
+        let duration = elapsed.min(PRESSURE_WINDOW);
+        if duration.is_zero() {
+            return None;
+        }
+        let mean_latency_us = if self.latency_samples == 0 {
+            self.previous_latency_mean.unwrap_or_default()
+        } else {
+            u64::try_from(self.latency_sum / u128::from(self.latency_samples)).unwrap_or(u64::MAX)
+        };
+        Some(PressureWindow {
+            ended_at: self.window_started + duration,
+            duration,
+            arrivals,
+            completions,
+            pending: self.last.pending,
+            mean_latency_us,
+            trend: PressureTrend::Neutral,
+        })
+    }
+}
+
+struct SetupPressure {
+    pressure: Pressure,
+    arrivals: u64,
+    completions: u64,
+    pending: u32,
+}
+
+impl SetupPressure {
+    fn new(now: Instant) -> Self {
+        Self {
+            pressure: Pressure::new(
+                now,
+                LoadSample {
+                    epoch: 0,
+                    arrivals: 0,
+                    completions: 0,
+                    pending: 0,
+                },
+                None,
+                true,
+                false,
+            ),
+            arrivals: 0,
+            completions: 0,
+            pending: 0,
+        }
+    }
+
+    fn sample(&self) -> LoadSample {
+        LoadSample {
+            epoch: 0,
+            arrivals: self.arrivals,
+            completions: self.completions,
+            pending: self.pending,
+        }
+    }
+
+    fn started(&mut self, now: Instant) {
+        self.arrivals = self.arrivals.saturating_add(1);
+        self.pending = self.pending.saturating_add(1);
+        self.pressure.observe(now, self.sample(), None);
+    }
+
+    fn completed(&mut self, now: Instant, latency: Duration) {
+        self.completions = self.completions.saturating_add(1);
+        self.pending = self.pending.saturating_sub(1);
+        let latency_us = u64::try_from(latency.as_micros()).unwrap_or(u64::MAX);
+        self.pressure.observe(now, self.sample(), Some(latency_us));
     }
 }
 
@@ -224,13 +343,19 @@ struct ControlTransition {
     source_proxy: IpAddr,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum PressureSource {
+    Proxy(IpAddr),
+    Setup(IpAddr),
+}
+
 struct HostRate {
     rate: Option<f64>,
     tokens: f64,
     last_refill: Instant,
     last_denied: Option<Instant>,
     completions: VecDeque<Instant>,
-    pressure_sequences: HashMap<IpAddr, u64>,
+    pressure_sequences: HashMap<PressureSource, u64>,
     healthy_windows: u8,
     state_since: Option<Instant>,
     source_proxy: Option<IpAddr>,
@@ -324,24 +449,41 @@ impl HostRate {
         self.completions.clear();
     }
 
-    fn apply(
+    fn apply_all(
         &mut self,
         host: IpAddr,
         proxy: IpAddr,
-        pressure: PressureView,
+        pressures: &[(PressureSource, PressureView)],
         now: Instant,
     ) -> Option<RateTransition> {
-        if pressure.sequence
-            <= self
-                .pressure_sequences
-                .get(&proxy)
-                .copied()
-                .unwrap_or_default()
-        {
+        let changed = pressures.iter().any(|(source, pressure)| {
+            pressure.sequence
+                > self
+                    .pressure_sequences
+                    .get(source)
+                    .copied()
+                    .unwrap_or_default()
+        });
+        if !changed {
             return None;
         }
-        self.pressure_sequences.insert(proxy, pressure.sequence);
-        match pressure.trend {
+        for (source, pressure) in pressures {
+            self.pressure_sequences.insert(*source, pressure.sequence);
+        }
+        let trend = if pressures
+            .iter()
+            .any(|(_, pressure)| pressure.trend == Trend::Congested)
+        {
+            Trend::Congested
+        } else if pressures
+            .iter()
+            .all(|(_, pressure)| pressure.trend == Trend::Healthy)
+        {
+            Trend::Healthy
+        } else {
+            Trend::Neutral
+        };
+        match trend {
             Trend::Congested => {
                 let activating = self.rate != Some(0.0);
                 self.rate = Some(0.0);
@@ -388,6 +530,22 @@ impl HostRate {
         None
     }
 
+    #[cfg(test)]
+    fn apply(
+        &mut self,
+        host: IpAddr,
+        proxy: IpAddr,
+        pressure: PressureView,
+        now: Instant,
+    ) -> Option<RateTransition> {
+        self.apply_all(
+            host,
+            proxy,
+            &[(PressureSource::Proxy(proxy), pressure)],
+            now,
+        )
+    }
+
     fn refill(&mut self, now: Instant) {
         let Some(rate) = self.rate else {
             self.last_refill = now;
@@ -401,13 +559,36 @@ impl HostRate {
 
 #[derive(Default)]
 struct State {
-    proxies: HashMap<IpAddr, ProxyPressure>,
+    proxies: HashMap<IpAddr, Pressure>,
+    setups: HashMap<IpAddr, SetupPressure>,
     hosts: HashMap<IpAddr, HostRate>,
 }
 
 #[derive(Default)]
 pub(crate) struct CongestionController {
     state: Mutex<State>,
+}
+
+pub(crate) struct SetupAttempt {
+    controller: std::sync::Arc<CongestionController>,
+    host: IpAddr,
+    started: Instant,
+}
+
+impl Drop for SetupAttempt {
+    fn drop(&mut self) {
+        let now = Instant::now();
+        let mut state = self
+            .controller
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .setups
+            .get_mut(&self.host)
+            .expect("setup attempt is registered")
+            .completed(now, now.duration_since(self.started));
+    }
 }
 
 impl CongestionController {
@@ -420,11 +601,36 @@ impl CongestionController {
     }
 
     fn observe_proxy_locked(state: &mut State, proxy: IpAddr, sample: ProxyLoad, now: Instant) {
+        let load = LoadSample {
+            epoch: sample.epoch,
+            arrivals: sample.arrivals,
+            completions: sample.completions,
+            pending: sample.waiters,
+        };
         state
             .proxies
             .entry(proxy)
-            .and_modify(|pressure| pressure.observe(now, sample))
-            .or_insert_with(|| ProxyPressure::new(now, sample));
+            .and_modify(|pressure| pressure.observe(now, load, Some(sample.wait_us)))
+            .or_insert_with(|| Pressure::new(now, load, Some(sample.wait_us), false, true));
+    }
+
+    pub(crate) fn setup_attempt(self: &std::sync::Arc<Self>, host: IpAddr) -> SetupAttempt {
+        let now = Instant::now();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .setups
+            .entry(host)
+            .or_insert_with(|| SetupPressure::new(now))
+            .started(now);
+        drop(state);
+        SetupAttempt {
+            controller: self.clone(),
+            host,
+            started: now,
+        }
     }
 
     pub(crate) fn allow_dedicated(&self, proxy: IpAddr, destination: IpAddr) -> AdmissionDecision {
@@ -441,7 +647,11 @@ impl CongestionController {
         destination: IpAddr,
         now: Instant,
     ) -> AdmissionDecision {
-        let pressure = state.proxies.get(&proxy).map(ProxyPressure::view);
+        let proxy_pressure = state.proxies.get(&proxy).map(Pressure::view);
+        let setup_pressure = state
+            .setups
+            .get(&destination)
+            .map(|setup| setup.pressure.view());
         let hosts = [proxy, destination];
         let host_count = if proxy == destination { 1 } else { 2 };
         let mut transitions = Vec::new();
@@ -451,8 +661,28 @@ impl CongestionController {
                 .entry(*host)
                 .or_insert_with(|| HostRate::new(now));
             rate.refill(now);
-            if let Some(pressure) = pressure
-                && let Some(transition) = rate.apply(*host, proxy, pressure, now)
+            let mut pressures = [(
+                PressureSource::Proxy(proxy),
+                PressureView {
+                    sequence: 0,
+                    trend: Trend::Neutral,
+                },
+            ); 2];
+            let mut pressure_count = 0;
+            if *host == proxy
+                && let Some(pressure) = proxy_pressure
+            {
+                pressures[pressure_count] = (PressureSource::Proxy(proxy), pressure);
+                pressure_count += 1;
+            }
+            if *host == destination
+                && let Some(pressure) = setup_pressure
+            {
+                pressures[pressure_count] = (PressureSource::Setup(destination), pressure);
+                pressure_count += 1;
+            }
+            if let Some(transition) =
+                rate.apply_all(*host, proxy, &pressures[..pressure_count], now)
             {
                 transitions.push(transition);
             }
@@ -522,17 +752,35 @@ impl CongestionController {
         nodes
             .into_iter()
             .map(|node| {
-                let pressure = state.proxies.get(&node);
-                let windows = pressure
+                let proxy_pressure = state.proxies.get(&node);
+                let proxy_windows = proxy_pressure
                     .into_iter()
                     .flat_map(|pressure| pressure.history.iter())
+                    .copied()
+                    .chain(proxy_pressure.and_then(|pressure| pressure.current_window(now)))
                     .map(|window| PressureWindowSnapshot {
                         age: now.duration_since(window.ended_at),
                         duration: window.duration,
                         arrivals: window.arrivals,
                         completions: window.completions,
-                        waiters: window.waiters,
-                        mean_wait_us: window.mean_wait_us,
+                        pending: window.pending,
+                        mean_latency_us: window.mean_latency_us,
+                        trend: window.trend,
+                    })
+                    .collect();
+                let setup_pressure = state.setups.get(&node);
+                let setup_windows = setup_pressure
+                    .into_iter()
+                    .flat_map(|setup| setup.pressure.history.iter())
+                    .copied()
+                    .chain(setup_pressure.and_then(|setup| setup.pressure.current_window(now)))
+                    .map(|window| PressureWindowSnapshot {
+                        age: now.duration_since(window.ended_at),
+                        duration: window.duration,
+                        arrivals: window.arrivals,
+                        completions: window.completions,
+                        pending: window.pending,
+                        mean_latency_us: window.mean_latency_us,
                         trend: window.trend,
                     })
                     .collect();
@@ -564,9 +812,12 @@ impl CongestionController {
                 (
                     node,
                     NodeCongestionSnapshot {
-                        pressure_age: pressure
+                        proxy_pressure_age: proxy_pressure
                             .map(|pressure| now.duration_since(pressure.last_observed)),
-                        windows,
+                        proxy_windows,
+                        setup_pressure_age: setup_pressure
+                            .map(|setup| now.duration_since(setup.pressure.last_observed)),
+                        setup_windows,
                         control,
                     },
                 )
@@ -591,6 +842,16 @@ mod tests {
             waiters,
             wait_us,
         }
+    }
+
+    fn congest_setup(state: &mut State, host: IpAddr, start: Instant) {
+        let setup = state
+            .setups
+            .entry(host)
+            .or_insert_with(|| SetupPressure::new(start));
+        setup.started(start);
+        setup.started(start + Duration::from_secs(1));
+        setup.started(start + Duration::from_secs(2));
     }
 
     #[test]
@@ -625,11 +886,30 @@ mod tests {
     #[test]
     fn pressure_history_is_bounded_and_survives_proxy_epoch_changes() {
         let start = Instant::now();
-        let mut pressure = ProxyPressure::new(start, sample(0, 0, 0, 0));
+        let first = sample(0, 0, 0, 0);
+        let mut pressure = Pressure::new(
+            start,
+            LoadSample {
+                epoch: first.epoch,
+                arrivals: first.arrivals,
+                completions: first.completions,
+                pending: first.waiters,
+            },
+            Some(first.wait_us),
+            false,
+            true,
+        );
         for second in 1..=65 {
+            let next = sample(second * 10, second * 10, 0, 100);
             pressure.observe(
                 start + Duration::from_secs(second),
-                sample(second * 10, second * 10, 0, 100),
+                LoadSample {
+                    epoch: next.epoch,
+                    arrivals: next.arrivals,
+                    completions: next.completions,
+                    pending: next.waiters,
+                },
+                Some(next.wait_us),
             );
         }
         assert_eq!(pressure.history.len(), PRESSURE_HISTORY);
@@ -637,12 +917,21 @@ mod tests {
 
         let mut reset = sample(1, 1, 0, 100);
         reset.epoch = 2;
-        pressure.observe(start + Duration::from_secs(66), reset);
+        pressure.observe(
+            start + Duration::from_secs(66),
+            LoadSample {
+                epoch: reset.epoch,
+                arrivals: reset.arrivals,
+                completions: reset.completions,
+                pending: reset.waiters,
+            },
+            Some(reset.wait_us),
+        );
         assert_eq!(pressure.history.len(), PRESSURE_HISTORY);
     }
 
     #[test]
-    fn growing_backlog_activates_rate_control() {
+    fn growing_proxy_backlog_activates_only_proxy_control() {
         let controller = CongestionController::default();
         let start = Instant::now();
         let mut state = controller.state.lock().unwrap();
@@ -674,12 +963,9 @@ mod tests {
             start + Duration::from_secs(2),
         );
         assert!(!first.dedicated);
-        assert_eq!(first.transitions.len(), 2);
-        assert!(
-            first
-                .transitions
-                .iter()
-                .all(|change| matches!(change, RateTransition::Activated { .. }))
+        assert_eq!(
+            first.transitions,
+            vec![RateTransition::Activated { host: ip(1) }]
         );
         assert!(
             !CongestionController::allow_dedicated_locked(
@@ -689,6 +975,191 @@ mod tests {
                 start + Duration::from_secs(2)
             )
             .dedicated
+        );
+    }
+
+    #[test]
+    fn proxy_backlog_does_not_activate_an_unmeasured_destination() {
+        let controller = CongestionController::default();
+        let start = Instant::now();
+        let mut state = controller.state.lock().unwrap();
+        CongestionController::observe_proxy_locked(&mut state, ip(1), sample(0, 0, 0, 0), start);
+        CongestionController::observe_proxy_locked(
+            &mut state,
+            ip(1),
+            sample(100, 70, 30, 1_000),
+            start + Duration::from_secs(1),
+        );
+        CongestionController::observe_proxy_locked(
+            &mut state,
+            ip(1),
+            sample(200, 140, 60, 2_000),
+            start + Duration::from_secs(2),
+        );
+
+        let decision = CongestionController::allow_dedicated_locked(
+            &mut state,
+            ip(1),
+            ip(2),
+            start + Duration::from_secs(2),
+        );
+
+        assert_eq!(
+            decision.transitions,
+            vec![RateTransition::Activated { host: ip(1) }]
+        );
+        assert_eq!(state.hosts[&ip(2)].mode(), ControlMode::Normal);
+    }
+
+    #[test]
+    fn destination_setup_backlog_activates_only_its_node() {
+        let controller = CongestionController::default();
+        let start = Instant::now();
+        let mut state = controller.state.lock().unwrap();
+        congest_setup(&mut state, ip(2), start);
+
+        let decision = CongestionController::allow_dedicated_locked(
+            &mut state,
+            ip(1),
+            ip(2),
+            start + Duration::from_secs(2),
+        );
+
+        assert!(!decision.dedicated);
+        assert_eq!(
+            decision.transitions,
+            vec![RateTransition::Activated { host: ip(2) }]
+        );
+        assert_eq!(state.hosts[&ip(1)].mode(), ControlMode::Normal);
+    }
+
+    #[test]
+    fn destination_pressure_never_spills_into_another_destination() {
+        let controller = CongestionController::default();
+        let start = Instant::now();
+        let mut state = controller.state.lock().unwrap();
+        congest_setup(&mut state, ip(2), start);
+
+        let decision = CongestionController::allow_dedicated_locked(
+            &mut state,
+            ip(1),
+            ip(3),
+            start + Duration::from_secs(2),
+        );
+
+        assert!(decision.dedicated);
+        assert!(decision.transitions.is_empty());
+        assert_eq!(state.hosts[&ip(3)].mode(), ControlMode::Normal);
+    }
+
+    #[test]
+    fn cross_host_setup_requires_both_independent_controllers() {
+        let controller = CongestionController::default();
+        let start = Instant::now();
+        let mut state = controller.state.lock().unwrap();
+        CongestionController::observe_proxy_locked(&mut state, ip(1), sample(0, 0, 0, 0), start);
+        CongestionController::observe_proxy_locked(
+            &mut state,
+            ip(1),
+            sample(100, 70, 30, 1_000),
+            start + Duration::from_secs(1),
+        );
+        CongestionController::observe_proxy_locked(
+            &mut state,
+            ip(1),
+            sample(200, 140, 60, 2_000),
+            start + Duration::from_secs(2),
+        );
+        congest_setup(&mut state, ip(2), start);
+
+        let decision = CongestionController::allow_dedicated_locked(
+            &mut state,
+            ip(1),
+            ip(2),
+            start + Duration::from_secs(2),
+        );
+
+        assert!(!decision.dedicated);
+        assert_eq!(
+            decision.transitions,
+            vec![
+                RateTransition::Activated { host: ip(1) },
+                RateTransition::Activated { host: ip(2) },
+            ]
+        );
+    }
+
+    #[test]
+    fn setup_latency_must_worsen_while_completions_continue() {
+        let start = Instant::now();
+        let mut pressure = Pressure::new(
+            start,
+            LoadSample {
+                epoch: 0,
+                arrivals: 0,
+                completions: 0,
+                pending: 0,
+            },
+            None,
+            true,
+            false,
+        );
+        let load = |arrivals, completions, pending| LoadSample {
+            epoch: 0,
+            arrivals,
+            completions,
+            pending,
+        };
+        pressure.observe(start + Duration::from_secs(1), load(10, 5, 5), Some(1_000));
+        pressure.observe(start + Duration::from_secs(2), load(20, 10, 10), Some(500));
+        assert_eq!(pressure.view().trend, Trend::Neutral);
+        pressure.observe(
+            start + Duration::from_secs(3),
+            load(30, 15, 15),
+            Some(1_000),
+        );
+        pressure.observe(
+            start + Duration::from_secs(4),
+            load(40, 20, 20),
+            Some(2_000),
+        );
+        assert_eq!(pressure.view().trend, Trend::Congested);
+    }
+
+    #[test]
+    fn setup_attempts_complete_independently_per_host() {
+        let controller = std::sync::Arc::new(CongestionController::default());
+        let proxy_attempt = controller.setup_attempt(ip(1));
+        let destination_attempt = controller.setup_attempt(ip(2));
+        {
+            let state = controller.state.lock().unwrap();
+            assert_eq!(state.setups[&ip(1)].arrivals, 1);
+            assert_eq!(state.setups[&ip(2)].arrivals, 1);
+            assert_eq!(state.setups[&ip(1)].pending, 1);
+            assert_eq!(state.setups[&ip(2)].pending, 1);
+        }
+        drop(destination_attempt);
+        {
+            let state = controller.state.lock().unwrap();
+            assert_eq!(state.setups[&ip(1)].completions, 0);
+            assert_eq!(state.setups[&ip(2)].completions, 1);
+            assert_eq!(state.setups[&ip(1)].pending, 1);
+            assert_eq!(state.setups[&ip(2)].pending, 0);
+        }
+        drop(proxy_attempt);
+        assert_eq!(controller.state.lock().unwrap().setups[&ip(1)].pending, 0);
+    }
+
+    #[test]
+    fn separate_same_host_setup_operations_are_counted() {
+        let controller = std::sync::Arc::new(CongestionController::default());
+        let first = controller.setup_attempt(ip(1));
+        let second = controller.setup_attempt(ip(1));
+        assert_eq!(controller.state.lock().unwrap().setups[&ip(1)].arrivals, 2);
+        drop((first, second));
+        assert_eq!(
+            controller.state.lock().unwrap().setups[&ip(1)].completions,
+            2
         );
     }
 
@@ -748,7 +1219,7 @@ mod tests {
             ip(2),
             start + Duration::from_secs(4),
         );
-        assert_eq!(decision.transitions.len(), 2);
+        assert_eq!(decision.transitions.len(), 1);
     }
 
     #[test]
@@ -781,7 +1252,7 @@ mod tests {
             ip(2),
             start + Duration::from_secs(2),
         );
-        assert_eq!(decision.transitions.len(), 2);
+        assert_eq!(decision.transitions.len(), 1);
     }
 
     #[test]
@@ -916,6 +1387,25 @@ mod tests {
             Some(RateTransition::Recovered { host: ip(2) })
         );
         assert_eq!(rate.rate, None);
+    }
+
+    #[test]
+    fn one_off_setup_is_visible_without_waiting_for_another_setup() {
+        let start = Instant::now();
+        let mut setup = SetupPressure::new(start);
+        setup.started(start);
+        setup.completed(start + Duration::from_millis(20), Duration::from_millis(20));
+
+        let window = setup
+            .pressure
+            .current_window(start + Duration::from_secs(5))
+            .expect("one-off setup has a display window");
+        assert_eq!(window.duration, PRESSURE_WINDOW);
+        assert_eq!(window.ended_at, start + PRESSURE_WINDOW);
+        assert_eq!(window.arrivals, 1);
+        assert_eq!(window.completions, 1);
+        assert_eq!(window.pending, 0);
+        assert_eq!(window.mean_latency_us, 20_000);
     }
 
     #[test]

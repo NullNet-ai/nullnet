@@ -3,8 +3,9 @@ import { useState } from 'react';
 import Layout from '../components/Layout';
 import { useApi } from '../hooks/useApi';
 import { useStack } from '../StackContext';
-import type { IngressControlState, NodeJson, PressureWindowJson } from '../types';
+import type { IngressControlState, NodeJson, PressureWindowJson, SetupPressureWindowJson } from '../types';
 import { useDragResize } from '../hooks/useDragResize';
+import { recentPressureWindows, timedLinePoints } from '../lib/pressureChart';
 
 function stateLabel(state: IngressControlState) {
   if (state === 'multiplexing') return 'Multiplexing';
@@ -40,20 +41,9 @@ function formatRate(value: number | null | undefined) {
   return value >= 100 ? Math.round(value).toLocaleString() : value.toFixed(1);
 }
 
-function linePoints(values: number[], width: number, height: number, max: number) {
-  if (values.length === 1) {
-    const y = height - (values[0] / max) * height;
-    return `0,${y} ${width},${y}`;
-  }
-  return values.map((value, index) => {
-    const x = (index / (values.length - 1)) * width;
-    const y = height - (value / max) * height;
-    return `${x},${y}`;
-  }).join(' ');
-}
+type ThroughputWindow = Pick<PressureWindowJson, 'age_ms' | 'duration_ms' | 'arrivals_per_sec' | 'completions_per_sec'>;
 
-function RoutingChart({ windows }: { windows: PressureWindowJson[] }) {
-  if (windows.length === 0) return <div className="pressure-empty">Waiting for routing samples…</div>;
+function RoutingChart({ windows }: { windows: ThroughputWindow[] }) {
   const arrivals = windows.map(window => window.arrivals_per_sec);
   const completions = windows.map(window => window.completions_per_sec);
   const max = Math.max(1, ...arrivals, ...completions);
@@ -62,39 +52,61 @@ function RoutingChart({ windows }: { windows: PressureWindowJson[] }) {
       <div className="pressure-legend">
         <span><i className="legend-line arrivals" />Arrivals/s</span>
         <span><i className="legend-line completions" />Completions/s</span>
-        <span className="pressure-range">last {windows.length}s</span>
+        <span className="pressure-range">last 60s</span>
       </div>
-      <svg className="pressure-chart" viewBox="0 0 300 82" preserveAspectRatio="none" aria-label="Routing arrivals and completions per second">
-        <line x1="0" y1="81" x2="300" y2="81" className="chart-axis" />
-        <line x1="0" y1="41" x2="300" y2="41" className="chart-grid" />
-        <polyline points={linePoints(arrivals, 300, 78, max)} className="chart-line arrivals" />
-        <polyline points={linePoints(completions, 300, 78, max)} className="chart-line completions" />
-      </svg>
+      <div className="pressure-plot-row">
+        <div className="chart-y-scale"><span>{formatRate(max)}</span><span>{formatRate(max / 2)}</span><span>0</span></div>
+        <svg className="pressure-chart" viewBox="0 0 300 78" preserveAspectRatio="none" aria-label="Routing arrivals and completions per second">
+          <line x1="0" y1="77" x2="300" y2="77" className="chart-axis" />
+          <line x1="0" y1="39" x2="300" y2="39" className="chart-grid" />
+          <polyline points={timedLinePoints(windows, window => window.arrivals_per_sec, 300, 76, max)} className="chart-line arrivals" />
+          <polyline points={timedLinePoints(windows, window => window.completions_per_sec, 300, 76, max)} className="chart-line completions" />
+        </svg>
+      </div>
     </div>
   );
 }
 
-function QueueChart({ windows }: { windows: PressureWindowJson[] }) {
-  if (windows.length === 0) return null;
-  const waiters = windows.map(window => window.waiters);
-  const waits = windows.map(window => window.mean_wait_us / 1000);
-  const waiterMax = Math.max(1, ...waiters);
-  const waitMax = Math.max(1, ...waits);
+function DetailCharts<T extends ThroughputWindow,>({
+  windows,
+  pendingLabel,
+  latencyLabel,
+  pendingValue,
+  latencyUs,
+}: {
+  windows: T[];
+  pendingLabel: string;
+  latencyLabel: string;
+  pendingValue: (window: T) => number;
+  latencyUs: (window: T) => number;
+}) {
+  const pending = windows.map(pendingValue);
+  const latencies = windows.map(window => latencyUs(window) / 1000);
+  const pendingMax = Math.max(1, ...pending);
+  const latencyMax = Math.max(1, ...latencies);
   return (
     <div className="queue-charts">
       <div className="queue-chart-row">
-        <span>Waiters</span>
-        <svg viewBox="0 0 220 34" preserveAspectRatio="none" aria-label="Routing waiters">
-          <polyline points={linePoints(waiters, 220, 31, waiterMax)} className="chart-line waiters" />
-        </svg>
-        <strong>{waiters.at(-1) ?? 0}</strong>
+        <span>{pendingLabel}</span>
+        <div className="queue-plot">
+          <div className="queue-y-scale"><span>{formatRate(pendingMax)}</span><span>0</span></div>
+          <svg viewBox="0 0 220 31" preserveAspectRatio="none" aria-label={pendingLabel}>
+            <line x1="0" y1="30" x2="220" y2="30" className="chart-axis" />
+            <polyline points={timedLinePoints(windows, pendingValue, 220, 29, pendingMax)} className="chart-line waiters" />
+          </svg>
+        </div>
+        <strong>{pending.at(-1) ?? 0}</strong>
       </div>
       <div className="queue-chart-row">
-        <span>Mean wait</span>
-        <svg viewBox="0 0 220 34" preserveAspectRatio="none" aria-label="Mean routing slot wait">
-          <polyline points={linePoints(waits, 220, 31, waitMax)} className="chart-line wait" />
-        </svg>
-        <strong>{formatWait(windows.at(-1)?.mean_wait_us)}</strong>
+        <span>{latencyLabel}</span>
+        <div className="queue-plot">
+          <div className="queue-y-scale"><span>{formatWait(latencyMax * 1000)}</span><span>0</span></div>
+          <svg viewBox="0 0 220 31" preserveAspectRatio="none" aria-label={latencyLabel}>
+            <line x1="0" y1="30" x2="220" y2="30" className="chart-axis" />
+            <polyline points={timedLinePoints(windows, window => latencyUs(window) / 1000, 220, 29, latencyMax)} className="chart-line wait" />
+          </svg>
+        </div>
+        <strong>{formatWait(windows.at(-1) ? latencyUs(windows.at(-1)!) : undefined)}</strong>
       </div>
     </div>
   );
@@ -130,24 +142,27 @@ export default function Nodes() {
 
           <div className="nodes-grid">
             {nodes?.map(node => {
-              const latest = node.pressure_windows.at(-1);
+              const latest = recentPressureWindows(node.setup_pressure_windows).at(-1);
               return (
                 <div key={node.ip} className={`node-card${selected === node.ip ? ' sel' : ''}`} onClick={() => select(node.ip)}>
                   <div className="nc-head">
                     <div>
                       <div className="nc-name"><span className="dot dot-g"></span>{node.ip}</div>
-                      <div className="nc-observed">Observed {formatAge(node.pressure_age_ms)}</div>
+                      <div className="nc-observed">Setup observed {formatAge(node.setup_pressure_age_ms)}</div>
                     </div>
-                    <span className={`badge ${stateBadge(node.ingress_control.state)}`}>
-                      {stateLabel(node.ingress_control.state)}
-                    </span>
+                    <div className="nc-badges">
+                      {node.is_proxy && <span className="badge b-amber">Proxy</span>}
+                      <span className={`badge ${stateBadge(node.ingress_control.state)}`}>
+                        {stateLabel(node.ingress_control.state)}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="nc-stats">
-                    <div className="nc-stat"><div className="nc-stat-k">Arrivals/s</div><div className="nc-stat-v">{formatRate(latest?.arrivals_per_sec)}</div></div>
-                    <div className="nc-stat"><div className="nc-stat-k">Completions/s</div><div className="nc-stat-v">{formatRate(latest?.completions_per_sec)}</div></div>
-                    <div className="nc-stat"><div className="nc-stat-k">Waiters</div><div className="nc-stat-v">{latest?.waiters ?? '–'}</div></div>
-                    <div className="nc-stat"><div className="nc-stat-k">Mean wait</div><div className="nc-stat-v compact">{formatWait(latest?.mean_wait_us)}</div></div>
+                    <div className="nc-stat"><div className="nc-stat-k">Setup/s</div><div className="nc-stat-v">{formatRate(latest?.arrivals_per_sec)}</div></div>
+                    <div className="nc-stat"><div className="nc-stat-k">Completed/s</div><div className="nc-stat-v">{formatRate(latest?.completions_per_sec)}</div></div>
+                    <div className="nc-stat"><div className="nc-stat-k">In flight</div><div className="nc-stat-v">{latest?.in_flight ?? '–'}</div></div>
+                    <div className="nc-stat"><div className="nc-stat-k">Mean setup</div><div className="nc-stat-v compact">{formatWait(latest?.mean_setup_us)}</div></div>
                   </div>
 
                   <div className="nc-groups">
@@ -172,7 +187,10 @@ export default function Nodes() {
         <div className="dp" style={{ width: dpWidth }}>
           <div className="drag-handle" onMouseDown={onResizeStart} />
           <div className="dp-head">
-            <span className="dp-title" title={selectedNode?.ip}>{selectedNode ? selectedNode.ip : '–'}</span>
+            <div className="dp-title-group">
+              <span className="dp-title" title={selectedNode?.ip}>{selectedNode ? selectedNode.ip : '–'}</span>
+              {selectedNode?.is_proxy && <span className="badge b-amber">Proxy</span>}
+            </div>
             {selectedNode && <button className="dp-close" onClick={() => setSelected(null)}>✕</button>}
           </div>
 
@@ -192,11 +210,32 @@ export default function Nodes() {
               </div>
 
               <div className="dp-sec">
-                <div className="dp-sec-title">Routing pressure</div>
-                <RoutingChart windows={selectedNode.pressure_windows} />
-                <QueueChart windows={selectedNode.pressure_windows} />
-                <div className="pressure-observed">Latest proxy sample {formatAge(selectedNode.pressure_age_ms)}</div>
+                <div className="dp-sec-title">Setup pressure</div>
+                <RoutingChart windows={recentPressureWindows(selectedNode.setup_pressure_windows)} />
+                <DetailCharts<SetupPressureWindowJson>
+                  windows={recentPressureWindows(selectedNode.setup_pressure_windows)}
+                  pendingLabel="In flight"
+                  latencyLabel="Mean setup"
+                  pendingValue={window => window.in_flight}
+                  latencyUs={window => window.mean_setup_us}
+                />
+                <div className="pressure-observed">Latest setup sample {formatAge(selectedNode.setup_pressure_age_ms)}</div>
               </div>
+
+              {selectedNode.is_proxy && (
+                <div className="dp-sec">
+                  <div className="dp-sec-title">Proxy routing pressure</div>
+                  <RoutingChart windows={recentPressureWindows(selectedNode.pressure_windows)} />
+                  <DetailCharts<PressureWindowJson>
+                    windows={recentPressureWindows(selectedNode.pressure_windows)}
+                    pendingLabel="Q waiters"
+                    latencyLabel="Mean routing wait"
+                    pendingValue={window => window.waiters}
+                    latencyUs={window => window.mean_wait_us}
+                  />
+                  <div className="pressure-observed">Latest proxy sample {formatAge(selectedNode.pressure_age_ms)}</div>
+                </div>
+              )}
 
               <div className="dp-sec">
                 <div className="dp-sec-title">Active ingress groups</div>

@@ -27,6 +27,7 @@ export interface HostedServiceJson {
 
 export interface NodeJson {
   ip: string;
+  is_proxy: boolean;
   hosted_services: HostedServiceJson[];
   ingress_groups: {
     dedicated: number;
@@ -44,6 +45,8 @@ export interface NodeJson {
   };
   pressure_age_ms: number | null;
   pressure_windows: PressureWindowJson[];
+  setup_pressure_age_ms: number | null;
+  setup_pressure_windows: SetupPressureWindowJson[];
 }
 
 export type IngressControlState = 'normal' | 'multiplexing' | 'recovery';
@@ -63,6 +66,18 @@ export interface PressureWindowJson {
   completions_per_sec: number;
   waiters: number;
   mean_wait_us: number;
+  trend: 'healthy' | 'growing' | 'neutral';
+}
+
+export interface SetupPressureWindowJson {
+  age_ms: number;
+  duration_ms: number;
+  arrivals: number;
+  completions: number;
+  arrivals_per_sec: number;
+  completions_per_sec: number;
+  in_flight: number;
+  mean_setup_us: number;
   trend: 'healthy' | 'growing' | 'neutral';
 }
 
