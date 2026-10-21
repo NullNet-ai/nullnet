@@ -92,6 +92,12 @@ struct DedicatedAdmission {
     key: (String, String),
 }
 
+#[derive(Default)]
+struct EntrySetupContext {
+    admission: Option<DedicatedAdmission>,
+    pressure: Option<Arc<CongestionController>>,
+}
+
 struct ProxyReplica {
     ip: IpAddr,
     port: u16,
@@ -105,6 +111,7 @@ struct ProxyChainRequest<'a> {
     client_ip: &'a str,
     replica: &'a ProxyReplica,
     policy: bool,
+    measure_congestion: bool,
 }
 
 impl Drop for DedicatedAdmission {
@@ -842,6 +849,7 @@ impl NullnetGrpcImpl {
                         client_ip,
                         replica: &replica,
                         policy: policy_overflow,
+                        measure_congestion: policy_eligible,
                     },
                     dedicated_admission.take(),
                 )
@@ -1032,16 +1040,7 @@ impl NullnetGrpcImpl {
             request.client_ip.to_string(),
             request.proxy_ip,
         );
-        let outcome = self
-            .setup_proxy_chain(
-                request.stack,
-                &key,
-                request.replica.ip,
-                request.replica.docker.as_deref(),
-                request.policy,
-                admission,
-            )
-            .await?;
+        let outcome = self.setup_proxy_chain(&request, &key, admission).await?;
 
         // Suspended replicas are unpaused per-edge inside `net_chain_setup`, so by
         // the time the chain is built every container in it is already serving.
@@ -1130,30 +1129,36 @@ impl NullnetGrpcImpl {
 
     async fn setup_proxy_chain(
         &self,
-        stack: &str,
+        request: &ProxyChainRequest<'_>,
         key: &ProxyKey,
-        service_ip: IpAddr,
-        service_docker: Option<&str>,
-        policy: bool,
         admission: Option<DedicatedAdmission>,
     ) -> Result<ChainOutcome, Error> {
         let (service_name, client_ip, proxy_ip) = key;
         let branches = self
-            .proxy_branches(stack, service_name, service_ip, service_docker)
+            .proxy_branches(
+                request.stack,
+                service_name,
+                request.replica.ip,
+                request.replica.docker.as_deref(),
+            )
             .await?;
 
         let mut entry = RegisteredEdge::new(
             *proxy_ip,
             Client::new(client_ip.clone(), Some(*proxy_ip)),
             None,
-            service_ip,
+            request.replica.ip,
             Client::new(service_name.to_string(), None),
-            service_docker.map(String::from),
+            request.replica.docker.clone(),
         );
-        entry.policy = policy;
+        entry.policy = request.policy;
 
+        let entry_setup = EntrySetupContext {
+            admission,
+            pressure: request.measure_congestion.then(|| self.congestion.clone()),
+        };
         match self
-            .net_chain_setup_with_admission(stack, entry, branches, admission)
+            .net_chain_setup_with_admission(request.stack, entry, branches, entry_setup)
             .await?
         {
             ChainOutcome::Built(None) => {
@@ -1509,8 +1514,14 @@ impl NullnetGrpcImpl {
         );
         // An invalidated owner unwinds its increments instead of retaining a hold.
         let built = matches!(
-            self.net_chain_setup_owned(stack, None, vec![branch], owner, None)
-                .await?,
+            self.net_chain_setup_owned(
+                stack,
+                None,
+                vec![branch],
+                owner,
+                EntrySetupContext::default(),
+            )
+            .await?,
             ChainOutcome::Built(_)
         );
         println!("[trigger] net_chain_setup completed for '{initiator_name}' port {port}");
@@ -1986,9 +1997,9 @@ impl NullnetGrpcImpl {
         stack: &str,
         entry: RegisteredEdge,
         branches: Vec<ChainBranch>,
-        admission: Option<DedicatedAdmission>,
+        entry_setup: EntrySetupContext,
     ) -> Result<ChainOutcome, Error> {
-        self.net_chain_setup_owned(stack, Some(entry), branches, None, admission)
+        self.net_chain_setup_owned(stack, Some(entry), branches, None, entry_setup)
             .await
     }
 
@@ -1998,7 +2009,7 @@ impl NullnetGrpcImpl {
         entry: Option<RegisteredEdge>,
         branches: Vec<ChainBranch>,
         owner: Option<(BackendKey, uuid::Uuid)>,
-        admission: Option<DedicatedAdmission>,
+        entry_setup: EntrySetupContext,
     ) -> Result<ChainOutcome, Error> {
         let services = self.services.clone();
         let orchestrator = self.orchestrator.clone();
@@ -2013,7 +2024,7 @@ impl NullnetGrpcImpl {
                     entry,
                     branches,
                     owner,
-                    admission,
+                    entry_setup,
                 )
                 .await,
             );
@@ -2128,7 +2139,7 @@ async fn run_net_chain_setup(
     entry: Option<RegisteredEdge>,
     branches: Vec<ChainBranch>,
     owner: Option<(BackendKey, uuid::Uuid)>,
-    admission: Option<DedicatedAdmission>,
+    entry_setup: EntrySetupContext,
 ) -> Result<ChainOutcome, Error> {
     let mut join_set_outer = JoinSet::new();
 
@@ -2151,7 +2162,8 @@ async fn run_net_chain_setup(
                 edge.backend_entry_port,
                 edge.egress,
                 edge.policy,
-                admission,
+                entry_setup.admission,
+                entry_setup.pressure,
             )
             .await;
             match outcome {
@@ -2203,6 +2215,7 @@ async fn run_net_chain_setup(
                     entry_port,
                     false,
                     false,
+                    None,
                     None,
                 )
                 .await;
@@ -2384,6 +2397,7 @@ async fn setup_edge(
     egress: bool,
     policy: bool,
     mut admission: Option<DedicatedAdmission>,
+    setup_pressure: Option<Arc<CongestionController>>,
 ) -> EdgeOutcome {
     let init_time = std::time::Instant::now();
     // Egress edges steer on the initiator (client) side and intercept on the
@@ -2542,37 +2556,53 @@ async fn setup_edge(
     let orch = orchestrator.clone();
     let cd = client_docker.clone();
     let sd = server_docker.clone();
-    let server_res = orch.send_net_setup(
-        server_ethernet,
-        None,
-        net_id,
-        client_ethernet,
-        (cd, sd),
-        None,
-        encryption_key,
-        xfrm_transport_id,
-        dstport,
-        encrypted,
-        server_egress,
-        server_policy,
-    );
+    let server_attempt = setup_pressure
+        .as_ref()
+        .map(|pressure| pressure.setup_attempt(server_ethernet));
+    let server_res = async move {
+        let _attempt = server_attempt;
+        orch.send_net_setup(
+            server_ethernet,
+            None,
+            net_id,
+            client_ethernet,
+            (cd, sd),
+            None,
+            encryption_key,
+            xfrm_transport_id,
+            dstport,
+            encrypted,
+            server_egress,
+            server_policy,
+        )
+        .await
+    };
     let orch2 = orchestrator.clone();
     let cd = client_docker.clone();
     let sd = server_docker.clone();
-    let client_res = orch2.send_net_setup(
-        client_ethernet,
-        Some(server_name.clone()),
-        net_id,
-        server_ethernet,
-        (cd, sd),
-        backend_entry_port,
-        encryption_key,
-        xfrm_transport_id,
-        dstport,
-        encrypted,
-        client_egress,
-        client_policy,
-    );
+    let client_attempt = setup_pressure
+        .as_ref()
+        .map(|pressure| pressure.setup_attempt(client_ethernet));
+    let client_server_name = server_name.clone();
+    let client_res = async move {
+        let _attempt = client_attempt;
+        orch2
+            .send_net_setup(
+                client_ethernet,
+                Some(client_server_name),
+                net_id,
+                server_ethernet,
+                (cd, sd),
+                backend_entry_port,
+                encryption_key,
+                xfrm_transport_id,
+                dstport,
+                encrypted,
+                client_egress,
+                client_policy,
+            )
+            .await
+    };
 
     let (server_ok, client_ok) = tokio::join!(server_res, client_res);
 

@@ -2,6 +2,7 @@ use super::AppState;
 use super::auth::{AuthContext, require_scope};
 use crate::auth::Scope;
 use crate::congestion::{ControlMode, NodeCongestionSnapshot, PressureTrend};
+use crate::env::PROXY_IP;
 use crate::services::service_info::ServiceInfo;
 use axum::extract::{Extension, Path, State};
 use axum::response::{IntoResponse, Response};
@@ -19,11 +20,14 @@ struct HostedServiceJson {
 #[derive(Serialize)]
 struct NodeJson {
     ip: String,
+    is_proxy: bool,
     hosted_services: Vec<HostedServiceJson>,
     ingress_groups: IngressGroupsJson,
     ingress_control: IngressControlJson,
     pressure_age_ms: Option<u64>,
-    pressure_windows: Vec<PressureWindowJson>,
+    pressure_windows: Vec<ProxyPressureWindowJson>,
+    setup_pressure_age_ms: Option<u64>,
+    setup_pressure_windows: Vec<SetupPressureWindowJson>,
 }
 
 #[derive(Default, Serialize)]
@@ -52,7 +56,7 @@ struct IngressStateJson {
 }
 
 #[derive(Serialize)]
-struct PressureWindowJson {
+struct ProxyPressureWindowJson {
     age_ms: u64,
     duration_ms: u64,
     arrivals: u64,
@@ -61,6 +65,19 @@ struct PressureWindowJson {
     completions_per_sec: f64,
     waiters: u32,
     mean_wait_us: u64,
+    trend: &'static str,
+}
+
+#[derive(Serialize)]
+struct SetupPressureWindowJson {
+    age_ms: u64,
+    duration_ms: u64,
+    arrivals: u64,
+    completions: u64,
+    arrivals_per_sec: f64,
+    completions_per_sec: f64,
+    in_flight: u32,
+    mean_setup_us: u64,
     trend: &'static str,
 }
 
@@ -78,7 +95,13 @@ fn control_mode(mode: ControlMode) -> &'static str {
 
 fn congestion_json(
     snapshot: NodeCongestionSnapshot,
-) -> (IngressControlJson, Option<u64>, Vec<PressureWindowJson>) {
+) -> (
+    IngressControlJson,
+    Option<u64>,
+    Vec<ProxyPressureWindowJson>,
+    Option<u64>,
+    Vec<SetupPressureWindowJson>,
+) {
     let control = snapshot.control.map_or_else(
         || IngressControlJson {
             state: "normal",
@@ -109,20 +132,20 @@ fn congestion_json(
                 .collect(),
         },
     );
-    let windows = snapshot
-        .windows
+    let proxy_windows = snapshot
+        .proxy_windows
         .into_iter()
         .map(|window| {
             let seconds = window.duration.as_secs_f64();
-            PressureWindowJson {
+            ProxyPressureWindowJson {
                 age_ms: millis(window.age),
                 duration_ms: millis(window.duration),
                 arrivals: window.arrivals,
                 completions: window.completions,
                 arrivals_per_sec: window.arrivals as f64 / seconds,
                 completions_per_sec: window.completions as f64 / seconds,
-                waiters: window.waiters,
-                mean_wait_us: window.mean_wait_us,
+                waiters: window.pending,
+                mean_wait_us: window.mean_latency_us,
                 trend: match window.trend {
                     PressureTrend::Growing => "growing",
                     PressureTrend::Healthy => "healthy",
@@ -131,7 +154,35 @@ fn congestion_json(
             }
         })
         .collect();
-    (control, snapshot.pressure_age.map(millis), windows)
+    let setup_windows = snapshot
+        .setup_windows
+        .into_iter()
+        .map(|window| {
+            let seconds = window.duration.as_secs_f64();
+            SetupPressureWindowJson {
+                age_ms: millis(window.age),
+                duration_ms: millis(window.duration),
+                arrivals: window.arrivals,
+                completions: window.completions,
+                arrivals_per_sec: window.arrivals as f64 / seconds,
+                completions_per_sec: window.completions as f64 / seconds,
+                in_flight: window.pending,
+                mean_setup_us: window.mean_latency_us,
+                trend: match window.trend {
+                    PressureTrend::Growing => "growing",
+                    PressureTrend::Healthy => "healthy",
+                    PressureTrend::Neutral => "neutral",
+                },
+            }
+        })
+        .collect();
+    (
+        control,
+        snapshot.proxy_pressure_age.map(millis),
+        proxy_windows,
+        snapshot.setup_pressure_age.map(millis),
+        setup_windows,
+    )
 }
 
 pub(super) async fn nodes_handler(
@@ -194,9 +245,16 @@ pub(super) async fn nodes_handler(
             let groups = ingress_groups.remove(&ip).unwrap_or_default();
             let multiplexed = groups.values().filter(|policy| **policy).count();
             let snapshot = congestion.remove(&ip).unwrap_or_default();
-            let (ingress_control, pressure_age_ms, pressure_windows) = congestion_json(snapshot);
+            let (
+                ingress_control,
+                pressure_age_ms,
+                pressure_windows,
+                setup_pressure_age_ms,
+                setup_pressure_windows,
+            ) = congestion_json(snapshot);
             NodeJson {
                 ip: ip.to_string(),
+                is_proxy: Some(ip) == *PROXY_IP,
                 hosted_services: svcs,
                 ingress_groups: IngressGroupsJson {
                     dedicated: groups.len() - multiplexed,
@@ -205,6 +263,8 @@ pub(super) async fn nodes_handler(
                 ingress_control,
                 pressure_age_ms,
                 pressure_windows,
+                setup_pressure_age_ms,
+                setup_pressure_windows,
             }
         })
         .collect();
