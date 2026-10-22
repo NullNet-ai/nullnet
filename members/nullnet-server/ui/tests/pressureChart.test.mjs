@@ -1,13 +1,6 @@
 import assert from 'node:assert/strict';
-import { Buffer } from 'node:buffer';
-import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
-import ts from 'typescript';
-
-const source = await readFile(new URL('../src/lib/pressureChart.ts', import.meta.url), 'utf8');
-const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext } });
-const module = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
-const { recentPressureWindows, timedLinePoints } = module;
+import { recentPressureWindows, timedLinePoints } from '../src/lib/pressureChart.ts';
 
 const windowAt = (age_ms, arrivals_per_sec = 1, duration_ms = 1000) => ({ age_ms, duration_ms, arrivals_per_sec });
 

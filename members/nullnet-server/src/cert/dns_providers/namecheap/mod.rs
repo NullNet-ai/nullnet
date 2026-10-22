@@ -182,11 +182,10 @@ fn parse_domain_list(xml: &str) -> Result<Vec<String>> {
             .read_event()
             .context("Failed to parse Namecheap domain list XML")?
         {
-            Event::Empty(e) | Event::Start(e) if e.local_name().as_ref() == b"Domain" => {
+            Event::Empty(e) | Event::Start(e) if e.local_name().as_ref() == "Domain" => {
                 for attr in e.attributes().flatten() {
-                    if attr.key.local_name().as_ref() == b"Name" {
-                        let val = String::from_utf8_lossy(&attr.value).to_string();
-                        domains.push(val);
+                    if attr.key.local_name().as_ref() == "Name" {
+                        domains.push(attr.value.into_owned());
                         break;
                     }
                 }
@@ -211,16 +210,16 @@ fn parse_hosts(xml: &str) -> Result<Vec<HostRecord>> {
             .read_event()
             .context("Failed to parse Namecheap getHosts XML")?
         {
-            Event::Empty(e) | Event::Start(e) if e.local_name().as_ref() == b"host" => {
+            Event::Empty(e) | Event::Start(e) if e.local_name().as_ref() == "host" => {
                 let mut record = HostRecord::default();
                 for attr in e.attributes().flatten() {
-                    let val = String::from_utf8_lossy(&attr.value).to_string();
+                    let val = attr.value.into_owned();
                     match attr.key.local_name().as_ref() {
-                        b"Name" => record.name = val,
-                        b"Type" => record.record_type = val,
-                        b"Address" => record.address = val,
-                        b"TTL" => record.ttl = val,
-                        b"MXPref" => record.mx_pref = val,
+                        "Name" => record.name = val,
+                        "Type" => record.record_type = val,
+                        "Address" => record.address = val,
+                        "TTL" => record.ttl = val,
+                        "MXPref" => record.mx_pref = val,
                         _ => {}
                     }
                 }

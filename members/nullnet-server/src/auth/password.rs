@@ -1,14 +1,12 @@
-use argon2::password_hash::rand_core::OsRng;
-use argon2::password_hash::{PasswordHash, SaltString};
+use argon2::password_hash::phc::PasswordHash;
 use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 
 /// Hash `plain` with argon2id, returning the standard encoded hash string
 /// (algorithm + params + salt + hash, all in one — nothing else needs storing).
 pub(crate) fn hash(plain: &str) -> Result<String, Error> {
-    let salt = SaltString::generate(&mut OsRng);
     Ok(Argon2::default()
-        .hash_password(plain.as_bytes(), &salt)
+        .hash_password(plain.as_bytes())
         .handle_err(location!())?
         .to_string())
 }

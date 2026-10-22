@@ -1,12 +1,6 @@
 import assert from 'node:assert/strict';
-import { Buffer } from 'node:buffer';
-import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
-import ts from 'typescript';
-
-const source = await readFile(new URL('../src/components/topology/sessionGraph.ts', import.meta.url), 'utf8');
-const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext } });
-const { sessionGraph } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
+import { sessionGraph } from '../src/components/topology/sessionGraph.ts';
 const live = {
   nodes: ['api', 'idle'].map(id => ({ id, registered: false, entry_point: false, replica_count: 0, active_replica_count: 0, paused_replica_count: 0 })),
   proxies: [],
