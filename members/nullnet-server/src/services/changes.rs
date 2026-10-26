@@ -341,14 +341,16 @@ async fn teardown_chain(
                     *policy,
                 )
                 .await;
-            orchestrator
-                .events
-                .emit(Event::session_torn_down(
-                    *net_id,
-                    name.to_string(),
-                    client_ip.to_string(),
-                ))
-                .await;
+            if crate::routine_diagnostics() {
+                orchestrator
+                    .events
+                    .emit(Event::session_torn_down(
+                        *net_id,
+                        name.to_string(),
+                        client_ip.to_string(),
+                    ))
+                    .await;
+            }
         }
     }
 }
@@ -691,10 +693,12 @@ pub(crate) async fn apply_changes(
     for change in changes {
         match change {
             ServiceChange::Removed { name } => {
-                orchestrator
-                    .events
-                    .emit(Event::service_unregistered(name.clone(), stack.to_string()))
-                    .await;
+                if crate::routine_diagnostics() {
+                    orchestrator
+                        .events
+                        .emit(Event::service_unregistered(name.clone(), stack.to_string()))
+                        .await;
+                }
                 teardown_invalidated_service(&name, true, services, orchestrator).await;
                 services.remove(&name);
             }
@@ -824,17 +828,19 @@ pub(crate) async fn apply_changes(
                 }
             }
             ServiceChange::ProxyClientTimedOut { name, client } => {
-                println!(
+                routine_log!(
                     "Proxy client '{}' timed out on service '{name}'",
                     client.display_name()
                 );
-                orchestrator
-                    .events
-                    .emit(Event::proxy_client_timed_out(
-                        name.clone(),
-                        client.display_name().to_string(),
-                    ))
-                    .await;
+                if crate::routine_diagnostics() {
+                    orchestrator
+                        .events
+                        .emit(Event::proxy_client_timed_out(
+                            name.clone(),
+                            client.display_name().to_string(),
+                        ))
+                        .await;
+                }
                 teardown_chain(
                     &name,
                     services,
@@ -844,7 +850,7 @@ pub(crate) async fn apply_changes(
                 .await;
             }
             ServiceChange::StaleSessionEvicted { name, client } => {
-                println!(
+                eprintln!(
                     "Evicting stale proxy session '{}' on service '{name}': \
                      dependency chain incomplete",
                     client.display_name()
@@ -858,7 +864,7 @@ pub(crate) async fn apply_changes(
                 .await;
             }
             ServiceChange::ForceSessionTeardown { name, client } => {
-                println!(
+                routine_log!(
                     "Force teardown of proxy client '{}' on service '{name}'",
                     client.display_name()
                 );

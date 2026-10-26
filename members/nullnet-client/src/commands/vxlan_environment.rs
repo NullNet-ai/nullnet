@@ -100,7 +100,7 @@ pub(crate) async fn start(grpc: NullnetGrpcInterface) -> Result<(), String> {
                 Ok(changed) => {
                     READY.store(true, Ordering::Release);
                     if changed || failed {
-                        println!("Shared VXLAN plaintext guards restored");
+                        eprintln!("Shared VXLAN plaintext guards restored");
                     }
                     failed = false;
                 }

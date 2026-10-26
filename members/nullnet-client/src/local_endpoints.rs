@@ -19,15 +19,13 @@ impl LocalEndpoints {
     pub async fn setup(rtnetlink_handle: &RtNetLinkHandle) -> Result<Self, Error> {
         loop {
             if let Some(ethernet_ip) = find_ethernet_ip(rtnetlink_handle).await {
-                println!("Local IP address found: {ethernet_ip}");
                 let forward_socket_addr = SocketAddr::new(IpAddr::V4(ethernet_ip), FORWARD_PORT);
                 if let Ok(sock) = UdpSocket::bind(forward_socket_addr).await {
                     let forward_socket = Arc::new(sock);
-                    println!("Forward socket bound successfully");
                     return Ok(Self { forward_socket });
                 }
             }
-            println!("Could not bind all needed sockets; will retry again in 10 seconds...");
+            eprintln!("Could not bind all needed sockets; will retry again in 10 seconds...");
             tokio::time::sleep(Duration::from_secs(10)).await;
         }
     }

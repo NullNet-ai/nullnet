@@ -220,9 +220,6 @@ impl Filters {
             let _ = self.sockets.remove(&cookie);
             return Err(error.into());
         }
-        println!(
-            "Device-event bypass attached: pid={pid} protocol={protocol} socket={inode} cookie={cookie}"
-        );
         Ok(())
     }
 }
@@ -367,7 +364,7 @@ pub(crate) async fn start() -> watch::Receiver<Status> {
                 }
             };
             if *tx.borrow() != status {
-                println!("Device-event bypass: {}", status.detail);
+                eprintln!("Device-event bypass: {}", status.detail);
                 let _ = tx.send(status);
             }
             std::thread::sleep(Duration::from_secs(1));

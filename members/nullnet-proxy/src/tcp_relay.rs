@@ -38,14 +38,13 @@ pub(crate) async fn run(
             return;
         }
     };
-    println!("[tcp/{listen_port}] listening");
-
+    routine_log!("[tcp/{listen_port}] listening");
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
                 let proxy = proxy.clone();
                 let entry = mapping.borrow().clone();
-                println!(
+                routine_log!(
                     "[tcp/{listen_port}] accepted connection from {peer} → '{}'",
                     entry.service_name
                 );
@@ -83,7 +82,7 @@ async fn handle_connection(
         .await
     {
         Ok(false) => {
-            println!(
+            routine_log!(
                 "[tcp] ingress policy denied {client_addr} -> '{}'",
                 entry.service_name
             );
@@ -97,7 +96,7 @@ async fn handle_connection(
     }
     let upstream = match proxy.get_or_add_upstream(proxy_req).await {
         Ok(u) => {
-            println!(
+            routine_log!(
                 "[tcp] {client_addr} → '{}' resolved upstream {u}",
                 entry.service_name
             );
@@ -144,7 +143,7 @@ async fn handle_connection(
 
     let mut outbound = match TcpStream::connect(upstream).await {
         Ok(s) => {
-            println!("[tcp] {client_addr} ↔ {upstream} relay started");
+            routine_log!("[tcp] {client_addr} ↔ {upstream} relay started");
             s
         }
         Err(e) => {
@@ -167,7 +166,7 @@ async fn handle_connection(
 
     match copy_bidirectional(&mut inbound, &mut outbound).await {
         Ok((to_upstream, to_client)) => {
-            println!(
+            routine_log!(
                 "[tcp] {client_addr} ↔ {upstream} relay closed (↑{to_upstream}B ↓{to_client}B)"
             );
         }

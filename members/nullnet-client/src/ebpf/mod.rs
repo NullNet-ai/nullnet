@@ -158,20 +158,12 @@ pub fn enable(iface: &str, cfg: &FirewallConfig) -> Result<Firewall, Error> {
         .handle_err(location!())?;
 
     // clsact carries both the ingress and egress TC hooks; idempotent.
-    match tc::qdisc_add_clsact(iface) {
-        Ok(()) => println!("[ebpf] clsact qdisc added on {iface}"),
-        Err(e) => println!("[ebpf] clsact qdisc add returned: {e} (ok if already present)"),
-    }
+    let _ = tc::qdisc_add_clsact(iface);
 
     // Direction-specific programs sharing the PEERS/ALLOW_PORTS/CT maps: the
     // ingress classifier enforces inbound, the egress one outbound.
     attach_classifier(&mut bpf, INGRESS_PROG, iface, TcAttachType::Ingress)?;
     attach_classifier(&mut bpf, EGRESS_PROG, iface, TcAttachType::Egress)?;
-    println!(
-        "[ebpf] nullnet firewall attached to {iface} (stateful; gateway={})",
-        cfg.egress_gateway
-    );
-
     let allow_ports = populate_allow_ports(&mut bpf, cfg)?;
 
     let peers_map: AyaHashMap<MapData, u32, u8> = bpf

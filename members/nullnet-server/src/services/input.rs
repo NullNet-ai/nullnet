@@ -285,7 +285,7 @@ impl ServicesToml {
 
             let (services, match_entries, route_entries) =
                 validate_stack(services_toml, routes_toml)?;
-            println!("Loaded stack '{stack_name}': {services:?}");
+            routine_log!("Loaded stack '{stack_name}': {services:?}");
             index.insert(stack_name.clone(), match_entries);
             routes.insert(stack_name.clone(), route_entries);
             stacks.insert(stack_name, services);
@@ -369,7 +369,7 @@ impl ServicesToml {
                 continue;
             };
             let (services, match_entries, route_entries) = parse_file(&path).await?;
-            println!("Loaded stack '{stack}': {services:?}");
+            routine_log!("Loaded stack '{stack}': {services:?}");
             stacks.insert(stack.clone(), services);
             index.insert(stack.clone(), match_entries);
             routes.insert(stack, route_entries);

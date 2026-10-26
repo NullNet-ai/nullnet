@@ -38,7 +38,7 @@ pub(crate) fn init() {
 
     // ESTABLISHED,RELATED bypass at top of mangle PREROUTING. Pre-delete is
     // intentional idempotency — silently ignore its result.
-    let _ = privileged(&[
+    let _ = privileged_quiet(&[
         "iptables",
         "-t",
         "mangle",
@@ -72,7 +72,7 @@ pub(crate) fn init() {
     // NFQUEUE rules for tcp + udp. Pre-deletes stay quiet; appends must
     // succeed or new flows on watched ports won't be queued.
     for proto in PROTOS {
-        let _ = privileged(&[
+        let _ = privileged_quiet(&[
             "iptables",
             "-t",
             "mangle",
@@ -114,8 +114,6 @@ pub(crate) fn init() {
             ],
         );
     }
-
-    println!("[nfqueue] init: ipset {SET_NAME} ready, mangle PREROUTING rules installed");
 }
 
 /// Run a privileged command that must succeed for the NFQUEUE plumbing to be
@@ -137,7 +135,7 @@ pub(crate) fn apply_ports_diff(old: &HashSet<u16>, new: &HashSet<u16>) {
         if !new.contains(&port) {
             let port_s = port.to_string();
             match privileged(&["ipset", "del", SET_NAME, &port_s]) {
-                Ok(s) if s.success() => println!("[nfqueue] unwatched port {port}"),
+                Ok(s) if s.success() => {}
                 Ok(s) => eprintln!("[nfqueue] ipset del {port} exited {s}"),
                 Err(e) => eprintln!("[nfqueue] ipset del {port}: {e}"),
             }
@@ -147,7 +145,7 @@ pub(crate) fn apply_ports_diff(old: &HashSet<u16>, new: &HashSet<u16>) {
         if !old.contains(&port) {
             let port_s = port.to_string();
             match privileged(&["ipset", "add", "-exist", SET_NAME, &port_s]) {
-                Ok(s) if s.success() => println!("[nfqueue] watching port {port}"),
+                Ok(s) if s.success() => {}
                 Ok(s) => eprintln!("[nfqueue] ipset add {port} exited {s}"),
                 Err(e) => eprintln!("[nfqueue] ipset add {port}: {e}"),
             }
@@ -156,5 +154,15 @@ pub(crate) fn apply_ports_diff(old: &HashSet<u16>, new: &HashSet<u16>) {
 }
 
 fn privileged(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
-    Command::new(args[0]).args(&args[1..]).status()
+    let mut command = Command::new(args[0]);
+    #[cfg(not(debug_assertions))]
+    command.stdout(std::process::Stdio::null());
+    command.args(&args[1..]).status()
+}
+
+fn privileged_quiet(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
+    Command::new(args[0])
+        .args(&args[1..])
+        .output()
+        .map(|output| output.status)
 }

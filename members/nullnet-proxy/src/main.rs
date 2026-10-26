@@ -1,3 +1,14 @@
+macro_rules! routine_log {
+    ($($arg:tt)*) => {{
+        #[cfg(debug_assertions)]
+        println!($($arg)*);
+        #[cfg(not(debug_assertions))]
+        if false {
+            println!($($arg)*);
+        }
+    }};
+}
+
 mod env;
 mod hsts;
 mod nullnet_proxy;
@@ -27,7 +38,6 @@ use pingora_proxy::{FailToProxy, ProxyHttp, Session};
 use std::process;
 use std::sync::Arc;
 use std::thread;
-use std::time::Instant;
 
 const PROXY_PORT: u16 = 80;
 const HTTPS_PROXY_PORT: u16 = 443;
@@ -219,12 +229,12 @@ impl ProxyHttp for NullnetProxy {
         session: &mut Session,
         ctx: &mut ProxyCtx,
     ) -> Result<Box<HttpPeer>> {
-        println!(
+        routine_log!(
             "Received new proxy request from client: {:?}\n",
             session.client_addr()
         );
-
-        let init_t = Instant::now();
+        #[cfg(debug_assertions)]
+        let init_t = std::time::Instant::now();
 
         // Extract client IP early so we can include it in error events
         let client_ip_opt = session
@@ -320,7 +330,7 @@ impl ProxyHttp for NullnetProxy {
             service_name: service_name.clone(),
             ..Default::default()
         };
-        println!("{proxy_req:?}");
+        routine_log!("{proxy_req:?}");
         let upstream = match self.get_or_add_upstream(proxy_req).await {
             Ok(u) => {
                 if ctx.counted {
@@ -377,11 +387,13 @@ impl ProxyHttp for NullnetProxy {
                 ));
             }
         };
+        #[cfg(debug_assertions)]
         println!("upstream: {upstream}\n");
-
-        let latency_ms = init_t.elapsed().as_millis() as u64;
-        println!("TOTAL VLANS SETUP TIME: {} ms\n", latency_ms);
-
+        #[cfg(debug_assertions)]
+        println!(
+            "TOTAL VLANS SETUP TIME: {} ms\n",
+            init_t.elapsed().as_millis()
+        );
         Ok(Box::new(HttpPeer::new(upstream, false, String::new())))
     }
 
@@ -566,8 +578,8 @@ async fn main() -> Result<(), nullnet_liberror::Error> {
     https_proxy.add_tls_with_settings(&https_address, None, tls_settings);
     my_server.add_service(https_proxy);
 
-    println!("Running Nullnet proxy at {http_address} (HTTP) and {https_address} (HTTPS)\n");
-    println!("HTTPS HSTS enabled: {}", *env::HSTS_ENABLED);
+    routine_log!("Running Nullnet proxy at {http_address} (HTTP) and {https_address} (HTTPS)\n");
+    routine_log!("HTTPS HSTS enabled: {}", *env::HSTS_ENABLED);
 
     // run on separate thread to avoid "cannot start a runtime from within a runtime"
     let handle = thread::spawn(|| my_server.run_forever());
@@ -658,9 +670,11 @@ async fn watch_certificates(server: NullnetGrpcInterface, store: Arc<ArcSwap<Cer
             match stream.message().await {
                 Ok(Some(bundle)) => {
                     let (new_store, failures) = CertStore::from_bundle(&bundle);
-                    let n = new_store.len();
+                    routine_log!(
+                        "Loaded {} TLS certificate(s) from control service",
+                        new_store.len()
+                    );
                     store.store(Arc::new(new_store));
-                    println!("Loaded {n} TLS certificate(s) from control service");
                     for (domain, reason) in failures {
                         eprintln!("Skipping TLS certificate for '{domain}': {reason}");
                         let _ = server

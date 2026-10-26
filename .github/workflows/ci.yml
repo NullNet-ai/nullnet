@@ -47,6 +47,9 @@ jobs:
       - name: clippy
         run: cargo clippy -p ${{ matrix.package }} -- -D warnings
 
+      - name: release clippy
+        run: cargo clippy -p ${{ matrix.package }} --release -- -D warnings
+
       - name: test
         run: cargo test -p ${{ matrix.package }} --verbose -- --nocapture
 
@@ -95,3 +98,11 @@ jobs:
         env:
           NULLNET_BIN_PATH: ${{ github.workspace }}/target/bpfel-unknown-none/debug/nullnet
         run: cargo test -p nullnet-client --verbose -- --nocapture
+
+      - name: release build
+        run: cargo xtask build --release
+
+      - name: release clippy
+        env:
+          NULLNET_BIN_PATH: ${{ github.workspace }}/target/bpfel-unknown-none/release/nullnet
+        run: cargo clippy -p nullnet-client --all-features --release -- -D warnings

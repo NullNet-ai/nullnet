@@ -116,7 +116,9 @@ pub fn purge_stale_mappings() {
         }
     }
 
-    println!("[hosts] purge: swept stale entries from {swept} file(s)");
+    if swept != 0 {
+        eprintln!("[hosts] purge: swept stale entries from {swept} file(s)");
+    }
 }
 
 /// Every line except the ones we wrote.

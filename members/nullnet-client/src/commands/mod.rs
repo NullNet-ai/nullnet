@@ -247,7 +247,9 @@ fn purge_stale_xfrm() {
         }
     }
 
-    println!("[xfrm] purge: deleted {states} stale SA(s), {policies} stale policy(ies)");
+    if states != 0 || policies != 0 {
+        eprintln!("[xfrm] purge: deleted {states} stale SA(s), {policies} stale policy(ies)");
+    }
 }
 
 /// `(src, dst, spi)` for each ESP state whose SPI falls in our range.
@@ -455,10 +457,7 @@ fn install_mss_clamp() -> Option<String> {
     let mut add = vec!["iptables", "-t", "mangle", "-A", "FORWARD"];
     add.extend_from_slice(&rule);
     match privileged(&add) {
-        Ok(s) if s.success() => {
-            println!("[mss] clamp installed on mangle/FORWARD: --set-mss {MSS}");
-            None
-        }
+        Ok(s) if s.success() => None,
         Ok(s) => {
             eprintln!("[mss] clamp install exited {s}");
             Some(format!("iptables exited {s}"))
@@ -514,7 +513,7 @@ fn prune_superseded_mss_rules() {
             del.extend_from_slice(spec);
             match privileged_quiet(&del) {
                 Ok(s) if s.success() => {
-                    println!("[mss] removed superseded clamp: {}", spec.join(" "));
+                    eprintln!("[mss] removed superseded clamp: {}", spec.join(" "));
                 }
                 _ => break,
             }
@@ -523,9 +522,10 @@ fn prune_superseded_mss_rules() {
 }
 
 fn privileged(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
-    std::process::Command::new(args[0])
-        .args(&args[1..])
-        .status()
+    let mut command = std::process::Command::new(args[0]);
+    #[cfg(not(debug_assertions))]
+    command.stdout(std::process::Stdio::null());
+    command.args(&args[1..]).status()
 }
 
 /// Privileged command with stdout/stderr captured rather than inherited. For calls whose

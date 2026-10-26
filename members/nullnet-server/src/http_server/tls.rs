@@ -73,7 +73,7 @@ impl ManagedTls {
                     return None;
                 }
                 self.active = Some(cert.clone());
-                println!("UI TLS certificate active for '{}'", self.domain);
+                routine_log!("UI TLS certificate active for '{}'", self.domain);
                 Some(Event::ui_tls_certificate_active(self.domain.clone()))
             }
             Err(reason) => {

@@ -158,12 +158,12 @@ impl TlsResolver {
 impl TlsAccept for TlsResolver {
     async fn certificate_callback(&self, ssl: &mut TlsRef) {
         let Some(hostname) = ssl.servername(NameType::HOST_NAME) else {
-            println!("TLS handshake without SNI; no certificate selected");
+            eprintln!("TLS handshake without SNI; no certificate selected");
             return;
         };
         let store = self.store.load();
         let Some(cert) = store.get(hostname) else {
-            println!("No TLS certificate found for '{hostname}'");
+            eprintln!("No TLS certificate found for '{hostname}'");
             return;
         };
 

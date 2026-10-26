@@ -45,10 +45,10 @@ pub(crate) async fn load_or_generate() -> Result<(String, String), Error> {
     ) {
         match verify_leaf_signed_by_ca(&cert_pem, &ca_cert_pem) {
             Ok(()) => {
-                println!("Loaded gRPC control channel TLS certificate from '{GRPC_TLS_DIR}'");
+                routine_log!("Loaded gRPC control channel TLS certificate from '{GRPC_TLS_DIR}'");
                 return Ok((cert_pem, key_pem));
             }
-            Err(e) => println!(
+            Err(e) => eprintln!(
                 "Persisted leaf cert under '{GRPC_TLS_DIR}' failed verification against the \
                  persisted CA ({e}) — regenerating the leaf"
             ),
@@ -152,7 +152,7 @@ fn leaf_sans_from_env() -> Vec<String> {
     if let Ok(addr) = std::env::var("CONTROL_SERVICE_ADDR") {
         let addr = addr.trim();
         if !addr.is_empty() {
-            println!(
+            eprintln!(
                 "'CONTROL_SERVICE_TLS_SAN' environment variable not set, falling back to \
                  'CONTROL_SERVICE_ADDR' ('{addr}') for the leaf cert's SAN"
             );
@@ -160,7 +160,7 @@ fn leaf_sans_from_env() -> Vec<String> {
         }
     }
 
-    println!(
+    eprintln!(
         "Neither 'CONTROL_SERVICE_TLS_SAN' nor 'CONTROL_SERVICE_ADDR' environment variables are \
          set, defaulting the leaf cert's SAN to 'localhost' — set one of them to the host/IP \
          clients use to reach this server, or their handshake will fail hostname verification"
@@ -183,10 +183,10 @@ async fn generate_ca_signed_leaf(dir: &Path) -> Result<(String, String), Error> 
     let ca_key_path = dir.join(CA_KEY_FILE);
 
     let ca_key = if let Ok(ca_key_pem) = tokio::fs::read_to_string(&ca_key_path).await {
-        println!("Loaded gRPC control channel CA from '{GRPC_TLS_DIR}'");
+        routine_log!("Loaded gRPC control channel CA from '{GRPC_TLS_DIR}'");
         KeyPair::from_pem(&ca_key_pem).handle_err(location!())?
     } else {
-        println!("Generating gRPC control channel private CA...");
+        eprintln!("Generating gRPC control channel private CA...");
         let mut ca_params = CertificateParams::new(vec![]).handle_err(location!())?;
         ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         ca_params.distinguished_name = ca_distinguished_name();
@@ -200,7 +200,7 @@ async fn generate_ca_signed_leaf(dir: &Path) -> Result<(String, String), Error> 
             .await
             .handle_err(location!())?;
         restrict_key_permissions(&ca_key_path).await?;
-        println!(
+        eprintln!(
             "Generated gRPC control channel CA at '{}' — copy it to every client/proxy \
              host and point CONTROL_SERVICE_CA_CERT at it",
             ca_cert_path.display()
@@ -208,7 +208,7 @@ async fn generate_ca_signed_leaf(dir: &Path) -> Result<(String, String), Error> 
         ca_key
     };
 
-    println!("Signing gRPC control channel leaf certificate...");
+    routine_log!("Signing gRPC control channel leaf certificate...");
     let mut ca_params = CertificateParams::new(vec![]).handle_err(location!())?;
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     ca_params.distinguished_name = ca_distinguished_name();

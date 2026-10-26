@@ -215,9 +215,11 @@ impl Orchestrator {
             .await
             .insert(client_ip, outbound.clone());
         self.policy_heartbeats(client_ip, outbound);
-        self.events
-            .emit(Event::node_connected(client_ip.to_string()))
-            .await;
+        if crate::routine_diagnostics() {
+            self.events
+                .emit(Event::node_connected(client_ip.to_string()))
+                .await;
+        }
 
         let mut inbound = request.into_inner();
         let orchestrator = self.clone();
@@ -230,7 +232,7 @@ impl Orchestrator {
                 }
             }
 
-            println!("Control channel from '{client_ip}' closed");
+            eprintln!("Control channel from '{client_ip}' closed");
             orchestrator
                 .events
                 .emit(Event::node_disconnected(client_ip.to_string()))
@@ -306,7 +308,7 @@ impl Orchestrator {
                 // stays dead until its client restarts. Take it over.
                 Some(e) => {
                     let stranded = e.reserved_at.elapsed();
-                    println!(
+                    eprintln!(
                         "[egress] reclaiming a stale reservation for '{service}' ({initiator_ip}), \
                          stranded {}s",
                         stranded.as_secs()
@@ -710,7 +712,7 @@ impl Orchestrator {
             })
             .await;
         for e in removed {
-            println!(
+            routine_log!(
                 "Egress edge for '{}' ({}) idle past the debounce; tearing down net {}",
                 e.initiator_docker.as_deref().unwrap_or("<host>"),
                 e.initiator_ip,
@@ -971,7 +973,7 @@ impl Orchestrator {
             if e.net_id == 0 {
                 continue;
             }
-            println!(
+            eprintln!(
                 "[egress] reaping edge for gone container {:?} on {}",
                 e.initiator_docker, e.initiator_ip
             );
@@ -1066,7 +1068,7 @@ impl Orchestrator {
     pub(crate) async fn send_container_suspend(&self, dest: IpAddr, docker_container: String) {
         let outbound = self.clients.read().await.get(&dest).cloned();
         if let Some(outbound) = outbound {
-            println!("Suspending container '{docker_container}' on {dest}");
+            routine_log!("Suspending container '{docker_container}' on {dest}");
             let message = NetMessage {
                 message: Some(net_message::Message::ContainerSuspend(ContainerSuspend {
                     docker_container,
@@ -1089,7 +1091,7 @@ impl Orchestrator {
             .map(|(ip, o)| (*ip, o.clone()))
             .collect();
         for (ip, outbound) in outbounds {
-            println!("Notifying {ip} of egress policy change");
+            routine_log!("Notifying {ip} of egress policy change");
             let message = NetMessage {
                 message: Some(net_message::Message::EgressPolicyChanged(
                     EgressPolicyChanged {},
@@ -1107,7 +1109,7 @@ impl Orchestrator {
         dest: IpAddr,
         docker_container: String,
     ) -> bool {
-        println!("Resuming container '{docker_container}' on {dest}");
+        routine_log!("Resuming container '{docker_container}' on {dest}");
         self.send_control(dest, |msg_id| {
             Some((
                 (),
@@ -1265,7 +1267,7 @@ impl Orchestrator {
         ] {
             let outbound = self.clients.read().await.get(&dest).cloned();
             if let Some(outbound) = outbound {
-                println!("Sending network {net_id} teardown to client {dest}");
+                routine_log!("Sending network {net_id} teardown to client {dest}");
 
                 let (tx, rx) = oneshot::channel();
                 let msg_id = Uuid::new_v4().to_string();
@@ -1349,7 +1351,7 @@ impl Orchestrator {
                     .await
                     .is_err()
                 {
-                    println!(
+                    eprintln!(
                         "Network {net_id} teardown was not acked by {dest} within {}s; keeping the id reserved",
                         TEARDOWN_ACK_GRACE.as_secs()
                     );
@@ -1362,7 +1364,7 @@ impl Orchestrator {
             }
 
             orchestrator.free_net_id(net_id).await;
-            println!("Network {net_id} teardown complete; ID released");
+            routine_log!("Network {net_id} teardown complete; ID released");
             inflight.fetch_sub(1, Ordering::SeqCst);
         });
     }

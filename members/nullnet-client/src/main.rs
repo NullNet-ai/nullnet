@@ -1,5 +1,16 @@
 #![allow(clippy::used_underscore_binding)]
 
+macro_rules! routine_log {
+    ($($arg:tt)*) => {{
+        #[cfg(debug_assertions)]
+        println!($($arg)*);
+        #[cfg(not(debug_assertions))]
+        if false {
+            println!($($arg)*);
+        }
+    }};
+}
+
 use crate::cli::Args;
 use crate::commands::{
     RtNetLinkHandle, cleanup_network, find_ethernet_interface, find_ethernet_ip, setup_br0,
@@ -15,10 +26,12 @@ use crate::peers::peer::Peers;
 use crate::triggers::TriggersState;
 use clap::Parser;
 use nullnet_grpc_lib::NullnetGrpcInterface;
+#[cfg(debug_assertions)]
+use nullnet_grpc_lib::nullnet_grpc::AgentServicesListUpdated;
 use nullnet_grpc_lib::nullnet_grpc::{
     AgentEvent, AgentFirewallRulesLoadFailed, AgentMssClampInstallFailed,
-    AgentServicesListUpdateFailed, AgentServicesListUpdated, Container, Listener, Net, NetType,
-    ServiceReport, agent_event::Event as AgentEventKind,
+    AgentServicesListUpdateFailed, Container, Listener, Net, NetType, ServiceReport,
+    agent_event::Event as AgentEventKind,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
@@ -153,7 +166,7 @@ async fn main() -> Result<(), Error> {
     // aborts startup rather than running unprotected.
     let ebpf_firewall = match setup_ebpf_firewall(&rtnetlink_handle, &net_type).await {
         Ok(fw) => {
-            println!("eBPF host firewall enabled (strict nullnet-only)");
+            routine_log!("eBPF host firewall enabled (strict nullnet-only)");
             fw
         }
         Err(e) => {
@@ -272,10 +285,10 @@ async fn main() -> Result<(), Error> {
 
 /// Prints useful info about the local environment and the created interface.
 fn print_info(net: Net) {
-    println!("\n{}", "=".repeat(40));
-    println!("Nullnet is up and running!");
-    println!("Network type: {net:?}");
-    println!("{}\n", "=".repeat(40));
+    routine_log!("\n{}", "=".repeat(40));
+    routine_log!("Nullnet is up and running!");
+    routine_log!("Network type: {net:?}");
+    routine_log!("{}\n", "=".repeat(40));
 }
 
 /// Resolve, attach, and return the host-NIC eBPF firewall. Fails closed: any
@@ -323,17 +336,22 @@ async fn setup_ebpf_firewall(
         egress_udp: to_u16(&net_type.egress_allow_udp_ports),
     };
     if cfg.egress_gateway {
-        println!(
+        routine_log!(
             "Attaching eBPF firewall to {iface} in EGRESS-GATEWAY mode (stateful boundary: \
              outbound allowed + tracked; inbound = established + allowlist \
              tcp{:?} udp{:?}; ICMP always allowed)",
-            cfg.ingress_tcp, cfg.ingress_udp
+            cfg.ingress_tcp,
+            cfg.ingress_udp
         );
     } else {
-        println!(
+        routine_log!(
             "Attaching eBPF firewall to {iface} (stateful strict; control plane \
              {server_ip}:{}; allow in tcp{:?} udp{:?}, out tcp{:?} udp{:?}; ICMP always allowed)",
-            cfg.control_port, cfg.ingress_tcp, cfg.ingress_udp, cfg.egress_tcp, cfg.egress_udp
+            cfg.control_port,
+            cfg.ingress_tcp,
+            cfg.ingress_udp,
+            cfg.egress_tcp,
+            cfg.egress_udp
         );
     }
     ebpf::enable(&iface, &cfg)
@@ -390,7 +408,7 @@ async fn declare_services(
             listeners: paths.into_iter().map(|path| Listener { path }).collect(),
         };
 
-        println!("Reporting to gRPC server: {report:?}");
+        routine_log!("Reporting to gRPC server: {report:?}");
         let num_services = (report.containers.len() + report.listeners.len()) as u32;
 
         // canonical snapshot for change detection (order-independent)
@@ -442,7 +460,9 @@ async fn declare_services(
                 }
                 if snapshot != last_snapshot {
                     last_snapshot = snapshot;
+                    #[cfg(debug_assertions)]
                     let grpc = grpc_server.clone();
+                    #[cfg(debug_assertions)]
                     tokio::spawn(async move {
                         let _ = grpc
                             .report_event(AgentEvent {

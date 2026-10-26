@@ -82,14 +82,14 @@ async fn run_pass(events: &EventStore, config: &RenewalConfig) {
         }
 
         let days_left = (expiry - now) / SECS_PER_DAY;
-        println!("Cert renewal: '{domain}' expires in {days_left}d, renewing");
+        eprintln!("Cert renewal: '{domain}' expires in {days_left}d, renewing");
 
         match renew_one(&domain, &creds_json, config).await {
             Ok(()) => {
                 events
                     .emit(Event::certificate_renewed(domain.clone()))
                     .await;
-                println!("Cert renewal: '{domain}' renewed successfully");
+                eprintln!("Cert renewal: '{domain}' renewed successfully");
             }
             Err(e) => {
                 eprintln!("Cert renewal: failed to renew '{domain}': {e:#}");

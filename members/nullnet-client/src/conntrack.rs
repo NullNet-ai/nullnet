@@ -327,7 +327,6 @@ pub fn spawn_destroy_listener(sets: LivenessSets, grpc: NullnetGrpcInterface) {
                 return;
             }
         };
-        println!("[conntrack] listening for DESTROY events");
         loop {
             match socket.recv_from_full().await {
                 Ok((buf, _)) => {
@@ -1160,7 +1159,6 @@ async fn reconcile_container(
     // the edge carries any other one.
     mark_dst_liveness(&sets.dsts, container, &egress.dsts);
     if let Some(Transition::Idle(c)) = egress.owner {
-        println!("[conntrack] reconcile: container {c} has no open egress flows");
         report_liveness(grpc, c, false).await;
     }
 
@@ -1176,7 +1174,6 @@ async fn reconcile_container(
         if let Some(Transition::Idle((c, p))) = transition.owner
             && let Some(service) = service_for(&sets.owners, &c, p)
         {
-            println!("[conntrack] reconcile: container {c} has no open flows on trigger port {p}");
             report_backend_liveness(grpc, service, c, p, false).await;
         }
     }

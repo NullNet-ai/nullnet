@@ -35,12 +35,12 @@ pub(crate) async fn watch_and_serve(proxy: NullnetProxy) {
     loop {
         match proxy.server.watch_port_mappings().await {
             Ok(mut stream) => {
-                println!("[port-mappings] watch stream opened");
+                routine_log!("[port-mappings] watch stream opened");
                 let mut running: HashMap<(Protocol, u16), RunningListener> = HashMap::new();
                 loop {
                     match stream.message().await {
                         Ok(Some(bundle)) => {
-                            println!(
+                            routine_log!(
                                 "[port-mappings] received bundle: {} mapping(s): [{}]",
                                 bundle.mappings.len(),
                                 bundle
@@ -59,7 +59,7 @@ pub(crate) async fn watch_and_serve(proxy: NullnetProxy) {
                             reconcile(&proxy, &mut running, bundle);
                         }
                         Ok(None) => {
-                            println!("[port-mappings] watch stream closed by server");
+                            routine_log!("[port-mappings] watch stream closed by server");
                             break;
                         }
                         Err(e) => {
@@ -70,7 +70,7 @@ pub(crate) async fn watch_and_serve(proxy: NullnetProxy) {
                 }
                 for (key, listener) in running {
                     listener.handle.abort();
-                    println!("[port-mappings] stopped {key:?} (watch stream closed)");
+                    routine_log!("[port-mappings] stopped {key:?} (watch stream closed)");
                 }
             }
             Err(e) => eprintln!("[port-mappings] failed to open watch stream: {e}"),
@@ -117,7 +117,7 @@ fn reconcile(
     for key in removed {
         if let Some(listener) = running.remove(&key) {
             listener.handle.abort();
-            println!("[port-mappings] stopped {key:?}");
+            routine_log!("[port-mappings] stopped {key:?}");
         }
     }
 
@@ -125,7 +125,7 @@ fn reconcile(
         if let Some(listener) = running.get(&key) {
             let _ = listener.mapping_tx.send(entry);
         } else {
-            println!(
+            routine_log!(
                 "[port-mappings] starting {key:?} -> '{}'",
                 entry.service_name
             );

@@ -70,8 +70,6 @@ pub fn spawn_queue_loop<H, Fut>(
         queue.set_nonblocking(true);
 
         let (verdict_tx, verdict_rx) = std::sync::mpsc::channel::<Message>();
-        println!("[nfqueue] recv loop running on queue {queue_id}");
-
         loop {
             let mut did_work = false;
             // Drain any verdicts that came back from per-packet handlers.

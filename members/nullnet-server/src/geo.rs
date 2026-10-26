@@ -119,7 +119,7 @@ impl GeoCache {
         #[cfg(not(test))]
         let (handler, cache_empty) =
             if ipinfo_disabled(std::env::var("IPINFO_DISABLED").ok().as_deref()) {
-                println!("[geo] enrichment disabled by IPINFO_DISABLED");
+                eprintln!("[geo] enrichment disabled by IPINFO_DISABLED");
                 (None, false)
             } else {
                 build_handler()
@@ -224,7 +224,7 @@ fn build_handler() -> (Option<IpInfoHandler>, bool) {
                 postal: None,
                 timezone: None,
             };
-            println!("[geo] using API provider {}", url.trim());
+            routine_log!("[geo] using API provider {}", url.trim());
             (
                 vec![IpInfoProvider::new_api_provider(
                     url.trim(),
@@ -235,7 +235,7 @@ fn build_handler() -> (Option<IpInfoHandler>, bool) {
             )
         }
         _ => {
-            println!("[geo] IPINFO_API_URL not set; using free db-ip.com fallback");
+            eprintln!("[geo] IPINFO_API_URL not set; using free db-ip.com fallback");
             (Vec::new(), false)
         }
     };

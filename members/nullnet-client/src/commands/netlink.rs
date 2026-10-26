@@ -28,7 +28,6 @@ pub(super) enum NetLinkCommand<'a> {
 impl NetLinkCommand<'_> {
     pub(super) async fn execute(&self, rtnetlink_handle: &RtNetLinkHandle) {
         let handle = &rtnetlink_handle.handle;
-        let init_t = std::time::Instant::now();
         match self {
             NetLinkCommand::HandleVethPairCreation(addr, veth_name, veth_peer_name) => {
                 let _ = handle_veth_pair_creation(handle, *addr, veth_name, veth_peer_name).await;
@@ -43,11 +42,6 @@ impl NetLinkCommand<'_> {
                 set_interface_up(handle, interface).await;
             }
         }
-        println!(
-            "Executed command {:?} in {} ms",
-            self,
-            init_t.elapsed().as_millis()
-        );
     }
 }
 

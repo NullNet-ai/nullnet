@@ -149,8 +149,10 @@ impl BridgeIpCache {
         match query_docker().await {
             Ok((map, namespaces)) => {
                 *self.namespaces.write().unwrap() = namespaces;
+                #[cfg(debug_assertions)]
                 let size = map.len();
                 self.replace(map);
+                #[cfg(debug_assertions)]
                 println!("[nfqueue/cache] refresh: {size} container IP(s) loaded");
             }
             Err(e) => {
@@ -490,7 +492,7 @@ async fn run_events_loop(cache: &BridgeIpCache, docker_changed: &Notify) -> Resu
         // full refresh. Cheap enough: a few processes per event.
         cache.watching.store(false, Ordering::Release);
         cache.namespaces.write().unwrap().clear();
-        println!("[nfqueue/cache] docker event: {line} — refreshing");
+        routine_log!("[nfqueue/cache] docker event: {line} — refreshing");
         cache.refresh().await;
         cache.watching.store(true, Ordering::Release);
         // Cache now reflects the new task; kick the declare-services
