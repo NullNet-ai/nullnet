@@ -105,10 +105,25 @@ impl std::fmt::Debug for GeoCache {
     }
 }
 
+fn ipinfo_disabled(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes"
+        )
+    })
+}
+
 impl GeoCache {
     pub(crate) fn from_env() -> Self {
         #[cfg(not(test))]
-        let (handler, cache_empty) = build_handler();
+        let (handler, cache_empty) =
+            if ipinfo_disabled(std::env::var("IPINFO_DISABLED").ok().as_deref()) {
+                println!("[geo] enrichment disabled by IPINFO_DISABLED");
+                (None, false)
+            } else {
+                build_handler()
+            };
         #[cfg(test)]
         let (handler, cache_empty) = (None, false);
         Self {
@@ -246,5 +261,14 @@ mod tests {
         cache.ensure(ip);
         assert!(cache.lookup_now(ip).await.is_none());
         assert!(cache.inflight.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn disabled_flag_accepts_boolean_values() {
+        assert!(ipinfo_disabled(Some("true")));
+        assert!(ipinfo_disabled(Some("YES")));
+        assert!(ipinfo_disabled(Some("1")));
+        assert!(!ipinfo_disabled(Some("false")));
+        assert!(!ipinfo_disabled(None));
     }
 }

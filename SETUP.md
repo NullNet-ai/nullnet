@@ -52,6 +52,7 @@ Run the setup scripts as root. The supplied systemd services also run as root; p
   INGRESS_ALLOW_UDP_PORTS=          # inbound UDP listeners (e.g. Swarm gossip 7946)
   EGRESS_ALLOW_TCP_PORTS=           # outbound TCP dsts (e.g. 80,443 for updates)
   EGRESS_ALLOW_UDP_PORTS=53,123     # outbound UDP dsts (DNS, NTP)
+  IPINFO_DISABLED=false             # set true to disable GeoIP/ASN lookups and database downloads
   ```
   `CERT_ENCRYPTION_KEY` is **required** — the server refuses to start without it. It encrypts
   TLS certificate private keys (and the DNS-provider credentials of ACME-issued certs) at rest;
@@ -67,6 +68,9 @@ Run the setup scripts as root. The supplied systemd services also run as root; p
   `DATABASE_URL` is the path to the server's SQLite database (users, sessions, service config, etc.),
   created on first start along with any parent directories. Defaults to `/var/nullnet/data/nullnet.db`
   if unset.
+
+  Set `IPINFO_DISABLED=true` when GeoIP/ASN enrichment is not needed. This prevents provider
+  lookups and the fallback GeoIP database downloads entirely.
 
   `ADMIN_BOOTSTRAP_USERNAME`/`ADMIN_BOOTSTRAP_PASSWORD` create the first admin account the one time
   the `users` table is empty — irrelevant on every subsequent start. If either is unset, the server
@@ -264,8 +268,8 @@ Run the setup scripts as root. The supplied systemd services also run as root; p
   activate it, and only sustained successful probes under traffic remove the limit (idle time does
   not count as recovery). Multiplexed clients get one policy
   generation and encryption key per client IP over a shared VXLAN. Cross-host groups use marked
-  per-group IPsec associations while sharing fixed XFRM routing shards; packet metadata and endpoint
-  maps preserve per-client isolation. Same-host multiplexing uses the same isolation policy with
+  per-group IPsec associations over the shared VXLAN; packet metadata and endpoint maps preserve
+  per-client isolation. Same-host multiplexing uses the same isolation policy with
   direct eBPF redirection and no VXLAN hairpin.
 - `proxy_dependencies` is a list of independent dep chains walked when the service is reached via a
   `Proxy` RPC from nullnet-proxy; each inner array is one linear branch and all branches are brought

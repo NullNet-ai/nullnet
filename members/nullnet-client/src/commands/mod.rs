@@ -21,7 +21,6 @@ pub(crate) mod vxlan;
 mod vxlan_cleanup;
 pub(crate) mod vxlan_environment;
 mod vxlan_recovery;
-mod xfrm_shards;
 
 pub(crate) async fn setup_br0(rtnetlink_handle: &RtNetLinkHandle) {
     // create the bridge
@@ -117,21 +116,6 @@ pub(crate) fn find_ethernet_interface(ip: Ipv4Addr) -> Option<String> {
         })
 }
 
-pub(crate) async fn initialize_policy_shards(
-    rtnetlink_handle: &RtNetLinkHandle,
-) -> Result<(), Error> {
-    let ip = find_ethernet_ip(rtnetlink_handle)
-        .await
-        .ok_or("could not find the local ethernet IP")
-        .handle_err(location!())?;
-    let interface = find_ethernet_interface(ip)
-        .ok_or("could not find the local ethernet interface")
-        .handle_err(location!())?;
-    xfrm_shards::initialize(&rtnetlink_handle.handle, &interface)
-        .await
-        .handle_err(location!())
-}
-
 #[derive(Clone)]
 pub(crate) struct RtNetLinkHandle {
     handle: Handle,
@@ -169,9 +153,6 @@ pub(crate) async fn cleanup_network(
     egress::init();
     install_overlay_forwarding().handle_err(location!())?;
     let mss_error = install_mss_clamp();
-    xfrm_shards::recover(&rtnetlink_handle.handle)
-        .await
-        .handle_err(location!())?;
     policy::recover(&rtnetlink_handle.handle)
         .await
         .handle_err(location!())?;

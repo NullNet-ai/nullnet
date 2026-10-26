@@ -140,7 +140,6 @@ async fn main() -> Result<(), Error> {
     }
 
     if net_type.net() == Net::Vxlan {
-        commands::initialize_policy_shards(&rtnetlink_handle).await?;
         commands::vxlan_environment::start(grpc_server.clone())
             .await
             .handle_err(location!())?;

@@ -1127,11 +1127,7 @@ impl Orchestrator {
         self.net_id_pool.lock().await.allocate()
     }
 
-    pub(crate) fn xfrm_transport(
-        &self,
-        first: IpAddr,
-        second: IpAddr,
-    ) -> (u32, [u8; 32]) {
+    pub(crate) fn xfrm_transport(&self, first: IpAddr, second: IpAddr) -> (u32, [u8; 32]) {
         let hosts = if first < second {
             (first, second)
         } else {

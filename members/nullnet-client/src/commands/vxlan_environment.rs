@@ -82,8 +82,8 @@ async fn reconcile() -> Result<bool, String> {
         .await?
         .status
         .success();
-    if !present {
-        checked(&[&["-I", "OUTPUT", "1"][..], &routed].concat()).await?;
+    if present {
+        checked(&[&["-D", "OUTPUT"][..], &routed].concat()).await?;
         changed = true;
     }
     Ok(changed)

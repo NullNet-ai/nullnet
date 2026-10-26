@@ -14,6 +14,7 @@ All Nullnet releases with the relative changes are documented in this file.
 - Persist ingress and egress sessions to SQLite and show the full history on the Sessions page, filterable by status, service, direction, and policy verdict, with its own retention window ([#170](https://github.com/NullNet-ai/nullnet/pull/170) — fixes [#156](https://github.com/NullNet-ai/nullnet/issues/156))
 ### Changed
 - Give each multiplexed cross-host ingress group its own IPsec key while retaining the shared VXLAN transport.
+- Allow GeoIP/ASN enrichment and fallback database downloads to be disabled with `IPINFO_DISABLED`.
 - Update Rust and UI dependencies, adopt TypeScript 7, and replace ESLint with Oxlint ([#212](https://github.com/NullNet-ai/nullnet/pull/212)).
 - Attribute encrypted ingress setup pressure and adaptive multiplexing to each destination node, and show per-node setup metrics with proxy-only routing pressure on the Nodes page ([#207](https://github.com/NullNet-ai/nullnet/pull/207)).
 - Show bounded live and recent ingress pressure, congestion-control state, and active ingress groups on the Nodes page ([#206](https://github.com/NullNet-ai/nullnet/pull/206)).

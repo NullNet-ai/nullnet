@@ -15,7 +15,7 @@ use core::mem::{size_of, zeroed};
 #[path = "../../shared/policy.rs"]
 #[allow(dead_code)]
 mod types;
-use types::{APP_IP, FlowKey, OutKey, Rule, XFRM_ROUTE_BIT};
+use types::{APP_IP, FlowKey, OutKey, Rule};
 
 #[map]
 static POLICY_OUT: HashMap<OutKey, Rule> = HashMap::with_max_entries(65536, 0);
@@ -137,7 +137,7 @@ fn outgoing(ctx: &TcContext) -> Result<i32, i64> {
     {
         return Err(-1);
     }
-    ctx.set_mark(rule.mark | XFRM_ROUTE_BIT);
+    ctx.set_mark(rule.mark);
     Ok(unsafe { bpf_redirect(rule.transport, 0) } as i32)
 }
 
