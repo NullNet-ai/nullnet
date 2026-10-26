@@ -72,6 +72,7 @@ struct PolicyEdge {
     rule: Rule,
     attachment: Arc<Attachment>,
     local: bool,
+    transport_id: u32,
 }
 impl PolicyEdge {
     fn output_ready(&self) -> bool {
@@ -578,6 +579,7 @@ pub(crate) async fn setup(
                             rule: local_rule,
                             attachment: output.clone(),
                             local: true,
+                            transport_id: transport.id,
                         },
                     );
                 } else {
@@ -589,6 +591,7 @@ pub(crate) async fn setup(
                             rule,
                             attachment: output.clone(),
                             local: true,
+                            transport_id: transport.id,
                         },
                     );
                 }
@@ -605,13 +608,20 @@ pub(crate) async fn setup(
                         rule,
                         attachment: output.clone(),
                         local: false,
+                        transport_id: transport.id,
                     },
                 );
             }
             Ok(())
         })()
     };
-    map_result?;
+    if let Err(map_error) = map_result {
+        if !local_transport {
+            engine.peers.lock().await.remove(&transport.id);
+            native_xfrm::remove(transport.id).await.map_err(error)?;
+        }
+        return Err(map_error);
+    }
     if let Some(container) = &message.docker_container {
         cache.add_overlay(&message.ns_name, Ipv4Addr::from(local_ip), container);
     }
@@ -719,12 +729,13 @@ pub(crate) async fn retire(name: &str) -> Result<bool, String> {
     let Some(engine) = engine else {
         return Ok(false);
     };
-    let (removed, map_error) = {
+    let (local, transport_id, removed, map_error) = {
         let mut edges = engine.edges.lock().unwrap();
         let Some(edge) = edges.get(name) else {
             return Ok(false);
         };
         let local = edge.local;
+        let transport_id = edge.transport_id;
         let id = name
             .strip_prefix("ns_")
             .and_then(|value| {
@@ -761,11 +772,19 @@ pub(crate) async fn retire(name: &str) -> Result<bool, String> {
             }
             removed.push((name, edge));
         }
-        (removed, map_error)
+        (local, transport_id, removed, map_error)
     };
-    let result = match map_error {
-        Some(value) => Err(value),
-        None => Ok(true),
+    let mut xfrm_error = None;
+    if !local {
+        engine.peers.lock().await.remove(&transport_id);
+        if let Err(value) = native_xfrm::remove(transport_id).await {
+            xfrm_error = Some(error(value));
+        }
+    }
+    let result = match (map_error, xfrm_error) {
+        (Some(map), Some(xfrm)) => Err(format!("{map}; {xfrm}")),
+        (Some(value), None) | (None, Some(value)) => Err(value),
+        (None, None) => Ok(true),
     };
     if result.is_err() {
         let mut edges = engine.edges.lock().unwrap();
@@ -1222,6 +1241,7 @@ mod tests {
                 rule,
                 attachment: first,
                 local: false,
+                transport_id: 0x20_0000,
             },
         );
         engine

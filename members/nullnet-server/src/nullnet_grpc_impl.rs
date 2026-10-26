@@ -2524,11 +2524,10 @@ async fn setup_edge(
     }
 
     let encrypted = *ENCRYPTION_ENABLED;
-    let policy_transport =
-        policy.then(|| orchestrator.policy_transport(client_ethernet, server_ethernet));
+    let policy_transport = policy.then(|| orchestrator.policy_transport(net_id));
     let xfrm_transport =
         (!policy && encrypted && *NET_TYPE == Net::Vxlan && client_ethernet != server_ethernet)
-            .then(|| orchestrator.xfrm_transport(client_ethernet, server_ethernet, false));
+            .then(|| orchestrator.xfrm_transport(client_ethernet, server_ethernet));
     let encryption_key = if let Some(transport) = &policy_transport {
         transport
             .encryption_key

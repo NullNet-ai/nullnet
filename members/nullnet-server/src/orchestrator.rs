@@ -22,7 +22,9 @@ use tonic::{Request, Status, Streaming};
 use uuid::Uuid;
 
 type OutboundStream = mpsc::Sender<Result<NetMessage, Status>>;
-type XfrmTransportMap = HashMap<(IpAddr, IpAddr, bool), (u32, [u8; 32])>;
+type XfrmTransportMap = HashMap<(IpAddr, IpAddr), (u32, [u8; 32])>;
+const SHARED_XFRM_ID_START: u32 = 0x10_0000;
+const POLICY_XFRM_ID_START: u32 = 0x20_0000;
 
 /// Initiator replica identity keying an egress edge: (node IP, docker container).
 /// One edge per initiator replica multiplexes all of its external destinations.
@@ -184,7 +186,7 @@ impl Orchestrator {
             geo: GeoCache::from_env(),
             inflight_teardowns: Arc::new(AtomicUsize::new(0)),
             xfrm_transports: Arc::new(StdMutex::new(HashMap::new())),
-            xfrm_transport_id: Arc::new(AtomicU32::new(0x20_0000)),
+            xfrm_transport_id: Arc::new(AtomicU32::new(SHARED_XFRM_ID_START)),
             policy_generation: Arc::new(AtomicU64::new(1)),
             policy_epoch: Arc::new(*Uuid::new_v4().as_bytes()),
             sessions: SessionStore::with_events(events.clone()),
@@ -349,7 +351,7 @@ impl Orchestrator {
 
         let encrypted = *ENCRYPTION_ENABLED;
         let xfrm_transport = (encrypted && *NET_TYPE == Net::Vxlan && initiator_ip != proxy_ip)
-            .then(|| self.xfrm_transport(initiator_ip, proxy_ip, false));
+            .then(|| self.xfrm_transport(initiator_ip, proxy_ip));
         let encryption_key = xfrm_transport
             .map(|(_, key)| key)
             .unwrap_or_else(|| if encrypted { generate_key() } else { [0u8; 32] });
@@ -1129,12 +1131,11 @@ impl Orchestrator {
         &self,
         first: IpAddr,
         second: IpAddr,
-        policy: bool,
     ) -> (u32, [u8; 32]) {
         let hosts = if first < second {
-            (first, second, policy)
+            (first, second)
         } else {
-            (second, first, policy)
+            (second, first)
         };
         *self
             .xfrm_transports
@@ -1149,11 +1150,10 @@ impl Orchestrator {
             })
     }
 
-    pub(crate) fn policy_transport(&self, first: IpAddr, second: IpAddr) -> PolicyTransport {
-        let (id, encryption_key) = self.xfrm_transport(first, second, true);
+    pub(crate) fn policy_transport(&self, net_id: u32) -> PolicyTransport {
         PolicyTransport {
-            id,
-            encryption_key: encryption_key.to_vec(),
+            id: POLICY_XFRM_ID_START + net_id,
+            encryption_key: generate_key().to_vec(),
             peer_container: false,
             generation: self.policy_generation.fetch_add(1, Ordering::Relaxed),
         }
@@ -1635,21 +1635,23 @@ mod policy_group_tests {
     }
 
     #[test]
-    fn overflow_edges_share_host_pair_transport_but_not_generation() {
+    fn overflow_edges_get_distinct_transports_keys_and_generations() {
         let orchestrator = Orchestrator::new();
         let host_a = ip(192, 0, 2, 1);
         let host_b = ip(192, 0, 2, 2);
-        let host_c = ip(192, 0, 2, 3);
-        let first = orchestrator.policy_transport(host_a, host_b);
-        let second = orchestrator.policy_transport(host_b, host_a);
-        let other = orchestrator.policy_transport(host_a, host_c);
-        let dedicated = orchestrator.xfrm_transport(host_a, host_b, false);
+        let first = orchestrator.policy_transport(101);
+        let second = orchestrator.policy_transport(102);
+        let recycled = orchestrator.policy_transport(101);
+        let dedicated = orchestrator.xfrm_transport(host_a, host_b);
 
-        assert_eq!(first.id, second.id);
-        assert_eq!(first.encryption_key, second.encryption_key);
+        assert_eq!(first.id, POLICY_XFRM_ID_START + 101);
+        assert_eq!(second.id, POLICY_XFRM_ID_START + 102);
+        assert_ne!(first.id, second.id);
+        assert_ne!(first.encryption_key, second.encryption_key);
         assert_ne!(first.generation, second.generation);
-        assert_ne!(first.id, other.id);
-        assert_ne!(first.encryption_key, other.encryption_key);
+        assert_eq!(first.id, recycled.id);
+        assert_ne!(first.encryption_key, recycled.encryption_key);
+        assert_ne!(first.generation, recycled.generation);
         assert_ne!(first.id, dedicated.0);
     }
 }

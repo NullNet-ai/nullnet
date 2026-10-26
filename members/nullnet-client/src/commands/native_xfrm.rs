@@ -515,7 +515,7 @@ mod tests {
     #[test]
     fn shared_transport_lives_until_its_last_owner() {
         let first = Edge {
-            id: 0x20_0000,
+            id: 0x10_0000,
             generation: 0,
             port: 47890,
             local: Ipv4Addr::new(192, 0, 2, 1),

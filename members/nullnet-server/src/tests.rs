@@ -1862,7 +1862,7 @@ proxy_dependencies = [["B"]]
             .map(|group| group.id)
             .collect::<HashSet<_>>()
             .len(),
-        1
+        190
     );
     assert_eq!(
         groups
@@ -1870,7 +1870,7 @@ proxy_dependencies = [["B"]]
             .map(|group| group.encryption_key.clone())
             .collect::<HashSet<_>>()
             .len(),
-        1
+        190
     );
     assert_eq!(
         groups

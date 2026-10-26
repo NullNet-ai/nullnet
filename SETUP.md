@@ -263,9 +263,10 @@ Run the setup scripts as root. The supplied systemd services also run as root; p
   healthy window; renewed congestion immediately returns the rate to zero. Stable queues do not
   activate it, and only sustained successful probes under traffic remove the limit (idle time does
   not count as recovery). Multiplexed clients get one policy
-  generation per client IP over a shared VXLAN. Cross-host groups share a persistent host-pair IPsec
-  transport; packet metadata and endpoint maps preserve per-client isolation. Same-host multiplexing
-  uses the same isolation policy with direct eBPF redirection and no VXLAN hairpin.
+  generation and encryption key per client IP over a shared VXLAN. Cross-host groups use marked
+  per-group IPsec associations while sharing fixed XFRM routing shards; packet metadata and endpoint
+  maps preserve per-client isolation. Same-host multiplexing uses the same isolation policy with
+  direct eBPF redirection and no VXLAN hairpin.
 - `proxy_dependencies` is a list of independent dep chains walked when the service is reached via a
   `Proxy` RPC from nullnet-proxy; each inner array is one linear branch and all branches are brought
   up in parallel

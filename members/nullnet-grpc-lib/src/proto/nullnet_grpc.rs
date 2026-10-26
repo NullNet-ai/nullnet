@@ -59,6 +59,8 @@ pub struct PolicyHeartbeat {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PolicyTransport {
+    /// Per-group XFRM identity and AES-256 key. Different active groups use
+    /// different identities and keys even when they share one VXLAN device.
     #[prost(uint32, tag = "1")]
     pub id: u32,
     #[prost(bytes = "vec", tag = "2")]
@@ -175,8 +177,9 @@ pub struct VxlanSetup {
     /// internet (kernel ip_forward + MASQUERADE); the Cilium egress-gateway model.
     #[prost(bool, optional, tag = "13")]
     pub egress_intercept: ::core::option::Option<bool>,
-    /// AES-256 key sent identically to both endpoints. Cross-host VXLANs share
-    /// one XFRM/ESP carrier per host pair; same-host MACsec remains per edge.
+    /// AES-256 key sent identically to both endpoints. Dedicated cross-host
+    /// VXLANs share one XFRM/ESP carrier per host pair; policy groups carry
+    /// their independently keyed transport in `policy_transport`.
     /// Meaningless (placeholder zero bytes) when `encrypted` is false.
     #[prost(bytes = "vec", tag = "14")]
     pub encryption_key: ::prost::alloc::vec::Vec<u8>,
@@ -192,7 +195,8 @@ pub struct VxlanSetup {
     pub encrypted: bool,
     #[prost(message, optional, tag = "17")]
     pub policy_transport: ::core::option::Option<PolicyTransport>,
-    /// Shared cross-host XFRM carrier. Absent means legacy per-edge transport.
+    /// Shared dedicated cross-host XFRM carrier. Policy groups use
+    /// `policy_transport`; absent means legacy per-edge transport.
     #[prost(uint32, optional, tag = "18")]
     pub xfrm_transport_id: ::core::option::Option<u32>,
 }
