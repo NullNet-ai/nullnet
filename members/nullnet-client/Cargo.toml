@@ -7,7 +7,7 @@ authors.workspace = true
 
 [dependencies]
 sha2 = "0.11.0"
-tun-rs = { version = "=2.8.11", features = ["async_tokio"] }
+tun-rs = { version = "=2.8.13", features = ["async_tokio"] }
 etherparse = "0.21.0"
 clap = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["net", "sync", "rt-multi-thread", "macros", "io-util", "time", "fs", "process"] }
