@@ -5081,9 +5081,9 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokio"
-version = "1.53.2"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e95f91fcc7a621e8b030f6aa23c71fe9838ae2fb4d8118b75602a328f5144044"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",
@@ -5422,12 +5422,12 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tun-rs"
-version = "2.8.11"
+version = "2.8.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19e3459c60bb1cd4a5969fced4299be335b3e3169d8cb3466ffe23da56eeeeb4"
+checksum = "9ca7a4b107aa44745461df7eff53541fb1773e3670271087feb7bca5cc11ac47"
 dependencies = [
+ "ahash",
  "blocking",
- "byteorder",
  "bytes",
  "encoding_rs",
  "getifaddrs",
