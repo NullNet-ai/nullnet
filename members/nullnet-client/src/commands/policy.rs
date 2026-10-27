@@ -950,7 +950,8 @@ mod tests {
     }
 
     async fn tcp_listener(namespace: Option<&str>, port: u16) -> tokio::process::Child {
-        let script = "import socket,sys; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('0.0.0.0',int(sys.argv[1]))); s.listen(1); s.settimeout(10); c,_=s.accept(); d=c.recv(64); c.sendall(d); c.close(); s.close()";
+        // The external coordinator may legitimately wait up to 45 seconds.
+        let script = "import socket,sys; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('0.0.0.0',int(sys.argv[1]))); s.listen(1); s.settimeout(60); c,_=s.accept(); d=c.recv(64); c.sendall(d); c.close(); s.close()";
         let mut child = python(namespace, script, &[port.to_string()])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
