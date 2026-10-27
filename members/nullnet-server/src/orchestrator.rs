@@ -22,7 +22,9 @@ use tonic::{Request, Status, Streaming};
 use uuid::Uuid;
 
 type OutboundStream = mpsc::Sender<Result<NetMessage, Status>>;
-type XfrmTransportMap = HashMap<(IpAddr, IpAddr, bool), (u32, [u8; 32])>;
+type XfrmTransportMap = HashMap<(IpAddr, IpAddr), (u32, [u8; 32])>;
+const SHARED_XFRM_ID_START: u32 = 0x10_0000;
+const POLICY_XFRM_ID_START: u32 = 0x20_0000;
 
 /// Initiator replica identity keying an egress edge: (node IP, docker container).
 /// One edge per initiator replica multiplexes all of its external destinations.
@@ -184,7 +186,7 @@ impl Orchestrator {
             geo: GeoCache::from_env(),
             inflight_teardowns: Arc::new(AtomicUsize::new(0)),
             xfrm_transports: Arc::new(StdMutex::new(HashMap::new())),
-            xfrm_transport_id: Arc::new(AtomicU32::new(0x20_0000)),
+            xfrm_transport_id: Arc::new(AtomicU32::new(SHARED_XFRM_ID_START)),
             policy_generation: Arc::new(AtomicU64::new(1)),
             policy_epoch: Arc::new(*Uuid::new_v4().as_bytes()),
             sessions: SessionStore::with_events(events.clone()),
@@ -213,9 +215,11 @@ impl Orchestrator {
             .await
             .insert(client_ip, outbound.clone());
         self.policy_heartbeats(client_ip, outbound);
-        self.events
-            .emit(Event::node_connected(client_ip.to_string()))
-            .await;
+        if crate::routine_diagnostics() {
+            self.events
+                .emit(Event::node_connected(client_ip.to_string()))
+                .await;
+        }
 
         let mut inbound = request.into_inner();
         let orchestrator = self.clone();
@@ -228,7 +232,7 @@ impl Orchestrator {
                 }
             }
 
-            println!("Control channel from '{client_ip}' closed");
+            eprintln!("Control channel from '{client_ip}' closed");
             orchestrator
                 .events
                 .emit(Event::node_disconnected(client_ip.to_string()))
@@ -304,7 +308,7 @@ impl Orchestrator {
                 // stays dead until its client restarts. Take it over.
                 Some(e) => {
                     let stranded = e.reserved_at.elapsed();
-                    println!(
+                    eprintln!(
                         "[egress] reclaiming a stale reservation for '{service}' ({initiator_ip}), \
                          stranded {}s",
                         stranded.as_secs()
@@ -349,7 +353,7 @@ impl Orchestrator {
 
         let encrypted = *ENCRYPTION_ENABLED;
         let xfrm_transport = (encrypted && *NET_TYPE == Net::Vxlan && initiator_ip != proxy_ip)
-            .then(|| self.xfrm_transport(initiator_ip, proxy_ip, false));
+            .then(|| self.xfrm_transport(initiator_ip, proxy_ip));
         let encryption_key = xfrm_transport
             .map(|(_, key)| key)
             .unwrap_or_else(|| if encrypted { generate_key() } else { [0u8; 32] });
@@ -708,7 +712,7 @@ impl Orchestrator {
             })
             .await;
         for e in removed {
-            println!(
+            routine_log!(
                 "Egress edge for '{}' ({}) idle past the debounce; tearing down net {}",
                 e.initiator_docker.as_deref().unwrap_or("<host>"),
                 e.initiator_ip,
@@ -969,7 +973,7 @@ impl Orchestrator {
             if e.net_id == 0 {
                 continue;
             }
-            println!(
+            eprintln!(
                 "[egress] reaping edge for gone container {:?} on {}",
                 e.initiator_docker, e.initiator_ip
             );
@@ -1064,7 +1068,7 @@ impl Orchestrator {
     pub(crate) async fn send_container_suspend(&self, dest: IpAddr, docker_container: String) {
         let outbound = self.clients.read().await.get(&dest).cloned();
         if let Some(outbound) = outbound {
-            println!("Suspending container '{docker_container}' on {dest}");
+            routine_log!("Suspending container '{docker_container}' on {dest}");
             let message = NetMessage {
                 message: Some(net_message::Message::ContainerSuspend(ContainerSuspend {
                     docker_container,
@@ -1087,7 +1091,7 @@ impl Orchestrator {
             .map(|(ip, o)| (*ip, o.clone()))
             .collect();
         for (ip, outbound) in outbounds {
-            println!("Notifying {ip} of egress policy change");
+            routine_log!("Notifying {ip} of egress policy change");
             let message = NetMessage {
                 message: Some(net_message::Message::EgressPolicyChanged(
                     EgressPolicyChanged {},
@@ -1105,7 +1109,7 @@ impl Orchestrator {
         dest: IpAddr,
         docker_container: String,
     ) -> bool {
-        println!("Resuming container '{docker_container}' on {dest}");
+        routine_log!("Resuming container '{docker_container}' on {dest}");
         self.send_control(dest, |msg_id| {
             Some((
                 (),
@@ -1125,16 +1129,11 @@ impl Orchestrator {
         self.net_id_pool.lock().await.allocate()
     }
 
-    pub(crate) fn xfrm_transport(
-        &self,
-        first: IpAddr,
-        second: IpAddr,
-        policy: bool,
-    ) -> (u32, [u8; 32]) {
+    pub(crate) fn xfrm_transport(&self, first: IpAddr, second: IpAddr) -> (u32, [u8; 32]) {
         let hosts = if first < second {
-            (first, second, policy)
+            (first, second)
         } else {
-            (second, first, policy)
+            (second, first)
         };
         *self
             .xfrm_transports
@@ -1149,11 +1148,10 @@ impl Orchestrator {
             })
     }
 
-    pub(crate) fn policy_transport(&self, first: IpAddr, second: IpAddr) -> PolicyTransport {
-        let (id, encryption_key) = self.xfrm_transport(first, second, true);
+    pub(crate) fn policy_transport(&self, net_id: u32) -> PolicyTransport {
         PolicyTransport {
-            id,
-            encryption_key: encryption_key.to_vec(),
+            id: POLICY_XFRM_ID_START + net_id,
+            encryption_key: generate_key().to_vec(),
             peer_container: false,
             generation: self.policy_generation.fetch_add(1, Ordering::Relaxed),
         }
@@ -1269,7 +1267,7 @@ impl Orchestrator {
         ] {
             let outbound = self.clients.read().await.get(&dest).cloned();
             if let Some(outbound) = outbound {
-                println!("Sending network {net_id} teardown to client {dest}");
+                routine_log!("Sending network {net_id} teardown to client {dest}");
 
                 let (tx, rx) = oneshot::channel();
                 let msg_id = Uuid::new_v4().to_string();
@@ -1353,7 +1351,7 @@ impl Orchestrator {
                     .await
                     .is_err()
                 {
-                    println!(
+                    eprintln!(
                         "Network {net_id} teardown was not acked by {dest} within {}s; keeping the id reserved",
                         TEARDOWN_ACK_GRACE.as_secs()
                     );
@@ -1366,7 +1364,7 @@ impl Orchestrator {
             }
 
             orchestrator.free_net_id(net_id).await;
-            println!("Network {net_id} teardown complete; ID released");
+            routine_log!("Network {net_id} teardown complete; ID released");
             inflight.fetch_sub(1, Ordering::SeqCst);
         });
     }
@@ -1635,21 +1633,23 @@ mod policy_group_tests {
     }
 
     #[test]
-    fn overflow_edges_share_host_pair_transport_but_not_generation() {
+    fn overflow_edges_get_distinct_transports_keys_and_generations() {
         let orchestrator = Orchestrator::new();
         let host_a = ip(192, 0, 2, 1);
         let host_b = ip(192, 0, 2, 2);
-        let host_c = ip(192, 0, 2, 3);
-        let first = orchestrator.policy_transport(host_a, host_b);
-        let second = orchestrator.policy_transport(host_b, host_a);
-        let other = orchestrator.policy_transport(host_a, host_c);
-        let dedicated = orchestrator.xfrm_transport(host_a, host_b, false);
+        let first = orchestrator.policy_transport(101);
+        let second = orchestrator.policy_transport(102);
+        let recycled = orchestrator.policy_transport(101);
+        let dedicated = orchestrator.xfrm_transport(host_a, host_b);
 
-        assert_eq!(first.id, second.id);
-        assert_eq!(first.encryption_key, second.encryption_key);
+        assert_eq!(first.id, POLICY_XFRM_ID_START + 101);
+        assert_eq!(second.id, POLICY_XFRM_ID_START + 102);
+        assert_ne!(first.id, second.id);
+        assert_ne!(first.encryption_key, second.encryption_key);
         assert_ne!(first.generation, second.generation);
-        assert_ne!(first.id, other.id);
-        assert_ne!(first.encryption_key, other.encryption_key);
+        assert_eq!(first.id, recycled.id);
+        assert_ne!(first.encryption_key, recycled.encryption_key);
+        assert_ne!(first.generation, recycled.generation);
         assert_ne!(first.id, dedicated.0);
     }
 }

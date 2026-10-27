@@ -106,7 +106,7 @@ pub(super) async fn request_handler(
     // keep a copy to persist for auto-renew; `create_dns_provider` consumes it
     let credentials = req.credentials.clone();
     let provider_name = req.credentials.provider_name();
-    println!("ACME request for '{domain}' via DNS provider '{provider_name}'");
+    routine_log!("ACME request for '{domain}' via DNS provider '{provider_name}'");
     let provider = match cert::create_dns_provider(req.credentials) {
         Ok(p) => p,
         Err(e) => return bad_request(&format!("invalid DNS provider credentials: {e}")),

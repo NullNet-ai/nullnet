@@ -9,13 +9,13 @@ const PROTOS: [&str; 2] = ["tcp", "udp"];
 /// inherits no stale state from a previous run. Idempotent.
 pub(crate) fn init() {
     // create our chain (no-op if it already exists)
-    let _ = privileged(&["iptables", "-t", "nat", "-N", CHAIN]);
+    let _ = privileged_quiet(&["iptables", "-t", "nat", "-N", CHAIN]);
     // flush any rules left over from a previous run
     let _ = privileged(&["iptables", "-t", "nat", "-F", CHAIN]);
     // hook the chain from PREROUTING (idempotent via -C check). The OUTPUT
     // hook is gone with the NFQUEUE migration — initiators are always
     // containers entering the host stack via PREROUTING.
-    let already = privileged(&["iptables", "-t", "nat", "-C", HOOK_CHAIN, "-j", CHAIN])
+    let already = privileged_quiet(&["iptables", "-t", "nat", "-C", HOOK_CHAIN, "-j", CHAIN])
         .map(|s| s.success())
         .unwrap_or(false);
     if !already {
@@ -23,7 +23,6 @@ pub(crate) fn init() {
     }
     // drop any conntrack flows that may have been NAT'd through stale rules
     let _ = privileged(&["conntrack", "-F"]);
-    println!("[dnat] init: chain {CHAIN} ready, conntrack flushed");
 }
 
 /// Install a DNAT for `port → overlay_ip:port`. When `container_ip` is a
@@ -73,10 +72,14 @@ fn run_iptables(
         "--to-destination",
         &target,
     ]);
-    let status = privileged(&args);
+    let status = if action == "-D" {
+        privileged_quiet(&args)
+    } else {
+        privileged(&args)
+    };
     if action == "-D" && !status.as_ref().is_ok_and(std::process::ExitStatus::success) {
         args[3] = "-C";
-        if privileged(&args).is_ok_and(|s| s.code() == Some(1)) {
+        if privileged_quiet(&args).is_ok_and(|s| s.code() == Some(1)) {
             return true;
         }
     }
@@ -86,10 +89,7 @@ fn run_iptables(
         container_ip_s.clone()
     };
     match status {
-        Ok(s) if s.success() => {
-            println!("[dnat] iptables {action} {CHAIN} {proto}/{port} -s {src} -> {target}");
-            true
-        }
+        Ok(s) if s.success() => true,
         Ok(s) => {
             eprintln!(
                 "[dnat] iptables {action} {CHAIN} {proto}/{port} -s {src} -> {target} exited {s}"
@@ -179,5 +179,18 @@ fn privileged(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
     if args[0] == "iptables" {
         command.arg("-w");
     }
+    #[cfg(not(debug_assertions))]
+    command.stdout(std::process::Stdio::null());
     command.args(&args[1..]).status()
+}
+
+fn privileged_quiet(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
+    let mut command = Command::new(args[0]);
+    if args[0] == "iptables" {
+        command.arg("-w");
+    }
+    command
+        .args(&args[1..])
+        .output()
+        .map(|output| output.status)
 }

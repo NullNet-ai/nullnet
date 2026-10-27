@@ -141,7 +141,6 @@ async fn handle_packet(mut msg: Message, ctx: ListenerCtx, verdict_tx: Sender<Me
     let Some(container) = ctx.cache.get(src_ip) else {
         // Host process, K8s pod, rootless docker — anything we can't map to
         // a docker container. Pass through unaltered; no DNAT will be installed.
-        println!("[nfqueue] no container for src {src_ip}:{dst_port}; accept passthrough");
         msg.set_verdict(Verdict::Accept);
         let _ = verdict_tx.send(msg);
         return;

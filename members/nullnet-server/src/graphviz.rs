@@ -106,7 +106,7 @@ pub(crate) async fn generate_graphviz(services: Arc<RwLock<StackMap>>) {
         }
         previously_written = current;
 
-        println!("Regenerated graphviz for {} stack(s)", snapshot.len());
+        routine_log!("Regenerated graphviz for {} stack(s)", snapshot.len());
 
         tokio::time::sleep(Duration::from_secs(10)).await;
     }

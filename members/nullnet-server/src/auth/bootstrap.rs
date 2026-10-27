@@ -29,7 +29,7 @@ pub(crate) async fn ensure_admin_exists(
     let username = bootstrap_username.filter(|s| !s.trim().is_empty());
     let plain_password = bootstrap_password.filter(|s| !s.is_empty());
     let (Some(username), Some(plain_password)) = (username, plain_password) else {
-        println!(
+        eprintln!(
             "WARNING: no users exist and ADMIN_BOOTSTRAP_USERNAME/ADMIN_BOOTSTRAP_PASSWORD are \
              not both set — the admin UI will be inaccessible until an initial admin is created \
              (set these env vars and restart)."
@@ -42,7 +42,7 @@ pub(crate) async fn ensure_admin_exists(
     users
         .create(&id, username, &password_hash, Role::Admin.as_str())
         .await?;
-    println!("Bootstrapped initial admin account '{username}'.");
+    eprintln!("Bootstrapped initial admin account '{username}'.");
     Ok(())
 }
 

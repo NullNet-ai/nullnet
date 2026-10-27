@@ -21,7 +21,6 @@ pub(crate) mod vxlan;
 mod vxlan_cleanup;
 pub(crate) mod vxlan_environment;
 mod vxlan_recovery;
-mod xfrm_shards;
 
 pub(crate) async fn setup_br0(rtnetlink_handle: &RtNetLinkHandle) {
     // create the bridge
@@ -117,21 +116,6 @@ pub(crate) fn find_ethernet_interface(ip: Ipv4Addr) -> Option<String> {
         })
 }
 
-pub(crate) async fn initialize_policy_shards(
-    rtnetlink_handle: &RtNetLinkHandle,
-) -> Result<(), Error> {
-    let ip = find_ethernet_ip(rtnetlink_handle)
-        .await
-        .ok_or("could not find the local ethernet IP")
-        .handle_err(location!())?;
-    let interface = find_ethernet_interface(ip)
-        .ok_or("could not find the local ethernet interface")
-        .handle_err(location!())?;
-    xfrm_shards::initialize(&rtnetlink_handle.handle, &interface)
-        .await
-        .handle_err(location!())
-}
-
 #[derive(Clone)]
 pub(crate) struct RtNetLinkHandle {
     handle: Handle,
@@ -169,9 +153,6 @@ pub(crate) async fn cleanup_network(
     egress::init();
     install_overlay_forwarding().handle_err(location!())?;
     let mss_error = install_mss_clamp();
-    xfrm_shards::recover(&rtnetlink_handle.handle)
-        .await
-        .handle_err(location!())?;
     policy::recover(&rtnetlink_handle.handle)
         .await
         .handle_err(location!())?;
@@ -266,7 +247,9 @@ fn purge_stale_xfrm() {
         }
     }
 
-    println!("[xfrm] purge: deleted {states} stale SA(s), {policies} stale policy(ies)");
+    if states != 0 || policies != 0 {
+        eprintln!("[xfrm] purge: deleted {states} stale SA(s), {policies} stale policy(ies)");
+    }
 }
 
 /// `(src, dst, spi)` for each ESP state whose SPI falls in our range.
@@ -474,10 +457,7 @@ fn install_mss_clamp() -> Option<String> {
     let mut add = vec!["iptables", "-t", "mangle", "-A", "FORWARD"];
     add.extend_from_slice(&rule);
     match privileged(&add) {
-        Ok(s) if s.success() => {
-            println!("[mss] clamp installed on mangle/FORWARD: --set-mss {MSS}");
-            None
-        }
+        Ok(s) if s.success() => None,
         Ok(s) => {
             eprintln!("[mss] clamp install exited {s}");
             Some(format!("iptables exited {s}"))
@@ -533,7 +513,7 @@ fn prune_superseded_mss_rules() {
             del.extend_from_slice(spec);
             match privileged_quiet(&del) {
                 Ok(s) if s.success() => {
-                    println!("[mss] removed superseded clamp: {}", spec.join(" "));
+                    eprintln!("[mss] removed superseded clamp: {}", spec.join(" "));
                 }
                 _ => break,
             }
@@ -542,9 +522,10 @@ fn prune_superseded_mss_rules() {
 }
 
 fn privileged(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
-    std::process::Command::new(args[0])
-        .args(&args[1..])
-        .status()
+    let mut command = std::process::Command::new(args[0]);
+    #[cfg(not(debug_assertions))]
+    command.stdout(std::process::Stdio::null());
+    command.args(&args[1..]).status()
 }
 
 /// Privileged command with stdout/stderr captured rather than inherited. For calls whose

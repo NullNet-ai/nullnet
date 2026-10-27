@@ -65,8 +65,7 @@ pub(crate) async fn run(
         }
     };
     let socket = Arc::new(socket);
-    println!("[udp/{listen_port}] listening");
-
+    routine_log!("[udp/{listen_port}] listening");
     let mut sessions: HashMap<SocketAddr, Session> = HashMap::new();
     let mut sweep = tokio::time::interval(SWEEP_INTERVAL);
     let mut buf = vec![0u8; MAX_DATAGRAM];
@@ -118,7 +117,7 @@ async fn handle_datagram(
         .await
     {
         Ok(false) => {
-            println!(
+            routine_log!(
                 "[udp] ingress policy denied {src} -> '{}'",
                 entry.service_name
             );
@@ -132,7 +131,7 @@ async fn handle_datagram(
     }
     let upstream_addr = match proxy.get_or_add_upstream(proxy_req).await {
         Ok(u) => {
-            println!(
+            routine_log!(
                 "[udp] new session from {src} → '{}' resolved upstream {u}",
                 entry.service_name
             );
@@ -244,7 +243,7 @@ fn sweep_idle(sessions: &mut HashMap<SocketAddr, Session>, idle_timeout_secs: u6
     for addr in expired {
         if let Some(session) = sessions.remove(&addr) {
             session.relay_handle.abort();
-            println!("[udp] session from {addr} swept (idle > {idle_timeout_secs}s)");
+            routine_log!("[udp] session from {addr} swept (idle > {idle_timeout_secs}s)");
         }
     }
 }

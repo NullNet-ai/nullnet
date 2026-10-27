@@ -1,3 +1,14 @@
+macro_rules! routine_log {
+    ($($arg:tt)*) => {{
+        #[cfg(debug_assertions)]
+        println!($($arg)*);
+        #[cfg(not(debug_assertions))]
+        if false {
+            println!($($arg)*);
+        }
+    }};
+}
+
 mod auth;
 mod cert;
 mod cert_renewal;
@@ -32,6 +43,11 @@ use tonic::transport::{Identity, Server, ServerTlsConfig};
 const PORT: u16 = 50051;
 /// Default path for the SQLite database; override with `DATABASE_URL`.
 const DEFAULT_DATABASE_URL: &str = "/var/nullnet/data/nullnet.db";
+
+#[inline(always)]
+fn routine_diagnostics() -> bool {
+    cfg!(debug_assertions)
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -74,7 +90,7 @@ async fn main() -> Result<(), Error> {
         .ok()
         .filter(|s| !s.is_empty());
     if bootstrap_username_env.is_none() || bootstrap_password_env.is_none() {
-        println!(
+        eprintln!(
             "WARNING: ADMIN_BOOTSTRAP_USERNAME/ADMIN_BOOTSTRAP_PASSWORD not set — defaulting the \
              initial admin account to 'admin'/'admin'. Change this password immediately after \
              first login (this only affects a brand-new deployment with no existing users)."
@@ -90,7 +106,7 @@ async fn main() -> Result<(), Error> {
     // including SSH — on startup, so warn loudly rather than silently lock out the
     // fleet on the next client restart.
     if env::INGRESS_ALLOW_TCP_PORTS.is_empty() {
-        println!(
+        eprintln!(
             "WARNING: INGRESS_ALLOW_TCP_PORTS is empty — every client firewall will drop all \
              inbound TCP (including SSH/22). Set it in the server .env before starting clients."
         );

@@ -16,7 +16,7 @@ pub static PROXY_IP: std::sync::LazyLock<Option<IpAddr>> =
         Ok(s) if !s.trim().is_empty() => match s.trim().parse() {
             Ok(ip) => Some(ip),
             Err(_) => {
-                println!("'PROXY_IP' environment variable is not a valid IP address: '{s}'");
+                eprintln!("'PROXY_IP' environment variable is not a valid IP address: '{s}'");
                 None
             }
         },
@@ -25,7 +25,7 @@ pub static PROXY_IP: std::sync::LazyLock<Option<IpAddr>> =
 
 pub static NET_TYPE: std::sync::LazyLock<Net> = std::sync::LazyLock::new(|| {
     let str = std::env::var("NET_TYPE").unwrap_or_else(|_| {
-        println!("'NET_TYPE' environment variable not set");
+        eprintln!("'NET_TYPE' environment variable not set");
         String::new()
     });
 

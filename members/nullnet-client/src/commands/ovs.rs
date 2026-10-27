@@ -1,5 +1,4 @@
 use crate::TAP_NAME;
-use nullnet_liberror::{ErrorHandler, Location, location};
 use std::process::Command;
 
 #[derive(Debug)]
@@ -37,17 +36,25 @@ pub(super) enum OvsCommand<'a> {
 
 impl OvsCommand<'_> {
     pub(super) fn execute(&self) {
-        let init_t = std::time::Instant::now();
-        let _ = Command::new(self.program())
-            .args(self.args())
-            .spawn()
-            .map(|mut c| c.wait())
-            .handle_err(location!());
-        println!(
-            "Executed command {:?} in {} ms",
-            self,
-            init_t.elapsed().as_millis()
-        );
+        let mut command = Command::new(self.program());
+        command.args(self.args());
+        #[cfg(debug_assertions)]
+        if let Err(error) = command.status() {
+            eprintln!("OVS command {self:?}: {error}");
+        }
+        #[cfg(not(debug_assertions))]
+        match command.output() {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                let detail = String::from_utf8_lossy(&output.stderr);
+                eprintln!(
+                    "OVS command {self:?} exited {}: {}",
+                    output.status,
+                    detail.trim()
+                );
+            }
+            Err(error) => eprintln!("OVS command {self:?}: {error}"),
+        }
     }
 
     fn program(&self) -> &str {
@@ -67,7 +74,10 @@ impl OvsCommand<'_> {
     fn args(&self) -> Vec<String> {
         match self {
             OvsCommand::AddBridge => ["add-br", "br0"].iter().map(ToString::to_string).collect(),
-            OvsCommand::DeleteBridge => ["del-br", "br0"].iter().map(ToString::to_string).collect(),
+            OvsCommand::DeleteBridge => ["--if-exists", "del-br", "br0"]
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
             OvsCommand::DeleteFlows => ["del-flows", "br0"]
                 .iter()
                 .map(ToString::to_string)

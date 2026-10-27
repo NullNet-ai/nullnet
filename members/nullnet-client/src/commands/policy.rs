@@ -13,8 +13,11 @@ use aya::{
 use futures::TryStreamExt;
 use nullnet_grpc_lib::nullnet_grpc::{PolicyTransport, VxlanSetup};
 use rtnetlink::{
-    Handle, LinkUnspec, LinkVeth, LinkVxlan,
-    packet_route::link::{InfoData, InfoVeth, LinkAttribute},
+    Handle, IpVersion, LinkUnspec, LinkVeth, LinkVxlan,
+    packet_route::{
+        link::{InfoData, InfoVeth, LinkAttribute},
+        rule::{RuleAttribute, RuleMessage},
+    },
 };
 use std::{
     collections::HashMap,
@@ -37,6 +40,8 @@ unsafe impl aya::Pod for Rule {}
 const APP_NAME: &str = "nnp_app";
 const DELIVERY_NAME: &str = "nnp_delivery";
 const VXLAN_NAME: &str = "nnp_vx";
+const LEGACY_XFRM_ROUTE_MARK: u32 = 0xce80_0000;
+const LEGACY_XFRM_RULE_PRIORITY: std::ops::RangeInclusive<u32> = 12_000..=12_064;
 static ENGINE: AsyncMutex<Option<Arc<Engine>>> = AsyncMutex::const_new(None);
 static HEARTBEAT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static SERVER_EPOCH: AsyncMutex<Option<Vec<u8>>> = AsyncMutex::const_new(None);
@@ -72,6 +77,7 @@ struct PolicyEdge {
     rule: Rule,
     attachment: Arc<Attachment>,
     local: bool,
+    transport_id: u32,
 }
 impl PolicyEdge {
     fn output_ready(&self) -> bool {
@@ -223,9 +229,6 @@ impl Engine {
             .or_default()
             .clone();
         cell.get_or_try_init(|| async {
-            let if_id = super::xfrm_shards::ensure(transport.id)
-                .await
-                .map_err(error)?;
             let result = native_xfrm::install_port(
                 transport.id,
                 transport.id,
@@ -233,7 +236,6 @@ impl Engine {
                 (local, remote),
                 key,
                 POLICY_PORT,
-                if_id,
             )
             .await;
             if result.is_err() {
@@ -578,6 +580,7 @@ pub(crate) async fn setup(
                             rule: local_rule,
                             attachment: output.clone(),
                             local: true,
+                            transport_id: transport.id,
                         },
                     );
                 } else {
@@ -589,6 +592,7 @@ pub(crate) async fn setup(
                             rule,
                             attachment: output.clone(),
                             local: true,
+                            transport_id: transport.id,
                         },
                     );
                 }
@@ -605,13 +609,20 @@ pub(crate) async fn setup(
                         rule,
                         attachment: output.clone(),
                         local: false,
+                        transport_id: transport.id,
                     },
                 );
             }
             Ok(())
         })()
     };
-    map_result?;
+    if let Err(map_error) = map_result {
+        if !local_transport {
+            engine.peers.lock().await.remove(&transport.id);
+            native_xfrm::remove(transport.id).await.map_err(error)?;
+        }
+        return Err(map_error);
+    }
     if let Some(container) = &message.docker_container {
         cache.add_overlay(&message.ns_name, Ipv4Addr::from(local_ip), container);
     }
@@ -719,12 +730,13 @@ pub(crate) async fn retire(name: &str) -> Result<bool, String> {
     let Some(engine) = engine else {
         return Ok(false);
     };
-    let (removed, map_error) = {
+    let (local, transport_id, removed, map_error) = {
         let mut edges = engine.edges.lock().unwrap();
         let Some(edge) = edges.get(name) else {
             return Ok(false);
         };
         let local = edge.local;
+        let transport_id = edge.transport_id;
         let id = name
             .strip_prefix("ns_")
             .and_then(|value| {
@@ -761,11 +773,19 @@ pub(crate) async fn retire(name: &str) -> Result<bool, String> {
             }
             removed.push((name, edge));
         }
-        (removed, map_error)
+        (local, transport_id, removed, map_error)
     };
-    let result = match map_error {
-        Some(value) => Err(value),
-        None => Ok(true),
+    let mut xfrm_error = None;
+    if !local {
+        engine.peers.lock().await.remove(&transport_id);
+        if let Err(value) = native_xfrm::remove(transport_id).await {
+            xfrm_error = Some(error(value));
+        }
+    }
+    let result = match (map_error, xfrm_error) {
+        (Some(map), Some(xfrm)) => Err(format!("{map}; {xfrm}")),
+        (Some(value), None) | (None, Some(value)) => Err(value),
+        (None, None) => Ok(true),
     };
     if result.is_err() {
         let mut edges = engine.edges.lock().unwrap();
@@ -776,7 +796,34 @@ pub(crate) async fn retire(name: &str) -> Result<bool, String> {
     result
 }
 
+fn legacy_xfrm_rule(rule: &RuleMessage) -> bool {
+    let mut priority = None;
+    let mut mark = None;
+    let mut mask = None;
+    for attribute in &rule.attributes {
+        match attribute {
+            RuleAttribute::Priority(value) => priority = Some(*value),
+            RuleAttribute::FwMark(value) => mark = Some(*value),
+            RuleAttribute::FwMask(value) => mask = Some(*value),
+            _ => {}
+        }
+    }
+    priority.is_some_and(|value| LEGACY_XFRM_RULE_PRIORITY.contains(&value))
+        && mark.is_some_and(|value| value & 0xffc0_0000 == LEGACY_XFRM_ROUTE_MARK)
+        && mask.is_some_and(|value| matches!(value, 0xffc0_0000 | 0xffc0_003f))
+}
+
 pub(crate) async fn recover(handle: &Handle) -> Result<(), String> {
+    let rules: Vec<_> = handle
+        .rule()
+        .get(IpVersion::V4)
+        .execute()
+        .try_collect()
+        .await
+        .map_err(error)?;
+    for rule in rules.into_iter().filter(legacy_xfrm_rule) {
+        handle.rule().del(rule).execute().await.map_err(error)?;
+    }
     let links: Vec<_> = handle
         .link()
         .get()
@@ -820,6 +867,24 @@ pub(crate) async fn destroy_all(rtnetlink: &RtNetLinkHandle) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_identifies_only_legacy_xfrm_rules() {
+        let rule = |priority, mark, mask| {
+            let mut rule = RuleMessage::default();
+            rule.attributes = vec![
+                RuleAttribute::Priority(priority),
+                RuleAttribute::FwMark(mark),
+                RuleAttribute::FwMask(mask),
+            ];
+            rule
+        };
+
+        assert!(legacy_xfrm_rule(&rule(12_000, 0xce80_0000, 0xffc0_0000)));
+        assert!(legacy_xfrm_rule(&rule(12_063, 0xce80_003f, 0xffc0_003f)));
+        assert!(!legacy_xfrm_rule(&rule(11_999, 0xce80_0000, 0xffc0_0000)));
+        assert!(!legacy_xfrm_rule(&rule(12_000, 0x4e80_0000, 0xffc0_0000)));
+    }
 
     fn same_host_message(
         net_id: u32,
@@ -885,7 +950,8 @@ mod tests {
     }
 
     async fn tcp_listener(namespace: Option<&str>, port: u16) -> tokio::process::Child {
-        let script = "import socket,sys; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('0.0.0.0',int(sys.argv[1]))); s.listen(1); s.settimeout(10); c,_=s.accept(); d=c.recv(64); c.sendall(d); c.close(); s.close()";
+        // The external coordinator may legitimately wait up to 45 seconds.
+        let script = "import socket,sys; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('0.0.0.0',int(sys.argv[1]))); s.listen(1); s.settimeout(60); c,_=s.accept(); d=c.recv(64); c.sendall(d); c.close(); s.close()";
         let mut child = python(namespace, script, &[port.to_string()])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
@@ -990,13 +1056,7 @@ mod tests {
             .unwrap();
         heartbeat(&[1; 16]).await.unwrap();
         let handle = RtNetLinkHandle::new().unwrap();
-        super::super::xfrm_shards::recover(&handle.handle)
-            .await
-            .unwrap();
         recover(&handle.handle).await.unwrap();
-        super::super::initialize_policy_shards(&handle)
-            .await
-            .unwrap();
         let cache = BridgeIpCache::new();
         let keys = if side == "s" {
             [0x42, 0x43, 0x44]
@@ -1065,9 +1125,6 @@ mod tests {
             assert!(retire(&format!("ns_{net_id}_{side}")).await.unwrap());
         }
         destroy_all(&handle).await.unwrap();
-        super::super::xfrm_shards::recover(&handle.handle)
-            .await
-            .unwrap();
         for message in messages {
             super::super::endpoint_namespace::remove(&message.ns_name)
                 .await
@@ -1222,6 +1279,7 @@ mod tests {
                 rule,
                 attachment: first,
                 local: false,
+                transport_id: 0x20_0000,
             },
         );
         engine

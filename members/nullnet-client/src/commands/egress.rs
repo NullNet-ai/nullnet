@@ -71,9 +71,15 @@ fn privileged(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
         v.push("iptables");
         v.push("-w");
         v.extend_from_slice(&args[1..]);
-        return Command::new(v[0]).args(&v[1..]).status();
+        let mut command = Command::new(v[0]);
+        #[cfg(not(debug_assertions))]
+        command.stdout(std::process::Stdio::null());
+        return command.args(&v[1..]).status();
     }
-    Command::new(args[0]).args(&args[1..]).status()
+    let mut command = Command::new(args[0]);
+    #[cfg(not(debug_assertions))]
+    command.stdout(std::process::Stdio::null());
+    command.args(&args[1..]).status()
 }
 
 /// Run a rule that must apply; log on failure. Returns success.
@@ -144,7 +150,7 @@ pub(crate) fn init() {
         ];
         let mut del = vec!["iptables", "-D", "PREROUTING"];
         del.extend_from_slice(&rule);
-        let _ = privileged(&del);
+        let _ = privileged_quiet(&del);
         let mut add = vec!["iptables", "-A", "PREROUTING"];
         add.extend_from_slice(&rule);
         privileged_ok(
@@ -161,8 +167,6 @@ pub(crate) fn init() {
         "sysctl ip_forward",
         &["sysctl", "-w", "net.ipv4.ip_forward=1"],
     );
-
-    println!("[egress] init: NFQUEUE queue {QUEUE_NUM} + ip_forward ready");
 }
 
 /// Table numbers start here, clear of the reserved 0/253-255 and of anything
@@ -277,11 +281,7 @@ pub(crate) fn install_steer(
             &snat_src.to_string(),
         ],
     );
-    if ok {
-        println!(
-            "[egress] steer net {net_id}: {cip} -> via {proxy_gw} dev {br_dev} (snat {snat_src})"
-        );
-    } else {
+    if !ok {
         // Roll back partial installation now; recorded state also lets the
         // eventual teardown retry any cleanup that fails here.
         eprintln!("[egress] steer net {net_id} partial install; rolling back");
@@ -366,7 +366,9 @@ pub(crate) fn purge_stale_steers() {
         }
     }
 
-    println!("[egress] purge: dropped {tables} stale steer table(s), {snats} SNAT rule(s)");
+    if tables != 0 || snats != 0 {
+        eprintln!("[egress] purge: dropped {tables} stale steer table(s), {snats} SNAT rule(s)");
+    }
 }
 
 struct SteerRule<'a> {
@@ -519,10 +521,11 @@ fn privileged_output(args: &[&str]) -> Option<String> {
 /// Privileged command with stderr captured rather than inherited, for calls whose failure
 /// is the expected steady state (deleting a rule that isn't there).
 fn privileged_quiet(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
-    Command::new(args[0])
-        .args(&args[1..])
-        .output()
-        .map(|o| o.status)
+    let mut command = Command::new(args[0]);
+    if args.first() == Some(&"iptables") {
+        command.arg("-w");
+    }
+    command.args(&args[1..]).output().map(|o| o.status)
 }
 
 /// Gateway side: forward decapsulated external-bound packets arriving on
@@ -537,11 +540,7 @@ pub(crate) fn install_gateway_forward(br_dev: &str, br_net: &str) -> bool {
         eprintln!("[egress] gateway forward: no default-route NIC found; not installed");
         return false;
     };
-    let ok = apply_forward_rules(&forward_rules(Some(br_dev), br_net, Some(&nic)), "-A");
-    if ok {
-        println!("[egress] gateway forward: {br_net} on {br_dev} -> MASQUERADE out {nic}");
-    }
-    ok
+    apply_forward_rules(&forward_rules(Some(br_dev), br_net, Some(&nic)), "-A")
 }
 
 /// Discover the installed NIC rather than assuming the default route is unchanged.
@@ -650,7 +649,6 @@ pub(crate) fn install_local_forward(net_id: u32, container_ips: &[Ipv4Addr]) -> 
         remove_local_forwards(Some(net_id));
         return false;
     }
-    println!("[egress] local gateway net {net_id}: {container_ips:?} -> host routing + MASQUERADE");
     true
 }
 

@@ -375,7 +375,6 @@ async fn activate(endpoint: Arc<Endpoint>, params: &VxlanSetupParams) -> Result<
                 (params.local_ip, params.remote_ip),
                 key,
                 params.dstport,
-                0,
             )
             .await
             .handle_err(location!())?;

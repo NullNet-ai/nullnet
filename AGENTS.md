@@ -14,6 +14,9 @@ Cursor, Gemini CLI, …). Read this before starting work, and follow the gates i
   real API source (not memory, not docs summaries) and confirm the approach
   before writing code.
 - **No code duplicates.** Re-use existing code and logic where applicable.
+- **Keep release paths silent.** Routine startup, success, per-request, and
+  per-flow diagnostics must be debug-only; release logs are for warnings,
+  errors, unusual state, and recovery transitions.
 - **Protect latency.** Keep database and external I/O outside shared locks unless ordering requires it; preserve lifecycle serialization and bound concurrent work.
 - **Check performance regressions.** For routing, storage or lifecycle changes, compare encrypted cold/warm concurrent load and teardown timings, including errors and cleanup, before declaring ready.
 

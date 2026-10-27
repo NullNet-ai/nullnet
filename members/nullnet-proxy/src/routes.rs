@@ -138,9 +138,11 @@ pub(crate) async fn watch_and_serve(server: NullnetGrpcInterface, store: Arc<Arc
         Ok(mut stream) => loop {
             match stream.message().await {
                 Ok(Some(bundle)) => {
-                    let n = bundle.routes.len();
+                    routine_log!(
+                        "[http-routes] loaded {} route(s) from control service",
+                        bundle.routes.len()
+                    );
                     store.store(Arc::new(RouteTable::from_bundle(&bundle)));
-                    println!("[http-routes] loaded {n} route(s) from control service");
                 }
                 Ok(None) => break,
                 Err(e) => {

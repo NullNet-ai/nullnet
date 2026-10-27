@@ -139,6 +139,8 @@ message PolicyHeartbeat {
 }
 
 message PolicyTransport {
+  // Per-group XFRM identity and AES-256 key. Different active groups use
+  // different identities and keys even when they share one VXLAN device.
   uint32 id = 1;
   bytes encryption_key = 2;
   bool peer_container = 3;
@@ -222,8 +224,9 @@ message VxlanSetup {
   // Set on the gateway's edge: forward tunnelled external-bound packets to the
   // internet (kernel ip_forward + MASQUERADE); the Cilium egress-gateway model.
   optional bool egress_intercept = 13;
-  // AES-256 key sent identically to both endpoints. Cross-host VXLANs share
-  // one XFRM/ESP carrier per host pair; same-host MACsec remains per edge.
+  // AES-256 key sent identically to both endpoints. Dedicated cross-host
+  // VXLANs share one XFRM/ESP carrier per host pair; policy groups carry
+  // their independently keyed transport in `policy_transport`.
   // Meaningless (placeholder zero bytes) when `encrypted` is false.
   bytes encryption_key = 14;
   // VXLAN UDP destination port (replaces the IANA-standard 4789 default).
@@ -235,7 +238,8 @@ message VxlanSetup {
   // SA/policy or MACsec (see nullnet-client's commands/vxlan.rs).
   bool encrypted = 16;
   PolicyTransport policy_transport = 17;
-  // Shared cross-host XFRM carrier. Absent means legacy per-edge transport.
+  // Shared dedicated cross-host XFRM carrier. Policy groups use
+  // `policy_transport`; absent means legacy per-edge transport.
   optional uint32 xfrm_transport_id = 18;
 }
 

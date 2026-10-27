@@ -15,10 +15,13 @@ use ipnetwork::Ipv4Network;
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
     AgentContainerResumeFailed, AgentContainerSuspendFailed, AgentControlChannelAckFailed,
-    AgentControlChannelClosed, AgentControlChannelEstablished, AgentDnatInstallFailed,
-    AgentDnatRemovalFailed, AgentEgressSteerInstallFailed, AgentGatewayForwardInstallFailed,
-    AgentHostMappingFailed, AgentVlanSetupCompleted, AgentVlanSetupFailed, AgentVlanTeardownFailed,
-    AgentVxlanSetupCompleted, AgentVxlanSetupFailed, AgentVxlanTeardownFailed,
+    AgentControlChannelClosed, AgentDnatInstallFailed, AgentDnatRemovalFailed,
+    AgentEgressSteerInstallFailed, AgentGatewayForwardInstallFailed, AgentHostMappingFailed,
+    AgentVlanSetupFailed, AgentVlanTeardownFailed, AgentVxlanSetupFailed, AgentVxlanTeardownFailed,
+};
+#[cfg(debug_assertions)]
+use nullnet_grpc_lib::nullnet_grpc::{
+    AgentControlChannelEstablished, AgentVlanSetupCompleted, AgentVxlanSetupCompleted,
 };
 use nullnet_grpc_lib::nullnet_grpc::{
     AgentEvent, ContainerResume, ContainerSuspend, HostMapping, MsgId, VlanSetup, VlanTeardown,
@@ -80,6 +83,7 @@ pub(crate) async fn control_channel(
         .await
         .handle_err(location!())?;
 
+    #[cfg(debug_assertions)]
     fire_event(
         &server,
         AgentEventKind::ControlChannelEstablished(AgentControlChannelEstablished {}),
@@ -105,7 +109,7 @@ pub(crate) async fn control_channel(
                     && let Some(valid) = current
                 {
                     if valid {
-                        println!("Policy control heartbeat restored");
+                        eprintln!("Policy control heartbeat restored");
                     } else {
                         fire_event(
                             &server,
@@ -287,7 +291,7 @@ pub(crate) async fn control_channel(
                 let grpc = server.clone();
                 let sets = sets.clone();
                 tokio::spawn(async move {
-                    println!("[egress-policy] policy changed on server; re-verdicting flows");
+                    eprintln!("[egress-policy] policy changed on server; re-verdicting flows");
                     verdicts.clear();
                     flush_container_conntrack(&grpc, cache.ips(), &sets, &cache).await;
                 });
@@ -373,6 +377,7 @@ async fn handle_vlan_setup(
     };
 
     // setup VLAN on this machine
+    #[cfg(debug_assertions)]
     let init_t = std::time::Instant::now();
     configure_access_port(
         &rtnetlink_handle,
@@ -380,6 +385,7 @@ async fn handle_vlan_setup(
         Ipv4Network::new(local_veth, 30).unwrap(),
     )
     .await;
+    #[cfg(debug_assertions)]
     println!(
         "veth {local_veth} setup completed in {} ms",
         init_t.elapsed().as_millis()
@@ -424,6 +430,7 @@ async fn handle_vlan_setup(
         );
     }
 
+    #[cfg(debug_assertions)]
     fire_event(
         &grpc,
         AgentEventKind::VlanSetupCompleted(AgentVlanSetupCompleted {
@@ -457,10 +464,12 @@ async fn handle_vlan_teardown(
         })?;
 
     // teardown VLAN on this machine
+    #[cfg(debug_assertions)]
     let init_t = std::time::Instant::now();
 
     remove_vlan(&rtnetlink_handle, vlan_id).await;
 
+    #[cfg(debug_assertions)]
     println!(
         "VLAN teardown completed in {} ms",
         init_t.elapsed().as_millis()
@@ -558,6 +567,7 @@ async fn handle_vxlan_setup(
     }
 
     // setup VXLAN on this machine (optionally attaching a Docker container)
+    #[cfg(debug_assertions)]
     let init_t = std::time::Instant::now();
     let vxlan_params = crate::commands::vxlan::VxlanSetupParams {
         vxlan_id,
@@ -600,6 +610,7 @@ async fn handle_vxlan_setup(
         );
         eprintln!("[vxlan_setup] {}", e.to_str());
     }
+    #[cfg(debug_assertions)]
     println!(
         "VXLAN {vxlan_id} {} in {} ms (docker: {})",
         if setup_result.is_ok() {
@@ -827,6 +838,7 @@ async fn handle_vxlan_setup(
         );
     }
 
+    #[cfg(debug_assertions)]
     if error_code == 0 {
         fire_event(
             &grpc,
@@ -931,8 +943,8 @@ async fn handle_vxlan_teardown(
     .expect("host mapping cleanup task panicked");
 
     // teardown VXLAN on this machine
+    #[cfg(debug_assertions)]
     let init_t = std::time::Instant::now();
-
     let vxlan_id = message.vxlan_id;
     let ns_name = message.ns_name.clone();
 
@@ -959,6 +971,7 @@ async fn handle_vxlan_teardown(
         }
     }
 
+    #[cfg(debug_assertions)]
     println!(
         "VXLAN {vxlan_id} {} in {} ms",
         if local_cleanup_ok && teardown_result.is_ok() {
@@ -983,12 +996,16 @@ async fn handle_vxlan_teardown(
 /// restart re-issues the command).
 fn handle_container_suspend(message: ContainerSuspend, grpc: NullnetGrpcInterface) {
     let container = message.docker_container;
+    #[cfg(debug_assertions)]
     let init_t = std::time::Instant::now();
     match docker_action("pause", &container, "is already paused") {
-        Ok(()) => println!(
-            "Paused container '{container}' in {} ms",
-            init_t.elapsed().as_millis()
-        ),
+        Ok(()) => {
+            #[cfg(debug_assertions)]
+            println!(
+                "Paused container '{container}' in {} ms",
+                init_t.elapsed().as_millis()
+            );
+        }
         Err(error_message) => fire_event(
             &grpc,
             AgentEventKind::ContainerSuspendFailed(AgentContainerSuspendFailed {
@@ -1013,6 +1030,7 @@ async fn handle_container_resume(
         .ok_or("Missing message ID in container resume message")
         .handle_err(location!())?;
     let container = message.docker_container;
+    #[cfg(debug_assertions)]
     let init_t = std::time::Instant::now();
 
     // unpause (tolerate an already-running container)
@@ -1040,6 +1058,7 @@ async fn handle_container_resume(
         return Ok(());
     }
 
+    #[cfg(debug_assertions)]
     println!(
         "Resumed container '{container}' in {} ms",
         init_t.elapsed().as_millis()

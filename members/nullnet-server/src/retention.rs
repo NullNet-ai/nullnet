@@ -57,7 +57,7 @@ pub(crate) fn start(db: Db, config: RetentionConfig) {
             let event_cutoff = now - config.event_retention_secs as i64;
             match db.events().delete_older_than(event_cutoff).await {
                 Ok(0) => {}
-                Ok(deleted) => println!(
+                Ok(deleted) => routine_log!(
                     "Event retention: deleted {deleted} event(s) older than {}d",
                     config.event_retention_secs / SECS_PER_DAY
                 ),
@@ -66,7 +66,7 @@ pub(crate) fn start(db: Db, config: RetentionConfig) {
             let session_cutoff = now - config.session_retention_secs as i64;
             match db.sessions().delete_ended_before(session_cutoff).await {
                 Ok(0) => {}
-                Ok(deleted) => println!(
+                Ok(deleted) => routine_log!(
                     "Session retention: deleted {deleted} session(s) ended over {}d ago",
                     config.session_retention_secs / SECS_PER_DAY
                 ),

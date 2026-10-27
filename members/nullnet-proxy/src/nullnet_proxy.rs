@@ -51,8 +51,7 @@ impl NullnetProxy {
         &self,
         proxy_req: ProxyRequest,
     ) -> Result<SocketAddr, UpstreamError> {
-        println!("requesting new upstream...");
-
+        routine_log!("requesting new upstream...");
         let service_name = proxy_req.service_name.clone();
         let response = match self.server.proxy(proxy_req).await {
             Ok(r) => r,

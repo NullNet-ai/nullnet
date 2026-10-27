@@ -52,7 +52,7 @@ pub(crate) async fn load_certificates() -> CertBundle {
         let Some(key_pem) = load_or_migrate_key(&path).await else {
             continue;
         };
-        println!("Loaded TLS certificate for '{domain}'");
+        routine_log!("Loaded TLS certificate for '{domain}'");
         certificates.push(TlsCertificate {
             domain,
             fullchain_pem,
@@ -80,7 +80,7 @@ async fn load_or_migrate_key(dir: &Path) -> Option<String> {
         && tokio::fs::write(&enc_path, encoded).await.is_ok()
     {
         let _ = tokio::fs::remove_file(dir.join(KEY_PLAINTEXT)).await;
-        println!("Encrypted private key at rest for '{}'", dir.display());
+        eprintln!("Encrypted private key at rest for '{}'", dir.display());
     }
     Some(key_pem)
 }
@@ -182,7 +182,7 @@ pub(crate) async fn watch(certs_tx: watch::Sender<CertBundle>) -> Result<(), Err
     loop {
         let event = rx.recv().await;
         if event.is_none() {
-            println!("Certs file watcher channel closed, stopping watch");
+            eprintln!("Certs file watcher channel closed, stopping watch");
             break;
         }
         if let Some(Ok(Event { kind, .. })) = event

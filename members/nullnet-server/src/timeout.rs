@@ -141,7 +141,7 @@ pub(crate) async fn reap_idle_backend_chains(
         let Some(stack_map) = services.get_mut(stack) else {
             continue;
         };
-        println!(
+        routine_log!(
             "Trigger chain '{service}' ({ip}) port {port} idle past the debounce; releasing its hold"
         );
         release_backend_chain(

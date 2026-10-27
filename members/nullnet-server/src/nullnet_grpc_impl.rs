@@ -154,7 +154,7 @@ fn build_port_mapping_bundle(stacks: &StackMap) -> PortMappingBundle {
             })
         })
         .collect();
-    println!(
+    routine_log!(
         "[port-mappings] bundle built: {} mapping(s): [{}]",
         mappings.len(),
         mappings
@@ -247,7 +247,7 @@ fn build_http_route_bundle(stacks: &StackMap, routes: &RouteMap) -> HttpRouteBun
         });
     }
 
-    println!("[http-routes] bundle built: {} route(s)", wire_routes.len());
+    routine_log!("[http-routes] bundle built: {} route(s)", wire_routes.len());
     HttpRouteBundle {
         routes: wire_routes,
     }
@@ -613,7 +613,7 @@ impl NullnetGrpcImpl {
         proxy_ip: IpAddr,
         client_ip: &str,
     ) -> Result<Upstream, Error> {
-        println!("Received proxy request for '{service_name}'");
+        routine_log!("Received proxy request for '{service_name}'");
 
         let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
         let stack = {
@@ -662,7 +662,7 @@ impl NullnetGrpcImpl {
             };
 
             if intact {
-                println!("'{client_ip}' ---> '{service_name}' is already set up");
+                routine_log!("'{client_ip}' ---> '{service_name}' is already set up");
 
                 // update the latest timestamp for this client since it's being used again
                 let mut services_mut = self.services.write().await;
@@ -803,13 +803,13 @@ impl NullnetGrpcImpl {
                 for transition in &decision.transitions {
                     let (host, active) = match transition {
                         RateTransition::Activated { host } => {
-                            println!(
+                            eprintln!(
                                 "Ingress congestion control activated for {host}: new encrypted ingress multiplexed"
                             );
                             (*host, true)
                         }
                         RateTransition::RecoveryStarted { host } => {
-                            println!(
+                            eprintln!(
                                 "Ingress congestion recovery started for {host}: dedicated setup probing enabled"
                             );
                             self.orchestrator
@@ -819,7 +819,7 @@ impl NullnetGrpcImpl {
                             continue;
                         }
                         RateTransition::Recovered { host } => {
-                            println!(
+                            eprintln!(
                                 "Ingress congestion control recovered for {host}: dedicated setup rate unrestricted"
                             );
                             (*host, false)
@@ -947,7 +947,7 @@ impl NullnetGrpcImpl {
 
         let report = request.into_inner();
 
-        println!(
+        routine_log!(
             "Received service report from '{}': {} container(s), {} listener(s)",
             sender_ip,
             report.containers.len(),
@@ -1328,7 +1328,7 @@ impl NullnetGrpcImpl {
         sender_ip: IpAddr,
         initiator_container: Option<&str>,
     ) -> Result<(), Error> {
-        println!(
+        routine_log!(
             "Received backend trigger for '{initiator_name}' (port {port}) from {sender_ip} (container: {})",
             initiator_container.unwrap_or("<none>"),
         );
@@ -1369,7 +1369,7 @@ impl NullnetGrpcImpl {
             let initiator_ip = replica.ip();
             let initiator_docker = replica.docker_container().map(String::from);
             let first_dep = reg.triggers().get(&port).cloned();
-            println!(
+            routine_log!(
                 "[trigger] triggers map for '{initiator_name}': {:?}; first_dep for port {port}: {first_dep:?}",
                 reg.triggers()
             );
@@ -1496,7 +1496,7 @@ impl NullnetGrpcImpl {
             .backend_branch(stack, initiator_name, initiator_ip, initiator_docker, port)
             .await?
         else {
-            println!("[trigger] no chain to build for '{initiator_name}' port {port}");
+            routine_log!("[trigger] no chain to build for '{initiator_name}' port {port}");
             self.orchestrator
                 .events
                 .emit(Event::backend_trigger_setup_bailed(
@@ -1507,7 +1507,7 @@ impl NullnetGrpcImpl {
             return Ok(false);
         };
 
-        println!(
+        routine_log!(
             "[trigger] dispatching net_chain_setup for '{initiator_name}' port {port} \
              ({} hop(s))",
             branch.deps.len()
@@ -1524,7 +1524,7 @@ impl NullnetGrpcImpl {
             .await?,
             ChainOutcome::Built(_)
         );
-        println!("[trigger] net_chain_setup completed for '{initiator_name}' port {port}");
+        routine_log!("[trigger] net_chain_setup completed for '{initiator_name}' port {port}");
         Ok(built)
     }
 
@@ -1572,7 +1572,7 @@ impl NullnetGrpcImpl {
         sender_ip: IpAddr,
         initiator_container: Option<&str>,
     ) -> Result<(), Error> {
-        println!(
+        routine_log!(
             "Received egress trigger from {sender_ip} (container: {})",
             initiator_container.unwrap_or("<none>"),
         );
@@ -1618,7 +1618,7 @@ impl NullnetGrpcImpl {
             )
             .await?;
             if built {
-                println!(
+                routine_log!(
                     "[egress] edge up for '{initiator_name}' ({initiator_ip}) -> proxy {proxy_ip}"
                 );
             }
@@ -1804,7 +1804,7 @@ impl NullnetGrpcImpl {
             let ctx = FilterContext { ip: dst_ip, geo };
             let allowed = policy.allows(&ctx).await;
             if !allowed {
-                println!(
+                routine_log!(
                     "[egress-policy] deny '{service_name}' -> {dst_ip} ({})",
                     country.as_deref().unwrap_or("unknown country")
                 );
@@ -1857,7 +1857,7 @@ impl NullnetGrpcImpl {
             let ctx = FilterContext { ip, geo };
             let allowed = policy.allows(&ctx).await;
             if !allowed {
-                println!(
+                routine_log!(
                     "[ingress-policy] deny {} ({}) -> '{}'",
                     req.client_ip,
                     country.as_deref().unwrap_or("unknown country"),
@@ -1971,7 +1971,7 @@ impl NullnetGrpcImpl {
                         reg.mark_replica_suspended(sender_ip, docker_container.as_deref());
                     }
                 });
-                if is_new {
+                if is_new && crate::routine_diagnostics() {
                     self.orchestrator
                         .events
                         .emit(Event::service_registered(name.clone(), stack.clone()))
@@ -2337,14 +2337,16 @@ async fn run_net_chain_setup(
         let (Some(ingress), Some(proxy_ip)) = (&edge.ingress, edge.client.is_proxy()) else {
             continue;
         };
-        orchestrator
-            .events
-            .emit(Event::session_created(
-                edge.net_id,
-                edge.server_name.clone(),
-                proxy_ip.to_string(),
-            ))
-            .await;
+        if crate::routine_diagnostics() {
+            orchestrator
+                .events
+                .emit(Event::session_created(
+                    edge.net_id,
+                    edge.server_name.clone(),
+                    proxy_ip.to_string(),
+                ))
+                .await;
+        }
         // The peer is the *external* client the proxy serves — the client's
         // name, not the proxy host, which is the same for every client it
         // serves. Geo is usually still unresolved; `ensure` starts the cached
@@ -2512,7 +2514,7 @@ async fn setup_edge(
         return EdgeOutcome::Failed;
     };
 
-    if client.is_proxy().is_some() {
+    if client.is_proxy().is_some() && crate::routine_diagnostics() {
         orchestrator
             .events
             .emit(Event::setup_started(
@@ -2524,11 +2526,10 @@ async fn setup_edge(
     }
 
     let encrypted = *ENCRYPTION_ENABLED;
-    let policy_transport =
-        policy.then(|| orchestrator.policy_transport(client_ethernet, server_ethernet));
+    let policy_transport = policy.then(|| orchestrator.policy_transport(net_id));
     let xfrm_transport =
         (!policy && encrypted && *NET_TYPE == Net::Vxlan && client_ethernet != server_ethernet)
-            .then(|| orchestrator.xfrm_transport(client_ethernet, server_ethernet, false));
+            .then(|| orchestrator.xfrm_transport(client_ethernet, server_ethernet));
     let encryption_key = if let Some(transport) = &policy_transport {
         transport
             .encryption_key
@@ -2649,10 +2650,10 @@ async fn setup_edge(
     };
 
     let setup_ms = init_time.elapsed().as_millis();
-    println!("{server_ethernet} acknowledged");
-    println!("{client_ethernet} acknowledged");
+    routine_log!("{server_ethernet} acknowledged");
+    routine_log!("{client_ethernet} acknowledged");
 
-    if client.is_proxy().is_some() {
+    if client.is_proxy().is_some() && crate::routine_diagnostics() {
         orchestrator
             .events
             .emit(Event::setup_ack(
@@ -2849,7 +2850,7 @@ impl NullnetGrpc for NullnetGrpcImpl {
         &self,
         request: Request<Streaming<MsgId>>,
     ) -> Result<Response<Self::ControlChannelStream>, Status> {
-        println!(
+        routine_log!(
             "Nullnet control channel requested from '{}'",
             request
                 .remote_addr()
@@ -2957,10 +2958,12 @@ impl NullnetGrpc for NullnetGrpcImpl {
         let orchestrator = self.orchestrator.clone();
         orchestrator.proxy_connected(proxy_ip).await;
         tokio::spawn(async move {
-            orchestrator
-                .events
-                .emit(Event::proxy_connected(proxy_ip.to_string()))
-                .await;
+            if crate::routine_diagnostics() {
+                orchestrator
+                    .events
+                    .emit(Event::proxy_connected(proxy_ip.to_string()))
+                    .await;
+            }
             // send the current set immediately, then one snapshot per change
             let initial = certs.borrow_and_update().clone();
             if tx.send(Ok(initial)).await.is_ok() {
