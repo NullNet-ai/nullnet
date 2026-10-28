@@ -29,6 +29,10 @@ plus the shared gRPC interface.
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   ```
 
+Encrypted VXLAN ingress requires Linux VXLAN VNI filtering (`vnifilter`, available in mainline
+Linux since 5.18). Nullnet uses it to run several metadata VXLAN carriers on UDP 4791 and assign
+each live client group to exactly one carrier.
+
 The repository should be cloned under `/root` so the provided `setup-*.sh` scripts and
 `.service` units work without changes.
 Run the setup scripts as root. The supplied systemd services also run as root; privileged commands execute directly without sudo.
@@ -260,17 +264,17 @@ Run the setup scripts as root. The supplied systemd services also run as root; p
 - `timeout` controls proxy-reachability: when present the service is a proxy-reachable entry point
   with that per-client idle timeout in seconds (`0` disables the timeout); omit it to keep the
   service off the proxy (backend-only)
-- `max_networks` is an optional hard cap on dedicated ingress networks for a proxy-reachable
+- `max_networks` is an optional hard cap on ingress carrier VXLANs for a proxy-reachable
   service. Independently of that setting, encrypted VXLAN ingress switches new clients to
   multiplexing when the proxy's RPC backlog and slot-wait time grow for consecutive windows. A
   host-scoped controller first pauses dedicated setups, then additively admits one more probe per
   healthy window; renewed congestion immediately returns the rate to zero. Stable queues do not
   activate it, and only sustained successful probes under traffic remove the limit (idle time does
-  not count as recovery). Multiplexed clients get one policy
-  generation and encryption key per client IP over a shared VXLAN. Cross-host groups use marked
-  per-group IPsec associations over the shared VXLAN; packet metadata and endpoint maps preserve
-  per-client isolation. Same-host multiplexing uses the same isolation policy with
-  direct eBPF redirection and no VXLAN hairpin.
+  not count as recovery). Every client IP gets its own group, generation, encryption key, and
+  marked IPsec associations. A standard group seeds a VNI-filtered carrier; multiplexed groups are
+  assigned to the least-loaded live carrier, so both paths use the same dataplane and UDP 4791.
+  Packet metadata and endpoint maps preserve per-client isolation. Same-host groups use the same
+  isolation policy with direct eBPF redirection and no VXLAN hairpin.
 - `proxy_dependencies` is a list of independent dep chains walked when the service is reached via a
   `Proxy` RPC from nullnet-proxy; each inner array is one linear branch and all branches are brought
   up in parallel
@@ -441,14 +445,15 @@ details. Stop observation to restore the saved config and review added/unused
 backends. Applying updates only backend lists. Completed observations remain
 available; results cannot overwrite a configuration edited since activation.
 
-VXLAN edges create fresh dedicated interfaces and use fixed TC redirects;
-Nullnet shares UDP 47890, separate from Docker Swarm’s UDP 4789. Egress policy rules use priorities 1000–1015 and protocol 242; reserve these for Nullnet.
+Dependency, backend-trigger, and egress VXLAN edges create dedicated interfaces on UDP 47890.
+Encrypted ingress uses VNI-filtered group carriers on UDP 4791; each carrier can host multiple
+independently keyed client groups. Both ports are separate from Docker Swarm's UDP 4789. Egress
+policy rules use priorities 1000–1015 and protocol 242; reserve these for Nullnet.
 Reserve TC blocks 7801–7832 and interface names `nn-tc-0` through `nn-tc-15`
-for Nullnet's shared classifiers. These down dummy interfaces carry no traffic;
-each edge still has dedicated interfaces and encryption keys. Startup removes
+for Nullnet's shared classifiers. These down dummy interfaces carry no traffic. Startup removes
 stale holders using their reserved name, group, and device type before rebuilding the classifiers.
 `br_<id>_<side>` is the gateway interface name, not a Linux bridge. Startup
 keeps routed overlay traffic allowed by owned interface groups while preserving
-the host's existing FORWARD policy. Pooling and policy multiplexing are deferred.
+the host's existing FORWARD policy.
 
 The client and proxy services set `LimitNOFILE=524288`: fresh endpoints retain netlink sockets, and each proxied connection needs downstream and upstream sockets. Update both installed units and run `systemctl daemon-reload` when upgrading.
