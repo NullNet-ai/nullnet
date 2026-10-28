@@ -213,10 +213,9 @@ impl Engine {
                     .mtu(1080)
                     .link_group(GROUP)
                     .build();
-                handle.link().add(link).execute().await.map_err(error)?;
-                let index = get_link_by_name(handle, &name)
+                let index = add_link_echo(handle, link)
                     .await
-                    .map_err(|e| e.to_str().to_owned())?
+                    .map_err(error)?
                     .header
                     .index;
                 let setup = async {
@@ -271,10 +270,29 @@ impl Engine {
             return Ok(());
         };
         let active = {
-            let state = carrier.state.lock().await;
+            let mut state = carrier.state.lock().await;
             let Some(active) = state.as_ref() else {
                 return Ok(());
             };
+            let last = active.operations.load(Ordering::Acquire) == 0 && {
+                let vnis = active.vnis.lock().unwrap();
+                vnis.len() == 1 && vnis.contains(&vni)
+            };
+            if last {
+                native_vxlan::remove_link(active.index)
+                    .await
+                    .map_err(error)?;
+                *state = None;
+                let mut carriers = self.carriers.lock().unwrap();
+                if carriers
+                    .get(&id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &carrier))
+                    && Arc::strong_count(&carrier) == 2
+                {
+                    carriers.remove(&id);
+                }
+                return Ok(());
+            }
             active.operations.fetch_add(1, Ordering::Relaxed);
             active.clone()
         };
@@ -318,7 +336,6 @@ impl Engine {
             .await
             .map_err(error)?;
         *state = None;
-        drop(state);
         let mut carriers = self.carriers.lock().unwrap();
         if carriers
             .get(&id)
@@ -795,7 +812,7 @@ pub(crate) fn heartbeat_valid() -> Option<bool> {
     (deadline != 0).then(|| deadline > clock())
 }
 
-pub(crate) async fn heartbeat(server_epoch: &[u8]) -> Result<(), String> {
+pub(crate) async fn heartbeat(server_epoch: &[u8], cache: &BridgeIpCache) -> Result<(), String> {
     if server_epoch.len() != 16 {
         return Err("Invalid policy server epoch".into());
     }
@@ -815,7 +832,7 @@ pub(crate) async fn heartbeat(server_epoch: &[u8]) -> Result<(), String> {
             .unwrap_or_default();
         let mut first_error = None;
         for name in names {
-            if let Err(error) = retire(&name).await {
+            if let Err(error) = retire(&name, cache).await {
                 first_error.get_or_insert(error);
             }
         }
@@ -886,7 +903,7 @@ pub(crate) async fn ready(id: u32) -> Result<bool, String> {
     Ok(found)
 }
 
-pub(crate) async fn retire(name: &str) -> Result<bool, String> {
+pub(crate) async fn retire(name: &str, cache: &BridgeIpCache) -> Result<bool, String> {
     let engine = ENGINE.lock().await.clone();
     let Some(engine) = engine else {
         return Ok(false);
@@ -960,6 +977,10 @@ pub(crate) async fn retire(name: &str) -> Result<bool, String> {
         let mut edges = engine.edges.lock().unwrap();
         for (name, edge) in removed {
             edges.entry(name).or_insert(edge);
+        }
+    } else {
+        for (name, _) in removed {
+            cache.remove_overlay(&name);
         }
     }
     result
@@ -1199,14 +1220,14 @@ mod tests {
         message
     }
 
-    async fn wait_for(path: &str) {
+    async fn wait_for(path: &str, cache: &BridgeIpCache) {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(45);
         while !std::path::Path::new(path).exists() {
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "coordinator timeout"
             );
-            heartbeat(&[1; 16]).await.unwrap();
+            heartbeat(&[1; 16], cache).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
@@ -1226,10 +1247,10 @@ mod tests {
         super::super::vxlan_environment::initialize_test()
             .await
             .unwrap();
-        heartbeat(&[1; 16]).await.unwrap();
+        let cache = BridgeIpCache::new();
+        heartbeat(&[1; 16], &cache).await.unwrap();
         let handle = RtNetLinkHandle::new().unwrap();
         recover(&handle.handle).await.unwrap();
-        let cache = BridgeIpCache::new();
         let keys = if side == "s" {
             [0x42, 0x43, 0x44]
         } else {
@@ -1251,7 +1272,7 @@ mod tests {
             messages[1].group_transport.as_ref().unwrap().encryption_key
         );
         std::fs::write("/tmp/nn-policy-cross-ready", "ok").unwrap();
-        wait_for("/tmp/nn-policy-cross-go").await;
+        wait_for("/tmp/nn-policy-cross-go", &cache).await;
 
         for net_id in [711, 712, 713] {
             assert!(ready(net_id).await.unwrap());
@@ -1262,7 +1283,7 @@ mod tests {
             None
         };
         std::fs::write("/tmp/nn-policy-cross-activated", "ok").unwrap();
-        wait_for("/tmp/nn-policy-cross-traffic-go").await;
+        wait_for("/tmp/nn-policy-cross-traffic-go", &cache).await;
         let peer = |net_id: u32| {
             let offset = if side == "c" { 1u32 } else { 3u32 };
             Ipv4Addr::from(u32::from(Ipv4Addr::new(10, 0, 0, 0)) + net_id * 8 + offset)
@@ -1277,16 +1298,20 @@ mod tests {
             finish_tcp_listener(tcp.unwrap()).await;
         }
 
-        assert!(retire(&format!("ns_711_{side}")).await.unwrap());
+        assert!(retire(&format!("ns_711_{side}"), &cache).await.unwrap());
         std::fs::write("/tmp/nn-policy-cross-retired", "ok").unwrap();
-        wait_for("/tmp/nn-policy-cross-survivor-go").await;
-        heartbeat(&[1; 16]).await.unwrap();
+        wait_for("/tmp/nn-policy-cross-survivor-go", &cache).await;
+        heartbeat(&[1; 16], &cache).await.unwrap();
         assert!(ping(&format!("ns_712_{side}"), peer(712)).await);
         std::fs::write("/tmp/nn-policy-cross-survived", "ok").unwrap();
-        wait_for("/tmp/nn-policy-cross-cleanup-go").await;
+        wait_for("/tmp/nn-policy-cross-cleanup-go", &cache).await;
 
         for net_id in [712, 713] {
-            assert!(retire(&format!("ns_{net_id}_{side}")).await.unwrap());
+            assert!(
+                retire(&format!("ns_{net_id}_{side}"), &cache)
+                    .await
+                    .unwrap()
+            );
         }
         destroy_all(&handle).await.unwrap();
         for message in messages {
@@ -1302,9 +1327,9 @@ mod tests {
         super::super::vxlan_environment::initialize_test()
             .await
             .unwrap();
-        heartbeat(&[1; 16]).await.unwrap();
-        let handle = RtNetLinkHandle::new().unwrap();
         let cache = BridgeIpCache::new();
+        heartbeat(&[1; 16], &cache).await.unwrap();
+        let handle = RtNetLinkHandle::new().unwrap();
         for name in ["nnpc1", "nnps1", "nnpc2", "nnps2"] {
             let namespace = super::super::endpoint_namespace::create(name)
                 .await
@@ -1329,11 +1354,19 @@ mod tests {
         assert!(tcp_echo(Some("nnpc2"), server_ip(702), 24702).await);
         finish_tcp_listener(tcp).await;
 
-        assert!(retire("ns_701_c").await.unwrap());
+        let client_701 = Ipv4Addr::from(u32::from(server_ip(701)) + 2);
+        assert_eq!(cache.get(server_ip(701)).as_deref(), Some("nnps1"));
+        assert_eq!(cache.get(client_701).as_deref(), Some("nnpc1"));
+        assert!(retire("ns_701_c", &cache).await.unwrap());
+        assert!(cache.get(server_ip(701)).is_none());
+        assert!(cache.get(client_701).is_none());
         assert!(!ping("nnpc1", server_ip(701)).await);
-        heartbeat(&[2; 16]).await.unwrap();
+        let client_702 = Ipv4Addr::from(u32::from(server_ip(702)) + 2);
+        heartbeat(&[2; 16], &cache).await.unwrap();
+        assert!(cache.get(server_ip(702)).is_none());
+        assert!(cache.get(client_702).is_none());
         assert!(!ping("nnpc2", server_ip(702)).await);
-        assert!(!retire("ns_702_s").await.unwrap());
+        assert!(!retire("ns_702_s", &cache).await.unwrap());
         destroy_all(&handle).await.unwrap();
         for name in ["nnpc1", "nnps1", "nnpc2", "nnps2"] {
             super::super::endpoint_namespace::remove(name)
@@ -1348,9 +1381,9 @@ mod tests {
         super::super::vxlan_environment::initialize_test()
             .await
             .unwrap();
-        heartbeat(&[1; 16]).await.unwrap();
-        let handle = RtNetLinkHandle::new().unwrap();
         let cache = BridgeIpCache::new();
+        heartbeat(&[1; 16], &cache).await.unwrap();
+        let handle = RtNetLinkHandle::new().unwrap();
         let mut client = same_host_message(703, "c", "unused", 0x20_02bf, 13);
         let mut server = same_host_message(703, "s", "unused", 0x20_02bf, 13);
         client.docker_container = None;
@@ -1374,7 +1407,7 @@ mod tests {
         assert!(tcp_echo(None, destination, 24703).await);
         finish_tcp_listener(tcp).await;
 
-        assert!(retire("ns_703_c").await.unwrap());
+        assert!(retire("ns_703_c", &cache).await.unwrap());
         assert!(!tcp_echo(None, destination, 24703).await);
         destroy_all(&handle).await.unwrap();
     }
@@ -1426,7 +1459,7 @@ mod tests {
             .await
             .unwrap();
         assert!(Arc::ptr_eq(&first, &second));
-        heartbeat(&[1; 16]).await.unwrap();
+        heartbeat(&[1; 16], &cache).await.unwrap();
         assert!(engine.maps.lock().unwrap().deadline.get(&0, 0).unwrap() > clock());
         disable().await.unwrap();
         assert_eq!(engine.maps.lock().unwrap().deadline.get(&0, 0).unwrap(), 0);
@@ -1457,8 +1490,8 @@ mod tests {
             .incoming
             .insert(rule.local, rule, 0)
             .unwrap();
-        assert!(retire("ns_192_c").await.unwrap());
-        assert!(!retire("ns_192_c").await.unwrap());
+        assert!(retire("ns_192_c", &cache).await.unwrap());
+        assert!(!retire("ns_192_c", &cache).await.unwrap());
         assert!(get_link_by_name(&handle.handle, "nng_1").await.is_err());
         assert!(get_link_by_name(&handle.handle, "nng_2").await.is_ok());
         destroy_all(&handle).await.unwrap();

@@ -135,7 +135,7 @@ pub(crate) async fn control_channel(
         let firewall_peers = firewall_peers.clone();
         match message.message {
             Some(net_message::Message::PolicyHeartbeat(heartbeat)) => {
-                crate::commands::policy::heartbeat(&heartbeat.server_epoch)
+                crate::commands::policy::heartbeat(&heartbeat.server_epoch, &bridge_cache)
                     .await
                     .handle_err(location!())?;
             }
@@ -864,7 +864,7 @@ async fn handle_vxlan_teardown(
 ) {
     let ack_id = message.msg_id.clone();
     let group_cleanup_ok = if message.group {
-        match crate::commands::policy::retire(&message.ns_name).await {
+        match crate::commands::policy::retire(&message.ns_name, &bridge_cache).await {
             Ok(_) => true,
             Err(error) => {
                 eprintln!("Group revocation failed: {error}");
