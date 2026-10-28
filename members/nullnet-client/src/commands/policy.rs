@@ -13,7 +13,7 @@ use aya::{
 use futures::TryStreamExt;
 use nullnet_grpc_lib::nullnet_grpc::{GroupTransport, VxlanSetup};
 use rtnetlink::{
-    Handle, IpVersion, LinkUnspec, LinkVeth, LinkVxlan,
+    Handle, IpVersion, LinkUnspec, LinkVeth, LinkVxlan, RouteMessageBuilder,
     packet_route::{
         link::{InfoData, InfoVeth, LinkAttribute},
         rule::{RuleAttribute, RuleMessage},
@@ -77,7 +77,9 @@ struct CarrierState {
 struct Attachment {
     namespace: Arc<EndpointNamespace>,
     outer: u32,
+    inner: u32,
     mac: [u8; 6],
+    routes: AsyncMutex<HashMap<u32, usize>>,
 }
 #[derive(Clone)]
 struct GroupEdge {
@@ -92,6 +94,54 @@ struct GroupEdge {
 impl GroupEdge {
     fn output_ready(&self) -> bool {
         !self.local || self.rule.output != 0
+    }
+}
+
+impl Attachment {
+    fn route(&self, peer: u32) -> rtnetlink::packet_route::route::RouteMessage {
+        RouteMessageBuilder::<Ipv4Addr>::new()
+            .destination_prefix(Ipv4Addr::from(peer), 32)
+            .gateway(Ipv4Addr::from(GATEWAY_IP))
+            .output_interface(self.inner)
+            .pref_source(Ipv4Addr::from(APP_IP))
+            .build()
+    }
+
+    async fn acquire_route(&self, peer: u32) -> Result<(), String> {
+        let mut routes = self.routes.lock().await;
+        if let Some(count) = routes.get_mut(&peer) {
+            *count += 1;
+            return Ok(());
+        }
+        self.namespace
+            .handle
+            .route()
+            .add(self.route(peer))
+            .execute()
+            .await
+            .map_err(error)?;
+        routes.insert(peer, 1);
+        Ok(())
+    }
+
+    async fn release_route(&self, peer: u32) -> Result<(), String> {
+        let mut routes = self.routes.lock().await;
+        let Some(count) = routes.get_mut(&peer) else {
+            return Ok(());
+        };
+        if *count > 1 {
+            *count -= 1;
+            return Ok(());
+        }
+        self.namespace
+            .handle
+            .route()
+            .del(self.route(peer))
+            .execute()
+            .await
+            .map_err(error)?;
+        routes.remove(&peer);
+        Ok(())
     }
 }
 fn error(e: impl std::fmt::Display) -> String {
@@ -538,21 +588,6 @@ async fn attachment(
                 ],
             )
             .await?;
-            namespace_command(
-                &namespace,
-                &[
-                    "route",
-                    "add",
-                    "10.0.0.0/8",
-                    "via",
-                    &Ipv4Addr::from(GATEWAY_IP).to_string(),
-                    "dev",
-                    APP_NAME,
-                    "src",
-                    &Ipv4Addr::from(APP_IP).to_string(),
-                ],
-            )
-            .await?;
             get_link_by_name(handle, &name)
                 .await
                 .map_err(|e| e.to_str().to_owned())?;
@@ -562,7 +597,9 @@ async fn attachment(
             Ok::<_, String>(Arc::new(Attachment {
                 namespace: namespace.clone(),
                 outer,
+                inner,
                 mac,
+                routes: AsyncMutex::new(HashMap::new()),
             }))
         }
         .await;
@@ -614,7 +651,9 @@ async fn root_delivery(
                 Ok::<_, String>(Arc::new(Attachment {
                     namespace: namespace.clone(),
                     outer,
+                    inner,
                     mac,
+                    routes: AsyncMutex::new(HashMap::new()),
                 }))
             }
             .await;
@@ -667,29 +706,43 @@ pub(crate) async fn setup(
     )
     .await?;
     output.namespace.validate().map_err(error)?;
-    let local_transport = local == remote;
-    let vxlan = if local_transport {
-        0
-    } else {
-        let vxlan = engine
-            .carrier(&rtnetlink.handle, transport.carrier_id, message.vxlan_id)
-            .await?;
-        if let Err(peer_error) = engine.peer(transport, local, remote).await {
-            let cleanup = engine
-                .release_carrier(transport.carrier_id, message.vxlan_id)
-                .await
-                .err()
-                .into_iter()
-                .collect();
-            return Err(cleanup_error(peer_error, cleanup));
-        }
-        vxlan
-    };
     let block = u32::from(Ipv4Addr::new(10, 0, 0, 0)) + message.vxlan_id * 8;
     let client = message.ns_name.ends_with("_c");
     let local_ip =
         block + if client { 3 } else { 1 } + u32::from(message.docker_container.is_none());
     let peer_ip = block + if client { 1 } else { 3 } + u32::from(!transport.peer_container);
+    output.acquire_route(peer_ip).await?;
+    let local_transport = local == remote;
+    let vxlan = if local_transport {
+        0
+    } else {
+        let vxlan = match engine
+            .carrier(&rtnetlink.handle, transport.carrier_id, message.vxlan_id)
+            .await
+        {
+            Ok(value) => value,
+            Err(value) => {
+                let cleanup = output
+                    .release_route(peer_ip)
+                    .await
+                    .err()
+                    .into_iter()
+                    .collect();
+                return Err(cleanup_error(value, cleanup));
+            }
+        };
+        if let Err(peer_error) = engine.peer(transport, local, remote).await {
+            let mut cleanup: Vec<_> = engine
+                .release_carrier(transport.carrier_id, message.vxlan_id)
+                .await
+                .err()
+                .into_iter()
+                .collect();
+            cleanup.extend(output.release_route(peer_ip).await.err());
+            return Err(cleanup_error(peer_error, cleanup));
+        }
+        vxlan
+    };
     let key = OutKey {
         interface: output.outer,
         peer: peer_ip,
@@ -709,7 +762,18 @@ pub(crate) async fn setup(
     };
     let delivery =
         if local_transport && message.docker_container.is_none() && !transport.peer_container {
-            Some(root_delivery(&rtnetlink.handle, &output.namespace).await?)
+            match root_delivery(&rtnetlink.handle, &output.namespace).await {
+                Ok(value) => Some(value),
+                Err(value) => {
+                    let cleanup = output
+                        .release_route(peer_ip)
+                        .await
+                        .err()
+                        .into_iter()
+                        .collect();
+                    return Err(cleanup_error(value, cleanup));
+                }
+            }
         } else {
             None
         };
@@ -785,9 +849,14 @@ pub(crate) async fn setup(
         })()
     };
     if let Err(map_error) = map_result {
+        let mut cleanup = output
+            .release_route(peer_ip)
+            .await
+            .err()
+            .into_iter()
+            .collect::<Vec<_>>();
         if !local_transport {
             engine.peers.lock().await.remove(&transport.id);
-            let mut cleanup = Vec::new();
             if let Err(value) = native_xfrm::remove(transport.id).await {
                 cleanup.push(error(value));
             }
@@ -799,7 +868,7 @@ pub(crate) async fn setup(
             }
             return Err(cleanup_error(map_error, cleanup));
         }
-        return Err(map_error);
+        return Err(cleanup_error(map_error, cleanup));
     }
     if let Some(container) = &message.docker_container {
         cache.add_overlay(&message.ns_name, Ipv4Addr::from(local_ip), container);
@@ -958,6 +1027,11 @@ pub(crate) async fn retire(name: &str, cache: &BridgeIpCache) -> Result<bool, St
     let mut cleanup_errors = Vec::new();
     if let Some(value) = map_error {
         cleanup_errors.push(value);
+    }
+    for (_, edge) in &removed {
+        if let Err(value) = edge.attachment.release_route(edge.key.peer).await {
+            cleanup_errors.push(value);
+        }
     }
     if !local {
         engine.peers.lock().await.remove(&transport_id);
@@ -1126,6 +1200,40 @@ mod tests {
             .status()
             .await
             .is_ok_and(|status| status.success())
+    }
+
+    async fn netns_ip(namespace: &str, args: &[&str]) -> bool {
+        tokio::process::Command::new("ip")
+            .args(["netns", "exec", namespace, "ip"])
+            .args(args)
+            .status()
+            .await
+            .is_ok_and(|status| status.success())
+    }
+
+    async fn route_device(namespace: &str, destination: Ipv4Addr) -> Option<String> {
+        let output = tokio::process::Command::new("ip")
+            .args([
+                "netns",
+                "exec",
+                namespace,
+                "ip",
+                "route",
+                "get",
+                &destination.to_string(),
+            ])
+            .output()
+            .await
+            .ok()?;
+        output.status.success().then_some(())?;
+        let words: Vec<_> = String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        words
+            .windows(2)
+            .find(|pair| pair[0] == "dev")
+            .map(|pair| pair[1].clone())
     }
 
     fn python(namespace: Option<&str>, script: &str, args: &[String]) -> tokio::process::Command {
@@ -1336,6 +1444,15 @@ mod tests {
                 .unwrap();
             cache.test_namespace(name.into(), namespace);
         }
+        assert!(netns_ip("nnpc1", &["link", "add", "normal0", "type", "dummy"]).await);
+        assert!(netns_ip("nnpc1", &["addr", "add", "192.0.2.2/24", "dev", "normal0"]).await);
+        assert!(netns_ip("nnpc1", &["link", "set", "normal0", "up"]).await);
+        assert!(netns_ip("nnpc1", &["route", "add", "default", "via", "192.0.2.1"]).await);
+        let private_service = Ipv4Addr::new(10, 130, 216, 95);
+        assert_eq!(
+            route_device("nnpc1", private_service).await.as_deref(),
+            Some("normal0")
+        );
         for message in [
             same_host_message(701, "c", "nnpc1", 0x20_02bd, 11),
             same_host_message(701, "s", "nnps1", 0x20_02bd, 11),
@@ -1347,6 +1464,14 @@ mod tests {
         ready(701).await.unwrap();
         ready(702).await.unwrap();
 
+        assert_eq!(
+            route_device("nnpc1", private_service).await.as_deref(),
+            Some("normal0")
+        );
+        assert_eq!(
+            route_device("nnpc1", server_ip(701)).await.as_deref(),
+            Some(APP_NAME)
+        );
         assert!(ping("nnpc1", server_ip(701)).await);
         assert!(ping("nnpc2", server_ip(702)).await);
         assert!(!ping("nnpc1", server_ip(702)).await);
@@ -1361,6 +1486,10 @@ mod tests {
         assert!(cache.get(server_ip(701)).is_none());
         assert!(cache.get(client_701).is_none());
         assert!(!ping("nnpc1", server_ip(701)).await);
+        assert_eq!(
+            route_device("nnpc1", server_ip(701)).await.as_deref(),
+            Some("normal0")
+        );
         let client_702 = Ipv4Addr::from(u32::from(server_ip(702)) + 2);
         heartbeat(&[2; 16], &cache).await.unwrap();
         assert!(cache.get(server_ip(702)).is_none());
