@@ -40,9 +40,9 @@ Three binaries coordinate over a gRPC control plane:
 
 ## What you get
 
-- **On-demand tunnels** — isolated VXLAN groups, built atomically across a whole dependency chain,
-  encrypted by default (MACsec / XFRM), and reclaimed once the connections they carry are gone.
-  Ingress groups can share a reusable carrier without sharing keys.
+- **On-demand tunnels** — encrypted links built atomically across a whole dependency chain and
+  reclaimed once the connections they carry are gone. Encrypted ingress uses isolated client
+  groups that can share a reusable VXLAN carrier without sharing keys.
 - **Default-deny host firewall** — an eBPF classifier on every node's uplink NIC, with one
   global allowlist decided server-side so there's a single point of configuration.
 - **Ingress that knows what it's serving** — Let's Encrypt certificates with automatic

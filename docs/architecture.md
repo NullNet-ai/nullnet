@@ -17,7 +17,7 @@ NullNet architecture is made of three components that coordinate over a gRPC con
 
 Each time a service is requested — through the proxy or by another service — the server walks the whole chain that request will travel. <br>
 If service A needs B, and B in turn needs C, that one request opens every link along the way at the same time, so the full path is ready atomically. <br>
-Each link is an isolated VXLAN group and only stays open while it is being used; once detected as idle via a configurable timeout, the server tears it down. Encrypted ingress groups have independent keys and policy state while standard and multiplexed groups share the same reusable carrier implementation.
+Each link is isolated and only stays open while it is being used; once detected as idle via a configurable timeout, the server tears it down. Encrypted ingress groups have independent keys and policy state while standard and multiplexed groups share the same reusable VXLAN carrier implementation; dependency, backend-trigger, and egress links retain dedicated VXLAN interfaces.
 
 The result: there is no broad "internal network" for an attacker to roam around inside if they break in somewhere.<br>
 The only paths that exist are the narrow, temporary ones carrying legitimate traffic as determined by the current network activity and defined topology. <br>
