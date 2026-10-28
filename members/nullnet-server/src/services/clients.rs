@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
@@ -8,6 +8,7 @@ use tokio::sync::Notify;
 pub(super) struct Clients {
     /// Mapping from service client to client info.
     clients: HashMap<Client, ClientInfo>,
+    group_carriers: HashMap<IpAddr, BTreeMap<u64, usize>>,
 }
 
 impl Clients {
@@ -25,6 +26,24 @@ impl Clients {
             }
             None => None,
         };
+        let previous_carrier = self
+            .clients
+            .get(&client)
+            .and_then(|info| client.is_proxy().zip(info.group_carrier()));
+        let next_carrier = client.is_proxy().zip(client_info.group_carrier());
+        if previous_carrier != next_carrier {
+            if let Some((proxy, carrier)) = previous_carrier {
+                self.remove_group_carrier(proxy, carrier);
+            }
+            if let Some((proxy, carrier)) = next_carrier {
+                *self
+                    .group_carriers
+                    .entry(proxy)
+                    .or_default()
+                    .entry(carrier)
+                    .or_default() += 1;
+            }
+        }
         self.clients.insert(client, client_info);
         // The edge is live now: release anything blocked on the reservation.
         if let Some(notify) = waiters {
@@ -40,9 +59,38 @@ impl Clients {
         let Some(notify) = self.clients.get(client).and_then(|ci| ci.pending.clone()) else {
             return false;
         };
-        self.clients.remove(client);
+        self.remove_client(client);
         notify.notify_waiters();
         true
+    }
+
+    pub(super) fn remove_client(&mut self, client: &Client) -> Option<ClientInfo> {
+        let info = self.clients.remove(client)?;
+        if let Some((proxy, carrier)) = client.is_proxy().zip(info.group_carrier()) {
+            self.remove_group_carrier(proxy, carrier);
+        }
+        Some(info)
+    }
+
+    fn remove_group_carrier(&mut self, proxy: IpAddr, carrier: u64) {
+        let carriers = self
+            .group_carriers
+            .get_mut(&proxy)
+            .expect("group carrier proxy is indexed");
+        let users = carriers
+            .get_mut(&carrier)
+            .expect("group carrier is indexed");
+        *users -= 1;
+        if *users == 0 {
+            carriers.remove(&carrier);
+        }
+        if carriers.is_empty() {
+            self.group_carriers.remove(&proxy);
+        }
+    }
+
+    pub(super) fn group_carriers(&self, proxy: IpAddr) -> Option<&BTreeMap<u64, usize>> {
+        self.group_carriers.get(&proxy)
     }
 
     /// The live overlay IP for `client`, or `None` while the edge is only
@@ -295,5 +343,53 @@ impl ClientInfo {
 
     pub(crate) fn created_at(&self) -> SystemTime {
         self.created_at
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reservation(ip: IpAddr, carrier: u64) -> ClientInfo {
+        let mut info = ClientInfo::reservation(ip, true);
+        info.set_group_carrier(carrier);
+        info
+    }
+
+    #[test]
+    fn group_carrier_index_tracks_reservations_promotions_and_removals() {
+        let proxy = IpAddr::from(Ipv4Addr::new(192, 0, 2, 1));
+        let client_ip = IpAddr::from(Ipv4Addr::new(198, 18, 0, 1));
+        let first = Client::new("first".into(), Some(proxy));
+        let second = Client::new("second".into(), Some(proxy));
+        let third = Client::new("third".into(), Some(proxy));
+        let mut clients = Clients::default();
+
+        clients.add_client(first.clone(), reservation(client_ip, 7));
+        assert_eq!(clients.group_carriers(proxy).unwrap()[&7], 1);
+
+        let mut promoted = ClientInfo::new(
+            client_ip,
+            Ipv4Addr::new(10, 0, 0, 3),
+            Ipv4Addr::new(10, 0, 0, 1),
+            1,
+            1,
+            None,
+        );
+        promoted.set_group_carrier(7);
+        clients.add_client(first.clone(), promoted);
+        assert_eq!(clients.group_carriers(proxy).unwrap()[&7], 1);
+
+        clients.add_client(second.clone(), reservation(client_ip, 7));
+        clients.add_client(third.clone(), reservation(client_ip, 9));
+        assert_eq!(clients.group_carriers(proxy).unwrap()[&7], 2);
+        assert_eq!(clients.group_carriers(proxy).unwrap()[&9], 1);
+
+        assert!(clients.remove_pending_client(&second));
+        assert_eq!(clients.group_carriers(proxy).unwrap()[&7], 1);
+        clients.remove_client(&first).unwrap();
+        assert!(!clients.group_carriers(proxy).unwrap().contains_key(&7));
+        clients.remove_client(&third).unwrap();
+        assert!(clients.group_carriers(proxy).is_none());
     }
 }

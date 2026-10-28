@@ -25,7 +25,7 @@ use std::{
     os::{fd::AsRawFd, unix::fs::MetadataExt},
     sync::{
         Arc, LazyLock, Mutex,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicUsize, Ordering},
     },
 };
 use tokio::sync::{Mutex as AsyncMutex, OnceCell, Semaphore};
@@ -67,11 +67,12 @@ struct Engine {
     edges: Mutex<HashMap<String, GroupEdge>>,
 }
 struct Carrier {
-    state: AsyncMutex<Option<CarrierState>>,
+    state: AsyncMutex<Option<Arc<CarrierState>>>,
 }
 struct CarrierState {
     index: u32,
-    vnis: HashSet<u32>,
+    vnis: Mutex<HashSet<u32>>,
+    operations: AtomicUsize,
 }
 struct Attachment {
     namespace: Arc<EndpointNamespace>,
@@ -196,88 +197,135 @@ impl Engine {
                 })
             })
             .clone();
-        let mut state = carrier.state.lock().await;
-        if let Some(state) = state.as_mut() {
-            native_vxlan::add_vni(state.index, vni)
-                .await
-                .map_err(error)?;
-            state.vnis.insert(vni);
-            return Ok(state.index);
-        }
-        let name = format!("{VXLAN_PREFIX}{id:x}");
-        let link = LinkVxlan::new(&name, 0)
-            .collect_metadata(true)
-            .vnifilter(true)
-            .gbp()
-            .learning(false)
-            .port(GROUP_PORT)
-            .mtu(1080)
-            .link_group(GROUP)
-            .build();
-        handle.link().add(link).execute().await.map_err(error)?;
-        let index = get_link_by_name(handle, &name)
-            .await
-            .map_err(|e| e.to_str().to_owned())?
-            .header
-            .index;
-        let setup = async {
-            self.attach(&name, "nullnet_policy_in")?;
-            native_vxlan::add_vni(index, vni).await.map_err(error)?;
-            handle
-                .link()
-                .set(LinkUnspec::new_with_index(index).up().build())
-                .execute()
-                .await
-                .map_err(error)?;
-            Ok::<u32, String>(index)
-        }
-        .await;
-        let index = match setup {
-            Ok(index) => index,
-            Err(setup_error) => {
-                let cleanup = handle
-                    .link()
-                    .del(index)
-                    .execute()
+        let active = {
+            let mut state = carrier.state.lock().await;
+            if let Some(active) = state.as_ref() {
+                active.operations.fetch_add(1, Ordering::Relaxed);
+                active.clone()
+            } else {
+                let name = format!("{VXLAN_PREFIX}{id:x}");
+                let link = LinkVxlan::new(&name, 0)
+                    .collect_metadata(true)
+                    .vnifilter(true)
+                    .gbp()
+                    .learning(false)
+                    .port(GROUP_PORT)
+                    .mtu(1080)
+                    .link_group(GROUP)
+                    .build();
+                handle.link().add(link).execute().await.map_err(error)?;
+                let index = get_link_by_name(handle, &name)
                     .await
-                    .err()
-                    .map(error)
-                    .into_iter()
-                    .collect();
-                return Err(cleanup_error(setup_error, cleanup));
+                    .map_err(|e| e.to_str().to_owned())?
+                    .header
+                    .index;
+                let setup = async {
+                    self.attach(&name, "nullnet_policy_in")?;
+                    handle
+                        .link()
+                        .set(LinkUnspec::new_with_index(index).up().build())
+                        .execute()
+                        .await
+                        .map_err(error)
+                }
+                .await;
+                if let Err(setup_error) = setup {
+                    let cleanup = handle
+                        .link()
+                        .del(index)
+                        .execute()
+                        .await
+                        .err()
+                        .map(error)
+                        .into_iter()
+                        .collect();
+                    return Err(cleanup_error(setup_error, cleanup));
+                }
+                let active = Arc::new(CarrierState {
+                    index,
+                    vnis: Mutex::new(HashSet::new()),
+                    operations: AtomicUsize::new(1),
+                });
+                *state = Some(active.clone());
+                active
             }
         };
-        *state = Some(CarrierState {
-            index,
-            vnis: HashSet::from([vni]),
-        });
-        Ok(index)
+        let result = native_vxlan::add_vni(active.index, vni)
+            .await
+            .map_err(error);
+        if result.is_ok() {
+            active.vnis.lock().unwrap().insert(vni);
+        }
+        let cleanup = self.finish_carrier_operation(id, &carrier, &active).await;
+        match result {
+            Ok(()) => cleanup.map(|()| active.index),
+            Err(setup_error) => Err(cleanup_error(
+                setup_error,
+                cleanup.err().into_iter().collect(),
+            )),
+        }
     }
 
     async fn release_carrier(&self, id: u64, vni: u32) -> Result<(), String> {
         let Some(carrier) = self.carriers.lock().unwrap().get(&id).cloned() else {
             return Ok(());
         };
-        let mut state = carrier.state.lock().await;
-        let Some(active) = state.as_mut() else {
-            return Ok(());
+        let active = {
+            let state = carrier.state.lock().await;
+            let Some(active) = state.as_ref() else {
+                return Ok(());
+            };
+            active.operations.fetch_add(1, Ordering::Relaxed);
+            active.clone()
         };
-        native_vxlan::remove_vni(active.index, vni)
+        let result = native_vxlan::remove_vni(active.index, vni)
+            .await
+            .map_err(error);
+        if result.is_ok() {
+            active.vnis.lock().unwrap().remove(&vni);
+        }
+        let cleanup = self.finish_carrier_operation(id, &carrier, &active).await;
+        match result {
+            Ok(()) => cleanup,
+            Err(remove_error) => Err(cleanup_error(
+                remove_error,
+                cleanup.err().into_iter().collect(),
+            )),
+        }
+    }
+
+    async fn finish_carrier_operation(
+        &self,
+        id: u64,
+        carrier: &Arc<Carrier>,
+        active: &Arc<CarrierState>,
+    ) -> Result<(), String> {
+        if active.operations.fetch_sub(1, Ordering::AcqRel) != 1
+            || !active.vnis.lock().unwrap().is_empty()
+        {
+            return Ok(());
+        }
+        let mut state = carrier.state.lock().await;
+        if state
+            .as_ref()
+            .is_none_or(|current| !Arc::ptr_eq(current, active))
+            || active.operations.load(Ordering::Acquire) != 0
+            || !active.vnis.lock().unwrap().is_empty()
+        {
+            return Ok(());
+        }
+        native_vxlan::remove_link(active.index)
             .await
             .map_err(error)?;
-        active.vnis.remove(&vni);
-        if active.vnis.is_empty() {
-            let index = active.index;
-            native_vxlan::remove_link(index).await.map_err(error)?;
-            *state = None;
-            let mut carriers = self.carriers.lock().unwrap();
-            if carriers
-                .get(&id)
-                .is_some_and(|current| Arc::ptr_eq(current, &carrier))
-                && Arc::strong_count(&carrier) == 2
-            {
-                carriers.remove(&id);
-            }
+        *state = None;
+        drop(state);
+        let mut carriers = self.carriers.lock().unwrap();
+        if carriers
+            .get(&id)
+            .is_some_and(|current| Arc::ptr_eq(current, carrier))
+            && Arc::strong_count(carrier) == 2
+        {
+            carriers.remove(&id);
         }
         Ok(())
     }

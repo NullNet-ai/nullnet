@@ -575,7 +575,7 @@ impl RegisteredServiceInfo {
                 }
                 ci.remove_active_chains(1);
                 if ci.active_chains() == 0
-                    && let Some(ci) = replica.clients.clients_mut().remove(client)
+                    && let Some(ci) = replica.clients.remove_client(client)
                 {
                     orchestrator
                         .send_net_teardown_kind(
@@ -683,12 +683,13 @@ impl RegisteredServiceInfo {
     pub(crate) fn group_carrier(&self, proxy_ip: IpAddr) -> Option<u64> {
         let mut carriers = HashMap::new();
         for replica in &self.replicas {
-            for (client, info) in replica.clients.clients() {
-                if client.is_proxy() == Some(proxy_ip)
-                    && let Some(carrier) = info.group_carrier()
-                {
-                    *carriers.entry(carrier).or_insert(0usize) += 1;
-                }
+            for (carrier, users) in replica
+                .clients
+                .group_carriers(proxy_ip)
+                .into_iter()
+                .flatten()
+            {
+                *carriers.entry(*carrier).or_insert(0usize) += users;
             }
         }
         carriers
@@ -824,7 +825,7 @@ impl RegisteredServiceInfo {
 
     pub(crate) fn remove_client(&mut self, client: &Client) {
         for replica in &mut self.replicas {
-            if replica.clients.clients_mut().remove(client).is_some() {
+            if replica.clients.remove_client(client).is_some() {
                 return;
             }
         }
