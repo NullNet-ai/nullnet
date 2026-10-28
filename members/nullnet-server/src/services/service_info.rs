@@ -575,7 +575,7 @@ impl RegisteredServiceInfo {
                 }
                 ci.remove_active_chains(1);
                 if ci.active_chains() == 0
-                    && let Some(ci) = replica.clients.clients_mut().remove(client)
+                    && let Some(ci) = replica.clients.remove_client(client)
                 {
                     orchestrator
                         .send_net_teardown_kind(
@@ -584,7 +584,7 @@ impl RegisteredServiceInfo {
                             replica.ip,
                             replica.docker_container.clone(),
                             ci.net_id(),
-                            ci.policy(),
+                            ci.group_carrier().is_some(),
                         )
                         .await;
                 }
@@ -677,6 +677,25 @@ impl RegisteredServiceInfo {
             .flat_map(|r| r.clients.clients().iter())
             .filter(|(client, info)| client.is_proxy().is_some() && !info.policy())
             .count()
+    }
+
+    /// Least-loaded reusable ingress carrier on this proxy.
+    pub(crate) fn group_carrier(&self, proxy_ip: IpAddr) -> Option<u64> {
+        let mut carriers = HashMap::new();
+        for replica in &self.replicas {
+            for (carrier, users) in replica
+                .clients
+                .group_carriers(proxy_ip)
+                .into_iter()
+                .flatten()
+            {
+                *carriers.entry(*carrier).or_insert(0usize) += users;
+            }
+        }
+        carriers
+            .into_iter()
+            .min_by_key(|(carrier, users)| (*users, *carrier))
+            .map(|(carrier, _)| carrier)
     }
 
     /// Find the network with the fewest clients on this proxy.
@@ -806,7 +825,7 @@ impl RegisteredServiceInfo {
 
     pub(crate) fn remove_client(&mut self, client: &Client) {
         for replica in &mut self.replicas {
-            if replica.clients.clients_mut().remove(client).is_some() {
+            if replica.clients.remove_client(client).is_some() {
                 return;
             }
         }

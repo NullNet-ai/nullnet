@@ -12,6 +12,7 @@ pub(crate) mod endpoint_namespace;
 mod endpoint_tc;
 mod native_macsec;
 mod native_netlink;
+mod native_vxlan;
 mod native_xfrm;
 mod netlink;
 pub(crate) mod nfqueue;

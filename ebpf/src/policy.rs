@@ -1,4 +1,4 @@
-//! Permission-gated IPv4 forwarding over shared policy transports.
+//! Permission-gated IPv4 forwarding over reusable group carriers.
 use aya_ebpf::{
     EbpfContext,
     bindings::{TC_ACT_SHOT, bpf_tunnel_key},
@@ -125,7 +125,7 @@ fn outgoing(ctx: &TcContext) -> Result<i32, i64> {
     }
 
     let mut tunnel: bpf_tunnel_key = unsafe { zeroed() };
-    tunnel.tunnel_id = (rule.generation & 0xff_ffff) as u32;
+    tunnel.tunnel_id = rule.vni;
     tunnel.tunnel_ttl = 64;
     tunnel.__bindgen_anon_1.remote_ipv4 = rule.underlay_remote;
     tunnel.__bindgen_anon_3.local_ipv4 = rule.underlay_local;
@@ -166,7 +166,8 @@ fn incoming(ctx: &TcContext) -> Result<i32, i64> {
         return Err(-1);
     }
     if unsafe { tunnel.__bindgen_anon_1.remote_ipv4 } != rule.underlay_remote
-        || (u64::from(option & 0xffff) << 24 | u64::from(tunnel.tunnel_id)) != rule.generation
+        || tunnel.tunnel_id != rule.vni
+        || u64::from(option & 0xffff) != rule.generation >> 24
     {
         return Err(-1);
     }

@@ -1,6 +1,6 @@
-//! Persistent attachments and permission groups for overflow IPv4 edges.
+//! Persistent attachments and permission groups for encrypted IPv4 ingress.
 use super::netlink::{add_link_echo, get_link_by_name};
-use super::{RtNetLinkHandle, endpoint_namespace::EndpointNamespace, native_xfrm};
+use super::{RtNetLinkHandle, endpoint_namespace::EndpointNamespace, native_vxlan, native_xfrm};
 use crate::nfqueue::BridgeIpCache;
 use aya::{
     Ebpf,
@@ -11,7 +11,7 @@ use aya::{
     },
 };
 use futures::TryStreamExt;
-use nullnet_grpc_lib::nullnet_grpc::{PolicyTransport, VxlanSetup};
+use nullnet_grpc_lib::nullnet_grpc::{GroupTransport, VxlanSetup};
 use rtnetlink::{
     Handle, IpVersion, LinkUnspec, LinkVeth, LinkVxlan,
     packet_route::{
@@ -20,12 +20,12 @@ use rtnetlink::{
     },
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::Ipv4Addr,
     os::{fd::AsRawFd, unix::fs::MetadataExt},
     sync::{
         Arc, LazyLock, Mutex,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicUsize, Ordering},
     },
 };
 use tokio::sync::{Mutex as AsyncMutex, OnceCell, Semaphore};
@@ -33,13 +33,13 @@ use tokio::sync::{Mutex as AsyncMutex, OnceCell, Semaphore};
 #[path = "../../../../shared/policy.rs"]
 #[allow(dead_code)]
 pub(crate) mod types;
-use types::{APP_IP, GATEWAY_IP, GROUP, MAX_GENERATION, OutKey, POLICY_PORT, Rule};
+use types::{APP_IP, GATEWAY_IP, GROUP, GROUP_PORT, MAX_GENERATION, OutKey, Rule};
 unsafe impl aya::Pod for OutKey {}
 unsafe impl aya::Pod for Rule {}
 
 const APP_NAME: &str = "nnp_app";
 const DELIVERY_NAME: &str = "nnp_delivery";
-const VXLAN_NAME: &str = "nnp_vx";
+const VXLAN_PREFIX: &str = "nng_";
 const LEGACY_XFRM_ROUTE_MARK: u32 = 0xce80_0000;
 const LEGACY_XFRM_RULE_PRIORITY: std::ops::RangeInclusive<u32> = 12_000..=12_064;
 static ENGINE: AsyncMutex<Option<Arc<Engine>>> = AsyncMutex::const_new(None);
@@ -62,9 +62,17 @@ struct Maps {
 struct Engine {
     bpf: Mutex<Ebpf>,
     maps: Mutex<Maps>,
-    transport: OnceCell<u32>,
+    carriers: Mutex<HashMap<u64, Arc<Carrier>>>,
     peers: AsyncMutex<HashMap<u32, Arc<OnceCell<()>>>>,
-    edges: Mutex<HashMap<String, PolicyEdge>>,
+    edges: Mutex<HashMap<String, GroupEdge>>,
+}
+struct Carrier {
+    state: AsyncMutex<Option<Arc<CarrierState>>>,
+}
+struct CarrierState {
+    index: u32,
+    vnis: Mutex<HashSet<u32>>,
+    operations: AtomicUsize,
 }
 struct Attachment {
     namespace: Arc<EndpointNamespace>,
@@ -72,20 +80,29 @@ struct Attachment {
     mac: [u8; 6],
 }
 #[derive(Clone)]
-struct PolicyEdge {
+struct GroupEdge {
     key: OutKey,
     rule: Rule,
     attachment: Arc<Attachment>,
     local: bool,
     transport_id: u32,
+    carrier_id: u64,
+    vni: u32,
 }
-impl PolicyEdge {
+impl GroupEdge {
     fn output_ready(&self) -> bool {
         !self.local || self.rule.output != 0
     }
 }
 fn error(e: impl std::fmt::Display) -> String {
     e.to_string()
+}
+fn cleanup_error(primary: String, cleanup: Vec<String>) -> String {
+    if cleanup.is_empty() {
+        primary
+    } else {
+        format!("{primary}; cleanup: {}", cleanup.join("; "))
+    }
 }
 fn clock() -> u64 {
     let mut now = libc::timespec {
@@ -138,7 +155,7 @@ async fn engine() -> Result<Arc<Engine>, String> {
         Ok::<_, String>(Arc::new(Engine {
             bpf: Mutex::new(bpf),
             maps: Mutex::new(maps),
-            transport: OnceCell::new(),
+            carriers: Mutex::new(HashMap::new()),
             peers: AsyncMutex::new(HashMap::new()),
             edges: Mutex::new(HashMap::new()),
         }))
@@ -168,53 +185,175 @@ impl Engine {
             .map_err(error)?;
         Ok(())
     }
-    async fn transport(&self, handle: &Handle) -> Result<u32, String> {
-        self.transport
-            .get_or_try_init(|| async {
-                let link = LinkVxlan::new(VXLAN_NAME, 0)
+    async fn carrier(&self, handle: &Handle, id: u64, vni: u32) -> Result<u32, String> {
+        let carrier = self
+            .carriers
+            .lock()
+            .unwrap()
+            .entry(id)
+            .or_insert_with(|| {
+                Arc::new(Carrier {
+                    state: AsyncMutex::new(None),
+                })
+            })
+            .clone();
+        let active = {
+            let mut state = carrier.state.lock().await;
+            if let Some(active) = state.as_ref() {
+                active.operations.fetch_add(1, Ordering::Relaxed);
+                active.clone()
+            } else {
+                let name = format!("{VXLAN_PREFIX}{id:x}");
+                let link = LinkVxlan::new(&name, 0)
                     .collect_metadata(true)
+                    .vnifilter(true)
                     .gbp()
                     .learning(false)
-                    .port(POLICY_PORT)
+                    .port(GROUP_PORT)
                     .mtu(1080)
                     .link_group(GROUP)
                     .build();
-                handle.link().add(link).execute().await.map_err(error)?;
-                let index = get_link_by_name(handle, VXLAN_NAME)
+                let index = add_link_echo(handle, link)
                     .await
-                    .map_err(|e| e.to_str().to_owned())?
+                    .map_err(error)?
                     .header
                     .index;
                 let setup = async {
-                    self.attach(VXLAN_NAME, "nullnet_policy_in")?;
+                    self.attach(&name, "nullnet_policy_in")?;
                     handle
                         .link()
                         .set(LinkUnspec::new_with_index(index).up().build())
                         .execute()
                         .await
-                        .map_err(error)?;
-                    get_link_by_name(handle, VXLAN_NAME)
-                        .await
-                        .map_err(|e| e.to_str().to_owned())?;
-                    Ok(index)
+                        .map_err(error)
                 }
                 .await;
-                if setup.is_err() {
-                    handle.link().del(index).execute().await.map_err(error)?;
+                if let Err(setup_error) = setup {
+                    let cleanup = handle
+                        .link()
+                        .del(index)
+                        .execute()
+                        .await
+                        .err()
+                        .map(error)
+                        .into_iter()
+                        .collect();
+                    return Err(cleanup_error(setup_error, cleanup));
                 }
-                setup
-            })
+                let active = Arc::new(CarrierState {
+                    index,
+                    vnis: Mutex::new(HashSet::new()),
+                    operations: AtomicUsize::new(1),
+                });
+                *state = Some(active.clone());
+                active
+            }
+        };
+        let result = native_vxlan::add_vni(active.index, vni)
             .await
-            .copied()
+            .map_err(error);
+        if result.is_ok() {
+            active.vnis.lock().unwrap().insert(vni);
+        }
+        let cleanup = self.finish_carrier_operation(id, &carrier, &active).await;
+        match result {
+            Ok(()) => cleanup.map(|()| active.index),
+            Err(setup_error) => Err(cleanup_error(
+                setup_error,
+                cleanup.err().into_iter().collect(),
+            )),
+        }
+    }
+
+    async fn release_carrier(&self, id: u64, vni: u32) -> Result<(), String> {
+        let Some(carrier) = self.carriers.lock().unwrap().get(&id).cloned() else {
+            return Ok(());
+        };
+        let active = {
+            let mut state = carrier.state.lock().await;
+            let Some(active) = state.as_ref() else {
+                return Ok(());
+            };
+            let last = active.operations.load(Ordering::Acquire) == 0 && {
+                let vnis = active.vnis.lock().unwrap();
+                vnis.len() == 1 && vnis.contains(&vni)
+            };
+            if last {
+                native_vxlan::remove_link(active.index)
+                    .await
+                    .map_err(error)?;
+                *state = None;
+                let mut carriers = self.carriers.lock().unwrap();
+                if carriers
+                    .get(&id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &carrier))
+                    && Arc::strong_count(&carrier) == 2
+                {
+                    carriers.remove(&id);
+                }
+                return Ok(());
+            }
+            active.operations.fetch_add(1, Ordering::Relaxed);
+            active.clone()
+        };
+        let result = native_vxlan::remove_vni(active.index, vni)
+            .await
+            .map_err(error);
+        if result.is_ok() {
+            active.vnis.lock().unwrap().remove(&vni);
+        }
+        let cleanup = self.finish_carrier_operation(id, &carrier, &active).await;
+        match result {
+            Ok(()) => cleanup,
+            Err(remove_error) => Err(cleanup_error(
+                remove_error,
+                cleanup.err().into_iter().collect(),
+            )),
+        }
+    }
+
+    async fn finish_carrier_operation(
+        &self,
+        id: u64,
+        carrier: &Arc<Carrier>,
+        active: &Arc<CarrierState>,
+    ) -> Result<(), String> {
+        if active.operations.fetch_sub(1, Ordering::AcqRel) != 1
+            || !active.vnis.lock().unwrap().is_empty()
+        {
+            return Ok(());
+        }
+        let mut state = carrier.state.lock().await;
+        if state
+            .as_ref()
+            .is_none_or(|current| !Arc::ptr_eq(current, active))
+            || active.operations.load(Ordering::Acquire) != 0
+            || !active.vnis.lock().unwrap().is_empty()
+        {
+            return Ok(());
+        }
+        native_vxlan::remove_link(active.index)
+            .await
+            .map_err(error)?;
+        *state = None;
+        let mut carriers = self.carriers.lock().unwrap();
+        if carriers
+            .get(&id)
+            .is_some_and(|current| Arc::ptr_eq(current, carrier))
+            && Arc::strong_count(carrier) == 2
+        {
+            carriers.remove(&id);
+        }
+        Ok(())
     }
     async fn peer(
         &self,
-        transport: &PolicyTransport,
+        transport: &GroupTransport,
         local: Ipv4Addr,
         remote: Ipv4Addr,
     ) -> Result<(), String> {
         if !(0x20_0000..0x40_0000).contains(&transport.id) {
-            return Err("Invalid policy transport identity".into());
+            return Err("Invalid group transport identity".into());
         }
         let key: [u8; 32] = transport
             .encryption_key
@@ -235,13 +374,21 @@ impl Engine {
                 transport.generation as u32,
                 (local, remote),
                 key,
-                POLICY_PORT,
+                GROUP_PORT,
             )
             .await;
-            if result.is_err() {
-                native_xfrm::remove(transport.id).await.map_err(error)?;
+            match result {
+                Ok(()) => Ok(()),
+                Err(install_error) => {
+                    let cleanup = native_xfrm::remove(transport.id)
+                        .await
+                        .err()
+                        .map(error)
+                        .into_iter()
+                        .collect();
+                    Err(cleanup_error(error(install_error), cleanup))
+                }
             }
-            result.map_err(error)
         })
         .await?;
         Ok(())
@@ -489,11 +636,15 @@ pub(crate) async fn setup(
         return Err("Host plaintext protection is not ready".into());
     }
     let transport = message
-        .policy_transport
+        .group_transport
         .as_ref()
-        .ok_or("Missing policy transport")?;
-    if transport.generation == 0 || transport.generation > MAX_GENERATION {
-        return Err("Policy generation exhausted".into());
+        .ok_or("Missing group transport")?;
+    if transport.generation == 0
+        || transport.generation > MAX_GENERATION
+        || transport.carrier_id == 0
+        || transport.carrier_id > MAX_GENERATION
+    {
+        return Err("Group generation exhausted".into());
     }
     let local: Ipv4Addr = message.local_ip.parse().map_err(error)?;
     let remote: Ipv4Addr = message.remote_ip.parse().map_err(error)?;
@@ -502,11 +653,11 @@ pub(crate) async fn setup(
         || message.egress_intercept.unwrap_or(false)
         || message.dnat_port.is_some()
     {
-        return Err("Unsupported policy placement".into());
+        return Err("Unsupported group placement".into());
     }
     let engine = engine().await?;
     if engine.edges.lock().unwrap().contains_key(&message.ns_name) {
-        return Err("Policy endpoint is already active".into());
+        return Err("Group endpoint is already active".into());
     }
     let output = attachment(
         &rtnetlink.handle,
@@ -520,8 +671,18 @@ pub(crate) async fn setup(
     let vxlan = if local_transport {
         0
     } else {
-        let vxlan = engine.transport(&rtnetlink.handle).await?;
-        engine.peer(transport, local, remote).await?;
+        let vxlan = engine
+            .carrier(&rtnetlink.handle, transport.carrier_id, message.vxlan_id)
+            .await?;
+        if let Err(peer_error) = engine.peer(transport, local, remote).await {
+            let cleanup = engine
+                .release_carrier(transport.carrier_id, message.vxlan_id)
+                .await
+                .err()
+                .into_iter()
+                .collect();
+            return Err(cleanup_error(peer_error, cleanup));
+        }
         vxlan
     };
     let block = u32::from(Ipv4Addr::new(10, 0, 0, 0)) + message.vxlan_id * 8;
@@ -535,6 +696,7 @@ pub(crate) async fn setup(
     };
     let rule = Rule {
         generation: transport.generation,
+        vni: message.vxlan_id,
         local: local_ip,
         peer: peer_ip,
         underlay_local: local.into(),
@@ -575,24 +737,28 @@ pub(crate) async fn setup(
                     maps.outgoing.insert(key, local_rule, 0).map_err(error)?;
                     edges.insert(
                         message.ns_name.clone(),
-                        PolicyEdge {
+                        GroupEdge {
                             key,
                             rule: local_rule,
                             attachment: output.clone(),
                             local: true,
                             transport_id: transport.id,
+                            carrier_id: transport.carrier_id,
+                            vni: message.vxlan_id,
                         },
                     );
                 } else {
                     maps.outgoing.insert(key, rule, 0).map_err(error)?;
                     edges.insert(
                         message.ns_name.clone(),
-                        PolicyEdge {
+                        GroupEdge {
                             key,
                             rule,
                             attachment: output.clone(),
                             local: true,
                             transport_id: transport.id,
+                            carrier_id: transport.carrier_id,
+                            vni: message.vxlan_id,
                         },
                     );
                 }
@@ -604,12 +770,14 @@ pub(crate) async fn setup(
                 }
                 edges.insert(
                     message.ns_name.clone(),
-                    PolicyEdge {
+                    GroupEdge {
                         key,
                         rule,
                         attachment: output.clone(),
                         local: false,
                         transport_id: transport.id,
+                        carrier_id: transport.carrier_id,
+                        vni: message.vxlan_id,
                     },
                 );
             }
@@ -619,7 +787,17 @@ pub(crate) async fn setup(
     if let Err(map_error) = map_result {
         if !local_transport {
             engine.peers.lock().await.remove(&transport.id);
-            native_xfrm::remove(transport.id).await.map_err(error)?;
+            let mut cleanup = Vec::new();
+            if let Err(value) = native_xfrm::remove(transport.id).await {
+                cleanup.push(error(value));
+            }
+            if let Err(value) = engine
+                .release_carrier(transport.carrier_id, message.vxlan_id)
+                .await
+            {
+                cleanup.push(value);
+            }
+            return Err(cleanup_error(map_error, cleanup));
         }
         return Err(map_error);
     }
@@ -634,7 +812,7 @@ pub(crate) fn heartbeat_valid() -> Option<bool> {
     (deadline != 0).then(|| deadline > clock())
 }
 
-pub(crate) async fn heartbeat(server_epoch: &[u8]) -> Result<(), String> {
+pub(crate) async fn heartbeat(server_epoch: &[u8], cache: &BridgeIpCache) -> Result<(), String> {
     if server_epoch.len() != 16 {
         return Err("Invalid policy server epoch".into());
     }
@@ -654,7 +832,7 @@ pub(crate) async fn heartbeat(server_epoch: &[u8]) -> Result<(), String> {
             .unwrap_or_default();
         let mut first_error = None;
         for name in names {
-            if let Err(error) = retire(&name).await {
+            if let Err(error) = retire(&name, cache).await {
                 first_error.get_or_insert(error);
             }
         }
@@ -725,18 +903,20 @@ pub(crate) async fn ready(id: u32) -> Result<bool, String> {
     Ok(found)
 }
 
-pub(crate) async fn retire(name: &str) -> Result<bool, String> {
+pub(crate) async fn retire(name: &str, cache: &BridgeIpCache) -> Result<bool, String> {
     let engine = ENGINE.lock().await.clone();
     let Some(engine) = engine else {
         return Ok(false);
     };
-    let (local, transport_id, removed, map_error) = {
+    let (local, transport_id, carrier_id, vni, removed, map_error) = {
         let mut edges = engine.edges.lock().unwrap();
         let Some(edge) = edges.get(name) else {
             return Ok(false);
         };
         let local = edge.local;
         let transport_id = edge.transport_id;
+        let carrier_id = edge.carrier_id;
+        let vni = edge.vni;
         let id = name
             .strip_prefix("ns_")
             .and_then(|value| {
@@ -773,24 +953,34 @@ pub(crate) async fn retire(name: &str) -> Result<bool, String> {
             }
             removed.push((name, edge));
         }
-        (local, transport_id, removed, map_error)
+        (local, transport_id, carrier_id, vni, removed, map_error)
     };
-    let mut xfrm_error = None;
+    let mut cleanup_errors = Vec::new();
+    if let Some(value) = map_error {
+        cleanup_errors.push(value);
+    }
     if !local {
         engine.peers.lock().await.remove(&transport_id);
         if let Err(value) = native_xfrm::remove(transport_id).await {
-            xfrm_error = Some(error(value));
+            cleanup_errors.push(error(value));
+        }
+        if let Err(value) = engine.release_carrier(carrier_id, vni).await {
+            cleanup_errors.push(value);
         }
     }
-    let result = match (map_error, xfrm_error) {
-        (Some(map), Some(xfrm)) => Err(format!("{map}; {xfrm}")),
-        (Some(value), None) | (None, Some(value)) => Err(value),
-        (None, None) => Ok(true),
+    let result = if cleanup_errors.is_empty() {
+        Ok(true)
+    } else {
+        Err(cleanup_errors.join("; "))
     };
     if result.is_err() {
         let mut edges = engine.edges.lock().unwrap();
         for (name, edge) in removed {
             edges.entry(name).or_insert(edge);
+        }
+    } else {
+        for (name, _) in removed {
+            cache.remove_overlay(&name);
         }
     }
     result
@@ -903,13 +1093,14 @@ mod tests {
             remote_ip: "192.0.2.1".into(),
             docker_container: Some(container.into()),
             encryption_key: vec![7; 32],
-            dstport: u32::from(POLICY_PORT),
+            dstport: u32::from(GROUP_PORT),
             encrypted: true,
-            policy_transport: Some(PolicyTransport {
+            group_transport: Some(GroupTransport {
                 id: transport_id,
                 encryption_key: vec![7; 32],
                 peer_container: true,
                 generation,
+                carrier_id: generation,
             }),
             ..Default::default()
         }
@@ -1023,18 +1214,20 @@ mod tests {
         message.local_ip = local.to_string();
         message.remote_ip = remote.to_string();
         message.encryption_key = vec![key; 32];
-        message.policy_transport.as_mut().unwrap().encryption_key = vec![key; 32];
+        let transport = message.group_transport.as_mut().unwrap();
+        transport.encryption_key = vec![key; 32];
+        transport.carrier_id = 42;
         message
     }
 
-    async fn wait_for(path: &str) {
+    async fn wait_for(path: &str, cache: &BridgeIpCache) {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(45);
         while !std::path::Path::new(path).exists() {
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "coordinator timeout"
             );
-            heartbeat(&[1; 16]).await.unwrap();
+            heartbeat(&[1; 16], cache).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
@@ -1054,10 +1247,10 @@ mod tests {
         super::super::vxlan_environment::initialize_test()
             .await
             .unwrap();
-        heartbeat(&[1; 16]).await.unwrap();
+        let cache = BridgeIpCache::new();
+        heartbeat(&[1; 16], &cache).await.unwrap();
         let handle = RtNetLinkHandle::new().unwrap();
         recover(&handle.handle).await.unwrap();
-        let cache = BridgeIpCache::new();
         let keys = if side == "s" {
             [0x42, 0x43, 0x44]
         } else {
@@ -1075,19 +1268,11 @@ mod tests {
             messages.push(message);
         }
         assert_ne!(
-            messages[0]
-                .policy_transport
-                .as_ref()
-                .unwrap()
-                .encryption_key,
-            messages[1]
-                .policy_transport
-                .as_ref()
-                .unwrap()
-                .encryption_key
+            messages[0].group_transport.as_ref().unwrap().encryption_key,
+            messages[1].group_transport.as_ref().unwrap().encryption_key
         );
         std::fs::write("/tmp/nn-policy-cross-ready", "ok").unwrap();
-        wait_for("/tmp/nn-policy-cross-go").await;
+        wait_for("/tmp/nn-policy-cross-go", &cache).await;
 
         for net_id in [711, 712, 713] {
             assert!(ready(net_id).await.unwrap());
@@ -1098,7 +1283,7 @@ mod tests {
             None
         };
         std::fs::write("/tmp/nn-policy-cross-activated", "ok").unwrap();
-        wait_for("/tmp/nn-policy-cross-traffic-go").await;
+        wait_for("/tmp/nn-policy-cross-traffic-go", &cache).await;
         let peer = |net_id: u32| {
             let offset = if side == "c" { 1u32 } else { 3u32 };
             Ipv4Addr::from(u32::from(Ipv4Addr::new(10, 0, 0, 0)) + net_id * 8 + offset)
@@ -1113,16 +1298,20 @@ mod tests {
             finish_tcp_listener(tcp.unwrap()).await;
         }
 
-        assert!(retire(&format!("ns_711_{side}")).await.unwrap());
+        assert!(retire(&format!("ns_711_{side}"), &cache).await.unwrap());
         std::fs::write("/tmp/nn-policy-cross-retired", "ok").unwrap();
-        wait_for("/tmp/nn-policy-cross-survivor-go").await;
-        heartbeat(&[1; 16]).await.unwrap();
+        wait_for("/tmp/nn-policy-cross-survivor-go", &cache).await;
+        heartbeat(&[1; 16], &cache).await.unwrap();
         assert!(ping(&format!("ns_712_{side}"), peer(712)).await);
         std::fs::write("/tmp/nn-policy-cross-survived", "ok").unwrap();
-        wait_for("/tmp/nn-policy-cross-cleanup-go").await;
+        wait_for("/tmp/nn-policy-cross-cleanup-go", &cache).await;
 
         for net_id in [712, 713] {
-            assert!(retire(&format!("ns_{net_id}_{side}")).await.unwrap());
+            assert!(
+                retire(&format!("ns_{net_id}_{side}"), &cache)
+                    .await
+                    .unwrap()
+            );
         }
         destroy_all(&handle).await.unwrap();
         for message in messages {
@@ -1138,9 +1327,9 @@ mod tests {
         super::super::vxlan_environment::initialize_test()
             .await
             .unwrap();
-        heartbeat(&[1; 16]).await.unwrap();
-        let handle = RtNetLinkHandle::new().unwrap();
         let cache = BridgeIpCache::new();
+        heartbeat(&[1; 16], &cache).await.unwrap();
+        let handle = RtNetLinkHandle::new().unwrap();
         for name in ["nnpc1", "nnps1", "nnpc2", "nnps2"] {
             let namespace = super::super::endpoint_namespace::create(name)
                 .await
@@ -1165,11 +1354,19 @@ mod tests {
         assert!(tcp_echo(Some("nnpc2"), server_ip(702), 24702).await);
         finish_tcp_listener(tcp).await;
 
-        assert!(retire("ns_701_c").await.unwrap());
+        let client_701 = Ipv4Addr::from(u32::from(server_ip(701)) + 2);
+        assert_eq!(cache.get(server_ip(701)).as_deref(), Some("nnps1"));
+        assert_eq!(cache.get(client_701).as_deref(), Some("nnpc1"));
+        assert!(retire("ns_701_c", &cache).await.unwrap());
+        assert!(cache.get(server_ip(701)).is_none());
+        assert!(cache.get(client_701).is_none());
         assert!(!ping("nnpc1", server_ip(701)).await);
-        heartbeat(&[2; 16]).await.unwrap();
+        let client_702 = Ipv4Addr::from(u32::from(server_ip(702)) + 2);
+        heartbeat(&[2; 16], &cache).await.unwrap();
+        assert!(cache.get(server_ip(702)).is_none());
+        assert!(cache.get(client_702).is_none());
         assert!(!ping("nnpc2", server_ip(702)).await);
-        assert!(!retire("ns_702_s").await.unwrap());
+        assert!(!retire("ns_702_s", &cache).await.unwrap());
         destroy_all(&handle).await.unwrap();
         for name in ["nnpc1", "nnps1", "nnpc2", "nnps2"] {
             super::super::endpoint_namespace::remove(name)
@@ -1184,15 +1381,15 @@ mod tests {
         super::super::vxlan_environment::initialize_test()
             .await
             .unwrap();
-        heartbeat(&[1; 16]).await.unwrap();
-        let handle = RtNetLinkHandle::new().unwrap();
         let cache = BridgeIpCache::new();
+        heartbeat(&[1; 16], &cache).await.unwrap();
+        let handle = RtNetLinkHandle::new().unwrap();
         let mut client = same_host_message(703, "c", "unused", 0x20_02bf, 13);
         let mut server = same_host_message(703, "s", "unused", 0x20_02bf, 13);
         client.docker_container = None;
         server.docker_container = None;
-        client.policy_transport.as_mut().unwrap().peer_container = false;
-        server.policy_transport.as_mut().unwrap().peer_container = false;
+        client.group_transport.as_mut().unwrap().peer_container = false;
+        server.group_transport.as_mut().unwrap().peer_container = false;
         setup(&client, &handle, &cache).await.unwrap();
         setup(&server, &handle, &cache).await.unwrap();
         assert!(ready(703).await.unwrap());
@@ -1210,7 +1407,7 @@ mod tests {
         assert!(tcp_echo(None, destination, 24703).await);
         finish_tcp_listener(tcp).await;
 
-        assert!(retire("ns_703_c").await.unwrap());
+        assert!(retire("ns_703_c", &cache).await.unwrap());
         assert!(!tcp_echo(None, destination, 24703).await);
         destroy_all(&handle).await.unwrap();
     }
@@ -1250,8 +1447,10 @@ mod tests {
             .await
             .unwrap();
         let engine = engine().await.unwrap();
-        let transport = engine.transport(&handle.handle).await.unwrap();
+        let transport = engine.carrier(&handle.handle, 1, 192).await.unwrap();
+        let other_transport = engine.carrier(&handle.handle, 2, 193).await.unwrap();
         assert_ne!(transport, 0);
+        assert_ne!(transport, other_transport);
         let cache = BridgeIpCache::new();
         let first = attachment(&handle.handle, &cache, None, &engine)
             .await
@@ -1260,7 +1459,7 @@ mod tests {
             .await
             .unwrap();
         assert!(Arc::ptr_eq(&first, &second));
-        heartbeat(&[1; 16]).await.unwrap();
+        heartbeat(&[1; 16], &cache).await.unwrap();
         assert!(engine.maps.lock().unwrap().deadline.get(&0, 0).unwrap() > clock());
         disable().await.unwrap();
         assert_eq!(engine.maps.lock().unwrap().deadline.get(&0, 0).unwrap(), 0);
@@ -1274,12 +1473,14 @@ mod tests {
         };
         engine.edges.lock().unwrap().insert(
             "ns_192_c".into(),
-            PolicyEdge {
+            GroupEdge {
                 key,
                 rule,
                 attachment: first,
                 local: false,
                 transport_id: 0x20_0000,
+                carrier_id: 1,
+                vni: 192,
             },
         );
         engine
@@ -1289,11 +1490,13 @@ mod tests {
             .incoming
             .insert(rule.local, rule, 0)
             .unwrap();
-        assert!(retire("ns_192_c").await.unwrap());
-        assert!(!retire("ns_192_c").await.unwrap());
+        assert!(retire("ns_192_c", &cache).await.unwrap());
+        assert!(!retire("ns_192_c", &cache).await.unwrap());
+        assert!(get_link_by_name(&handle.handle, "nng_1").await.is_err());
+        assert!(get_link_by_name(&handle.handle, "nng_2").await.is_ok());
         destroy_all(&handle).await.unwrap();
         assert!(get_link_by_name(&handle.handle, "keep_me").await.is_ok());
-        assert!(get_link_by_name(&handle.handle, VXLAN_NAME).await.is_err());
+        assert!(get_link_by_name(&handle.handle, "nng_1").await.is_err());
         assert!(get_link_by_name(&handle.handle, APP_NAME).await.is_err());
     }
 }
