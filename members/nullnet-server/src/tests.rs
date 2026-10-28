@@ -1782,13 +1782,13 @@ async fn multi_replica_first_step_container_disconnect() {
 
 // ===========================================================================
 // max_networks: A→B, max_networks=1, timeout=1.
-// The first ingress edges are dedicated; later edges share a host-pair transport.
+// Standard ingress groups seed carriers; overflow balances across them.
 // ===========================================================================
 
 const MAX_NETWORKS: &str = "max_networks";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn max_networks_shares_transport_across_concurrent_overflow() {
+async fn max_networks_balances_groups_across_standard_carriers() {
     let config: ServicesToml = toml::from_str(
         r#"[[services]]
 name = "A"
@@ -1851,18 +1851,18 @@ proxy_dependencies = [["B"]]
     let groups: Vec<_> = messages
         .iter()
         .filter_map(|message| match &message.message {
-            Some(net_message::Message::VxlanSetup(setup)) => setup.policy_transport.as_ref(),
+            Some(net_message::Message::VxlanSetup(setup)) => setup.group_transport.as_ref(),
             _ => None,
         })
         .collect();
-    assert_eq!(groups.len(), 190);
+    assert_eq!(groups.len(), 200);
     assert_eq!(
         groups
             .iter()
             .map(|group| group.id)
             .collect::<HashSet<_>>()
             .len(),
-        190
+        200
     );
     assert_eq!(
         groups
@@ -1870,7 +1870,7 @@ proxy_dependencies = [["B"]]
             .map(|group| group.encryption_key.clone())
             .collect::<HashSet<_>>()
             .len(),
-        190
+        200
     );
     assert_eq!(
         groups
@@ -1878,8 +1878,14 @@ proxy_dependencies = [["B"]]
             .map(|group| group.generation)
             .collect::<HashSet<_>>()
             .len(),
-        190
+        200
     );
+    let mut carrier_users = HashMap::new();
+    for group in &groups {
+        *carrier_users.entry(group.carrier_id).or_insert(0usize) += 1;
+    }
+    assert_eq!(carrier_users.len(), 10);
+    assert!(carrier_users.values().all(|users| *users == 20));
     drop(messages);
     let guard = server.services().read().await;
     let ServiceInfo::Registered(dep) = &stack_view(&guard)["B"] else {
@@ -1937,16 +1943,26 @@ async fn max_networks_reuses_one_overflow_group_for_the_same_client_ip() {
             .filter(|message| matches!(
                 &message.message,
                 Some(net_message::Message::VxlanSetup(setup))
-                    if setup.policy_transport.is_some()
+                    if setup.group_transport.is_some()
             ))
             .count(),
-        1
+        2
     );
+    let groups: Vec<_> = messages
+        .iter()
+        .filter_map(|message| match &message.message {
+            Some(net_message::Message::VxlanSetup(setup)) => setup.group_transport.as_ref(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0].carrier_id, groups[1].carrier_id);
+    assert_ne!(groups[0].encryption_key, groups[1].encryption_key);
 }
 
 /// Full lifecycle:
 ///   1. First client creates network (2 net IDs: proxy→A, A→B)
-///   2. Second client gets a policy group (3 IDs including the dependency)
+///   2. Second client gets an overflow group (3 IDs including the dependency)
 ///   3. First client times out (policy edge and dependency survive)
 ///   4. Second client times out (all edges are torn down)
 #[tokio::test]
@@ -1992,17 +2008,13 @@ async fn max_networks_reuse_lifecycle() {
             panic!("A should be registered");
         };
         assert_eq!(reg_a.client_count(), 2, "A should have 2 proxy clients");
-        // Every overflow connection is its own policy group and net id.
+        // Every overflow connection is its own group and net id.
         let net_ids: HashSet<u32> = reg_a
             .replicas()
             .iter()
             .flat_map(|r| r.clients().values().map(|ci| ci.net_id()))
             .collect();
-        assert_eq!(
-            net_ids.len(),
-            2,
-            "overflow clients must not share a policy group"
-        );
+        assert_eq!(net_ids.len(), 2, "overflow clients must not share a group");
 
         let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
             panic!("B should be registered");
@@ -4512,7 +4524,7 @@ async fn an_ingress_session_opens_and_closes_a_row() {
     assert!(rows[0].ended_at.is_some(), "should have been closed");
 }
 
-/// The dedicated client and each overflow policy group have separate sessions.
+/// The standard client and each overflow group have separate sessions.
 /// Expiring either must close exactly its own row.
 #[tokio::test]
 async fn max_networks_overflow_closes_each_client_session() {
@@ -4535,7 +4547,7 @@ async fn max_networks_overflow_closes_each_client_session() {
     let rows = session_rows(&server, &db).await;
     assert_eq!(rows.len(), 2, "one row per client, got {rows:?}");
     let net_ids: HashSet<i32> = rows.iter().map(|r| r.net_id).collect();
-    assert_eq!(net_ids.len(), 2, "overflow has its own policy group");
+    assert_eq!(net_ids.len(), 2, "overflow has its own group");
     assert!(rows.iter().all(|r| r.ended_at.is_none()));
 
     // First client expires while the overflow client remains active.

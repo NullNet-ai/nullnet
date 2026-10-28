@@ -8,8 +8,8 @@ use crate::services::changes::{apply_changes, detect_node_disconnect_changes};
 use crate::services::input::StackMap;
 use crate::sessions::SessionStore;
 use nullnet_grpc_lib::nullnet_grpc::{
-    ContainerResume, ContainerSuspend, EgressPolicyChanged, MsgId, Net, NetMessage, NetReady,
-    PolicyHeartbeat, PolicyTransport, net_message,
+    ContainerResume, ContainerSuspend, EgressPolicyChanged, GroupTransport, MsgId, Net, NetMessage,
+    NetReady, PolicyHeartbeat, net_message,
 };
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
@@ -1002,7 +1002,7 @@ impl Orchestrator {
         dstport: Option<u32>,
         encrypted: bool,
         egress: EgressRole,
-        policy_transport: Option<PolicyTransport>,
+        group_transport: Option<GroupTransport>,
     ) -> Option<Ipv4Addr> {
         self.send_control(dest, |msg_id| {
             NET_TYPE.setup(
@@ -1018,7 +1018,7 @@ impl Orchestrator {
                 dstport,
                 encrypted,
                 egress,
-                policy_transport,
+                group_transport,
             )
         })
         .await
@@ -1148,12 +1148,14 @@ impl Orchestrator {
             })
     }
 
-    pub(crate) fn policy_transport(&self, net_id: u32) -> PolicyTransport {
-        PolicyTransport {
+    pub(crate) fn group_transport(&self, net_id: u32, carrier: Option<u64>) -> GroupTransport {
+        let generation = self.policy_generation.fetch_add(1, Ordering::Relaxed);
+        GroupTransport {
             id: POLICY_XFRM_ID_START + net_id,
             encryption_key: generate_key().to_vec(),
             peer_container: false,
-            generation: self.policy_generation.fetch_add(1, Ordering::Relaxed),
+            generation,
+            carrier_id: carrier.unwrap_or(generation),
         }
     }
 
@@ -1258,7 +1260,7 @@ impl Orchestrator {
         server: IpAddr,
         server_docker: Option<String>,
         net_id: u32,
-        policy: bool,
+        group: bool,
     ) {
         let mut acks = Vec::new();
         for (dest, remote, side, docker) in [
@@ -1281,7 +1283,7 @@ impl Orchestrator {
                     remote,
                     None,
                     msg_id.clone(),
-                    policy,
+                    group,
                 );
 
                 acks.push((dest, msg_id, rx, outbound, message));
@@ -1637,9 +1639,9 @@ mod policy_group_tests {
         let orchestrator = Orchestrator::new();
         let host_a = ip(192, 0, 2, 1);
         let host_b = ip(192, 0, 2, 2);
-        let first = orchestrator.policy_transport(101);
-        let second = orchestrator.policy_transport(102);
-        let recycled = orchestrator.policy_transport(101);
+        let first = orchestrator.group_transport(101, None);
+        let second = orchestrator.group_transport(102, Some(first.carrier_id));
+        let recycled = orchestrator.group_transport(101, None);
         let dedicated = orchestrator.xfrm_transport(host_a, host_b);
 
         assert_eq!(first.id, POLICY_XFRM_ID_START + 101);
@@ -1647,6 +1649,8 @@ mod policy_group_tests {
         assert_ne!(first.id, second.id);
         assert_ne!(first.encryption_key, second.encryption_key);
         assert_ne!(first.generation, second.generation);
+        assert_eq!(first.carrier_id, first.generation);
+        assert_eq!(second.carrier_id, first.carrier_id);
         assert_eq!(first.id, recycled.id);
         assert_ne!(first.encryption_key, recycled.encryption_key);
         assert_ne!(first.generation, recycled.generation);

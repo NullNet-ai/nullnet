@@ -1,4 +1,4 @@
-//! Reconcile the host-wide guard for the shared metadata VXLAN.
+//! Reconcile the host-wide guard for group carrier VXLANs.
 use nullnet_grpc_lib::{
     NullnetGrpcInterface,
     nullnet_grpc::{AgentEvent, AgentVxlanEnvironmentFailed, agent_event::Event},

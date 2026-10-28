@@ -138,13 +138,16 @@ message PolicyHeartbeat {
   bytes server_epoch = 1;
 }
 
-message PolicyTransport {
+message GroupTransport {
   // Per-group XFRM identity and AES-256 key. Different active groups use
-  // different identities and keys even when they share one VXLAN device.
+  // different identities and keys even when they share a carrier VXLAN.
   uint32 id = 1;
   bytes encryption_key = 2;
   bool peer_container = 3;
   uint64 generation = 4;
+  // Standard ingress groups seed carriers; overflow groups are assigned to
+  // the least-loaded live carrier. Both endpoints receive the same identity.
+  uint64 carrier_id = 5;
 }
 
 // Both endpoints are prepared; the initiator may release held packets.
@@ -224,9 +227,9 @@ message VxlanSetup {
   // Set on the gateway's edge: forward tunnelled external-bound packets to the
   // internet (kernel ip_forward + MASQUERADE); the Cilium egress-gateway model.
   optional bool egress_intercept = 13;
-  // AES-256 key sent identically to both endpoints. Dedicated cross-host
-  // VXLANs share one XFRM/ESP carrier per host pair; policy groups carry
-  // their independently keyed transport in `policy_transport`.
+  // AES-256 key sent identically to both endpoints. Group ingress carries its
+  // independently keyed transport in `group_transport`; other VXLAN edges
+  // use this field directly.
   // Meaningless (placeholder zero bytes) when `encrypted` is false.
   bytes encryption_key = 14;
   // VXLAN UDP destination port (replaces the IANA-standard 4789 default).
@@ -237,9 +240,9 @@ message VxlanSetup {
   // `encryption_key` and sets up a bare vxlan/veth link with no XFRM
   // SA/policy or MACsec (see nullnet-client's commands/vxlan.rs).
   bool encrypted = 16;
-  PolicyTransport policy_transport = 17;
-  // Shared dedicated cross-host XFRM carrier. Policy groups use
-  // `policy_transport`; absent means legacy per-edge transport.
+  GroupTransport group_transport = 17;
+  // Shared dedicated cross-host XFRM carrier. Group ingress uses
+  // `group_transport`; absent means legacy per-edge transport.
   optional uint32 xfrm_transport_id = 18;
 }
 
@@ -258,7 +261,8 @@ message VxlanTeardown {
   // predates this field simply never acks, and the server frees on its grace
   // timer instead.
   optional MsgId msg_id = 8;
-  bool policy = 9;
+  // True when this endpoint uses the reusable group dataplane.
+  bool group = 9;
 }
 
 message MsgId {

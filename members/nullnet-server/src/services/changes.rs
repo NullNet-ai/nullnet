@@ -279,7 +279,7 @@ async fn teardown_chain(
                 ci.docker_container().cloned(),
                 replica_ip,
                 replica_docker,
-                ci.policy(),
+                ci.group_carrier().is_some(),
             )
         })
         .collect();
@@ -319,8 +319,7 @@ async fn teardown_chain(
     }
 
     let mut torn_down_net_ids = HashSet::new();
-    for (_, client_ip, net_id, client_docker, service_ip, service_docker, policy) in
-        &proxy_teardowns
+    for (_, client_ip, net_id, client_docker, service_ip, service_docker, group) in &proxy_teardowns
     {
         if !torn_down_net_ids.insert(*net_id) {
             continue; // already handled this net_id
@@ -338,7 +337,7 @@ async fn teardown_chain(
                     *service_ip,
                     service_docker.clone(),
                     *net_id,
-                    *policy,
+                    *group,
                 )
                 .await;
             if crate::routine_diagnostics() {

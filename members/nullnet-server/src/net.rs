@@ -1,7 +1,7 @@
 use crate::net_id_pool::DEFAULT_VXLAN_DSTPORT;
 use ipnetwork::Ipv4Network;
 use nullnet_grpc_lib::nullnet_grpc::{
-    HostMapping, MsgId, Net, NetMessage, PolicyTransport, VlanSetup, VlanTeardown, VxlanSetup,
+    GroupTransport, HostMapping, MsgId, Net, NetMessage, VlanSetup, VlanTeardown, VxlanSetup,
     VxlanTeardown, net_message,
 };
 use nullnet_liberror::{ErrorHandler, Location, location};
@@ -38,7 +38,7 @@ pub(crate) trait NetExt {
         dstport: Option<u32>,
         encrypted: bool,
         egress: EgressRole,
-        policy_transport: Option<PolicyTransport>,
+        group_transport: Option<GroupTransport>,
     ) -> Option<(Ipv4Addr, NetMessage)>;
 
     #[allow(clippy::too_many_arguments)]
@@ -51,7 +51,7 @@ pub(crate) trait NetExt {
         remote_ip: IpAddr,
         dstport: Option<u16>,
         msg_id: String,
-        policy: bool,
+        group: bool,
     ) -> NetMessage;
 }
 
@@ -70,7 +70,7 @@ impl NetExt for Net {
         dstport: Option<u32>,
         encrypted: bool,
         egress: EgressRole,
-        policy_transport: Option<PolicyTransport>,
+        group_transport: Option<GroupTransport>,
     ) -> Option<(Ipv4Addr, NetMessage)> {
         match self {
             Net::Vlan => vlan_setup(
@@ -95,7 +95,7 @@ impl NetExt for Net {
                 dstport.unwrap_or(u32::from(DEFAULT_VXLAN_DSTPORT)),
                 encrypted,
                 egress,
-                policy_transport,
+                group_transport,
             ),
         }
     }
@@ -109,7 +109,7 @@ impl NetExt for Net {
         remote_ip: IpAddr,
         dstport: Option<u16>,
         msg_id: String,
-        policy: bool,
+        group: bool,
     ) -> NetMessage {
         let msg_id = Some(MsgId { id: msg_id });
         match self {
@@ -129,7 +129,7 @@ impl NetExt for Net {
                     remote_ip: remote_ip.to_string(),
                     dstport: u32::from(dstport.unwrap_or(DEFAULT_VXLAN_DSTPORT)),
                     msg_id,
-                    policy,
+                    group,
                 })),
             },
         }
@@ -199,7 +199,7 @@ fn vxlan_setup(
     dstport: u32,
     encrypted: bool,
     egress: EgressRole,
-    policy_transport: Option<PolicyTransport>,
+    group_transport: Option<GroupTransport>,
 ) -> Option<(Ipv4Addr, NetMessage)> {
     // Map vxlan_id to a /29 block within 10.0.0.0/8.
     // Each ID gets 8 IPs (6 usable), with 4 IPs used for ns/br server/client.
@@ -280,7 +280,7 @@ fn vxlan_setup(
                 egress_steer,
                 egress_intercept,
                 encrypted,
-                policy_transport,
+                group_transport,
                 xfrm_transport_id,
             })),
         },

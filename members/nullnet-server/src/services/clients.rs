@@ -142,6 +142,7 @@ pub(crate) struct ClientInfo {
     created_at: SystemTime,
     docker_container: Option<String>,
     policy: bool,
+    group_carrier: Option<u64>,
     /// Set while the edge is reserved but not yet built. Everything that walks
     /// the graph — teardown, intactness, idle reaping — has to treat a
     /// reservation as *not an edge*, or it decrements a refcount it never
@@ -171,6 +172,7 @@ impl ClientInfo {
             created_at: SystemTime::now(),
             docker_container,
             policy: false,
+            group_carrier: None,
             pending: None,
         }
     }
@@ -191,6 +193,7 @@ impl ClientInfo {
             created_at: SystemTime::now(),
             docker_container: None,
             policy,
+            group_carrier: None,
             pending: Some(Arc::new(Notify::new())),
         }
     }
@@ -205,6 +208,14 @@ impl ClientInfo {
 
     pub(crate) fn policy(&self) -> bool {
         self.policy
+    }
+
+    pub(crate) fn set_group_carrier(&mut self, carrier: u64) {
+        self.group_carrier = Some(carrier);
+    }
+
+    pub(crate) fn group_carrier(&self) -> Option<u64> {
+        self.group_carrier
     }
 
     pub(crate) fn client_ip(&self) -> IpAddr {

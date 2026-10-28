@@ -58,9 +58,9 @@ pub struct PolicyHeartbeat {
     pub server_epoch: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct PolicyTransport {
+pub struct GroupTransport {
     /// Per-group XFRM identity and AES-256 key. Different active groups use
-    /// different identities and keys even when they share one VXLAN device.
+    /// different identities and keys even when they share a carrier VXLAN.
     #[prost(uint32, tag = "1")]
     pub id: u32,
     #[prost(bytes = "vec", tag = "2")]
@@ -69,6 +69,10 @@ pub struct PolicyTransport {
     pub peer_container: bool,
     #[prost(uint64, tag = "4")]
     pub generation: u64,
+    /// Standard ingress groups seed carriers; overflow groups are assigned to
+    /// the least-loaded live carrier. Both endpoints receive the same identity.
+    #[prost(uint64, tag = "5")]
+    pub carrier_id: u64,
 }
 /// Both endpoints are prepared; the initiator may release held packets.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -177,9 +181,9 @@ pub struct VxlanSetup {
     /// internet (kernel ip_forward + MASQUERADE); the Cilium egress-gateway model.
     #[prost(bool, optional, tag = "13")]
     pub egress_intercept: ::core::option::Option<bool>,
-    /// AES-256 key sent identically to both endpoints. Dedicated cross-host
-    /// VXLANs share one XFRM/ESP carrier per host pair; policy groups carry
-    /// their independently keyed transport in `policy_transport`.
+    /// AES-256 key sent identically to both endpoints. Group ingress carries its
+    /// independently keyed transport in `group_transport`; other VXLAN edges
+    /// use this field directly.
     /// Meaningless (placeholder zero bytes) when `encrypted` is false.
     #[prost(bytes = "vec", tag = "14")]
     pub encryption_key: ::prost::alloc::vec::Vec<u8>,
@@ -194,9 +198,9 @@ pub struct VxlanSetup {
     #[prost(bool, tag = "16")]
     pub encrypted: bool,
     #[prost(message, optional, tag = "17")]
-    pub policy_transport: ::core::option::Option<PolicyTransport>,
-    /// Shared dedicated cross-host XFRM carrier. Policy groups use
-    /// `policy_transport`; absent means legacy per-edge transport.
+    pub group_transport: ::core::option::Option<GroupTransport>,
+    /// Shared dedicated cross-host XFRM carrier. Group ingress uses
+    /// `group_transport`; absent means legacy per-edge transport.
     #[prost(uint32, optional, tag = "18")]
     pub xfrm_transport_id: ::core::option::Option<u32>,
 }
@@ -224,8 +228,9 @@ pub struct VxlanTeardown {
     /// timer instead.
     #[prost(message, optional, tag = "8")]
     pub msg_id: ::core::option::Option<MsgId>,
+    /// True when this endpoint uses the reusable group dataplane.
     #[prost(bool, tag = "9")]
-    pub policy: bool,
+    pub group: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MsgId {

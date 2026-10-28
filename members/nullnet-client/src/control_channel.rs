@@ -506,7 +506,7 @@ async fn handle_vxlan_setup(
     sets: LivenessSets,
     bridge_cache: BridgeIpCache,
 ) -> Result<(), Error> {
-    let policy_message = message.policy_transport.is_some().then(|| message.clone());
+    let group_message = message.group_transport.is_some().then(|| message.clone());
     let egress_steer = message.egress_steer.unwrap_or(false);
     let egress_intercept = message.egress_intercept.unwrap_or(false);
     let msg_id = &message
@@ -591,8 +591,8 @@ async fn handle_vxlan_setup(
             message.docker_container.clone()
         },
     };
-    let setup_result = if let Some(policy_message) = &policy_message {
-        crate::commands::policy::setup(policy_message, &rtnetlink_handle, &bridge_cache)
+    let setup_result = if let Some(group_message) = &group_message {
+        crate::commands::policy::setup(group_message, &rtnetlink_handle, &bridge_cache)
             .await
             .handle_err(location!())
     } else {
@@ -737,7 +737,7 @@ async fn handle_vxlan_setup(
             );
             return Err("gateway forwarding installation failed").handle_err(location!());
         }
-    } else if policy_message.is_none()
+    } else if group_message.is_none()
         && let Some(host_mapping) = &message.host_mapping
     {
         // Backend DNAT keeps the trigger address so each new flow remains
@@ -863,11 +863,11 @@ async fn handle_vxlan_teardown(
     bridge_cache: BridgeIpCache,
 ) {
     let ack_id = message.msg_id.clone();
-    let policy_cleanup_ok = if message.policy {
+    let group_cleanup_ok = if message.group {
         match crate::commands::policy::retire(&message.ns_name).await {
             Ok(_) => true,
             Err(error) => {
-                eprintln!("Policy revocation failed: {error}");
+                eprintln!("Group revocation failed: {error}");
                 false
             }
         }
@@ -875,8 +875,8 @@ async fn handle_vxlan_teardown(
         true
     };
     // reverse egress steering/interception if this was an egress edge
-    let mut local_cleanup_ok = policy_cleanup_ok;
-    if !message.policy
+    let mut local_cleanup_ok = group_cleanup_ok;
+    if !message.group
         && let Some(rec) = egress_state.take(message.vxlan_id)
     {
         match rec {
@@ -907,7 +907,7 @@ async fn handle_vxlan_teardown(
     // DNAT — its teardown runs via EgressState below — so skip DNAT removal for
     // it. Only real backend DNAT ports (>0) go through `dnat::remove`; otherwise
     // we'd fire a bogus `iptables -D --dport 0` and a false removal-failed event.
-    if !message.policy
+    if !message.group
         && let Some((container, port, overlay_ip, container_ip)) =
             triggers_state.remove_by_vxlan(message.vxlan_id)
         && port != crate::triggers::EGRESS_TRIGGER_PORT
@@ -952,7 +952,7 @@ async fn handle_vxlan_teardown(
         vxlan_id,
         ns_name: ns_name.clone(),
     };
-    let teardown_result = if message.policy {
+    let teardown_result = if message.group {
         Ok(())
     } else {
         crate::commands::vxlan::teardown(&rtnetlink_handle, &vxlan_params, &bridge_cache).await

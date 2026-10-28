@@ -584,7 +584,7 @@ impl RegisteredServiceInfo {
                             replica.ip,
                             replica.docker_container.clone(),
                             ci.net_id(),
-                            ci.policy(),
+                            ci.group_carrier().is_some(),
                         )
                         .await;
                 }
@@ -677,6 +677,24 @@ impl RegisteredServiceInfo {
             .flat_map(|r| r.clients.clients().iter())
             .filter(|(client, info)| client.is_proxy().is_some() && !info.policy())
             .count()
+    }
+
+    /// Least-loaded reusable ingress carrier on this proxy.
+    pub(crate) fn group_carrier(&self, proxy_ip: IpAddr) -> Option<u64> {
+        let mut carriers = HashMap::new();
+        for replica in &self.replicas {
+            for (client, info) in replica.clients.clients() {
+                if client.is_proxy() == Some(proxy_ip)
+                    && let Some(carrier) = info.group_carrier()
+                {
+                    *carriers.entry(carrier).or_insert(0usize) += 1;
+                }
+            }
+        }
+        carriers
+            .into_iter()
+            .min_by_key(|(carrier, users)| (*users, *carrier))
+            .map(|(carrier, _)| carrier)
     }
 
     /// Find the network with the fewest clients on this proxy.

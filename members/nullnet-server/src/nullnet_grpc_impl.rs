@@ -2419,7 +2419,7 @@ async fn setup_edge(
     // by (client, proxy) and dep clients by source replica, and a source
     // replica can only route to one replica of a given dep.
     let deadline = std::time::Instant::now() + EDGE_CLAIM_TIMEOUT;
-    let (server_ethernet, server_docker, server_resume, reservation) = loop {
+    let (server_ethernet, server_docker, server_resume, reservation, reserved_carrier) = loop {
         let waiting_on = {
             let mut services_guard = services.write().await;
             let Some(stack_map) = services_guard.get_mut(stack) else {
@@ -2446,12 +2446,18 @@ async fn setup_edge(
                     };
                     // Reserving takes the refcount too, so the slot is never
                     // visible at zero.
-                    if !reg.add_client_to_replica(
-                        ip,
-                        docker.as_deref(),
-                        client.clone(),
-                        ClientInfo::reservation(client_ethernet, policy),
-                    ) {
+                    let reserved_carrier = if policy {
+                        client
+                            .is_proxy()
+                            .and_then(|proxy_ip| reg.group_carrier(proxy_ip))
+                    } else {
+                        None
+                    };
+                    let mut info = ClientInfo::reservation(client_ethernet, policy);
+                    if let Some(carrier) = reserved_carrier {
+                        info.set_group_carrier(carrier);
+                    }
+                    if !reg.add_client_to_replica(ip, docker.as_deref(), client.clone(), info) {
                         return EdgeOutcome::Failed;
                     }
                     // Does the target replica need unpausing first?
@@ -2461,7 +2467,7 @@ async fn setup_edge(
                         .find(|r| r.matches_identity(ip, docker.as_deref()))
                         .and_then(|r| r.resume(orchestrator));
                     let reservation = reg.pending_notify(&client).expect("just reserved edge");
-                    break (ip, docker, resume, reservation);
+                    break (ip, docker, resume, reservation, reserved_carrier);
                 }
             }
         };
@@ -2526,11 +2532,16 @@ async fn setup_edge(
     }
 
     let encrypted = *ENCRYPTION_ENABLED;
-    let policy_transport = policy.then(|| orchestrator.policy_transport(net_id));
+    let group = encrypted
+        && *NET_TYPE == Net::Vxlan
+        && client.is_proxy().is_some()
+        && backend_entry_port.is_none()
+        && !egress;
+    let group_transport = group.then(|| orchestrator.group_transport(net_id, reserved_carrier));
     let xfrm_transport =
-        (!policy && encrypted && *NET_TYPE == Net::Vxlan && client_ethernet != server_ethernet)
+        (!group && encrypted && *NET_TYPE == Net::Vxlan && client_ethernet != server_ethernet)
             .then(|| orchestrator.xfrm_transport(client_ethernet, server_ethernet));
-    let encryption_key = if let Some(transport) = &policy_transport {
+    let encryption_key = if let Some(transport) = &group_transport {
         transport
             .encryption_key
             .as_slice()
@@ -2545,11 +2556,14 @@ async fn setup_edge(
     };
     let xfrm_transport_id = xfrm_transport.map(|(id, _)| id);
     let dstport = None;
-    let server_policy = policy_transport.clone().map(|mut transport| {
+    let group_carrier = group_transport
+        .as_ref()
+        .map(|transport| transport.carrier_id);
+    let server_group = group_transport.clone().map(|mut transport| {
         transport.peer_container = client_docker.is_some();
         transport
     });
-    let client_policy = policy_transport.map(|mut transport| {
+    let client_group = group_transport.map(|mut transport| {
         transport.peer_container = server_docker.is_some();
         transport
     });
@@ -2574,7 +2588,7 @@ async fn setup_edge(
             dstport,
             encrypted,
             server_egress,
-            server_policy,
+            server_group,
         )
         .await
     };
@@ -2600,7 +2614,7 @@ async fn setup_edge(
                 dstport,
                 encrypted,
                 client_egress,
-                client_policy,
+                client_group,
             )
             .await
     };
@@ -2612,7 +2626,7 @@ async fn setup_edge(
         && (backend_entry_port.is_some() || client_egress == EgressRole::Steer);
     let ready = if server_ok.is_none() || client_ok.is_none() {
         false
-    } else if policy {
+    } else if group {
         orchestrator.send_net_ready(server_ethernet, net_id).await
             && orchestrator.send_net_ready(client_ethernet, net_id).await
     } else {
@@ -2633,7 +2647,7 @@ async fn setup_edge(
                 server_ethernet,
                 server_docker.clone(),
                 net_id,
-                policy,
+                group,
             )
             .await;
         // remove placeholder
@@ -2687,6 +2701,9 @@ async fn setup_edge(
             if policy {
                 ci.set_policy();
             }
+            if let Some(carrier) = group_carrier {
+                ci.set_group_carrier(carrier);
+            }
             reg.add_client_to_replica(
                 server_ethernet,
                 server_docker.as_deref(),
@@ -2723,7 +2740,7 @@ async fn setup_edge(
                 server_ethernet,
                 server_docker,
                 net_id,
-                policy,
+                group,
             )
             .await;
         return EdgeOutcome::Failed;
