@@ -100,7 +100,6 @@ struct EntrySetupContext {
 
 struct ProxyReplica {
     ip: IpAddr,
-    port: u16,
     docker: Option<String>,
 }
 
@@ -726,13 +725,28 @@ impl NullnetGrpcImpl {
                     return None;
                 }
                 let network = reg.find_reusable_network_on_proxy(proxy_ip)?;
-                let (_, client_net, server_net, net_id, replica_ip, replica_docker, setup_ms) =
-                    &network;
+                let (
+                    upstream,
+                    client_net,
+                    server_net,
+                    net_id,
+                    replica_ip,
+                    replica_docker,
+                    setup_ms,
+                ) = &network;
                 reg.add_client_to_replica(
                     *replica_ip,
                     replica_docker.as_deref(),
                     proxy_client.clone(),
-                    ClientInfo::new(proxy_ip, *client_net, *server_net, *net_id, *setup_ms, None),
+                    ClientInfo::sharing_network(
+                        proxy_ip,
+                        *client_net,
+                        *server_net,
+                        *net_id,
+                        *setup_ms,
+                        None,
+                        upstream.pool_generation,
+                    ),
                 );
                 reg.add_chain(&proxy_client);
                 let dep_edges = collect_dep_chain_edges(
@@ -1050,10 +1064,22 @@ impl NullnetGrpcImpl {
             ChainOutcome::Built(None) | ChainOutcome::OwnerLost => return Ok(None),
         };
 
-        Ok(Some(Response::new(Upstream {
-            ip: upstream_ip.to_string(),
-            port: u32::from(request.replica.port),
-        })))
+        let proxy_client = Client::new(request.client_ip.to_string(), Some(request.proxy_ip));
+        let upstream = self
+            .services
+            .read()
+            .await
+            .get(request.stack)
+            .and_then(|stack_map| stack_map.get(request.service_name))
+            .and_then(|service| match service {
+                ServiceInfo::Registered(reg) => reg.is_client_setup(&proxy_client),
+                ServiceInfo::Unregistered(_) => None,
+            })
+            .ok_or("Proxy edge disappeared after setup")
+            .handle_err(location!())?;
+        debug_assert_eq!(upstream.ip, upstream_ip.to_string());
+
+        Ok(Some(Response::new(upstream)))
     }
 
     async fn pick_proxy_replica(
@@ -1076,7 +1102,6 @@ impl NullnetGrpcImpl {
             .handle_err(location!())?;
         Ok(ProxyReplica {
             ip: replica.ip(),
-            port: replica.port(),
             docker: replica.docker_container().map(String::from),
         })
     }

@@ -325,6 +325,8 @@ message ProxyRequest {
 message Upstream {
   string ip = 1;
   uint32 port = 2;
+  // Separates pooled sockets when an overlay address is reused by a new edge.
+  uint64 pool_generation = 3;
 }
 
 // Close half of the ingress open-connection count. Keyed on the *client*

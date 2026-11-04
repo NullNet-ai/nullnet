@@ -13,6 +13,11 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub(crate) struct ResolvedUpstream {
+    pub(crate) address: SocketAddr,
+    pub(crate) pool_generation: u64,
+}
+
 #[derive(Clone)]
 pub struct NullnetProxy {
     pub(crate) server: NullnetGrpcInterface,
@@ -51,6 +56,13 @@ impl NullnetProxy {
         &self,
         proxy_req: ProxyRequest,
     ) -> Result<SocketAddr, UpstreamError> {
+        self.resolve_upstream(proxy_req).await.map(|u| u.address)
+    }
+
+    pub(crate) async fn resolve_upstream(
+        &self,
+        proxy_req: ProxyRequest,
+    ) -> Result<ResolvedUpstream, UpstreamError> {
         routine_log!("requesting new upstream...");
         let service_name = proxy_req.service_name.clone();
         let response = match self.server.proxy(proxy_req).await {
@@ -86,7 +98,10 @@ impl NullnetProxy {
             u16::try_from(response.port).map_err(|e| UpstreamError::Failed(format!("{e:?}")))?;
         let upstream = SocketAddr::new(veth_ip, host_port);
 
-        Ok(upstream)
+        Ok(ResolvedUpstream {
+            address: upstream,
+            pool_generation: response.pool_generation,
+        })
     }
 }
 
