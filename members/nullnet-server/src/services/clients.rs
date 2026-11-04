@@ -96,11 +96,11 @@ impl Clients {
     /// The live overlay IP for `client`, or `None` while the edge is only
     /// reserved. A reservation names no network yet, so answering with one
     /// hands out an upstream for a tunnel that does not exist.
-    pub(super) fn is_client_setup(&self, client: &Client) -> Option<Ipv4Addr> {
+    pub(super) fn is_client_setup(&self, client: &Client) -> Option<(Ipv4Addr, u64)> {
         self.clients
             .get(client)
             .filter(|ci| ci.pending.is_none())
-            .map(|ci| ci.server_net)
+            .map(|ci| (ci.server_net, ci.pool_generation))
     }
 
     /// The handle to wait on when another task is already building this edge.
@@ -180,6 +180,7 @@ pub(crate) struct ClientInfo {
     client_net: Ipv4Addr,
     server_net: Ipv4Addr,
     net_id: u32,
+    pool_generation: u64,
     time_ms: u128,
     active_chains: usize,
     /// Front connections currently open through the proxy for this client.
@@ -208,11 +209,52 @@ impl ClientInfo {
         time_ms: u128,
         docker_container: Option<String>,
     ) -> Self {
+        Self::with_pool_generation(
+            client_ip,
+            client_net,
+            server_net,
+            net_id,
+            time_ms,
+            docker_container,
+            uuid::Uuid::new_v4().as_u128() as u64,
+        )
+    }
+
+    pub(crate) fn sharing_network(
+        client_ip: IpAddr,
+        client_net: Ipv4Addr,
+        server_net: Ipv4Addr,
+        net_id: u32,
+        time_ms: u128,
+        docker_container: Option<String>,
+        pool_generation: u64,
+    ) -> Self {
+        Self::with_pool_generation(
+            client_ip,
+            client_net,
+            server_net,
+            net_id,
+            time_ms,
+            docker_container,
+            pool_generation,
+        )
+    }
+
+    fn with_pool_generation(
+        client_ip: IpAddr,
+        client_net: Ipv4Addr,
+        server_net: Ipv4Addr,
+        net_id: u32,
+        time_ms: u128,
+        docker_container: Option<String>,
+        pool_generation: u64,
+    ) -> Self {
         Self {
             client_ip,
             client_net,
             server_net,
             net_id,
+            pool_generation,
             time_ms,
             active_chains: 0,
             open_connections: 0,
@@ -234,6 +276,7 @@ impl ClientInfo {
             client_net: Ipv4Addr::UNSPECIFIED,
             server_net: Ipv4Addr::UNSPECIFIED,
             net_id: 0,
+            pool_generation: 0,
             time_ms: 0,
             active_chains: 1,
             open_connections: 0,
@@ -284,6 +327,10 @@ impl ClientInfo {
 
     pub(crate) fn net_id(&self) -> u32 {
         self.net_id
+    }
+
+    pub(crate) fn pool_generation(&self) -> u64 {
+        self.pool_generation
     }
 
     pub(crate) fn time_ms(&self) -> u128 {
@@ -354,6 +401,38 @@ mod tests {
         let mut info = ClientInfo::reservation(ip, true);
         info.set_group_carrier(carrier);
         info
+    }
+
+    fn edge() -> ClientInfo {
+        ClientInfo::new(
+            IpAddr::from(Ipv4Addr::new(192, 0, 2, 1)),
+            Ipv4Addr::new(10, 0, 0, 3),
+            Ipv4Addr::new(10, 0, 0, 1),
+            1,
+            1,
+            None,
+        )
+    }
+
+    #[test]
+    fn fresh_edges_get_distinct_pool_generations() {
+        assert_ne!(edge().pool_generation(), edge().pool_generation());
+    }
+
+    #[test]
+    fn clients_sharing_a_network_share_its_pool_generation() {
+        let original = edge();
+        let shared = ClientInfo::sharing_network(
+            original.client_ip(),
+            original.client_net(),
+            original.server_net(),
+            original.net_id(),
+            original.time_ms(),
+            None,
+            original.pool_generation(),
+        );
+
+        assert_eq!(original.pool_generation(), shared.pool_generation());
     }
 
     #[test]

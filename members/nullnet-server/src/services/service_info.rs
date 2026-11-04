@@ -738,6 +738,7 @@ impl RegisteredServiceInfo {
             Upstream {
                 ip: server_net.to_string(),
                 port: u32::from(replica.port),
+                pool_generation: info.pool_generation(),
             },
             client_net,
             server_net,
@@ -813,10 +814,11 @@ impl RegisteredServiceInfo {
 
     pub(crate) fn is_client_setup(&self, client: &Client) -> Option<Upstream> {
         for replica in &self.replicas {
-            if let Some(server_net) = replica.clients.is_client_setup(client) {
+            if let Some((server_net, pool_generation)) = replica.clients.is_client_setup(client) {
                 return Some(Upstream {
                     ip: server_net.to_string(),
                     port: u32::from(replica.port),
+                    pool_generation,
                 });
             }
         }

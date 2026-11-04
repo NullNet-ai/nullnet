@@ -39,6 +39,7 @@ All Nullnet releases with the relative changes are documented in this file.
 - Install BPF linker as a prebuilt binary rather than compiling it from source ([#158](https://github.com/NullNet-ai/nullnet/pull/158))
 ### Removed
 ### Fixed
+- Prevent recycled overlay addresses from reusing pooled upstream TCP connections from an earlier edge generation ([#220](https://github.com/NullNet-ai/nullnet/pull/220)).
 - Limit group policy routing to active overlay peers so protected containers retain their existing private-network routes ([#217](https://github.com/NullNet-ai/nullnet/pull/217)).
 - Keep teardown control-channel backpressure outside topology locks ([#199](https://github.com/NullNet-ai/nullnet/pull/199))
 - Decouple session history writes from network setup and teardown with bounded asynchronous persistence and visible failure recovery ([#199](https://github.com/NullNet-ai/nullnet/pull/199))

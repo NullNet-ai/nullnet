@@ -18,7 +18,7 @@ mod tcp_relay;
 mod tls;
 mod udp_relay;
 
-use crate::nullnet_proxy::{NullnetProxy, UpstreamError, send_close};
+use crate::nullnet_proxy::{NullnetProxy, ResolvedUpstream, UpstreamError, send_close};
 use crate::routes::{Resolution, RouteMatch, RouteTable};
 use crate::tls::{CertStore, TlsResolver};
 use arc_swap::ArcSwap;
@@ -41,6 +41,12 @@ use std::thread;
 
 const PROXY_PORT: u16 = 80;
 const HTTPS_PROXY_PORT: u16 = 443;
+
+fn pooled_http_peer(upstream: ResolvedUpstream) -> HttpPeer {
+    let mut peer = HttpPeer::new(upstream.address, false, String::new());
+    peer.group_key = upstream.pool_generation;
+    peer
+}
 
 /// Per-request state threaded from `request_filter` to `upstream_peer`/
 /// `upstream_request_filter`.
@@ -331,7 +337,7 @@ impl ProxyHttp for NullnetProxy {
             ..Default::default()
         };
         routine_log!("{proxy_req:?}");
-        let upstream = match self.get_or_add_upstream(proxy_req).await {
+        let upstream = match self.resolve_upstream(proxy_req).await {
             Ok(u) => {
                 if ctx.counted {
                     // A retry. Pingora re-enters this function, and *every*
@@ -388,13 +394,13 @@ impl ProxyHttp for NullnetProxy {
             }
         };
         #[cfg(debug_assertions)]
-        println!("upstream: {upstream}\n");
+        println!("upstream: {}\n", upstream.address);
         #[cfg(debug_assertions)]
         println!(
             "TOTAL VLANS SETUP TIME: {} ms\n",
             init_t.elapsed().as_millis()
         );
-        Ok(Box::new(HttpPeer::new(upstream, false, String::new())))
+        Ok(Box::new(pooled_http_peer(upstream)))
     }
 
     async fn upstream_request_filter(
@@ -703,12 +709,33 @@ async fn watch_certificates(server: NullnetGrpcInterface, store: Arc<ArcSwap<Cer
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pingora_core::upstreams::peer::Peer;
 
     /// Build a minimal GET request with the given Host header and target URI.
     fn req(host: &str, uri: &str) -> RequestHeader {
         let mut req = RequestHeader::build("GET", uri.as_bytes(), None).unwrap();
         req.insert_header("host", host).unwrap();
         req
+    }
+
+    #[test]
+    fn overlay_generation_separates_upstream_pool_keys() {
+        let address = "10.0.0.2:9000".parse().unwrap();
+        let old = pooled_http_peer(ResolvedUpstream {
+            address,
+            pool_generation: 41,
+        });
+        let same_edge = pooled_http_peer(ResolvedUpstream {
+            address,
+            pool_generation: 41,
+        });
+        let recycled_address = pooled_http_peer(ResolvedUpstream {
+            address,
+            pool_generation: 42,
+        });
+
+        assert_eq!(old.reuse_hash(), same_edge.reuse_hash());
+        assert_ne!(old.reuse_hash(), recycled_address.reuse_hash());
     }
 
     #[test]

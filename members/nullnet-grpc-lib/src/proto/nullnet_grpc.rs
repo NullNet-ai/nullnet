@@ -318,6 +318,9 @@ pub struct Upstream {
     pub ip: ::prost::alloc::string::String,
     #[prost(uint32, tag = "2")]
     pub port: u32,
+    /// Separates pooled sockets when an overlay address is reused by a new edge.
+    #[prost(uint64, tag = "3")]
+    pub pool_generation: u64,
 }
 /// Close half of the ingress open-connection count. Keyed on the *client*
 /// identity, not the resolved upstream: under max_networks/sticky reuse many
