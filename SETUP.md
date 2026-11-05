@@ -37,6 +37,36 @@ The repository should be cloned under `/root` so the provided `setup-*.sh` scrip
 `.service` units work without changes.
 Run the setup scripts as root. The supplied systemd services also run as root; privileged commands execute directly without sudo.
 
+## Upgrades
+
+Keep `setup-*.sh` for initial host provisioning. For an upgrade, run `prepare.sh` on every node. It
+fast-forwards to `origin/main`, backs up the current deployment, and builds every active Nullnet
+component without restarting it:
+
+```
+./prepare.sh
+```
+
+Only after preparation succeeds everywhere, run `deploy.sh` on all nodes together. It only
+restarts the components recorded during preparation:
+
+```
+./deploy.sh
+```
+
+Runtime `.env` files, certificates, service definitions, graphs, and the database are left in
+place. `prepare.sh` saves the current commit and binaries under `/opt/nullnet/previous`. When server
+migrations changed, it also creates a verified online SQLite backup there. Run `./rollback.sh` to
+restore the commit and binaries, plus the database when it was backed up. Database writes made
+after that backup are discarded by rollback. Repeating a successful prepare, deploy, or rollback
+is a no-op; retrying a failed preparation reuses its original pre-deployment backup. All three
+scripts take no arguments.
+
+Starting the nodes together shortens but does not eliminate the mixed-revision window. An
+unexpected service restart after preparation can also start its new on-disk binary early. Adjacent
+revisions must therefore remain wire-compatible; otherwise, split the protocol change into
+backward-compatible stages.
+
 ## Usage
 
 ### nullnet-server

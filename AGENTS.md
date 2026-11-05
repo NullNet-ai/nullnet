@@ -79,6 +79,7 @@ A change that is invisible when it misbehaves is not finished.
   Otherwise, the event is emitted and silently never shown.
 - Update `SETUP.md` when the change alters set up and configuration,
   but only include the essential info without being verbose.
+- Check whether the change requires corresponding updates to `prepare.sh`, `deploy.sh`, or `rollback.sh`.
 - Update `CHANGELOG.md` with a one-line description of the change, following the existing format,
   and including a link to the PR and the issue it fixes (if any).
 
