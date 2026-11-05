@@ -270,7 +270,7 @@ message MsgId {
 }
 
 // Raw local observations a client reports; the server joins them against the
-// match keys in services/<stack>.toml. One observation may match many services.
+// match keys in the stack configuration. One observation may match many services.
 message ServiceReport {
   repeated Container containers = 1;
   repeated Listener listeners = 2;

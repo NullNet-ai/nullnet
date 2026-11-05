@@ -14,6 +14,14 @@ STATE=$ROOT/state
   exit 1
 }
 
+if [[ ${NULLNET_DEPLOY_ACTIVE:-} != 1 ]]; then
+  systemd-run --quiet --unit=nullnet-deploy --collect \
+    --setenv=NULLNET_DEPLOY_ACTIVE=1 "$REPO/deploy.sh"
+  echo "Deployment started; it will continue if SSH disconnects"
+  echo "Status: journalctl -u nullnet-deploy --no-pager"
+  exit 0
+fi
+
 exec 9>"$ROOT/deploy.lock"
 flock -n 9 || { echo "Another deployment command is running" >&2; exit 1; }
 
@@ -27,7 +35,8 @@ git -C "$REPO" cat-file -e "$target^{commit}"
   echo "Repository is not at the prepared commit; run prepare.sh again" >&2
   exit 1
 }
-declare -a units=()
+declare -a first_units=()
+restart_client=false
 
 already_active=true
 for component in "${components[@]}"; do
@@ -42,7 +51,11 @@ for component in "${components[@]}"; do
       echo "Prepared binary is missing or changed: nullnet-$component" >&2
       exit 1
     }
-  units+=("nullnet-$component.service")
+  if [[ $component == client ]]; then
+    restart_client=true
+  else
+    first_units+=("nullnet-$component.service")
+  fi
   if [[ ! -f $STATE/$component ]] ||
     [[ $(<"$STATE/$component") != "$target" ]] ||
     ! systemctl is-active --quiet "nullnet-$component.service"; then
@@ -62,12 +75,22 @@ if $already_active; then
   exit 0
 fi
 
-echo "Restarting: ${components[*]}"
-systemctl restart "${units[@]}"
-sleep 3
+if ((${#first_units[@]})); then
+  echo "Restarting: ${first_units[*]}"
+  systemctl restart "${first_units[@]}"
+  sleep 3
+  for unit in "${first_units[@]}"; do
+    systemctl is-active --quiet "$unit"
+  done
+fi
+if $restart_client; then
+  echo "Restarting: nullnet-client.service"
+  systemctl restart nullnet-client.service
+  sleep 3
+  systemctl is-active --quiet nullnet-client.service
+fi
 mkdir -p "$STATE"
 for component in "${components[@]}"; do
-  systemctl is-active --quiet "nullnet-$component.service"
   printf '%s\n' "$target" >"$STATE/$component"
 done
 echo "active at ${target:0:12}"

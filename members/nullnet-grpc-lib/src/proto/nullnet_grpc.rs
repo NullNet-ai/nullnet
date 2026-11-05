@@ -238,7 +238,7 @@ pub struct MsgId {
     pub id: ::prost::alloc::string::String,
 }
 /// Raw local observations a client reports; the server joins them against the
-/// match keys in services/<stack>.toml. One observation may match many services.
+/// match keys in the stack configuration. One observation may match many services.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServiceReport {
     #[prost(message, repeated, tag = "1")]

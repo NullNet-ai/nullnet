@@ -1,16 +1,25 @@
+#[cfg(any(debug_assertions, test))]
 use crate::env::NET_TYPE;
 use crate::orchestrator::EgressEdgeInfo;
+#[cfg(any(debug_assertions, test))]
 use crate::services::clients::ClientInfo;
+#[cfg(debug_assertions)]
 use crate::services::input::StackMap;
 use crate::services::service_info::ServiceInfo;
+#[cfg(any(debug_assertions, test))]
 use nullnet_liberror::{ErrorHandler, Location, location};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
+#[cfg(any(debug_assertions, test))]
 use std::fmt::Write;
 use std::net::IpAddr;
+#[cfg(debug_assertions)]
 use std::path::{Path, PathBuf};
+#[cfg(debug_assertions)]
 use std::sync::Arc;
+#[cfg(debug_assertions)]
 use std::time::Duration;
+#[cfg(debug_assertions)]
 use tokio::sync::RwLock;
 
 // ---------------------------------------------------------------------------
@@ -44,6 +53,7 @@ fn initiators(
 // Graphviz dot output
 // ---------------------------------------------------------------------------
 
+#[cfg(any(debug_assertions, test))]
 pub(crate) fn render_graphviz(services: &HashMap<String, ServiceInfo>) -> String {
     let mut entries: Vec<_> = services.iter().collect();
     entries.sort_by_key(|(name, _)| *name);
@@ -82,8 +92,10 @@ pub(crate) fn render_graphviz(services: &HashMap<String, ServiceInfo>) -> String
     graphviz
 }
 
+#[cfg(debug_assertions)]
 const GRAPHS_DIR: &str = "./graphs";
 
+#[cfg(debug_assertions)]
 pub(crate) async fn generate_graphviz(services: Arc<RwLock<StackMap>>) {
     let mut previously_written: HashSet<PathBuf> = HashSet::new();
     loop {
@@ -112,6 +124,7 @@ pub(crate) async fn generate_graphviz(services: Arc<RwLock<StackMap>>) {
     }
 }
 
+#[cfg(any(debug_assertions, test))]
 impl ServiceInfo {
     fn graphviz_label(
         &self,
@@ -153,6 +166,7 @@ impl ServiceInfo {
     }
 }
 
+#[cfg(any(debug_assertions, test))]
 impl ClientInfo {
     fn graphviz_edge_label(&self, show_ends: bool) -> String {
         let client_br = self.client_net();
