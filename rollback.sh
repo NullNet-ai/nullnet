@@ -14,6 +14,14 @@ STATE=$ROOT/state
   exit 1
 }
 
+if [[ ${NULLNET_ROLLBACK_ACTIVE:-} != 1 ]]; then
+  systemd-run --quiet --unit=nullnet-rollback --collect \
+    --setenv=NULLNET_ROLLBACK_ACTIVE=1 "$REPO/rollback.sh"
+  echo "Rollback started; it will continue if SSH disconnects"
+  echo "Status: journalctl -u nullnet-rollback --no-pager"
+  exit 0
+fi
+
 exec 9>"$ROOT/deploy.lock"
 flock -n 9 || { echo "Another deployment command is running" >&2; exit 1; }
 
@@ -26,13 +34,19 @@ git -C "$REPO" cat-file -e "$target^{commit}"
 
 already_rolled_back=true
 [[ $(git -C "$REPO" rev-parse 'HEAD^{commit}') == "$commit" ]] || already_rolled_back=false
-declare -a units=()
+declare -a units=() first_units=()
+restart_client=false
 for component in "${components[@]}"; do
   case "$component" in
     server | proxy | client) ;;
     *) echo "Invalid backup component: $component" >&2; exit 1 ;;
   esac
   units+=("nullnet-$component.service")
+  if [[ $component == client ]]; then
+    restart_client=true
+  else
+    first_units+=("nullnet-$component.service")
+  fi
   binary="$BACKUP/bin/nullnet-$component"
   live_binary="$REPO/target/release/nullnet-$component"
   if [[ ! -x $binary || ! -x $live_binary ]] || ! cmp -s "$binary" "$live_binary" ||
@@ -78,19 +92,27 @@ if [[ -n ${database:-} ]]; then
   systemctl stop "${units[@]}"
   install -m 600 "$BACKUP/database" "$database"
   rm -f "$database-wal" "$database-shm"
+  action=start
+else
+  action=restart
 fi
 
-if [[ -n ${database:-} ]]; then
-  echo "Starting: ${components[*]}"
-  systemctl start "${units[@]}"
-else
-  echo "Restarting: ${components[*]}"
-  systemctl restart "${units[@]}"
+if ((${#first_units[@]})); then
+  echo "${action^}: ${first_units[*]}"
+  systemctl "$action" "${first_units[@]}"
+  sleep 3
+  for unit in "${first_units[@]}"; do
+    systemctl is-active --quiet "$unit"
+  done
 fi
-sleep 3
+if $restart_client; then
+  echo "${action^}: nullnet-client.service"
+  systemctl "$action" nullnet-client.service
+  sleep 3
+  systemctl is-active --quiet nullnet-client.service
+fi
 mkdir -p "$STATE"
 for component in "${components[@]}"; do
-  systemctl is-active --quiet "nullnet-$component.service"
   printf '%s\n' "$commit" >"$STATE/$component"
 done
 echo "rolled back to ${commit:0:12}"

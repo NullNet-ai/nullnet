@@ -48,13 +48,17 @@ component without restarting it:
 ```
 
 Only after preparation succeeds everywhere, run `deploy.sh` on all nodes together. It only
-restarts the components recorded during preparation:
+restarts the components recorded during preparation, with the client last:
 
 ```
 ./deploy.sh
 ```
 
-Runtime `.env` files, certificates, service definitions, graphs, and the database are left in
+Activation continues under systemd if restarting Nullnet disconnects SSH. Reconnect and run
+`journalctl -u nullnet-deploy --no-pager` to see the result. Rollback behaves the same way under
+`nullnet-rollback`.
+
+Runtime `.env` files, certificates, service definitions, and the database are left in
 place. `prepare.sh` saves the current commit and binaries under `/opt/nullnet/previous`. When server
 migrations changed, it also creates a verified online SQLite backup there. Run `./rollback.sh` to
 restore the commit and binaries, plus the database when it was backed up. Database writes made
@@ -369,7 +373,7 @@ backward-compatible stages.
   ./setup-server.sh
   ```
 
-- the server regularly renders one Graphviz file per stack under
+- debug builds regularly render one Graphviz file per stack under
   `members/nullnet-server/graphs/<stack>.dot`
 
 ***
@@ -405,7 +409,7 @@ backward-compatible stages.
 - for services declared with `protocol = "tcp"` or `"udp"` in the server's stack config, the proxy
   also opens a raw listener on each `listen_port` and forwards traffic to the matching service —
   no `Host` header involved. This table is pushed live by the server, so listeners open and close
-  as `services/<stack>.toml` changes, without a proxy restart
+  as service configuration changes, without a proxy restart
 
 ***
 

@@ -4,6 +4,7 @@ use crate::env::{
     INGRESS_ALLOW_UDP_PORTS, NET_TYPE, PROXY_IP,
 };
 use crate::events::Event;
+#[cfg(debug_assertions)]
 use crate::graphviz::generate_graphviz;
 use crate::net::EgressRole;
 use crate::net_id_pool::generate_key;
@@ -340,11 +341,13 @@ impl NullnetGrpcImpl {
         let match_index = Arc::new(RwLock::new(index));
         let routes = Arc::new(RwLock::new(route_map));
 
-        // regenerate the service graphviz periodically for debugging
-        let services_2 = services.clone();
-        tokio::spawn(async move {
-            generate_graphviz(services_2).await;
-        });
+        #[cfg(debug_assertions)]
+        {
+            let services_2 = services.clone();
+            tokio::spawn(async move {
+                generate_graphviz(services_2).await;
+            });
+        }
 
         // Conflicts detected before the event store existed: the offending
         // stacks were dropped, so report them now that we can.
