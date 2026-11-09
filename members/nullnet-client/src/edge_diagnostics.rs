@@ -1,6 +1,7 @@
 use crate::commands::RtNetLinkHandle;
 use crate::commands::endpoint_namespace::{LinkSnapshot, NamespaceSnapshot, NeighbourSignal};
 use crate::commands::native_macsec::MacsecSnapshot;
+use crate::commands::native_xfrm::{XfrmSnapshot, XfrmStateSnapshot};
 use crate::commands::vxlan::{EdgeTransportSnapshot, TransportEndpointSnapshot};
 use crate::nfqueue::{BridgeIpCache, EdgeDiagnosticContext};
 use nullnet_grpc_lib::NullnetGrpcInterface;
@@ -154,6 +155,20 @@ fn creation_baseline(snapshot: &EdgeSnapshot) -> EdgeSnapshot {
                     }),
                 })
                 .collect(),
+            underlay: None,
+            xfrm: snapshot.transport.xfrm.as_ref().map(|xfrm| {
+                xfrm.as_ref()
+                    .map(|xfrm| XfrmSnapshot {
+                        transport_id: xfrm.transport_id,
+                        scope: xfrm.scope,
+                        owner_count: xfrm.owner_count,
+                        outbound_policy: true,
+                        inbound_policy: true,
+                        outbound: xfrm.outbound.as_ref().map(zero_xfrm).map_err(Clone::clone),
+                        inbound: xfrm.inbound.as_ref().map(zero_xfrm).map_err(Clone::clone),
+                    })
+                    .map_err(Clone::clone)
+            }),
         },
         interface_index: snapshot.interface_index,
         neighbor_mac: snapshot.neighbor_mac.clone(),
@@ -161,9 +176,24 @@ fn creation_baseline(snapshot: &EdgeSnapshot) -> EdgeSnapshot {
     }
 }
 
+fn zero_xfrm(state: &XfrmStateSnapshot) -> XfrmStateSnapshot {
+    XfrmStateSnapshot {
+        spi: state.spi,
+        source: state.source,
+        destination: state.destination,
+        bytes: 0,
+        packets: 0,
+        sequence: state.sequence.map(|_| 0),
+        replay_window_errors: 0,
+        replay_errors: 0,
+        integrity_failed: 0,
+    }
+}
+
 fn zero_link(link: &LinkSnapshot) -> LinkSnapshot {
     LinkSnapshot {
         name: link.name.clone(),
+        mtu: link.mtu,
         carrier: link.carrier,
         operstate: link.operstate.clone(),
         ..LinkSnapshot::default()
@@ -213,6 +243,143 @@ fn log_snapshot(
             endpoint,
         );
     }
+    if after_snapshot.transport.endpoints.is_empty() {
+        eprintln!(
+            "[edge] {phase} snapshot transport: net_id={net_id} placement={} snapshot_error=active_transport_missing",
+            after_snapshot.transport.placement
+        );
+    }
+    log_underlay(
+        phase,
+        net_id,
+        baseline_name,
+        before.and_then(|snapshot| snapshot.transport.underlay.as_ref()),
+        after_snapshot.transport.underlay.as_ref(),
+    );
+    log_xfrm(
+        phase,
+        net_id,
+        baseline_name,
+        before.and_then(|snapshot| snapshot.transport.xfrm.as_ref()),
+        after_snapshot.transport.xfrm.as_ref(),
+    );
+}
+
+fn log_underlay(
+    phase: &str,
+    net_id: u32,
+    baseline_name: &str,
+    before: Option<&Result<crate::commands::endpoint_namespace::PathSnapshot, String>>,
+    after: Option<&Result<crate::commands::endpoint_namespace::PathSnapshot, String>>,
+) {
+    let Some(after) = after else { return };
+    let Ok(after) = after else {
+        eprintln!(
+            "[edge] {phase} snapshot underlay: net_id={net_id} snapshot_error={}",
+            after.as_ref().unwrap_err()
+        );
+        return;
+    };
+    let before = before.and_then(|snapshot| snapshot.as_ref().ok());
+    eprintln!(
+        "[edge] {phase} snapshot underlay: net_id={net_id} baseline={} destination={} route_oif={} route_source={} route_gateway={} neighbor={} neighbor_state={} neighbor_mac={} neighbor_probes={} {}",
+        baseline(before.is_some(), baseline_name),
+        after.destination,
+        after.route_oif,
+        option(after.route_source),
+        option(after.route_gateway),
+        after.neighbor,
+        after.neighbor_state,
+        after
+            .neighbor_mac
+            .as_deref()
+            .map(format_mac)
+            .unwrap_or_else(|| "none".to_string()),
+        option(after.neighbor_probes),
+        link_delta(before.map(|snapshot| &snapshot.link), &after.link),
+    );
+}
+
+fn log_xfrm(
+    phase: &str,
+    net_id: u32,
+    baseline_name: &str,
+    before: Option<&Result<XfrmSnapshot, String>>,
+    after: Option<&Result<XfrmSnapshot, String>>,
+) {
+    let Some(after) = after else { return };
+    let Ok(after) = after else {
+        eprintln!(
+            "[edge] {phase} snapshot xfrm: net_id={net_id} snapshot_error={}",
+            after.as_ref().unwrap_err()
+        );
+        return;
+    };
+    let before = before.and_then(|snapshot| snapshot.as_ref().ok());
+    eprintln!(
+        "[edge] {phase} snapshot xfrm: net_id={net_id} baseline={} transport_id={} scope={} owner_count={} outbound_policy={} inbound_policy={}",
+        baseline(before.is_some(), baseline_name),
+        after.transport_id,
+        after.scope,
+        after.owner_count,
+        after.outbound_policy,
+        after.inbound_policy,
+    );
+    log_xfrm_state(
+        phase,
+        net_id,
+        "outbound",
+        baseline_name,
+        before.and_then(|snapshot| snapshot.outbound.as_ref().ok()),
+        &after.outbound,
+    );
+    log_xfrm_state(
+        phase,
+        net_id,
+        "inbound",
+        baseline_name,
+        before.and_then(|snapshot| snapshot.inbound.as_ref().ok()),
+        &after.inbound,
+    );
+}
+
+fn log_xfrm_state(
+    phase: &str,
+    net_id: u32,
+    direction: &str,
+    baseline_name: &str,
+    before: Option<&XfrmStateSnapshot>,
+    after: &Result<XfrmStateSnapshot, String>,
+) {
+    let Ok(after) = after else {
+        eprintln!(
+            "[edge] {phase} snapshot xfrm: net_id={net_id} direction={direction} state_error={}",
+            after.as_ref().unwrap_err()
+        );
+        return;
+    };
+    eprintln!(
+        "[edge] {phase} snapshot xfrm: net_id={net_id} direction={direction} baseline={} spi={:#010x} source={} destination={} bytes={} packets={} sequence={} replay_window_errors={} replay_errors={} integrity_failed={}",
+        baseline(before.is_some(), baseline_name),
+        after.spi,
+        after.source,
+        after.destination,
+        counter(before.map(|state| state.bytes), after.bytes),
+        counter(before.map(|state| state.packets), after.packets),
+        optional_counter(before.and_then(|state| state.sequence), after.sequence),
+        counter(
+            before.map(|state| u64::from(state.replay_window_errors)),
+            u64::from(after.replay_window_errors)
+        ),
+        counter(
+            before.map(|state| u64::from(state.replay_errors)),
+            u64::from(after.replay_errors)
+        ),
+        counter(
+            before.map(|state| u64::from(state.integrity_failed)),
+            u64::from(after.integrity_failed)
+        ),
+    );
 }
 
 fn log_transport_endpoint(
@@ -322,8 +489,9 @@ fn option(value: Option<impl Display>) -> String {
 
 fn link_delta(before: Option<&LinkSnapshot>, after: &LinkSnapshot) -> String {
     format!(
-        "link={} carrier={} operstate={} rx_packets={} tx_packets={} rx_errors={} tx_errors={} rx_dropped={} tx_dropped={}",
+        "link={} mtu={} carrier={} operstate={} rx_packets={} tx_packets={} rx_errors={} tx_errors={} rx_dropped={} tx_dropped={}",
         after.name,
+        option(after.mtu),
         option(after.carrier),
         after.operstate,
         counter(before.map(|value| value.rx_packets), after.rx_packets),
@@ -341,6 +509,12 @@ fn counter(before: Option<u64>, after: u64) -> String {
         Some(before) => format!("{before}->{after}(reset)"),
         None => format!("{after}(delta=unavailable)"),
     }
+}
+
+fn optional_counter(before: Option<u64>, after: Option<u64>) -> String {
+    after
+        .map(|after| counter(before, after))
+        .unwrap_or_else(|| "none".to_string())
 }
 
 fn sci(value: Option<u64>) -> String {

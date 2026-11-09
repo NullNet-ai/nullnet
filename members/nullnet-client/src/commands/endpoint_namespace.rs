@@ -3,6 +3,7 @@ use super::native_netlink::blocking;
 use futures::{StreamExt, TryStreamExt};
 use netlink_sys::{Socket, SocketAddr, TokioSocket};
 use rtnetlink::packet_core::NetlinkPayload;
+use rtnetlink::packet_route::AddressFamily;
 use rtnetlink::packet_route::RouteNetlinkMessage;
 use rtnetlink::packet_route::link::LinkAttribute;
 use rtnetlink::packet_route::neighbour::{NeighbourAddress, NeighbourAttribute, NeighbourState};
@@ -37,6 +38,7 @@ type NeighbourObserver = (String, UnboundedSender<NeighbourSignal>);
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct LinkSnapshot {
     pub(crate) name: String,
+    pub(crate) mtu: Option<u32>,
     pub(crate) carrier: Option<u8>,
     pub(crate) operstate: String,
     pub(crate) rx_packets: u64,
@@ -53,6 +55,26 @@ pub(crate) struct NamespaceSnapshot {
     pub(crate) route_oif: Option<u32>,
     pub(crate) route_source: Option<Ipv4Addr>,
     pub(crate) route_gateway: Option<Ipv4Addr>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PathSnapshot {
+    pub(crate) link: LinkSnapshot,
+    pub(crate) destination: Ipv4Addr,
+    pub(crate) route_oif: u32,
+    pub(crate) route_source: Option<Ipv4Addr>,
+    pub(crate) route_gateway: Option<Ipv4Addr>,
+    pub(crate) neighbor: Ipv4Addr,
+    pub(crate) neighbor_state: String,
+    pub(crate) neighbor_mac: Option<Vec<u8>>,
+    pub(crate) neighbor_probes: Option<u32>,
+}
+
+#[derive(Default)]
+struct RouteSnapshot {
+    oif: Option<u32>,
+    source: Option<Ipv4Addr>,
+    gateway: Option<Ipv4Addr>,
 }
 
 pub(crate) struct EndpointNamespace {
@@ -94,32 +116,13 @@ impl EndpointNamespace {
         interface_index: u32,
     ) -> Result<NamespaceSnapshot, String> {
         let link = link_snapshot(&self.handle, interface_index).await?;
-        let route = RouteMessageBuilder::<Ipv4Addr>::new()
-            .destination_prefix(destination, 32)
-            .build();
-        let mut routes = self.handle.route().get(route).execute();
-        let route = routes
-            .try_next()
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("route to {destination} missing"))?;
-        let mut snapshot = NamespaceSnapshot {
+        let route = route_snapshot(&self.handle, destination).await?;
+        Ok(NamespaceSnapshot {
             link,
-            ..NamespaceSnapshot::default()
-        };
-        for attribute in route.attributes {
-            match attribute {
-                RouteAttribute::Oif(index) => snapshot.route_oif = Some(index),
-                RouteAttribute::PrefSource(RouteAddress::Inet(ip)) => {
-                    snapshot.route_source = Some(ip);
-                }
-                RouteAttribute::Gateway(RouteAddress::Inet(ip)) => {
-                    snapshot.route_gateway = Some(ip);
-                }
-                _ => {}
-            }
-        }
-        Ok(snapshot)
+            route_oif: route.oif,
+            route_source: route.source,
+            route_gateway: route.gateway,
+        })
     }
 
     pub(crate) async fn container(
@@ -209,6 +212,7 @@ pub(crate) async fn link_snapshot(handle: &Handle, index: u32) -> Result<LinkSna
     for attribute in link.attributes {
         match attribute {
             LinkAttribute::IfName(name) => snapshot.name = name,
+            LinkAttribute::Mtu(mtu) => snapshot.mtu = Some(mtu),
             LinkAttribute::Carrier(carrier) => snapshot.carrier = Some(carrier),
             LinkAttribute::OperState(state) => snapshot.operstate = format!("{state:?}"),
             LinkAttribute::Stats64(stats) => {
@@ -219,6 +223,84 @@ pub(crate) async fn link_snapshot(handle: &Handle, index: u32) -> Result<LinkSna
                 snapshot.rx_dropped = stats.rx_dropped;
                 snapshot.tx_dropped = stats.tx_dropped;
             }
+            _ => {}
+        }
+    }
+    Ok(snapshot)
+}
+
+pub(crate) async fn path_snapshot(
+    handle: &Handle,
+    destination: Ipv4Addr,
+) -> Result<PathSnapshot, String> {
+    let route = route_snapshot(handle, destination).await?;
+    let route_oif = route
+        .oif
+        .ok_or_else(|| format!("route to {destination} has no output interface"))?;
+    let link = link_snapshot(handle, route_oif).await?;
+    let target = route.gateway.unwrap_or(destination);
+    let mut neighbours = handle
+        .neighbours()
+        .get()
+        .set_address_family(AddressFamily::Inet)
+        .execute();
+    let mut neighbor_state = "Missing".to_string();
+    let mut neighbor_mac = None;
+    let mut neighbor_probes = None;
+    while let Some(message) = neighbours
+        .try_next()
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        let matches = message.header.ifindex == route_oif
+            && message.attributes.iter().any(|attribute| {
+                matches!(
+                    attribute,
+                    NeighbourAttribute::Destination(NeighbourAddress::Inet(ip)) if *ip == target
+                )
+            });
+        if !matches {
+            continue;
+        }
+        neighbor_state = format!("{:?}", message.header.state);
+        for attribute in message.attributes {
+            match attribute {
+                NeighbourAttribute::LinkLayerAddress(address) => neighbor_mac = Some(address),
+                NeighbourAttribute::Probes(probes) => neighbor_probes = Some(probes),
+                _ => {}
+            }
+        }
+        break;
+    }
+    Ok(PathSnapshot {
+        link,
+        destination,
+        route_oif,
+        route_source: route.source,
+        route_gateway: route.gateway,
+        neighbor: target,
+        neighbor_state,
+        neighbor_mac,
+        neighbor_probes,
+    })
+}
+
+async fn route_snapshot(handle: &Handle, destination: Ipv4Addr) -> Result<RouteSnapshot, String> {
+    let route = RouteMessageBuilder::<Ipv4Addr>::new()
+        .destination_prefix(destination, 32)
+        .build();
+    let mut routes = handle.route().get(route).execute();
+    let route = routes
+        .try_next()
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("route to {destination} missing"))?;
+    let mut snapshot = RouteSnapshot::default();
+    for attribute in route.attributes {
+        match attribute {
+            RouteAttribute::Oif(index) => snapshot.oif = Some(index),
+            RouteAttribute::PrefSource(RouteAddress::Inet(ip)) => snapshot.source = Some(ip),
+            RouteAttribute::Gateway(RouteAddress::Inet(ip)) => snapshot.gateway = Some(ip),
             _ => {}
         }
     }

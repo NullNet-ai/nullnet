@@ -4,7 +4,7 @@ All Nullnet releases with the relative changes are documented in this file.
 
 ## [UNRELEASED]
 ### Added
-- Report active-edge neighbor failures and recoveries with route, link, and MACsec counter snapshots, plus backend and egress setup timeouts, in the journal and Events page.
+- Report active-edge neighbor failures and recoveries with route, link, underlay, MACsec, and XFRM counter snapshots, plus backend and egress setup timeouts, in the journal and Events page.
 - Add per-stack observation mode with all-to-all backend triggers and configuration suggestions ([#194](https://github.com/NullNet-ai/nullnet/pull/194))
 - Show backend trigger sessions in session history with a destination service peer, gray N/A policy, and a Kind column ([#189](https://github.com/NullNet-ai/nullnet/pull/189))
 - Serve the UI with a managed certificate selected by `UI_TLS_DOMAIN`, with first-run self-signed setup and automatic certificate reload ([#188](https://github.com/NullNet-ai/nullnet/pull/188))

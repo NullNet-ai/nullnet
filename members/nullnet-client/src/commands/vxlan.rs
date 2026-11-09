@@ -109,6 +109,8 @@ pub(crate) struct TransportEndpointSnapshot {
 pub(crate) struct EdgeTransportSnapshot {
     pub(crate) placement: &'static str,
     pub(crate) endpoints: Vec<TransportEndpointSnapshot>,
+    pub(crate) underlay: Option<Result<super::endpoint_namespace::PathSnapshot, String>>,
+    pub(crate) xfrm: Option<Result<super::native_xfrm::XfrmSnapshot, String>>,
 }
 
 async fn lock(id: u32) -> OwnedMutexGuard<()> {
@@ -474,6 +476,7 @@ pub(crate) async fn diagnostic_snapshot(
                 endpoint.params.encrypted,
                 endpoint.forwarding,
                 endpoint.transport,
+                endpoint.params.remote_ip,
             )
         })
         .collect();
@@ -486,13 +489,35 @@ pub(crate) async fn diagnostic_snapshot(
         .iter()
         .filter_map(|endpoint| (endpoint.1 && endpoint.2).then_some(endpoint.3))
         .collect();
-    let macsec = if macsec_indices.is_empty() {
-        Ok(HashMap::new())
-    } else {
-        super::native_macsec::snapshots(macsec_indices).await
-    };
+    let cross_host = endpoints
+        .iter()
+        .find(|endpoint| !endpoint.1)
+        .map(|endpoint| (endpoint.2, endpoint.5));
+    let (macsec, underlay, xfrm) = tokio::join!(
+        async {
+            if macsec_indices.is_empty() {
+                Ok(HashMap::new())
+            } else {
+                super::native_macsec::snapshots(macsec_indices).await
+            }
+        },
+        async {
+            match cross_host {
+                Some((_, remote)) => {
+                    Some(super::endpoint_namespace::path_snapshot(&rtnetlink.handle, remote).await)
+                }
+                None => None,
+            }
+        },
+        async {
+            match cross_host {
+                Some((true, _)) => Some(super::native_xfrm::diagnostic_snapshot(id).await),
+                _ => None,
+            }
+        }
+    );
     let mut snapshots = Vec::with_capacity(endpoints.len());
-    for (side, same_host, encrypted, forwarding, transport) in endpoints {
+    for (side, same_host, encrypted, forwarding, transport, _) in endpoints {
         let forwarding_snapshot =
             super::endpoint_namespace::link_snapshot(&rtnetlink.handle, forwarding).await;
         let transport_snapshot = if transport == forwarding {
@@ -517,6 +542,8 @@ pub(crate) async fn diagnostic_snapshot(
     EdgeTransportSnapshot {
         placement,
         endpoints: snapshots,
+        underlay,
+        xfrm,
     }
 }
 
