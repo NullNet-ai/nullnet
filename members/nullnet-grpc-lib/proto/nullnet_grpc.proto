@@ -580,6 +580,7 @@ message AgentEvent {
     AgentProxyRequestRouted       proxy_request_routed       = 37;
     AgentDeviceEventBypassChanged device_event_bypass_changed = 38;
     AgentVxlanEnvironmentFailed vxlan_environment_failed = 39;
+    AgentEdgeDataPlaneStatus edge_data_plane_status = 40;
   }
 }
 
@@ -624,3 +625,12 @@ message AgentUdpUpstreamConnectFailed { string service_name = 1; string client_i
 message AgentDeviceEventBypassChanged { bool available = 1; string detail = 2; }
 
 message AgentVxlanEnvironmentFailed { string error_message = 1; }
+
+message AgentEdgeDataPlaneStatus {
+  uint32 net_id = 1;
+  string docker_container = 2;
+  string local_ip = 3;
+  string destination_ip = 4;
+  bool reachable = 5;
+  string signal = 6;
+}

@@ -244,6 +244,7 @@ export type EventJson =
   | WithSeverity & { type: 'gateway_forward_install_failed'; vxlan_id: number; br_net: string }
   | WithSeverity & { type: 'vxlan_environment_failed'; error_message: string }
   | WithSeverity & { type: 'device_event_bypass_changed'; available: boolean; detail: string }
+  | WithSeverity & { type: 'edge_data_plane_status'; net_id: number; docker_container: string; local_ip: string; destination_ip: string; reachable: boolean; signal: string }
   | WithSeverity & { type: 'firewall_rules_load_failed'; path: string; error_message: string }
   | WithSeverity & { type: 'container_suspend_failed'; docker_container: string; error_message: string }
   | WithSeverity & { type: 'container_resume_failed'; docker_container: string; error_message: string }

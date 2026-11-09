@@ -1,4 +1,6 @@
-use crate::commands::endpoint_namespace::EndpointNamespace;
+use crate::commands::endpoint_namespace::{
+    EndpointNamespace, NeighbourReachability, NeighbourSignal,
+};
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::process::Stdio;
@@ -6,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{Mutex, Notify};
 
 /// First 12 hex chars of `NetworkSettings.SandboxID` are what Docker uses
@@ -27,6 +30,7 @@ const DOCKER_SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct BridgeIpCache {
     inner: Arc<RwLock<AddressOwners>>,
     namespaces: Arc<RwLock<HashMap<String, Arc<EndpointNamespace>>>>,
+    diagnostics: Option<UnboundedSender<NeighbourSignal>>,
     refresh_lock: Arc<Mutex<()>>,
     watching: Arc<AtomicBool>,
 }
@@ -34,12 +38,32 @@ pub struct BridgeIpCache {
 #[derive(Default)]
 struct AddressOwners {
     docker: HashMap<Ipv4Addr, String>,
-    overlays: HashMap<Ipv4Addr, (String, String)>,
+    overlays: HashMap<Ipv4Addr, OverlayOwner>,
+}
+
+struct OverlayOwner {
+    namespace: String,
+    container: String,
+    unreachable_reported: bool,
+}
+
+pub(crate) struct EdgeReachabilityChange {
+    pub(crate) net_id: u32,
+    pub(crate) local_ip: Ipv4Addr,
+    pub(crate) reachable: bool,
 }
 
 impl BridgeIpCache {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn with_diagnostics(sender: UnboundedSender<NeighbourSignal>) -> Self {
+        Self {
+            diagnostics: Some(sender),
+            ..Self::default()
+        }
     }
 
     #[cfg(test)]
@@ -94,7 +118,7 @@ impl BridgeIpCache {
         owners
             .overlays
             .get(&ip)
-            .map(|(_, container)| container)
+            .map(|owner| &owner.container)
             .or_else(|| owners.docker.get(&ip))
             .cloned()
     }
@@ -112,17 +136,20 @@ impl BridgeIpCache {
             owners
                 .overlays
                 .iter()
-                .map(|(ip, (_, container))| (*ip, container.clone())),
+                .map(|(ip, owner)| (*ip, owner.container.clone())),
         );
         addresses
     }
 
     pub(crate) fn add_overlay(&self, namespace: &str, ip: Ipv4Addr, container: &str) {
-        self.inner
-            .write()
-            .unwrap()
-            .overlays
-            .insert(ip, (namespace.into(), container.into()));
+        self.inner.write().unwrap().overlays.insert(
+            ip,
+            OverlayOwner {
+                namespace: namespace.into(),
+                container: container.into(),
+                unreachable_reported: false,
+            },
+        );
     }
 
     pub(crate) fn remove_overlay(&self, namespace: &str) {
@@ -130,7 +157,31 @@ impl BridgeIpCache {
             .write()
             .unwrap()
             .overlays
-            .retain(|_, (owner, _)| owner != namespace);
+            .retain(|_, owner| owner.namespace != namespace);
+    }
+
+    pub(crate) fn update_reachability(
+        &self,
+        signal: &NeighbourSignal,
+    ) -> Option<EdgeReachabilityChange> {
+        let net_id = overlay_net_id(signal.destination)?;
+        let server = format!("ns_{net_id}_s");
+        let client = format!("ns_{net_id}_c");
+        let mut owners = self.inner.write().unwrap();
+        let (local_ip, owner) = owners.overlays.iter_mut().find(|(_, owner)| {
+            owner.container == signal.container
+                && (owner.namespace == server || owner.namespace == client)
+        })?;
+        let reachable = signal.reachability == NeighbourReachability::Reachable;
+        if owner.unreachable_reported == !reachable {
+            return None;
+        }
+        owner.unreachable_reported = !reachable;
+        Some(EdgeReachabilityChange {
+            net_id,
+            local_ip: *local_ip,
+            reachable,
+        })
     }
 
     fn replace(&self, map: HashMap<Ipv4Addr, String>) {
@@ -146,7 +197,7 @@ impl BridgeIpCache {
     }
 
     async fn refresh_unlocked(&self) {
-        match query_docker().await {
+        match query_docker(self.diagnostics.clone()).await {
             Ok((map, namespaces)) => {
                 *self.namespaces.write().unwrap() = namespaces;
                 #[cfg(debug_assertions)]
@@ -209,7 +260,9 @@ type Discovery = (
     HashMap<String, Arc<EndpointNamespace>>,
 );
 
-async fn query_docker() -> Result<Discovery, String> {
+async fn query_docker(
+    diagnostics: Option<UnboundedSender<NeighbourSignal>>,
+) -> Result<Discovery, String> {
     let ids = list_container_ids().await?;
     if ids.is_empty() {
         return Ok((HashMap::new(), HashMap::new()));
@@ -218,7 +271,10 @@ async fn query_docker() -> Result<Discovery, String> {
 
     let mut namespaces = HashMap::new();
     for (name, id, pid, sandbox) in &index.identities {
-        match EndpointNamespace::container(*pid, sandbox.clone()).await {
+        let observer = diagnostics
+            .as_ref()
+            .map(|sender| (name.clone(), sender.clone()));
+        match EndpointNamespace::container(*pid, sandbox.clone(), observer).await {
             Ok(namespace) => {
                 namespaces.insert(name.clone(), namespace.clone());
                 namespaces.insert(id.clone(), namespace);
@@ -249,6 +305,13 @@ async fn query_docker() -> Result<Discovery, String> {
     }
 
     Ok((map, namespaces))
+}
+
+fn overlay_net_id(ip: Ipv4Addr) -> Option<u32> {
+    let base = u32::from(Ipv4Addr::new(10, 0, 0, 0));
+    let value = u32::from(ip);
+    let offset = value.checked_sub(base)?;
+    (offset < (1 << 24)).then_some(offset / 8)
 }
 
 async fn list_container_ids() -> Result<Vec<String>, String> {
@@ -564,6 +627,60 @@ mod tests {
         assert_eq!(cache.get(old), None);
         assert_eq!(cache.get(new).as_deref(), Some("source"));
         assert_eq!(cache.owned_ips().into_keys().collect::<Vec<_>>(), vec![new]);
+    }
+
+    #[test]
+    fn edge_reachability_reports_each_failure_and_recovery_once() {
+        let cache = BridgeIpCache::new();
+        let local = Ipv4Addr::new(10, 0, 6, 19);
+        let peer = Ipv4Addr::new(10, 0, 6, 17);
+        cache.add_overlay("ns_194_c", local, "api3");
+
+        let failed = NeighbourSignal {
+            container: "api3".into(),
+            destination: peer,
+            reachability: NeighbourReachability::Failed,
+        };
+        let change = cache.update_reachability(&failed).unwrap();
+        assert_eq!(change.net_id, 194);
+        assert_eq!(change.local_ip, local);
+        assert!(!change.reachable);
+        assert!(cache.update_reachability(&failed).is_none());
+
+        let recovered = NeighbourSignal {
+            reachability: NeighbourReachability::Reachable,
+            ..failed
+        };
+        let change = cache.update_reachability(&recovered).unwrap();
+        assert_eq!(change.net_id, 194);
+        assert!(change.reachable);
+        assert!(cache.update_reachability(&recovered).is_none());
+    }
+
+    #[test]
+    fn edge_reachability_ignores_unowned_neighbours() {
+        let cache = BridgeIpCache::new();
+        cache.add_overlay("ns_194_c", Ipv4Addr::new(10, 0, 6, 19), "api3");
+
+        for signal in [
+            NeighbourSignal {
+                container: "another-container".into(),
+                destination: Ipv4Addr::new(10, 0, 6, 17),
+                reachability: NeighbourReachability::Failed,
+            },
+            NeighbourSignal {
+                container: "api3".into(),
+                destination: Ipv4Addr::new(10, 0, 6, 25),
+                reachability: NeighbourReachability::Failed,
+            },
+            NeighbourSignal {
+                container: "api3".into(),
+                destination: Ipv4Addr::new(172, 18, 0, 1),
+                reachability: NeighbourReachability::Failed,
+            },
+        ] {
+            assert!(cache.update_reachability(&signal).is_none());
+        }
     }
 
     fn idx_with(name: &str, sandbox_prefix: &str) -> ContainerIndex {

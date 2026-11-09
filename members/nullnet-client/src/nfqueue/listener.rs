@@ -6,7 +6,8 @@ use crate::triggers::{TriggerClaim, TriggerState, TriggersState};
 use nfq::{Message, Verdict};
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentBackendTriggerSendFailed, AgentEvent, agent_event::Event as AgentEventKind,
+    AgentBackendTriggerSendFailed, AgentBackendTriggerSetupTimedOut, AgentEvent,
+    agent_event::Event as AgentEventKind,
 };
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
@@ -246,6 +247,13 @@ async fn decide_verdict(
                         eprintln!(
                             "[nfqueue] tunnel not ready for '{service}' port {dst_port} container {container}"
                         );
+                        report_setup_timeout(
+                            &ctx.grpc,
+                            service,
+                            dst_port,
+                            container,
+                            "timed out waiting for backend NetReady",
+                        );
                         Verdict::Drop
                     }
                 },
@@ -266,6 +274,12 @@ async fn decide_verdict(
                     ) {
                         Verdict::Accept
                     } else {
+                        report_trigger_send_failed(
+                            &ctx.grpc,
+                            service,
+                            dst_port,
+                            "backend trigger RPC timed out before activation".to_string(),
+                        );
                         Verdict::Drop
                     }
                 }
@@ -310,6 +324,29 @@ fn report_trigger_send_failed(
                 service_name: service.to_string(),
                 port: u32::from(port),
                 error_message,
+            },
+        )),
+    };
+    tokio::spawn(async move {
+        let _ = grpc.report_event(event).await;
+    });
+}
+
+fn report_setup_timeout(
+    grpc: &NullnetGrpcInterface,
+    service: &str,
+    port: u16,
+    container: &str,
+    error_message: &str,
+) {
+    let grpc = grpc.clone();
+    let event = AgentEvent {
+        event: Some(AgentEventKind::BackendTriggerSetupTimedOut(
+            AgentBackendTriggerSetupTimedOut {
+                service_name: service.to_string(),
+                port: u32::from(port),
+                docker_container: container.to_string(),
+                error_message: error_message.to_string(),
             },
         )),
     };

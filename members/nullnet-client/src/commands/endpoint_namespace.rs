@@ -1,22 +1,45 @@
 //! Namespace-bound sockets and pinned container process generations.
 use super::native_netlink::blocking;
-use netlink_sys::{Socket, TokioSocket};
+use futures::StreamExt;
+use netlink_sys::{Socket, SocketAddr, TokioSocket};
 use rtnetlink::Handle;
+use rtnetlink::packet_core::NetlinkPayload;
+use rtnetlink::packet_route::RouteNetlinkMessage;
+use rtnetlink::packet_route::neighbour::{NeighbourAddress, NeighbourAttribute, NeighbourState};
 use std::fs::File;
 use std::io;
+use std::net::Ipv4Addr;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::sync::Arc;
+use tokio::sync::mpsc::UnboundedSender;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NeighbourReachability {
+    Failed,
+    Reachable,
+}
+
+#[derive(Debug)]
+pub(crate) struct NeighbourSignal {
+    pub(crate) container: String,
+    pub(crate) destination: Ipv4Addr,
+    pub(crate) reachability: NeighbourReachability,
+}
+
+type NeighbourObserver = (String, UnboundedSender<NeighbourSignal>);
 
 pub(crate) struct EndpointNamespace {
     pub(crate) file: File,
     pub(crate) handle: Handle,
     process: Option<OwnedFd>,
+    connection: tokio::task::AbortHandle,
+    monitor: Option<tokio::task::AbortHandle>,
 }
 
 impl EndpointNamespace {
     pub(crate) async fn root() -> io::Result<Arc<Self>> {
-        Self::open(File::open("/proc/self/ns/net")?, None).await
+        Self::open(File::open("/proc/self/ns/net")?, None, None).await
     }
 
     pub(crate) fn validate(&self) -> io::Result<()> {
@@ -39,7 +62,11 @@ impl EndpointNamespace {
         Ok(())
     }
 
-    pub(crate) async fn container(pid: u32, sandbox: String) -> io::Result<Arc<Self>> {
+    pub(crate) async fn container(
+        pid: u32,
+        sandbox: String,
+        observer: Option<NeighbourObserver>,
+    ) -> io::Result<Arc<Self>> {
         let (file, process) = blocking(move || {
             let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
             if raw < 0 {
@@ -58,43 +85,107 @@ impl EndpointNamespace {
             Ok((file, process))
         })
         .await?;
-        Self::open(file, Some(process)).await
+        Self::open(file, Some(process), observer).await
     }
 
     #[cfg(test)]
     pub(crate) async fn named(name: &str) -> io::Result<Arc<Self>> {
-        Self::open(File::open(format!("/run/netns/{name}"))?, None).await
+        Self::open(File::open(format!("/run/netns/{name}"))?, None, None).await
     }
 
-    async fn open(file: File, process: Option<OwnedFd>) -> io::Result<Arc<Self>> {
+    async fn open(
+        file: File,
+        process: Option<OwnedFd>,
+        observer: Option<NeighbourObserver>,
+    ) -> io::Result<Arc<Self>> {
         let target = file.try_clone()?;
+        let watch_neighbours = observer.is_some();
         let socket = blocking(move || {
             std::thread::spawn(move || {
                 let original = File::open("/proc/thread-self/ns/net")?;
                 if unsafe { libc::setns(target.as_raw_fd(), libc::CLONE_NEWNET) } != 0 {
                     return Err(io::Error::last_os_error());
                 }
-                let socket = Socket::new(libc::NETLINK_ROUTE as _);
+                let mut socket = Socket::new(libc::NETLINK_ROUTE as _)?;
+                if watch_neighbours {
+                    socket.bind(&SocketAddr::new(0, rtnetlink::constants::RTMGRP_NEIGH))?;
+                }
                 // Never return a thread to its caller in the wrong namespace.
                 if unsafe { libc::setns(original.as_raw_fd(), libc::CLONE_NEWNET) } != 0 {
                     std::process::abort();
                 }
-                socket
+                Ok(socket)
             })
             .join()
             .map_err(|_| io::Error::other("namespace socket thread panicked"))?
         })
         .await?;
         let socket = unsafe { TokioSocket::from_raw_fd(socket.into_raw_fd()) };
-        let (connection, handle, _) = rtnetlink::from_socket(socket);
-        tokio::spawn(connection);
+        let (connection, handle, messages) = rtnetlink::from_socket(socket);
+        let connection = tokio::spawn(connection).abort_handle();
+        let monitor = observer.map(|(container, sender)| {
+            tokio::spawn(monitor_neighbours(messages, container, sender)).abort_handle()
+        });
         let namespace = Arc::new(Self {
             file,
             handle,
             process,
+            connection,
+            monitor,
         });
         namespace.validate()?;
         Ok(namespace)
+    }
+}
+
+impl Drop for EndpointNamespace {
+    fn drop(&mut self) {
+        self.connection.abort();
+        if let Some(monitor) = &self.monitor {
+            monitor.abort();
+        }
+    }
+}
+
+async fn monitor_neighbours(
+    mut messages: futures::channel::mpsc::UnboundedReceiver<(
+        rtnetlink::packet_core::NetlinkMessage<RouteNetlinkMessage>,
+        SocketAddr,
+    )>,
+    container: String,
+    sender: UnboundedSender<NeighbourSignal>,
+) {
+    while let Some((message, _)) = messages.next().await {
+        let NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewNeighbour(message)) =
+            message.payload
+        else {
+            continue;
+        };
+        let reachability = match message.header.state {
+            NeighbourState::Failed => NeighbourReachability::Failed,
+            NeighbourState::Reachable => NeighbourReachability::Reachable,
+            _ => continue,
+        };
+        let destination = message
+            .attributes
+            .iter()
+            .find_map(|attribute| match attribute {
+                NeighbourAttribute::Destination(NeighbourAddress::Inet(ip)) => Some(*ip),
+                _ => None,
+            });
+        let Some(destination) = destination else {
+            continue;
+        };
+        if sender
+            .send(NeighbourSignal {
+                container: container.clone(),
+                destination,
+                reachability,
+            })
+            .is_err()
+        {
+            break;
+        }
     }
 }
 
