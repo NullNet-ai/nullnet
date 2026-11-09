@@ -293,23 +293,41 @@ fn creation_baseline(snapshot: &EdgeSnapshot) -> EdgeSnapshot {
                 })
                 .collect(),
             underlay: None,
-            xfrm: snapshot.transport.xfrm.as_ref().map(|xfrm| {
-                xfrm.as_ref()
-                    .map(|xfrm| XfrmSnapshot {
-                        transport_id: xfrm.transport_id,
-                        scope: xfrm.scope,
-                        owner_count: xfrm.owner_count,
-                        outbound_policy: true,
-                        inbound_policy: true,
-                        outbound: xfrm.outbound.as_ref().map(zero_xfrm).map_err(Clone::clone),
-                        inbound: xfrm.inbound.as_ref().map(zero_xfrm).map_err(Clone::clone),
-                    })
-                    .map_err(Clone::clone)
-            }),
+            xfrm: snapshot
+                .transport
+                .xfrm
+                .as_ref()
+                .and_then(creation_xfrm_baseline),
         },
         interface_index: snapshot.interface_index,
         neighbor_mac: snapshot.neighbor_mac.clone(),
         neighbor_probes: snapshot.neighbor_probes,
+    }
+}
+
+fn creation_xfrm_baseline(
+    snapshot: &Result<XfrmSnapshot, String>,
+) -> Option<Result<XfrmSnapshot, String>> {
+    match snapshot {
+        Ok(snapshot) if snapshot.owner_count > 1 => None,
+        Ok(snapshot) => Some(Ok(XfrmSnapshot {
+            transport_id: snapshot.transport_id,
+            scope: snapshot.scope,
+            owner_count: snapshot.owner_count,
+            outbound_policy: true,
+            inbound_policy: true,
+            outbound: snapshot
+                .outbound
+                .as_ref()
+                .map(zero_xfrm)
+                .map_err(Clone::clone),
+            inbound: snapshot
+                .inbound
+                .as_ref()
+                .map(zero_xfrm)
+                .map_err(Clone::clone),
+        })),
+        Err(error) => Some(Err(error.clone())),
     }
 }
 
@@ -691,6 +709,51 @@ mod tests {
             ..LinkSnapshot::default()
         };
         assert!(link_delta(Some(&before), &after).contains("tx_packets=0->3(+3)"));
+    }
+
+    #[test]
+    fn shared_xfrm_transport_has_no_edge_creation_baseline() {
+        fn snapshot(owner_count: usize) -> EdgeSnapshot {
+            let state = XfrmStateSnapshot {
+                spi: 1,
+                source: Ipv4Addr::new(192, 0, 2, 1),
+                destination: Ipv4Addr::new(192, 0, 2, 2),
+                bytes: 100,
+                packets: 1,
+                sequence: Some(1),
+                replay_window_errors: 0,
+                replay_errors: 0,
+                integrity_failed: 0,
+            };
+            EdgeSnapshot {
+                namespace: Err("test".into()),
+                transport: EdgeTransportSnapshot {
+                    placement: "cross_host",
+                    endpoints: Vec::new(),
+                    underlay: None,
+                    xfrm: Some(Ok(XfrmSnapshot {
+                        transport_id: 42,
+                        scope: if owner_count == 1 {
+                            "edge"
+                        } else {
+                            "shared_transport"
+                        },
+                        owner_count,
+                        outbound_policy: true,
+                        inbound_policy: true,
+                        outbound: Ok(state.clone()),
+                        inbound: Ok(state),
+                    })),
+                },
+                interface_index: 1,
+                neighbor_mac: None,
+                neighbor_probes: None,
+            }
+        }
+
+        assert!(creation_baseline(&snapshot(2)).transport.xfrm.is_none());
+        let dedicated = creation_baseline(&snapshot(1)).transport.xfrm.unwrap();
+        assert_eq!(dedicated.unwrap().outbound.unwrap().bytes, 0);
     }
 
     #[test]
