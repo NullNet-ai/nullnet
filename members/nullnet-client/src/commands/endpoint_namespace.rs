@@ -1,11 +1,13 @@
 //! Namespace-bound sockets and pinned container process generations.
 use super::native_netlink::blocking;
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use netlink_sys::{Socket, SocketAddr, TokioSocket};
-use rtnetlink::Handle;
 use rtnetlink::packet_core::NetlinkPayload;
 use rtnetlink::packet_route::RouteNetlinkMessage;
+use rtnetlink::packet_route::link::LinkAttribute;
 use rtnetlink::packet_route::neighbour::{NeighbourAddress, NeighbourAttribute, NeighbourState};
+use rtnetlink::packet_route::route::{RouteAddress, RouteAttribute};
+use rtnetlink::{Handle, RouteMessageBuilder};
 use std::fs::File;
 use std::io;
 use std::net::Ipv4Addr;
@@ -24,10 +26,34 @@ pub(crate) enum NeighbourReachability {
 pub(crate) struct NeighbourSignal {
     pub(crate) container: String,
     pub(crate) destination: Ipv4Addr,
+    pub(crate) interface_index: u32,
+    pub(crate) link_layer_address: Option<Vec<u8>>,
+    pub(crate) probes: Option<u32>,
     pub(crate) reachability: NeighbourReachability,
 }
 
 type NeighbourObserver = (String, UnboundedSender<NeighbourSignal>);
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LinkSnapshot {
+    pub(crate) name: String,
+    pub(crate) carrier: Option<u8>,
+    pub(crate) operstate: String,
+    pub(crate) rx_packets: u64,
+    pub(crate) tx_packets: u64,
+    pub(crate) rx_errors: u64,
+    pub(crate) tx_errors: u64,
+    pub(crate) rx_dropped: u64,
+    pub(crate) tx_dropped: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct NamespaceSnapshot {
+    pub(crate) link: LinkSnapshot,
+    pub(crate) route_oif: Option<u32>,
+    pub(crate) route_source: Option<Ipv4Addr>,
+    pub(crate) route_gateway: Option<Ipv4Addr>,
+}
 
 pub(crate) struct EndpointNamespace {
     pub(crate) file: File,
@@ -60,6 +86,40 @@ impl EndpointNamespace {
             }
         }
         Ok(())
+    }
+
+    pub(crate) async fn snapshot(
+        &self,
+        destination: Ipv4Addr,
+        interface_index: u32,
+    ) -> Result<NamespaceSnapshot, String> {
+        let link = link_snapshot(&self.handle, interface_index).await?;
+        let route = RouteMessageBuilder::<Ipv4Addr>::new()
+            .destination_prefix(destination, 32)
+            .build();
+        let mut routes = self.handle.route().get(route).execute();
+        let route = routes
+            .try_next()
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("route to {destination} missing"))?;
+        let mut snapshot = NamespaceSnapshot {
+            link,
+            ..NamespaceSnapshot::default()
+        };
+        for attribute in route.attributes {
+            match attribute {
+                RouteAttribute::Oif(index) => snapshot.route_oif = Some(index),
+                RouteAttribute::PrefSource(RouteAddress::Inet(ip)) => {
+                    snapshot.route_source = Some(ip);
+                }
+                RouteAttribute::Gateway(RouteAddress::Inet(ip)) => {
+                    snapshot.route_gateway = Some(ip);
+                }
+                _ => {}
+            }
+        }
+        Ok(snapshot)
     }
 
     pub(crate) async fn container(
@@ -138,6 +198,33 @@ impl EndpointNamespace {
     }
 }
 
+pub(crate) async fn link_snapshot(handle: &Handle, index: u32) -> Result<LinkSnapshot, String> {
+    let mut links = handle.link().get().match_index(index).execute();
+    let link = links
+        .try_next()
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("link index {index} missing"))?;
+    let mut snapshot = LinkSnapshot::default();
+    for attribute in link.attributes {
+        match attribute {
+            LinkAttribute::IfName(name) => snapshot.name = name,
+            LinkAttribute::Carrier(carrier) => snapshot.carrier = Some(carrier),
+            LinkAttribute::OperState(state) => snapshot.operstate = format!("{state:?}"),
+            LinkAttribute::Stats64(stats) => {
+                snapshot.rx_packets = stats.rx_packets;
+                snapshot.tx_packets = stats.tx_packets;
+                snapshot.rx_errors = stats.rx_errors;
+                snapshot.tx_errors = stats.tx_errors;
+                snapshot.rx_dropped = stats.rx_dropped;
+                snapshot.tx_dropped = stats.tx_dropped;
+            }
+            _ => {}
+        }
+    }
+    Ok(snapshot)
+}
+
 impl Drop for EndpointNamespace {
     fn drop(&mut self) {
         self.connection.abort();
@@ -176,10 +263,27 @@ async fn monitor_neighbours(
         let Some(destination) = destination else {
             continue;
         };
+        let link_layer_address = message
+            .attributes
+            .iter()
+            .find_map(|attribute| match attribute {
+                NeighbourAttribute::LinkLayerAddress(address) => Some(address.clone()),
+                _ => None,
+            });
+        let probes = message
+            .attributes
+            .iter()
+            .find_map(|attribute| match attribute {
+                NeighbourAttribute::Probes(probes) => Some(*probes),
+                _ => None,
+            });
         if sender
             .send(NeighbourSignal {
                 container: container.clone(),
                 destination,
+                interface_index: message.header.ifindex,
+                link_layer_address,
+                probes,
                 reachability,
             })
             .is_err()

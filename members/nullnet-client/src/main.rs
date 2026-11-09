@@ -212,6 +212,7 @@ async fn main() -> Result<(), Error> {
     let bridge_cache = nfqueue::BridgeIpCache::with_diagnostics(edge_diagnostic_tx);
     edge_diagnostics::spawn(
         grpc_server.clone(),
+        rtnetlink_handle.clone(),
         bridge_cache.clone(),
         edge_diagnostic_rx,
     );

@@ -5,6 +5,7 @@ pub(crate) mod parse;
 mod recv_loop;
 
 pub use cache::BridgeIpCache;
+pub(crate) use cache::EdgeDiagnosticContext;
 pub use listener::{TriggerMap, TriggerOwner, TriggerOwners, service_for, watched_ports};
 
 use crate::commands::nfqueue as rules;

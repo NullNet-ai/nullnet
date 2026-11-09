@@ -97,6 +97,20 @@ struct Endpoint {
     retirement: Arc<endpoint_io::Retirement>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct TransportEndpointSnapshot {
+    pub(crate) side: &'static str,
+    pub(crate) forwarding: Result<super::endpoint_namespace::LinkSnapshot, String>,
+    pub(crate) transport: Option<Result<super::endpoint_namespace::LinkSnapshot, String>>,
+    pub(crate) macsec: Option<Result<super::native_macsec::MacsecSnapshot, String>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct EdgeTransportSnapshot {
+    pub(crate) placement: &'static str,
+    pub(crate) endpoints: Vec<TransportEndpointSnapshot>,
+}
+
 async fn lock(id: u32) -> OwnedMutexGuard<()> {
     let entry = VXLAN_LOCKS
         .lock()
@@ -438,6 +452,72 @@ pub(crate) async fn ready(id: u32) -> Result<(), Error> {
         return Err("Fresh endpoint is missing").handle_err(location!());
     }
     synchronize(endpoints).await
+}
+
+pub(crate) async fn diagnostic_snapshot(
+    rtnetlink: &RtNetLinkHandle,
+    id: u32,
+) -> EdgeTransportSnapshot {
+    let endpoints: Vec<_> = ENDPOINTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .values()
+        .filter(|endpoint| endpoint.params.vxlan_id == id)
+        .map(|endpoint| {
+            (
+                if endpoint.params.br_name.ends_with("_c") {
+                    "client"
+                } else {
+                    "server"
+                },
+                endpoint.params.local_ip == endpoint.params.remote_ip,
+                endpoint.params.encrypted,
+                endpoint.forwarding,
+                endpoint.transport,
+            )
+        })
+        .collect();
+    let placement = if endpoints.iter().all(|endpoint| endpoint.1) {
+        "same_host"
+    } else {
+        "cross_host"
+    };
+    let macsec_indices: Vec<_> = endpoints
+        .iter()
+        .filter_map(|endpoint| (endpoint.1 && endpoint.2).then_some(endpoint.3))
+        .collect();
+    let macsec = if macsec_indices.is_empty() {
+        Ok(HashMap::new())
+    } else {
+        super::native_macsec::snapshots(macsec_indices).await
+    };
+    let mut snapshots = Vec::with_capacity(endpoints.len());
+    for (side, same_host, encrypted, forwarding, transport) in endpoints {
+        let forwarding_snapshot =
+            super::endpoint_namespace::link_snapshot(&rtnetlink.handle, forwarding).await;
+        let transport_snapshot = if transport == forwarding {
+            None
+        } else {
+            Some(super::endpoint_namespace::link_snapshot(&rtnetlink.handle, transport).await)
+        };
+        let macsec_snapshot = (same_host && encrypted).then(|| match &macsec {
+            Ok(snapshots) => snapshots
+                .get(&forwarding)
+                .cloned()
+                .ok_or_else(|| format!("MACsec index {forwarding} missing")),
+            Err(error) => Err(error.to_string()),
+        });
+        snapshots.push(TransportEndpointSnapshot {
+            side,
+            forwarding: forwarding_snapshot,
+            transport: transport_snapshot,
+            macsec: macsec_snapshot,
+        });
+    }
+    EdgeTransportSnapshot {
+        placement,
+        endpoints: snapshots,
+    }
 }
 
 async fn synchronize(endpoints: Vec<Arc<Endpoint>>) -> Result<(), Error> {

@@ -53,6 +53,11 @@ pub(crate) struct EdgeReachabilityChange {
     pub(crate) reachable: bool,
 }
 
+pub(crate) struct EdgeDiagnosticContext {
+    pub(crate) net_id: u32,
+    pub(crate) namespace: Arc<EndpointNamespace>,
+}
+
 impl BridgeIpCache {
     #[cfg(test)]
     pub fn new() -> Self {
@@ -181,6 +186,29 @@ impl BridgeIpCache {
             net_id,
             local_ip: *local_ip,
             reachable,
+        })
+    }
+
+    pub(crate) fn diagnostic_context(
+        &self,
+        signal: &NeighbourSignal,
+    ) -> Option<EdgeDiagnosticContext> {
+        let net_id = overlay_net_id(signal.destination)?;
+        let server = format!("ns_{net_id}_s");
+        let client = format!("ns_{net_id}_c");
+        let owned = {
+            let owners = self.inner.read().unwrap();
+            owners.overlays.values().any(|owner| {
+                owner.container == signal.container
+                    && (owner.namespace == server || owner.namespace == client)
+            })
+        };
+        if !owned {
+            return None;
+        }
+        Some(EdgeDiagnosticContext {
+            net_id,
+            namespace: self.cached_namespace(&signal.container)?,
         })
     }
 
@@ -639,6 +667,9 @@ mod tests {
         let failed = NeighbourSignal {
             container: "api3".into(),
             destination: peer,
+            interface_index: 7,
+            link_layer_address: None,
+            probes: Some(3),
             reachability: NeighbourReachability::Failed,
         };
         let change = cache.update_reachability(&failed).unwrap();
@@ -666,16 +697,25 @@ mod tests {
             NeighbourSignal {
                 container: "another-container".into(),
                 destination: Ipv4Addr::new(10, 0, 6, 17),
+                interface_index: 7,
+                link_layer_address: None,
+                probes: None,
                 reachability: NeighbourReachability::Failed,
             },
             NeighbourSignal {
                 container: "api3".into(),
                 destination: Ipv4Addr::new(10, 0, 6, 25),
+                interface_index: 7,
+                link_layer_address: None,
+                probes: None,
                 reachability: NeighbourReachability::Failed,
             },
             NeighbourSignal {
                 container: "api3".into(),
                 destination: Ipv4Addr::new(172, 18, 0, 1),
+                interface_index: 7,
+                link_layer_address: None,
+                probes: None,
                 reachability: NeighbourReachability::Failed,
             },
         ] {
