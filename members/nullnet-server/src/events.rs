@@ -345,6 +345,17 @@ pub(crate) enum Event {
         detail: String,
         timestamp: u64,
     },
+    /// The kernel marked the peer address of an active edge failed, or
+    /// subsequently confirmed it reachable again.
+    EdgeDataPlaneStatus {
+        net_id: u32,
+        docker_container: String,
+        local_ip: String,
+        destination_ip: String,
+        reachable: bool,
+        signal: String,
+        timestamp: u64,
+    },
     FirewallRulesLoadFailed {
         path: String,
         error_message: String,
@@ -607,6 +618,7 @@ impl Event {
             Self::GatewayForwardInstallFailed { .. } => "gateway_forward_install_failed",
             Self::VxlanEnvironmentFailed { .. } => "vxlan_environment_failed",
             Self::DeviceEventBypassChanged { .. } => "device_event_bypass_changed",
+            Self::EdgeDataPlaneStatus { .. } => "edge_data_plane_status",
             Self::FirewallRulesLoadFailed { .. } => "firewall_rules_load_failed",
             Self::ContainerSuspendFailed { .. } => "container_suspend_failed",
             Self::ContainerResumeFailed { .. } => "container_resume_failed",
@@ -639,6 +651,12 @@ impl Event {
             Self::DeviceEventBypassChanged {
                 available: false, ..
             } => Severity::Warning,
+            Self::EdgeDataPlaneStatus {
+                reachable: true, ..
+            } => Severity::Info,
+            Self::EdgeDataPlaneStatus {
+                reachable: false, ..
+            } => Severity::Error,
             Self::IngressCongestionControlChanged { active: true, .. } => Severity::Warning,
             Self::IngressCongestionControlChanged { active: false, .. } => Severity::Info,
             Self::IngressCongestionRecoveryStarted { .. } => Severity::Info,
@@ -1151,6 +1169,25 @@ impl Event {
         }
     }
 
+    pub(crate) fn edge_data_plane_status(
+        net_id: u32,
+        docker_container: String,
+        local_ip: String,
+        destination_ip: String,
+        reachable: bool,
+        signal: String,
+    ) -> Self {
+        Self::EdgeDataPlaneStatus {
+            net_id,
+            docker_container,
+            local_ip,
+            destination_ip,
+            reachable,
+            signal,
+            timestamp: now_secs(),
+        }
+    }
+
     pub(crate) fn firewall_rules_load_failed(path: String, error_message: String) -> Self {
         Self::FirewallRulesLoadFailed {
             path,
@@ -1597,5 +1634,38 @@ impl EventStore {
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.tx.subscribe()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edge_data_plane_status_serializes_failure_and_recovery_severity() {
+        for (reachable, expected) in [(false, Severity::Error), (true, Severity::Info)] {
+            let event = Event::edge_data_plane_status(
+                194,
+                "api3".into(),
+                "10.0.6.19".into(),
+                "10.0.6.17".into(),
+                reachable,
+                if reachable {
+                    "neighbor_reachable".into()
+                } else {
+                    "neighbor_failed".into()
+                },
+            );
+            assert_eq!(event.kind(), "edge_data_plane_status");
+            assert_eq!(event.severity(), expected);
+            let value = serde_json::to_value(EventEnvelope {
+                severity: event.severity(),
+                event: &event,
+            })
+            .unwrap();
+            assert_eq!(value["net_id"], 194);
+            assert_eq!(value["docker_container"], "api3");
+            assert_eq!(value["reachable"], reachable);
+        }
     }
 }

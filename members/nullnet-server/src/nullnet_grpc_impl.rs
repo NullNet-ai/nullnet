@@ -3132,6 +3132,14 @@ impl NullnetGrpc for NullnetGrpcImpl {
             AgentEventKind::DeviceEventBypassChanged(e) => {
                 Event::device_event_bypass_changed(e.available, e.detail)
             }
+            AgentEventKind::EdgeDataPlaneStatus(e) => Event::edge_data_plane_status(
+                e.net_id,
+                e.docker_container,
+                e.local_ip,
+                e.destination_ip,
+                e.reachable,
+                e.signal,
+            ),
             AgentEventKind::GatewayForwardInstallFailed(e) => {
                 Event::gateway_forward_install_failed(e.vxlan_id, e.br_net)
             }

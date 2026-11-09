@@ -16,6 +16,30 @@ type Owners = Arc<AsyncMutex<HashSet<u32>>>;
 static PEERS: LazyLock<Mutex<HashMap<Peer, Owners>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static EDGES: LazyLock<Mutex<HashMap<u32, Edge>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct XfrmStateSnapshot {
+    pub(crate) spi: u32,
+    pub(crate) source: Ipv4Addr,
+    pub(crate) destination: Ipv4Addr,
+    pub(crate) bytes: u64,
+    pub(crate) packets: u64,
+    pub(crate) sequence: Option<u64>,
+    pub(crate) replay_window_errors: u32,
+    pub(crate) replay_errors: u32,
+    pub(crate) integrity_failed: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct XfrmSnapshot {
+    pub(crate) transport_id: u32,
+    pub(crate) scope: &'static str,
+    pub(crate) owner_count: usize,
+    pub(crate) outbound_policy: bool,
+    pub(crate) inbound_policy: bool,
+    pub(crate) outbound: Result<XfrmStateSnapshot, String>,
+    pub(crate) inbound: Result<XfrmStateSnapshot, String>,
+}
+
 #[derive(Clone, Copy)]
 struct Edge {
     id: u32,
@@ -238,6 +262,143 @@ fn batch(
 
 pub(super) fn mark(id: u32) -> u32 {
     MARK_PREFIX | id
+}
+
+pub(crate) async fn diagnostic_snapshot(owner: u32) -> Result<XfrmSnapshot, String> {
+    let (edge, owner_count) = {
+        let edges = EDGES.lock().unwrap();
+        let edge = edges
+            .get(&owner)
+            .copied()
+            .ok_or_else(|| format!("XFRM owner {owner} missing"))?;
+        let owner_count = edges
+            .values()
+            .filter(|candidate| {
+                candidate.id == edge.id
+                    && candidate.local == edge.local
+                    && candidate.remote == edge.remote
+                    && candidate.port == edge.port
+            })
+            .count();
+        (edge, owner_count)
+    };
+    blocking(move || {
+        let mut socket = NativeSocket::new(libc::NETLINK_XFRM as _)?;
+        let states = socket.dump(18, &[0; 24])?;
+        let policies = socket.dump(21, &[0; 64])?;
+        parse_diagnostic_snapshot(&states, &policies, edge, owner_count)
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+fn parse_diagnostic_snapshot(
+    states: &[Vec<u8>],
+    policies: &[Vec<u8>],
+    edge: Edge,
+    owner_count: usize,
+) -> io::Result<XfrmSnapshot> {
+    let outbound_spi = edge.spi(edge.direction());
+    let inbound_spi = edge.spi(1 - edge.direction());
+    let mut outbound = None;
+    let mut inbound = None;
+    for message in states {
+        if message.len() < 224 {
+            return Err(io::Error::other("truncated XFRM state dump"));
+        }
+        let destination = parse_ipv4(&message[56..72])?;
+        let spi = u32::from_be_bytes(message[72..76].try_into().unwrap());
+        let protocol = message[76];
+        let source = parse_ipv4(&message[80..96])?;
+        let reqid = u32::from_ne_bytes(message[208..212].try_into().unwrap());
+        if protocol != 50 || reqid != edge.mark() {
+            continue;
+        }
+        if spi == outbound_spi && source == edge.local && destination == edge.remote {
+            outbound = Some(parse_state_snapshot(message, true)?);
+        } else if spi == inbound_spi && source == edge.remote && destination == edge.local {
+            inbound = Some(parse_state_snapshot(message, false)?);
+        }
+    }
+    Ok(XfrmSnapshot {
+        transport_id: edge.id,
+        scope: if edge.multiplexed() {
+            "group_transport"
+        } else if owner_count == 1 {
+            "edge"
+        } else {
+            "shared_transport"
+        },
+        owner_count,
+        outbound_policy: policy_present(policies, edge, false)?,
+        inbound_policy: policy_present(policies, edge, true)?,
+        outbound: outbound.ok_or_else(|| format!("outbound SA {outbound_spi:#010x} missing")),
+        inbound: inbound.ok_or_else(|| format!("inbound SA {inbound_spi:#010x} missing")),
+    })
+}
+
+fn policy_present(messages: &[Vec<u8>], edge: Edge, inbound: bool) -> io::Result<bool> {
+    let (source, destination) = if inbound {
+        (edge.remote, edge.local)
+    } else {
+        (edge.local, edge.remote)
+    };
+    let expected_selector = selector(source, destination, edge.port, false);
+    let expected_mark = if inbound {
+        [MARK_PREFIX.to_ne_bytes(), 0xffc0_0000u32.to_ne_bytes()].concat()
+    } else {
+        [edge.mark().to_ne_bytes(), u32::MAX.to_ne_bytes()].concat()
+    };
+    for message in messages {
+        if message.len() < 168 {
+            return Err(io::Error::other("truncated XFRM policy dump"));
+        }
+        if message[..56] == expected_selector
+            && message[160] == u8::from(!inbound)
+            && attrs(&message[168..])?
+                .iter()
+                .any(|(kind, value)| *kind == 21 && *value == expected_mark)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn parse_state_snapshot(message: &[u8], outbound: bool) -> io::Result<XfrmStateSnapshot> {
+    let sequence = attrs(&message[224..])?
+        .into_iter()
+        .find(|(kind, _)| *kind == 23)
+        .map(|(_, replay)| {
+            if replay.len() < 24 {
+                return Err(io::Error::other("truncated XFRM replay state"));
+            }
+            let low_offset = if outbound { 4 } else { 8 };
+            let high_offset = if outbound { 12 } else { 16 };
+            let low = u32::from_ne_bytes(replay[low_offset..low_offset + 4].try_into().unwrap());
+            let high = u32::from_ne_bytes(replay[high_offset..high_offset + 4].try_into().unwrap());
+            Ok((u64::from(high) << 32) | u64::from(low))
+        })
+        .transpose()?;
+    Ok(XfrmStateSnapshot {
+        spi: u32::from_be_bytes(message[72..76].try_into().unwrap()),
+        source: parse_ipv4(&message[80..96])?,
+        destination: parse_ipv4(&message[56..72])?,
+        bytes: u64::from_ne_bytes(message[160..168].try_into().unwrap()),
+        packets: u64::from_ne_bytes(message[168..176].try_into().unwrap()),
+        sequence,
+        replay_window_errors: u32::from_ne_bytes(message[192..196].try_into().unwrap()),
+        replay_errors: u32::from_ne_bytes(message[196..200].try_into().unwrap()),
+        integrity_failed: u32::from_ne_bytes(message[200..204].try_into().unwrap()),
+    })
+}
+
+fn parse_ipv4(value: &[u8]) -> io::Result<Ipv4Addr> {
+    value
+        .get(..4)
+        .and_then(|value| <[u8; 4]>::try_from(value).ok())
+        .map(Ipv4Addr::from)
+        .ok_or_else(|| io::Error::other("truncated XFRM IPv4 address"))
 }
 
 async fn install_unique(owner: u32, edge: Edge, key: [u8; 32]) -> io::Result<()> {
@@ -470,6 +631,30 @@ fn missing_ok(result: io::Result<Vec<u8>>) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    fn state_dump(edge: Edge, direction: u32, packets: u64, sequence: u32) -> Vec<u8> {
+        let inbound = direction != edge.direction();
+        let (source, destination) = if inbound {
+            (edge.remote, edge.local)
+        } else {
+            (edge.local, edge.remote)
+        };
+        let mut message = vec![0; 224];
+        message[56..80].copy_from_slice(&identity(destination, edge.spi(direction)));
+        message[80..96].copy_from_slice(&address(source));
+        message[160..168].copy_from_slice(&(packets * 100).to_ne_bytes());
+        message[168..176].copy_from_slice(&packets.to_ne_bytes());
+        message[192..196].copy_from_slice(&1u32.to_ne_bytes());
+        message[196..200].copy_from_slice(&2u32.to_ne_bytes());
+        message[200..204].copy_from_slice(&3u32.to_ne_bytes());
+        message[208..212].copy_from_slice(&edge.mark().to_ne_bytes());
+        message[212..214].copy_from_slice(&(libc::AF_INET as u16).to_ne_bytes());
+        let mut replay = vec![0; 24];
+        let offset = if inbound { 8 } else { 4 };
+        replay[offset..offset + 4].copy_from_slice(&sequence.to_ne_bytes());
+        message.extend(attr(23, &replay));
+        message
+    }
+
     fn kinds(body: &[u8], offset: usize) -> Vec<u16> {
         attrs(&body[offset..])
             .unwrap()
@@ -568,6 +753,35 @@ mod tests {
         assert!(transport_owned_by(&owners, &edges, first.id, Some(102)));
         let last = HashSet::from([102]);
         assert!(!transport_owned_by(&last, &edges, first.id, Some(102)));
+    }
+
+    #[test]
+    fn parses_directional_diagnostic_counters() {
+        let edge = Edge {
+            id: 42,
+            generation: 0,
+            port: 4790,
+            local: Ipv4Addr::new(192, 0, 2, 1),
+            remote: Ipv4Addr::new(192, 0, 2, 2),
+        };
+        let outbound = state_dump(edge, edge.direction(), 7, 8);
+        let inbound = state_dump(edge, 1 - edge.direction(), 5, 6);
+        let (_, _, outbound_policy) = policy_message(edge, false, false);
+        let (_, _, inbound_policy) = policy_message(edge, true, false);
+        let snapshot = parse_diagnostic_snapshot(
+            &[outbound, inbound],
+            &[outbound_policy, inbound_policy],
+            edge,
+            2,
+        )
+        .unwrap();
+        assert_eq!(snapshot.transport_id, 42);
+        assert_eq!(snapshot.scope, "shared_transport");
+        assert_eq!(snapshot.owner_count, 2);
+        assert!(snapshot.outbound_policy);
+        assert!(snapshot.inbound_policy);
+        assert_eq!(snapshot.outbound.unwrap().packets, 7);
+        assert_eq!(snapshot.inbound.unwrap().sequence, Some(6));
     }
 }
 

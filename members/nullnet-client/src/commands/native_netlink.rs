@@ -250,6 +250,21 @@ impl NativeSocket {
         let reply = self.request(family, REQUEST, &body)?;
         Ok(reply.get(4..).unwrap_or_default().to_vec())
     }
+
+    pub(super) fn generic_dump(
+        &mut self,
+        family: u16,
+        command: u8,
+        version: u8,
+    ) -> io::Result<Vec<Vec<u8>>> {
+        let body = [command, version, 0, 0];
+        self.dump(family, &body).map(|messages| {
+            messages
+                .into_iter()
+                .map(|message| message.get(4..).unwrap_or_default().to_vec())
+                .collect()
+        })
+    }
 }
 
 #[cfg(test)]

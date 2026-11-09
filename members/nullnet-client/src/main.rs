@@ -50,6 +50,7 @@ mod control_channel;
 mod crypto;
 mod device_events;
 mod ebpf;
+mod edge_diagnostics;
 mod egress_policy;
 mod egress_state;
 mod env;
@@ -207,7 +208,14 @@ async fn main() -> Result<(), Error> {
     // bridge-IP → container cache + egress policy-verdict cache, shared by the
     // NFQUEUE listeners and the control channel (which flushes them when the
     // server pushes an egress policy change).
-    let bridge_cache = nfqueue::BridgeIpCache::new();
+    let (edge_diagnostic_tx, edge_diagnostic_rx) = edge_diagnostics::channel();
+    let bridge_cache = nfqueue::BridgeIpCache::with_diagnostics(edge_diagnostic_tx);
+    edge_diagnostics::spawn(
+        grpc_server.clone(),
+        rtnetlink_handle.clone(),
+        bridge_cache.clone(),
+        edge_diagnostic_rx,
+    );
     // Which connections each container has open, for egress and for each
     // trigger-built chain. Shared: the NFQUEUE accept paths add flows, conntrack
     // DESTROY retires them, and the control channel must suppress both around

@@ -31,6 +31,16 @@ fn link_group(vxlan_id: u32, client_side: bool) -> u32 {
     0x4e00_0000 | (vxlan_id << 1) | u32::from(client_side)
 }
 
+fn peer_addresses(params: &VxlanSetupParams) -> [Ipv4Addr; 2] {
+    let base = u32::from(params.ns_net.ip()) & !7;
+    let offsets = if params.br_name.ends_with("_c") {
+        [1, 2]
+    } else {
+        [3, 4]
+    };
+    offsets.map(|offset| Ipv4Addr::from(base + offset))
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct VxlanSetupParams {
     pub(crate) vxlan_id: u32,
@@ -95,6 +105,22 @@ struct Endpoint {
     forwarding: u32,
     io: endpoint_io::EndpointSockets,
     retirement: Arc<endpoint_io::Retirement>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TransportEndpointSnapshot {
+    pub(crate) side: &'static str,
+    pub(crate) forwarding: Result<super::endpoint_namespace::LinkSnapshot, String>,
+    pub(crate) transport: Option<Result<super::endpoint_namespace::LinkSnapshot, String>>,
+    pub(crate) macsec: Option<Result<super::native_macsec::MacsecSnapshot, String>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct EdgeTransportSnapshot {
+    pub(crate) placement: &'static str,
+    pub(crate) endpoints: Vec<TransportEndpointSnapshot>,
+    pub(crate) underlay: Option<Result<super::endpoint_namespace::PathSnapshot, String>>,
+    pub(crate) xfrm: Option<Result<super::native_xfrm::XfrmSnapshot, String>>,
 }
 
 async fn lock(id: u32) -> OwnedMutexGuard<()> {
@@ -345,7 +371,16 @@ pub(crate) async fn setup(
             return Err(error);
         }
         if let Some(container) = &params.docker_container {
-            cache.add_overlay(&params.ns_name, params.ns_net.ip(), container);
+            cache.add_observed_overlay(
+                &params.ns_name,
+                params.ns_net.ip(),
+                container,
+                params.vxlan_id,
+                endpoint
+                    .inner
+                    .expect("container endpoint has an inner link"),
+                peer_addresses(&params),
+            );
         }
         Ok(())
     })
@@ -403,20 +438,8 @@ async fn activate(endpoint: Arc<Endpoint>, params: &VxlanSetupParams) -> Result<
         endpoint_io::set_up(&mut root.route, endpoint.forwarding)?;
 
         endpoint_io::set_up(&mut root.route, endpoint.transport)?;
-        let octets = p.ns_net.ip().octets();
-        let base = u32::from_be_bytes(octets) & !7;
-        let offsets = if p.br_name.ends_with("_c") {
-            [1, 2]
-        } else {
-            [3, 4]
-        };
-        for offset in offsets {
-            endpoint_io::peer_route(
-                &mut root.route,
-                Ipv4Addr::from(base + offset),
-                endpoint.forwarding,
-                p.br_net.ip(),
-            )?;
+        for peer in peer_addresses(p) {
+            endpoint_io::peer_route(&mut root.route, peer, endpoint.forwarding, p.br_net.ip())?;
         }
         Ok(())
     })
@@ -438,6 +461,98 @@ pub(crate) async fn ready(id: u32) -> Result<(), Error> {
         return Err("Fresh endpoint is missing").handle_err(location!());
     }
     synchronize(endpoints).await
+}
+
+pub(crate) async fn diagnostic_snapshot(
+    rtnetlink: &RtNetLinkHandle,
+    id: u32,
+) -> EdgeTransportSnapshot {
+    let endpoints: Vec<_> = {
+        let active = ENDPOINTS.lock().unwrap_or_else(PoisonError::into_inner);
+        [format!("ns_{id}_c"), format!("ns_{id}_s")]
+            .into_iter()
+            .filter_map(|name| active.get(&name))
+            .map(|endpoint| {
+                (
+                    if endpoint.params.br_name.ends_with("_c") {
+                        "client"
+                    } else {
+                        "server"
+                    },
+                    endpoint.params.local_ip == endpoint.params.remote_ip,
+                    endpoint.params.encrypted,
+                    endpoint.forwarding,
+                    endpoint.transport,
+                    endpoint.params.remote_ip,
+                )
+            })
+            .collect()
+    };
+    let placement = if endpoints.iter().all(|endpoint| endpoint.1) {
+        "same_host"
+    } else {
+        "cross_host"
+    };
+    let macsec_indices: Vec<_> = endpoints
+        .iter()
+        .filter_map(|endpoint| (endpoint.1 && endpoint.2).then_some(endpoint.3))
+        .collect();
+    let cross_host = endpoints
+        .iter()
+        .find(|endpoint| !endpoint.1)
+        .map(|endpoint| (endpoint.2, endpoint.5));
+    let (macsec, underlay, xfrm) = tokio::join!(
+        async {
+            if macsec_indices.is_empty() {
+                Ok(HashMap::new())
+            } else {
+                super::native_macsec::snapshots(macsec_indices).await
+            }
+        },
+        async {
+            match cross_host {
+                Some((_, remote)) => {
+                    Some(super::endpoint_namespace::path_snapshot(&rtnetlink.handle, remote).await)
+                }
+                None => None,
+            }
+        },
+        async {
+            match cross_host {
+                Some((true, _)) => Some(super::native_xfrm::diagnostic_snapshot(id).await),
+                _ => None,
+            }
+        }
+    );
+    let mut snapshots = Vec::with_capacity(endpoints.len());
+    for (side, same_host, encrypted, forwarding, transport, _) in endpoints {
+        let forwarding_snapshot =
+            super::endpoint_namespace::link_snapshot(&rtnetlink.handle, forwarding).await;
+        let transport_snapshot = if transport == forwarding {
+            None
+        } else {
+            Some(super::endpoint_namespace::link_snapshot(&rtnetlink.handle, transport).await)
+        };
+        let macsec_snapshot = (same_host && encrypted).then(|| match &macsec {
+            Ok(snapshots) => snapshots
+                .get(&forwarding)
+                .cloned()
+                .ok_or_else(|| format!("MACsec index {forwarding} missing")),
+            Err(error) => Err(error.to_string()),
+        });
+        snapshots.push(TransportEndpointSnapshot {
+            side,
+            forwarding: forwarding_snapshot,
+            transport: transport_snapshot,
+            macsec: macsec_snapshot,
+        });
+    }
+    EdgeTransportSnapshot {
+        placement,
+        endpoints: snapshots,
+        underlay,
+        xfrm,
+    }
 }
 
 async fn synchronize(endpoints: Vec<Arc<Endpoint>>) -> Result<(), Error> {

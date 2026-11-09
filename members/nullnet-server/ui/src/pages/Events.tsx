@@ -116,6 +116,8 @@ function eventDetail(e: EventJson): string {
       return e.error_message;
     case 'device_event_bypass_changed':
       return `Device-event bypass ${e.available ? 'active' : 'unavailable'}: ${e.detail}`;
+    case 'edge_data_plane_status':
+      return `net ${e.net_id} · ${e.docker_container} · ${e.local_ip} → ${e.destination_ip} · ${e.reachable ? 'recovered' : 'unreachable (likely EHOSTUNREACH)'} (${e.signal})`;
     case 'firewall_rules_load_failed':
       return `${e.path} · ${e.error_message}`;
     case 'container_suspend_failed':

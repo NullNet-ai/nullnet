@@ -18,8 +18,8 @@ use crate::triggers::{EGRESS_TRIGGER_PORT, TriggerClaim, TriggerState, TriggersS
 use nfq::{Message, Verdict};
 use nullnet_grpc_lib::NullnetGrpcInterface;
 use nullnet_grpc_lib::nullnet_grpc::{
-    AgentEgressPolicyCheckFailed, AgentEgressTriggerSendFailed, AgentEvent, EgressDestinationEntry,
-    agent_event::Event as AgentEventKind,
+    AgentEgressPolicyCheckFailed, AgentEgressSteerSetupTimedOut, AgentEgressTriggerSendFailed,
+    AgentEvent, EgressDestinationEntry, agent_event::Event as AgentEventKind,
 };
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -289,6 +289,13 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Decision {
                         // Pending (ages out at PENDING_TIMEOUT) so a retransmit
                         // re-waits on the same notify; drop this held SYN.
                         eprintln!("[egress-nfq] no egress steer for container {container}");
+                        report_setup_timeout(
+                            &ctx.grpc,
+                            &container,
+                            dst_ip,
+                            dst_port,
+                            "timed out waiting for egress NetReady",
+                        );
                         tracked(Verdict::Drop)
                     }
                 },
@@ -306,6 +313,13 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Decision {
                         ) {
                             Verdict::Accept
                         } else {
+                            report_trigger_send_failed(
+                                &ctx.grpc,
+                                &container,
+                                dst_ip,
+                                dst_port,
+                                "egress trigger RPC timed out before activation".to_string(),
+                            );
                             Verdict::Drop
                         },
                     )
@@ -493,7 +507,6 @@ fn report_policy_check_failed(
     dst_ip: Ipv4Addr,
     error_message: String,
 ) {
-    let grpc = grpc.clone();
     let event = AgentEvent {
         event: Some(AgentEventKind::EgressPolicyCheckFailed(
             AgentEgressPolicyCheckFailed {
@@ -503,9 +516,7 @@ fn report_policy_check_failed(
             },
         )),
     };
-    tokio::spawn(async move {
-        let _ = grpc.report_event(event).await;
-    });
+    super::fire_event(grpc, event);
 }
 
 /// Fire-and-forget: report a failed `egress_trigger` to the server's event stream.
@@ -516,7 +527,6 @@ fn report_trigger_send_failed(
     dst_port: u16,
     error_message: String,
 ) {
-    let grpc = grpc.clone();
     let event = AgentEvent {
         event: Some(AgentEventKind::EgressTriggerSendFailed(
             AgentEgressTriggerSendFailed {
@@ -527,7 +537,25 @@ fn report_trigger_send_failed(
             },
         )),
     };
-    tokio::spawn(async move {
-        let _ = grpc.report_event(event).await;
-    });
+    super::fire_event(grpc, event);
+}
+
+fn report_setup_timeout(
+    grpc: &NullnetGrpcInterface,
+    container: &str,
+    dst_ip: Ipv4Addr,
+    dst_port: u16,
+    error_message: &str,
+) {
+    let event = AgentEvent {
+        event: Some(AgentEventKind::EgressSteerSetupTimedOut(
+            AgentEgressSteerSetupTimedOut {
+                docker_container: container.to_string(),
+                dst_ip: dst_ip.to_string(),
+                dst_port: u32::from(dst_port),
+                error_message: error_message.to_string(),
+            },
+        )),
+    };
+    super::fire_event(grpc, event);
 }

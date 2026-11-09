@@ -128,6 +128,7 @@ export const EVENT_KIND_GROUPS = defineEventKindGroups([
     label: 'Network Devices',
     kinds: [
       'device_event_bypass_changed',
+      'edge_data_plane_status',
       'vlan_setup_completed',
       'vlan_setup_failed',
       'vlan_teardown_failed',
