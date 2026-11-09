@@ -317,7 +317,6 @@ fn report_trigger_send_failed(
     port: u16,
     error_message: String,
 ) {
-    let grpc = grpc.clone();
     let event = AgentEvent {
         event: Some(AgentEventKind::BackendTriggerSendFailed(
             AgentBackendTriggerSendFailed {
@@ -327,9 +326,7 @@ fn report_trigger_send_failed(
             },
         )),
     };
-    tokio::spawn(async move {
-        let _ = grpc.report_event(event).await;
-    });
+    super::fire_event(grpc, event);
 }
 
 fn report_setup_timeout(
@@ -339,7 +336,6 @@ fn report_setup_timeout(
     container: &str,
     error_message: &str,
 ) {
-    let grpc = grpc.clone();
     let event = AgentEvent {
         event: Some(AgentEventKind::BackendTriggerSetupTimedOut(
             AgentBackendTriggerSetupTimedOut {
@@ -350,9 +346,7 @@ fn report_setup_timeout(
             },
         )),
     };
-    tokio::spawn(async move {
-        let _ = grpc.report_event(event).await;
-    });
+    super::fire_event(grpc, event);
 }
 
 #[cfg(test)]

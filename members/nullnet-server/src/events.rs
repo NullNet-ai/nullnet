@@ -345,8 +345,8 @@ pub(crate) enum Event {
         detail: String,
         timestamp: u64,
     },
-    /// The kernel marked the peer address of an active encrypted edge failed,
-    /// or subsequently confirmed it reachable again.
+    /// The kernel marked the peer address of an active edge failed, or
+    /// subsequently confirmed it reachable again.
     EdgeDataPlaneStatus {
         net_id: u32,
         docker_container: String,

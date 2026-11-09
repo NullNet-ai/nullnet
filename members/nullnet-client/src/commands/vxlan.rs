@@ -31,6 +31,16 @@ fn link_group(vxlan_id: u32, client_side: bool) -> u32 {
     0x4e00_0000 | (vxlan_id << 1) | u32::from(client_side)
 }
 
+fn peer_addresses(params: &VxlanSetupParams) -> [Ipv4Addr; 2] {
+    let base = u32::from(params.ns_net.ip()) & !7;
+    let offsets = if params.br_name.ends_with("_c") {
+        [1, 2]
+    } else {
+        [3, 4]
+    };
+    offsets.map(|offset| Ipv4Addr::from(base + offset))
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct VxlanSetupParams {
     pub(crate) vxlan_id: u32,
@@ -361,7 +371,16 @@ pub(crate) async fn setup(
             return Err(error);
         }
         if let Some(container) = &params.docker_container {
-            cache.add_overlay(&params.ns_name, params.ns_net.ip(), container);
+            cache.add_observed_overlay(
+                &params.ns_name,
+                params.ns_net.ip(),
+                container,
+                params.vxlan_id,
+                endpoint
+                    .inner
+                    .expect("container endpoint has an inner link"),
+                peer_addresses(&params),
+            );
         }
         Ok(())
     })
@@ -419,20 +438,8 @@ async fn activate(endpoint: Arc<Endpoint>, params: &VxlanSetupParams) -> Result<
         endpoint_io::set_up(&mut root.route, endpoint.forwarding)?;
 
         endpoint_io::set_up(&mut root.route, endpoint.transport)?;
-        let octets = p.ns_net.ip().octets();
-        let base = u32::from_be_bytes(octets) & !7;
-        let offsets = if p.br_name.ends_with("_c") {
-            [1, 2]
-        } else {
-            [3, 4]
-        };
-        for offset in offsets {
-            endpoint_io::peer_route(
-                &mut root.route,
-                Ipv4Addr::from(base + offset),
-                endpoint.forwarding,
-                p.br_net.ip(),
-            )?;
+        for peer in peer_addresses(p) {
+            endpoint_io::peer_route(&mut root.route, peer, endpoint.forwarding, p.br_net.ip())?;
         }
         Ok(())
     })
@@ -460,26 +467,27 @@ pub(crate) async fn diagnostic_snapshot(
     rtnetlink: &RtNetLinkHandle,
     id: u32,
 ) -> EdgeTransportSnapshot {
-    let endpoints: Vec<_> = ENDPOINTS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .values()
-        .filter(|endpoint| endpoint.params.vxlan_id == id)
-        .map(|endpoint| {
-            (
-                if endpoint.params.br_name.ends_with("_c") {
-                    "client"
-                } else {
-                    "server"
-                },
-                endpoint.params.local_ip == endpoint.params.remote_ip,
-                endpoint.params.encrypted,
-                endpoint.forwarding,
-                endpoint.transport,
-                endpoint.params.remote_ip,
-            )
-        })
-        .collect();
+    let endpoints: Vec<_> = {
+        let active = ENDPOINTS.lock().unwrap_or_else(PoisonError::into_inner);
+        [format!("ns_{id}_c"), format!("ns_{id}_s")]
+            .into_iter()
+            .filter_map(|name| active.get(&name))
+            .map(|endpoint| {
+                (
+                    if endpoint.params.br_name.ends_with("_c") {
+                        "client"
+                    } else {
+                        "server"
+                    },
+                    endpoint.params.local_ip == endpoint.params.remote_ip,
+                    endpoint.params.encrypted,
+                    endpoint.forwarding,
+                    endpoint.transport,
+                    endpoint.params.remote_ip,
+                )
+            })
+            .collect()
+    };
     let placement = if endpoints.iter().all(|endpoint| endpoint.1) {
         "same_host"
     } else {

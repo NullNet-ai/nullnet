@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 use tokio::sync::{Mutex, Notify};
 
 /// First 12 hex chars of `NetworkSettings.SandboxID` are what Docker uses
@@ -30,7 +30,7 @@ const DOCKER_SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct BridgeIpCache {
     inner: Arc<RwLock<AddressOwners>>,
     namespaces: Arc<RwLock<HashMap<String, Arc<EndpointNamespace>>>>,
-    diagnostics: Option<UnboundedSender<NeighbourSignal>>,
+    diagnostics: Option<Sender<NeighbourSignal>>,
     refresh_lock: Arc<Mutex<()>>,
     watching: Arc<AtomicBool>,
 }
@@ -39,12 +39,45 @@ pub struct BridgeIpCache {
 struct AddressOwners {
     docker: HashMap<Ipv4Addr, String>,
     overlays: HashMap<Ipv4Addr, OverlayOwner>,
+    diagnostic_peers: HashMap<String, HashMap<Ipv4Addr, DiagnosticOwner>>,
+    diagnostic_namespaces: HashMap<String, (String, [Ipv4Addr; 2])>,
 }
 
 struct OverlayOwner {
     namespace: String,
     container: String,
+}
+
+struct DiagnosticOwner {
+    local_ip: Ipv4Addr,
+    net_id: u32,
+    interface_index: u32,
     unreachable_reported: bool,
+}
+
+impl AddressOwners {
+    fn diagnostic_transition(
+        &mut self,
+        signal: &NeighbourSignal,
+    ) -> Option<EdgeReachabilityChange> {
+        let owner = self
+            .diagnostic_peers
+            .get_mut(&signal.container)?
+            .get_mut(&signal.destination)?;
+        if owner.interface_index != signal.interface_index {
+            return None;
+        }
+        let reachable = signal.reachability == NeighbourReachability::Reachable;
+        if owner.unreachable_reported == !reachable {
+            return None;
+        }
+        owner.unreachable_reported = !reachable;
+        Some(EdgeReachabilityChange {
+            net_id: owner.net_id,
+            local_ip: owner.local_ip,
+            reachable,
+        })
+    }
 }
 
 pub(crate) struct EdgeReachabilityChange {
@@ -64,7 +97,7 @@ impl BridgeIpCache {
         Self::default()
     }
 
-    pub(crate) fn with_diagnostics(sender: UnboundedSender<NeighbourSignal>) -> Self {
+    pub(crate) fn with_diagnostics(sender: Sender<NeighbourSignal>) -> Self {
         Self {
             diagnostics: Some(sender),
             ..Self::default()
@@ -152,64 +185,84 @@ impl BridgeIpCache {
             OverlayOwner {
                 namespace: namespace.into(),
                 container: container.into(),
-                unreachable_reported: false,
             },
         );
     }
 
-    pub(crate) fn remove_overlay(&self, namespace: &str) {
-        self.inner
-            .write()
-            .unwrap()
-            .overlays
-            .retain(|_, owner| owner.namespace != namespace);
+    pub(crate) fn add_observed_overlay(
+        &self,
+        namespace: &str,
+        local_ip: Ipv4Addr,
+        container: &str,
+        net_id: u32,
+        interface_index: u32,
+        peers: [Ipv4Addr; 2],
+    ) {
+        let mut owners = self.inner.write().unwrap();
+        owners.overlays.insert(
+            local_ip,
+            OverlayOwner {
+                namespace: namespace.into(),
+                container: container.into(),
+            },
+        );
+        let entries = owners
+            .diagnostic_peers
+            .entry(container.to_string())
+            .or_default();
+        for peer in peers {
+            entries.insert(
+                peer,
+                DiagnosticOwner {
+                    local_ip,
+                    net_id,
+                    interface_index,
+                    unreachable_reported: false,
+                },
+            );
+        }
+        owners
+            .diagnostic_namespaces
+            .insert(namespace.to_string(), (container.to_string(), peers));
     }
 
-    pub(crate) fn update_reachability(
+    pub(crate) fn remove_overlay(&self, namespace: &str) {
+        let mut owners = self.inner.write().unwrap();
+        owners
+            .overlays
+            .retain(|_, owner| owner.namespace != namespace);
+        if let Some((container, peer_addresses)) = owners.diagnostic_namespaces.remove(namespace) {
+            let remove_container = if let Some(peers) = owners.diagnostic_peers.get_mut(&container)
+            {
+                for peer in peer_addresses {
+                    peers.remove(&peer);
+                }
+                peers.is_empty()
+            } else {
+                false
+            };
+            if remove_container {
+                owners.diagnostic_peers.remove(&container);
+            }
+        }
+    }
+
+    pub(crate) fn diagnostic_transition(
+        &self,
+        signal: &NeighbourSignal,
+    ) -> Option<(EdgeReachabilityChange, EdgeDiagnosticContext)> {
+        let namespace = self.cached_namespace(&signal.container)?;
+        let change = self.inner.write().unwrap().diagnostic_transition(signal)?;
+        let net_id = change.net_id;
+        Some((change, EdgeDiagnosticContext { net_id, namespace }))
+    }
+
+    #[cfg(test)]
+    fn test_diagnostic_transition(
         &self,
         signal: &NeighbourSignal,
     ) -> Option<EdgeReachabilityChange> {
-        let net_id = overlay_net_id(signal.destination)?;
-        let server = format!("ns_{net_id}_s");
-        let client = format!("ns_{net_id}_c");
-        let mut owners = self.inner.write().unwrap();
-        let (local_ip, owner) = owners.overlays.iter_mut().find(|(_, owner)| {
-            owner.container == signal.container
-                && (owner.namespace == server || owner.namespace == client)
-        })?;
-        let reachable = signal.reachability == NeighbourReachability::Reachable;
-        if owner.unreachable_reported == !reachable {
-            return None;
-        }
-        owner.unreachable_reported = !reachable;
-        Some(EdgeReachabilityChange {
-            net_id,
-            local_ip: *local_ip,
-            reachable,
-        })
-    }
-
-    pub(crate) fn diagnostic_context(
-        &self,
-        signal: &NeighbourSignal,
-    ) -> Option<EdgeDiagnosticContext> {
-        let net_id = overlay_net_id(signal.destination)?;
-        let server = format!("ns_{net_id}_s");
-        let client = format!("ns_{net_id}_c");
-        let owned = {
-            let owners = self.inner.read().unwrap();
-            owners.overlays.values().any(|owner| {
-                owner.container == signal.container
-                    && (owner.namespace == server || owner.namespace == client)
-            })
-        };
-        if !owned {
-            return None;
-        }
-        Some(EdgeDiagnosticContext {
-            net_id,
-            namespace: self.cached_namespace(&signal.container)?,
-        })
+        self.inner.write().unwrap().diagnostic_transition(signal)
     }
 
     fn replace(&self, map: HashMap<Ipv4Addr, String>) {
@@ -288,9 +341,7 @@ type Discovery = (
     HashMap<String, Arc<EndpointNamespace>>,
 );
 
-async fn query_docker(
-    diagnostics: Option<UnboundedSender<NeighbourSignal>>,
-) -> Result<Discovery, String> {
+async fn query_docker(diagnostics: Option<Sender<NeighbourSignal>>) -> Result<Discovery, String> {
     let ids = list_container_ids().await?;
     if ids.is_empty() {
         return Ok((HashMap::new(), HashMap::new()));
@@ -333,13 +384,6 @@ async fn query_docker(
     }
 
     Ok((map, namespaces))
-}
-
-fn overlay_net_id(ip: Ipv4Addr) -> Option<u32> {
-    let base = u32::from(Ipv4Addr::new(10, 0, 0, 0));
-    let value = u32::from(ip);
-    let offset = value.checked_sub(base)?;
-    (offset < (1 << 24)).then_some(offset / 8)
 }
 
 async fn list_container_ids() -> Result<Vec<String>, String> {
@@ -662,7 +706,14 @@ mod tests {
         let cache = BridgeIpCache::new();
         let local = Ipv4Addr::new(10, 0, 6, 19);
         let peer = Ipv4Addr::new(10, 0, 6, 17);
-        cache.add_overlay("ns_194_c", local, "api3");
+        cache.add_observed_overlay(
+            "ns_194_c",
+            local,
+            "api3",
+            194,
+            7,
+            [peer, Ipv4Addr::new(10, 0, 6, 18)],
+        );
 
         let failed = NeighbourSignal {
             container: "api3".into(),
@@ -672,26 +723,44 @@ mod tests {
             probes: Some(3),
             reachability: NeighbourReachability::Failed,
         };
-        let change = cache.update_reachability(&failed).unwrap();
+        let change = cache.test_diagnostic_transition(&failed).unwrap();
         assert_eq!(change.net_id, 194);
         assert_eq!(change.local_ip, local);
         assert!(!change.reachable);
-        assert!(cache.update_reachability(&failed).is_none());
+        assert!(cache.test_diagnostic_transition(&failed).is_none());
+
+        let unrelated_reachable = NeighbourSignal {
+            destination: Ipv4Addr::new(10, 0, 6, 18),
+            reachability: NeighbourReachability::Reachable,
+            ..failed.clone()
+        };
+        assert!(
+            cache
+                .test_diagnostic_transition(&unrelated_reachable)
+                .is_none()
+        );
 
         let recovered = NeighbourSignal {
             reachability: NeighbourReachability::Reachable,
             ..failed
         };
-        let change = cache.update_reachability(&recovered).unwrap();
+        let change = cache.test_diagnostic_transition(&recovered).unwrap();
         assert_eq!(change.net_id, 194);
         assert!(change.reachable);
-        assert!(cache.update_reachability(&recovered).is_none());
+        assert!(cache.test_diagnostic_transition(&recovered).is_none());
     }
 
     #[test]
     fn edge_reachability_ignores_unowned_neighbours() {
         let cache = BridgeIpCache::new();
-        cache.add_overlay("ns_194_c", Ipv4Addr::new(10, 0, 6, 19), "api3");
+        cache.add_observed_overlay(
+            "ns_194_c",
+            Ipv4Addr::new(10, 0, 6, 19),
+            "api3",
+            194,
+            7,
+            [Ipv4Addr::new(10, 0, 6, 17), Ipv4Addr::new(10, 0, 6, 18)],
+        );
 
         for signal in [
             NeighbourSignal {
@@ -704,8 +773,16 @@ mod tests {
             },
             NeighbourSignal {
                 container: "api3".into(),
-                destination: Ipv4Addr::new(10, 0, 6, 25),
+                destination: Ipv4Addr::new(10, 0, 6, 20),
                 interface_index: 7,
+                link_layer_address: None,
+                probes: None,
+                reachability: NeighbourReachability::Failed,
+            },
+            NeighbourSignal {
+                container: "api3".into(),
+                destination: Ipv4Addr::new(10, 0, 6, 17),
+                interface_index: 8,
                 link_layer_address: None,
                 probes: None,
                 reachability: NeighbourReachability::Failed,
@@ -719,8 +796,36 @@ mod tests {
                 reachability: NeighbourReachability::Failed,
             },
         ] {
-            assert!(cache.update_reachability(&signal).is_none());
+            assert!(cache.test_diagnostic_transition(&signal).is_none());
         }
+    }
+
+    #[test]
+    fn removing_an_overlay_removes_its_diagnostic_peers() {
+        let cache = BridgeIpCache::new();
+        let peer = Ipv4Addr::new(10, 0, 6, 17);
+        cache.add_observed_overlay(
+            "ns_194_c",
+            Ipv4Addr::new(10, 0, 6, 19),
+            "api3",
+            194,
+            7,
+            [peer, Ipv4Addr::new(10, 0, 6, 18)],
+        );
+        cache.remove_overlay("ns_194_c");
+
+        assert!(
+            cache
+                .test_diagnostic_transition(&NeighbourSignal {
+                    container: "api3".into(),
+                    destination: peer,
+                    interface_index: 7,
+                    link_layer_address: None,
+                    probes: None,
+                    reachability: NeighbourReachability::Failed,
+                })
+                .is_none()
+        );
     }
 
     fn idx_with(name: &str, sandbox_prefix: &str) -> ContainerIndex {

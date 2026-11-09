@@ -507,7 +507,6 @@ fn report_policy_check_failed(
     dst_ip: Ipv4Addr,
     error_message: String,
 ) {
-    let grpc = grpc.clone();
     let event = AgentEvent {
         event: Some(AgentEventKind::EgressPolicyCheckFailed(
             AgentEgressPolicyCheckFailed {
@@ -517,9 +516,7 @@ fn report_policy_check_failed(
             },
         )),
     };
-    tokio::spawn(async move {
-        let _ = grpc.report_event(event).await;
-    });
+    super::fire_event(grpc, event);
 }
 
 /// Fire-and-forget: report a failed `egress_trigger` to the server's event stream.
@@ -530,7 +527,6 @@ fn report_trigger_send_failed(
     dst_port: u16,
     error_message: String,
 ) {
-    let grpc = grpc.clone();
     let event = AgentEvent {
         event: Some(AgentEventKind::EgressTriggerSendFailed(
             AgentEgressTriggerSendFailed {
@@ -541,9 +537,7 @@ fn report_trigger_send_failed(
             },
         )),
     };
-    tokio::spawn(async move {
-        let _ = grpc.report_event(event).await;
-    });
+    super::fire_event(grpc, event);
 }
 
 fn report_setup_timeout(
@@ -553,7 +547,6 @@ fn report_setup_timeout(
     dst_port: u16,
     error_message: &str,
 ) {
-    let grpc = grpc.clone();
     let event = AgentEvent {
         event: Some(AgentEventKind::EgressSteerSetupTimedOut(
             AgentEgressSteerSetupTimedOut {
@@ -564,7 +557,5 @@ fn report_setup_timeout(
             },
         )),
     };
-    tokio::spawn(async move {
-        let _ = grpc.report_event(event).await;
-    });
+    super::fire_event(grpc, event);
 }

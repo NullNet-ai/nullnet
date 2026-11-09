@@ -5,7 +5,7 @@ pub(crate) mod parse;
 mod recv_loop;
 
 pub use cache::BridgeIpCache;
-pub(crate) use cache::EdgeDiagnosticContext;
+pub(crate) use cache::{EdgeDiagnosticContext, EdgeReachabilityChange};
 pub use listener::{TriggerMap, TriggerOwner, TriggerOwners, service_for, watched_ports};
 
 use crate::commands::nfqueue as rules;
@@ -15,11 +15,35 @@ use crate::triggers::TriggersState;
 use egress_listener::spawn_egress_recv_thread;
 use listener::{HANDLER_CONCURRENCY, ListenerCtx, spawn_recv_thread};
 use nullnet_grpc_lib::NullnetGrpcInterface;
+use nullnet_grpc_lib::nullnet_grpc::AgentEvent;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc::UnboundedReceiver;
+
+static EVENT_TASKS: Semaphore = Semaphore::const_new(8);
+static EVENT_OVERFLOW_REPORTED: AtomicBool = AtomicBool::new(false);
+
+fn fire_event(grpc: &NullnetGrpcInterface, event: AgentEvent) {
+    let Ok(permit) = EVENT_TASKS.try_acquire() else {
+        if !EVENT_OVERFLOW_REPORTED.swap(true, Ordering::Relaxed) {
+            eprintln!("[nfqueue] event dropped: reason=reporters_busy");
+        }
+        return;
+    };
+    let grpc = grpc.clone();
+    tokio::spawn(async move {
+        let _permit = permit;
+        match tokio::time::timeout(Duration::from_secs(5), grpc.report_event(event)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => eprintln!("[nfqueue] event report failed: {error}"),
+            Err(_) => eprintln!("[nfqueue] event report failed: timeout"),
+        }
+    });
+}
 
 /// Wire up the NFQUEUE-based trigger pipeline.
 ///

@@ -15,7 +15,10 @@ use std::net::Ipv4Addr;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::sync::Arc;
-use tokio::sync::mpsc::UnboundedSender;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::mpsc::Sender;
+
+static DIAGNOSTIC_QUEUE_OVERFLOW_REPORTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NeighbourReachability {
@@ -23,7 +26,7 @@ pub(crate) enum NeighbourReachability {
     Reachable,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct NeighbourSignal {
     pub(crate) container: String,
     pub(crate) destination: Ipv4Addr,
@@ -33,7 +36,7 @@ pub(crate) struct NeighbourSignal {
     pub(crate) reachability: NeighbourReachability,
 }
 
-type NeighbourObserver = (String, UnboundedSender<NeighbourSignal>);
+type NeighbourObserver = (String, Sender<NeighbourSignal>);
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct LinkSnapshot {
@@ -322,7 +325,7 @@ async fn monitor_neighbours(
         SocketAddr,
     )>,
     container: String,
-    sender: UnboundedSender<NeighbourSignal>,
+    sender: Sender<NeighbourSignal>,
 ) {
     while let Some((message, _)) = messages.next().await {
         let NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewNeighbour(message)) =
@@ -359,18 +362,21 @@ async fn monitor_neighbours(
                 NeighbourAttribute::Probes(probes) => Some(*probes),
                 _ => None,
             });
-        if sender
-            .send(NeighbourSignal {
-                container: container.clone(),
-                destination,
-                interface_index: message.header.ifindex,
-                link_layer_address,
-                probes,
-                reachability,
-            })
-            .is_err()
-        {
-            break;
+        match sender.try_send(NeighbourSignal {
+            container: container.clone(),
+            destination,
+            interface_index: message.header.ifindex,
+            link_layer_address,
+            probes,
+            reachability,
+        }) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                if !DIAGNOSTIC_QUEUE_OVERFLOW_REPORTED.swap(true, Ordering::Relaxed) {
+                    eprintln!("[edge] diagnostic signal dropped: reason=queue_full");
+                }
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
         }
     }
 }

@@ -208,7 +208,7 @@ async fn main() -> Result<(), Error> {
     // bridge-IP → container cache + egress policy-verdict cache, shared by the
     // NFQUEUE listeners and the control channel (which flushes them when the
     // server pushes an egress policy change).
-    let (edge_diagnostic_tx, edge_diagnostic_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (edge_diagnostic_tx, edge_diagnostic_rx) = edge_diagnostics::channel();
     let bridge_cache = nfqueue::BridgeIpCache::with_diagnostics(edge_diagnostic_tx);
     edge_diagnostics::spawn(
         grpc_server.clone(),
