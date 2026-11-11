@@ -226,15 +226,15 @@ fn build_match_entries(services: &[ServiceToml]) -> Result<Vec<MatchEntry>, Erro
             })
             .transpose()
             .handle_err(location!())?;
-        if s.docker_container.is_none() && s.process_path.is_none() {
-            continue;
-        }
         if s.timeout.is_some() && s.port.is_none() {
             return Err(format!(
                 "service '{}': proxy-reachable service requires a nonzero 'port'",
                 s.name
             ))
             .handle_err(location!());
+        }
+        if s.docker_container.is_none() && s.process_path.is_none() {
+            continue;
         }
         entries.push(MatchEntry {
             name: s.name.clone(),
@@ -537,7 +537,15 @@ impl ServicesToml {
                 .handle_err(location!());
             }
             let mut triggers = HashMap::new();
+            let mut backend_names = std::collections::HashSet::new();
             for peer in s.backends {
+                if !backend_names.insert(peer.clone()) {
+                    return Err(format!(
+                        "service '{}': backend peer '{}' is declared more than once",
+                        s.name, peer
+                    ))
+                    .handle_err(location!());
+                }
                 let Some(port) = peer_ports.get(&peer).copied() else {
                     return Err(format!(
                         "service '{}': backend peer '{}' must be declared",
@@ -1222,6 +1230,7 @@ port = 8080
         for suffix in [
             "backends = [' ']",
             "backends = ['a']",
+            "backends = ['a', 'a']\n[[services]]\nname = 'a'",
             "backends = ['a']\n[[services]]\nname = 'a'\nport = 0",
             "backends = ['a', 'b']\n[[services]]\nname = 'a'\nport = 5555\n[[services]]\nname = 'b'\nport = 5555",
         ] {
@@ -1275,6 +1284,20 @@ docker_container = "dep"
 [[services]]
 name = "web"
 docker_container = "web"
+timeout = 0
+"#,
+            )
+            .unwrap(),
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_str().contains("proxy-reachable service requires"));
+
+        let error = validate_stack(
+            stack_services(
+                r#"
+[[services]]
+name = "web"
 timeout = 0
 "#,
             )
