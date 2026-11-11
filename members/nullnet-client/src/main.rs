@@ -217,7 +217,7 @@ async fn main() -> Result<(), Error> {
         edge_diagnostic_rx,
     );
     // Which connections each container has open, for egress and for each
-    // trigger-built chain. Shared: the NFQUEUE accept paths add flows, conntrack
+    // trigger-built edge. Shared: the NFQUEUE accept paths add flows, conntrack
     // DESTROY retires them, and the control channel must suppress both around
     // the conntrack flushes it triggers.
     let liveness = conntrack::LivenessSets::new();
@@ -253,7 +253,7 @@ async fn main() -> Result<(), Error> {
     // NFQUEUE listener owns trigger detection: kernel queues the first
     // packet of each new watched-port flow, listener fires backend_trigger
     // with the resolved initiator container, waits for VxlanSetup to install
-    // DNAT, then verdicts ACCEPT so the original packet hits the new chain.
+    // DNAT, then verdicts ACCEPT so the original packet hits the new edge.
     let (config_tx, config_rx) = tokio::sync::mpsc::unbounded_channel::<TriggerMap>();
 
     // Poked by the cache's docker-events watcher after every container

@@ -1,9 +1,9 @@
 use crate::db::AsyncSqlite;
 use crate::db::models::{
-    NewRouteRow, NewServiceDependencyRow, NewServiceRow, NewServiceTriggerRow, NewStack, RouteRow,
-    ServiceDependencyRow, ServiceRow, ServiceTriggerRow,
+    NewRouteRow, NewServiceRow, NewServiceTriggerRow, NewStack, RouteRow, ServiceRow,
+    ServiceTriggerRow,
 };
-use crate::db::schema::{routes, service_dependencies, service_triggers, services, stacks};
+use crate::db::schema::{routes, service_triggers, services, stacks};
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
@@ -11,9 +11,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// One service's row data for a [`StackRepository::put_services`] call: its
-/// own columns plus its already-JSON-encoded trigger and dependency-branch
-/// children — encoding a chain to JSON is the caller's job (it knows what a
-/// "chain" means; this module just stores TEXT columns).
+/// own columns plus its backend peers.
 pub(crate) struct ServiceInsert<'a> {
     pub(crate) name: &'a str,
     pub(crate) docker_container: Option<&'a str>,
@@ -30,8 +28,6 @@ pub(crate) struct ServiceInsert<'a> {
     pub(crate) ingress_filter: Option<String>,
     /// Peer service names, from the service’s `backends` list.
     pub(crate) backends: Vec<String>,
-    /// JSON-encoded chain, one per `proxy_dependencies` branch, in order.
-    pub(crate) dependencies: Vec<String>,
 }
 
 pub(crate) struct RouteInsert<'a> {
@@ -98,22 +94,6 @@ impl StackRepository {
             .handle_err(location!())
     }
 
-    pub(crate) async fn dependencies_for(
-        &self,
-        service_ids: &[i32],
-    ) -> Result<Vec<ServiceDependencyRow>, Error> {
-        let mut conn = self.conn.lock().await;
-        service_dependencies::table
-            .filter(service_dependencies::service_id.eq_any(service_ids))
-            .order((
-                service_dependencies::service_id,
-                service_dependencies::branch_index,
-            ))
-            .load(&mut *conn)
-            .await
-            .handle_err(location!())
-    }
-
     pub(crate) async fn routes_for(&self, stack: &str) -> Result<Vec<RouteRow>, Error> {
         let mut conn = self.conn.lock().await;
         routes::table
@@ -167,7 +147,6 @@ impl StackRepository {
                             ingress_filter: s.ingress_filter.clone(),
                         },
                         s.backends.clone(),
-                        s.dependencies.clone(),
                     )
                 })
                 .collect::<Vec<_>>()
@@ -211,7 +190,7 @@ impl StackRepository {
                         diesel::delete(services::table.filter(services::stack.eq(&stack))),
                         conn,
                     )?;
-                    for (row, backends, dependencies) in items {
+                    for (row, backends) in items {
                         let service_id: i32 = diesel::RunQueryDsl::get_result(
                             diesel::insert_into(services::table)
                                 .values(row)
@@ -222,18 +201,6 @@ impl StackRepository {
                             diesel::RunQueryDsl::execute(
                                 diesel::insert_into(service_triggers::table)
                                     .values(NewServiceTriggerRow { service_id, peer }),
-                                conn,
-                            )?;
-                        }
-                        for (i, chain) in dependencies.into_iter().enumerate() {
-                            diesel::RunQueryDsl::execute(
-                                diesel::insert_into(service_dependencies::table).values(
-                                    NewServiceDependencyRow {
-                                        service_id,
-                                        branch_index: i32::try_from(i).unwrap_or(i32::MAX),
-                                        chain,
-                                    },
-                                ),
                                 conn,
                             )?;
                         }
@@ -259,7 +226,7 @@ impl StackRepository {
     }
 
     /// Delete the stack; cascades to its services (and their
-    /// triggers/dependencies) and routes.
+    /// triggers) and routes.
     pub(crate) async fn delete(&self, stack: &str) -> Result<(), Error> {
         let mut conn = self.conn.lock().await;
         diesel::delete(stacks::table.find(stack))
@@ -303,7 +270,6 @@ mod tests {
             egress_filter: None,
             ingress_filter: None,
             backends: vec!["worker".to_string()],
-            dependencies: vec!["[\"db\",\"cache\"]".to_string()],
         }
     }
 
@@ -325,7 +291,6 @@ mod tests {
         assert_eq!(rows[0].id, original);
         assert_eq!(rows[0].name, "original");
         assert_eq!(repo.triggers_for(&[original]).await.unwrap().len(), 1);
-        assert_eq!(repo.dependencies_for(&[original]).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -367,7 +332,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn put_services_round_trips_service_triggers_and_dependencies() {
+    async fn put_services_round_trips_service_triggers() {
         let db = test_db().await;
         let repo = db.stacks();
 
@@ -385,10 +350,6 @@ mod tests {
         let triggers = repo.triggers_for(&ids).await.unwrap();
         assert_eq!(triggers.len(), 1);
         assert_eq!(triggers[0].peer, "worker");
-
-        let deps = repo.dependencies_for(&ids).await.unwrap();
-        assert_eq!(deps.len(), 1);
-        assert_eq!(deps[0].chain, "[\"db\",\"cache\"]");
     }
 
     #[tokio::test]
@@ -402,7 +363,7 @@ mod tests {
         assert_eq!(repo.services_for("alpha").await.unwrap().len(), 2);
 
         // Second call replaces, not appends: only "web" remains, and its old
-        // service_id's triggers/dependencies are gone too (cascade).
+        // service_id's triggers are gone too (cascade).
         repo.put_services("alpha", &[service("web")]).await.unwrap();
         let services = repo.services_for("alpha").await.unwrap();
         assert_eq!(services.len(), 1);
@@ -442,7 +403,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_cascades_services_triggers_dependencies_and_routes() {
+    async fn delete_cascades_services_triggers_and_routes() {
         let db = test_db().await;
         let repo = db.stacks();
 
@@ -468,12 +429,6 @@ mod tests {
         assert!(repo.services_for("alpha").await.unwrap().is_empty());
         assert!(repo.routes_for("alpha").await.unwrap().is_empty());
         assert!(repo.triggers_for(&[service_id]).await.unwrap().is_empty());
-        assert!(
-            repo.dependencies_for(&[service_id])
-                .await
-                .unwrap()
-                .is_empty()
-        );
     }
 
     #[tokio::test]

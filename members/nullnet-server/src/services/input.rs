@@ -259,7 +259,7 @@ pub(crate) struct ServicesToml {
 
 impl ServicesToml {
     /// Load every stack's config from the normalized `stacks`/`services`/
-    /// `service_triggers`/`service_dependencies`/`routes` tables (issue
+    /// `service_triggers`/`routes` tables (issue
     /// #140 — this replaces the old `./services/*.toml` directory scan).
     /// Returns the service map, the parallel host-match index, and the
     /// parallel route map.
@@ -271,10 +271,9 @@ impl ServicesToml {
             let service_rows = db.stacks().services_for(&stack_name).await?;
             let service_ids: Vec<i32> = service_rows.iter().map(|r| r.id).collect();
             let trigger_rows = db.stacks().triggers_for(&service_ids).await?;
-            let dependency_rows = db.stacks().dependencies_for(&service_ids).await?;
             let route_rows = db.stacks().routes_for(&stack_name).await?;
 
-            let mut services_toml = services_from_rows(service_rows, trigger_rows, dependency_rows);
+            let mut services_toml = services_from_rows(service_rows, trigger_rows);
             if db.observations().active(&stack_name).await?.is_some() {
                 observation_backends(&mut services_toml)
                     .map_err(|errors| errors.join("; "))
@@ -305,12 +304,7 @@ impl ServicesToml {
         let service_rows = db.stacks().services_for(stack).await?;
         let service_ids: Vec<i32> = service_rows.iter().map(|r| r.id).collect();
         let trigger_rows = db.stacks().triggers_for(&service_ids).await?;
-        let dependency_rows = db.stacks().dependencies_for(&service_ids).await?;
-        Ok(Some(services_from_rows(
-            service_rows,
-            trigger_rows,
-            dependency_rows,
-        )))
+        Ok(Some(services_from_rows(service_rows, trigger_rows)))
     }
 
     /// Serialize a stack's current DB-stored services and routes back into
@@ -448,48 +442,20 @@ impl ServicesToml {
     }
 
     pub(crate) fn services_map(self) -> Result<HashMap<String, ServiceInfo>, Error> {
-        // Referenced peers and proxy dependencies are registrable placeholders.
-        // Proxy branches live on their entry point; a backend trigger reaches
-        // only its peer, without following that peer's dependencies.
         let peer_ports: HashMap<String, Option<u16>> = self
             .services
             .iter()
             .map(|service| (service.name.clone(), service.port))
             .collect();
-        let mut dep_names: std::collections::HashSet<String> = std::collections::HashSet::new();
         for s in &self.services {
-            for dep in s.proxy_dependencies.iter().flatten() {
-                dep_names.insert(dep.clone());
-            }
             for peer in &s.backends {
                 if peer.trim().is_empty() {
                     Err("Backend trigger peer must not be empty").handle_err(location!())?;
                 }
-                dep_names.insert(peer.clone());
             }
         }
 
         let mut ret_val: HashMap<String, ServiceInfo> = HashMap::new();
-        for name in dep_names {
-            ret_val.insert(
-                name,
-                ServiceInfo::new(
-                    Vec::new(),
-                    HashMap::new(),
-                    None,
-                    None,
-                    ServiceProtocol::Http,
-                    None,
-                    FilterPolicy::None,
-                    FilterPolicy::None,
-                ),
-            );
-        }
-
-        // Explicit declarations override any placeholder for the same name,
-        // carrying their `timeout` verbatim: `Some` makes the service a
-        // proxy-reachable entry point, `None` (omitted) leaves it backend-only.
-        // A declared service can thus host triggers without being reachable.
         for s in self.services {
             if s.port == Some(0) {
                 return Err(format!("service '{}': 'port' must be nonzero", s.name))
@@ -566,7 +532,6 @@ impl ServicesToml {
             ret_val.insert(
                 s.name,
                 ServiceInfo::new(
-                    s.proxy_dependencies,
                     triggers,
                     s.timeout,
                     s.max_networks,
@@ -637,11 +602,8 @@ pub(crate) struct NameConflict {
 }
 
 /// Scan every stack for service names claimed by more than one stack.
-/// Placeholder entries count: `services_map` registers every dependency and
-/// trigger-peer name as one, and they are keys `find_service_stack` can
-/// resolve to just like a declared service. Stacks and names are visited in
-/// sorted order so the reported pair doesn't itself depend on `HashMap`
-/// iteration order.
+/// Stacks and names are visited in sorted order so the reported pair doesn't
+/// itself depend on `HashMap` iteration order.
 pub(crate) fn detect_name_conflicts(stacks: &StackMap) -> Vec<NameConflict> {
     let mut claimed: HashMap<&str, &str> = HashMap::new();
     let mut conflicts = Vec::new();
@@ -726,16 +688,11 @@ fn decode_filter(json: Option<String>) -> FilterPolicy {
         .unwrap_or_default()
 }
 
-/// Group `service_triggers`/`service_dependencies` rows by `service_id` and
-/// rebuild each service's declared TOML shape — the inverse of
-/// [`services_to_inserts`]. Order among a service's `service_dependencies`
-/// rows is already `service_id, branch_index` from the query
-/// (`StackRepository::dependencies_for`); trigger order doesn't matter
-/// (each is independently keyed by its own `port`).
+/// Group `service_triggers` rows by `service_id` and rebuild each service's
+/// declared TOML shape — the inverse of [`services_to_inserts`].
 fn services_from_rows(
     service_rows: Vec<crate::db::ServiceRow>,
     trigger_rows: Vec<crate::db::ServiceTriggerRow>,
-    dependency_rows: Vec<crate::db::ServiceDependencyRow>,
 ) -> Vec<ServiceToml> {
     let mut triggers_by_service: HashMap<i32, Vec<String>> = HashMap::new();
     for t in trigger_rows {
@@ -744,19 +701,10 @@ fn services_from_rows(
             .or_default()
             .push(t.peer);
     }
-    let mut dependencies_by_service: HashMap<i32, Vec<Vec<String>>> = HashMap::new();
-    for d in dependency_rows {
-        dependencies_by_service
-            .entry(d.service_id)
-            .or_default()
-            .push(serde_json::from_str(&d.chain).unwrap_or_default());
-    }
-
     service_rows
         .into_iter()
         .map(|row| ServiceToml {
             backends: triggers_by_service.remove(&row.id).unwrap_or_default(),
-            proxy_dependencies: dependencies_by_service.remove(&row.id).unwrap_or_default(),
             name: row.name,
             docker_container: row.docker_container,
             process_path: row.process_path,
@@ -802,11 +750,6 @@ pub(crate) fn services_to_inserts(services: &[ServiceToml]) -> Vec<crate::db::Se
             egress_filter: encode_filter(&s.egress_filter),
             ingress_filter: encode_filter(&s.ingress_filter),
             backends: s.backends.clone(),
-            dependencies: s
-                .proxy_dependencies
-                .iter()
-                .map(|branch| serde_json::to_string(branch).unwrap_or_default())
-                .collect(),
         })
         .collect()
 }
@@ -980,7 +923,7 @@ pub(crate) async fn apply_config_update(
             .await;
         if let Some(stack_map) = services.get_mut(&stack) {
             // Mark every service as removed so apply_changes tears down all
-            // chains and replicas before we drop the stack entirely.
+            // edges and replicas before we drop the stack entirely.
             let names: Vec<String> = stack_map.keys().cloned().collect();
             let changes = names
                 .into_iter()
@@ -1050,25 +993,21 @@ pub(crate) struct ServiceToml {
     /// Allow idle Docker replicas to be paused. Opt-in only.
     #[serde(default)]
     pausable: bool,
-    /// Backend port the proxy connects to on this service's replicas. Required
-    /// for proxy reachability; optional otherwise. A portless `backends` target
+    /// Listening port used by proxy ingress and backend triggers. Required for
+    /// proxy reachability; optional otherwise. A portless `backends` target
     /// remains configured but has no runtime trigger. Distinct from
     /// `listen_port` (the proxy's external tcp/udp front port).
     pub(crate) port: Option<u16>,
     /// Proxy-reachability for this service. Present → reachable entry point
     /// with this per-client timeout in seconds (0 disables the timeout).
     /// Omitted → not proxy-reachable (backend-only); the service is still
-    /// declarable to host triggers or backend deps.
+    /// declarable to host backend triggers.
     timeout: Option<u64>,
-    /// Independent dep chains walked on proxy-triggered setup. Each inner array
-    /// is one linear branch; all branches are brought up in parallel.
-    #[serde(default)]
-    proxy_dependencies: Vec<Vec<String>>,
     /// Backend peers; their declared listening ports identify the triggers.
     #[serde(default)]
     pub(crate) backends: Vec<String>,
     /// Maximum number of networks that can be created for this service.
-    /// Applies to proxy chains only (backend connections are unbounded).
+    /// Applies to ingress connections only (backend connections are unbounded).
     /// When the limit is reached, new proxy clients reuse an existing network
     /// on the same proxy node instead of creating a new one.
     max_networks: Option<u32>,
@@ -1092,7 +1031,7 @@ pub(crate) struct ServiceToml {
     ingress_filter: FilterPolicy,
 }
 
-/// Expand only backend triggers; saved config and proxy branches are untouched.
+/// Expand backend triggers without changing other saved configuration.
 pub(crate) fn observation_backends(services: &mut [ServiceToml]) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
     if services.len() < 2 {
@@ -1179,15 +1118,13 @@ mod tests {
     use crate::services::firewall::{FilterCondition, FilterField, FilterRule};
 
     #[test]
-    fn parses_explicit_and_implicit_services() {
+    fn parses_services_and_backend_triggers() {
         let toml_str = r#"
 [[services]]
 backends = ["ts.color.com"]
 name = "color.com"
 timeout = 0
 port = 3001
-proxy_dependencies = [["pre.fs.color.com", "fs.color.com"]]
-
 [[services]]
 name = "ts.color.com"
 port = 5555
@@ -1204,12 +1141,7 @@ port = 8080
         assert_eq!(map["color.com"].timeout(), Some(0));
         assert_eq!(map["fs.color.com"].timeout(), Some(30));
 
-        // every name referenced in a proxy_dependencies list or trigger peer
-        // is implicitly added with timeout=None (registrable as a dep, not an
-        // entry point), regardless of its position in the chain
-        assert_eq!(map["pre.fs.color.com"].timeout(), None);
         assert_eq!(map["ts.color.com"].timeout(), None);
-        assert!(!map.contains_key("deeper.dep"));
     }
 
     #[test]
@@ -1255,8 +1187,6 @@ port = 8080
 [[services]]
 name = "source"
 docker_container = "source"
-proxy_dependencies = [["dep"]]
-
 [[services]]
 name = "dep"
 docker_container = "dep"
@@ -1316,8 +1246,6 @@ port = 8080
 [[services]]
 backends = ["dep.b"]
 name = "backend.only"
-proxy_dependencies = [["dep.a"]]
-
 [[services]]
 name = "dep.b"
 port = 5555
@@ -1327,43 +1255,8 @@ port = 5555
 
         // Not proxy-reachable...
         assert_eq!(map["backend.only"].timeout(), None);
-        // ...yet it carries its triggers and proxy deps verbatim.
+        // ...yet it carries its backend trigger.
         assert_eq!(map["backend.only"].triggers()[&5555], "dep.b");
-        assert_eq!(map["backend.only"].proxy_deps(), vec![vec!["dep.a"]]);
-    }
-
-    #[test]
-    fn parses_parallel_proxy_branches() {
-        let toml_str = r#"
-[[services]]
-name = "app"
-timeout = 0
-proxy_dependencies = [["a", "b"], ["c", "d"]]
-"#;
-        let parsed: ServicesToml = toml::from_str(toml_str).unwrap();
-        let map = parsed.services_map().unwrap();
-
-        // The entry point keeps both branches verbatim.
-        assert_eq!(
-            map["app"].proxy_deps(),
-            vec![
-                vec!["a".to_string(), "b".to_string()],
-                vec!["c".to_string(), "d".to_string()],
-            ]
-        );
-        // Every dep across both branches is registered.
-        for name in ["a", "b", "c", "d"] {
-            assert!(map.contains_key(name), "{name} not registered");
-            assert_eq!(map[name].timeout(), None);
-        }
-        // Deps are bare placeholders — the full chain lives on the entry point,
-        // so no intermediate dep carries a continuation of its own.
-        for name in ["a", "b", "c", "d"] {
-            assert!(
-                map[name].proxy_deps().is_empty(),
-                "{name} should carry no deps"
-            );
-        }
     }
 
     #[tokio::test]
@@ -1374,7 +1267,6 @@ proxy_dependencies = [["a", "b"], ["c", "d"]]
 [[services]]
 name = "a.svc"
 timeout = 0
-proxy_dependencies = [["a.dep"]]
 "#;
         let stack_b = r#"
 [[services]]
@@ -1398,7 +1290,6 @@ timeout = 30
 
         assert_eq!(stacks.len(), 2);
         assert!(stacks["alpha"].contains_key("a.svc"));
-        assert!(stacks["alpha"].contains_key("a.dep"));
         assert!(stacks["bravo"].contains_key("b.svc"));
         // stacks are isolated: alpha's deps aren't bleeding into bravo
         assert!(!stacks["bravo"].contains_key("a.dep"));
@@ -1474,7 +1365,6 @@ listen_port = 6379
         alpha.insert(
             "redis.a".to_string(),
             ServiceInfo::new(
-                vec![],
                 HashMap::new(),
                 Some(0),
                 None,
@@ -1488,7 +1378,6 @@ listen_port = 6379
         bravo.insert(
             "redis.b".to_string(),
             ServiceInfo::new(
-                vec![],
                 HashMap::new(),
                 Some(0),
                 None,
@@ -1513,7 +1402,6 @@ listen_port = 6379
         alpha.insert(
             "dns.tcp".to_string(),
             ServiceInfo::new(
-                vec![],
                 HashMap::new(),
                 Some(0),
                 None,
@@ -1526,7 +1414,6 @@ listen_port = 6379
         alpha.insert(
             "dns.udp".to_string(),
             ServiceInfo::new(
-                vec![],
                 HashMap::new(),
                 Some(0),
                 None,
@@ -1838,7 +1725,6 @@ redirect_status = 200
         (
             name.to_string(),
             ServiceInfo::new(
-                vec![],
                 HashMap::new(),
                 Some(30),
                 None,
@@ -1879,38 +1765,6 @@ redirect_status = 200
         ]);
 
         assert!(detect_name_conflicts(&stacks).is_empty());
-    }
-
-    /// A dependency name is a real key in its stack's map (`services_map`
-    /// registers a placeholder for it), so it shadows another stack's
-    /// declared service of that name just as effectively.
-    #[test]
-    fn detect_name_conflicts_flags_dependency_placeholder() {
-        let declaring: ServicesToml = toml::from_str(
-            r#"
-[[services]]
-name = "api"
-timeout = 30
-"#,
-        )
-        .unwrap();
-        let referencing: ServicesToml = toml::from_str(
-            r#"
-[[services]]
-name = "web"
-timeout = 30
-proxy_dependencies = [["api"]]
-"#,
-        )
-        .unwrap();
-        let stacks: StackMap = HashMap::from([
-            ("alpha".to_string(), declaring.services_map().unwrap()),
-            ("bravo".to_string(), referencing.services_map().unwrap()),
-        ]);
-
-        let conflicts = detect_name_conflicts(&stacks);
-        assert_eq!(conflicts.len(), 1);
-        assert_eq!(conflicts[0].service, "api");
     }
 
     #[test]
@@ -2000,7 +1854,6 @@ pausable = true
             pausable: false,
             port: None,
             timeout: None,
-            proxy_dependencies: Vec::new(),
             backends: Vec::new(),
             max_networks: None,
             protocol: None,
@@ -2015,7 +1868,7 @@ pausable = true
     /// the DB now does instead of the old TOML-text merge/re-parse. Feeds
     /// `services_to_inserts`' output back through hand-built rows (mirroring
     /// what `StackRepository::put_services`/`services_for`/`triggers_for`/
-    /// `dependencies_for` would actually produce) rather than hitting a real
+    /// would actually produce) rather than hitting a real
     /// DB — `db::stacks::tests` covers the real round trip through SQLite.
     #[test]
     fn service_row_conversion_round_trips_every_field() {
@@ -2025,7 +1878,6 @@ pausable = true
             pausable: true,
             port: Some(3001),
             timeout: Some(0),
-            proxy_dependencies: vec![vec!["a.dep".to_string(), "b.dep".to_string()]],
             backends: vec!["ts.color.com".to_string()],
             max_networks: Some(2),
             protocol: Some(ProtocolToml::Tcp),
@@ -2052,7 +1904,7 @@ pausable = true
         let insert = &inserts[0];
 
         // Simulate what the DB would hand back: one `ServiceRow` (id 1) plus
-        // its trigger/dependency rows, built straight from the insert data.
+        // its trigger rows, built straight from the insert data.
         let row = crate::db::ServiceRow {
             id: 1,
             stack: "my-app".to_string(),
@@ -2078,29 +1930,13 @@ pausable = true
                 peer: peer.clone(),
             })
             .collect();
-        let dependency_rows: Vec<crate::db::ServiceDependencyRow> = insert
-            .dependencies
-            .iter()
-            .enumerate()
-            .map(|(i, chain)| crate::db::ServiceDependencyRow {
-                id: i32::try_from(i).unwrap() + 1,
-                service_id: 1,
-                branch_index: i32::try_from(i).unwrap(),
-                chain: chain.clone(),
-            })
-            .collect();
-
-        let parsed = services_from_rows(vec![row], trigger_rows, dependency_rows);
+        let parsed = services_from_rows(vec![row], trigger_rows);
         assert_eq!(parsed.len(), 1);
         let s = &parsed[0];
         assert_eq!(s.name, "color.com");
         assert_eq!(s.docker_container.as_deref(), Some("my-app_color"));
         assert_eq!(s.port, Some(3001));
         assert_eq!(s.timeout, Some(0));
-        assert_eq!(
-            s.proxy_dependencies,
-            vec![vec!["a.dep".to_string(), "b.dep".to_string()]]
-        );
         assert_eq!(s.backends.len(), 1);
         assert_eq!(s.backends[0], "ts.color.com");
         assert_eq!(s.max_networks, Some(2));
@@ -2210,8 +2046,8 @@ pausable = true
 
     /// `export_toml`'s output must be exactly what `import_handler` (and a
     /// legacy hand-edited file) can parse back — round-trip it through
-    /// `validate_stack_toml` and check the declared service/dependency/
-    /// trigger/route shape survived.
+    /// `validate_stack_toml` and check the declared service/trigger/route
+    /// shape survived.
     #[tokio::test]
     async fn export_toml_round_trips_through_validate_stack_toml() {
         let db = test_db().await;
@@ -2220,7 +2056,6 @@ pausable = true
                 docker_container: Some("my-app_web".to_string()),
                 port: Some(8080),
                 timeout: Some(0),
-                proxy_dependencies: vec![vec!["db".to_string()]],
                 backends: vec!["worker".to_string()],
                 ..empty_service("web")
             },
@@ -2253,9 +2088,7 @@ pausable = true
             .unwrap();
         let (map, _match_entries, routes) = validate_stack_toml(&text).unwrap();
 
-        assert_eq!(map["web"].proxy_deps(), vec![vec!["db".to_string()]]);
         assert_eq!(map["web"].triggers()[&5555], "worker");
-        assert!(map.contains_key("db")); // implicit dependency placeholder
         assert_eq!(routes, route_entries);
     }
 

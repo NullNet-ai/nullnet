@@ -30,13 +30,11 @@ const POLICY_XFRM_ID_START: u32 = 0x20_0000;
 /// One edge per initiator replica multiplexes all of its external destinations.
 type EgressKey = (IpAddr, Option<String>);
 
-/// Identity of one autonomous `backend_trigger` chain: the initiator replica
-/// plus the trigger port. Per port, because one replica can hold several
-/// trigger chains at once and they go quiet independently.
+/// Identity of one autonomous backend edge: the initiator replica plus the
+/// trigger port. One replica can hold several edges that go quiet independently.
 pub(crate) type BackendKey = (String, IpAddr, Option<String>, u16);
 
-/// A live trigger-built chain that this server holds **exactly one** refcount
-/// on, across every hop.
+/// A live trigger-built edge that this server holds **exactly one** refcount on.
 ///
 /// The map entry is the refcount receipt: a session exists if and only if the
 /// trigger claimed an increment that nothing has consumed yet. That is what
@@ -46,11 +44,11 @@ struct BackendSession {
     generation: Uuid,
     history_id: Option<Uuid>,
     building: bool,
-    /// Which stack the chain lives in; the reap walks services per stack.
+    /// Which stack the edge lives in; the reap walks services per stack.
     stack: String,
     /// When the initiator's last connection on this trigger port closed, per
     /// the client's conntrack view. `None` means connections are open, or none
-    /// have been reported yet — a chain is never reaped before its first flow.
+    /// have been reported yet — an edge is never reaped before its first flow.
     idle_since: Option<Instant>,
 }
 
@@ -155,8 +153,8 @@ pub struct Orchestrator {
     /// [`Self::remove_egress_edges`], which is what closes the removed edges'
     /// session-history rows.
     egress_edges: Arc<RwLock<HashMap<EgressKey, EgressEdge>>>,
-    /// Trigger chains this server holds a refcount on, keyed per trigger port.
-    /// The chain edges themselves live in the service StackMap; this records
+    /// Trigger-built edges this server holds a refcount on, keyed per trigger port.
+    /// The edges themselves live in the service StackMap; this records
     /// only *our* claim on them and when they last went quiet.
     backend_sessions: Arc<RwLock<HashMap<BackendKey, BackendSession>>>,
     /// IP → country/ASN cache enriching contacted egress destinations.
@@ -863,7 +861,7 @@ impl Orchestrator {
         }
     }
 
-    /// Record a trigger chain's open-connection transition reported by the client.
+    /// Record a backend edge's open-connection transition reported by the client.
     ///
     /// A report for a session we hold no refcount on is ignored: there is
     /// nothing for us to release, and inventing an entry would let the next
@@ -907,7 +905,7 @@ impl Orchestrator {
             .collect()
     }
 
-    /// How long until the nearest trigger chain becomes reapable, if any.
+    /// How long until the nearest backend edge becomes reapable, if any.
     pub(crate) async fn nearest_backend_expiry(&self, debounce: Duration) -> Option<Duration> {
         let now = Instant::now();
         self.backend_sessions
@@ -926,9 +924,9 @@ impl Orchestrator {
         self.backend_sessions.read().await.contains_key(key)
     }
 
-    /// Drop our claim on `ports`' chains for one initiator replica.
+    /// Drop our claim on `ports`' edges for one initiator replica.
     ///
-    /// Called from every teardown path that decrements a trigger chain from
+    /// Called from every teardown path that decrements a backend edge from
     /// somewhere else: that teardown consumed our increment, so keeping the
     /// session would let a later close decrement a second time.
     pub(crate) async fn forget_backend_sessions(
@@ -1234,9 +1232,8 @@ impl Orchestrator {
     /// still being dismantled. The free is therefore deferred to a detached
     /// task that waits on the endpoints' acks.
     ///
-    /// Detached deliberately — callers `.await` this in loops (`decrement_chain`
-    /// per replica, `collect_dep_chain_edges` per edge), so blocking here would
-    /// turn a multi-edge chain teardown into a serial walk of ack timeouts.
+    /// Detached deliberately — callers `.await` this in teardown loops, so
+    /// blocking here would serialize acknowledgement timeouts.
     /// Caller-visible latency is unchanged.
     ///
     /// A disconnected endpoint purges old state before registering again.
@@ -1405,7 +1402,7 @@ impl Orchestrator {
     }
 
     /// Like `register_recording_client`, but every ack is withheld until the
-    /// test hands out a permit. Lets a test park one edge of a chain in the
+    /// test hands out a permit. Lets a test park an edge in the
     /// window between its placeholder reservation and its promotion, which is
     /// where setup holds no lock and a teardown can interleave.
     pub(crate) async fn register_gated_client(
@@ -2031,7 +2028,7 @@ mod session_history_tests {
     }
 
     #[tokio::test]
-    async fn backend_history_tracks_independent_chains_and_generations() {
+    async fn backend_history_tracks_independent_edges_and_generations() {
         let (orch, db) = orch_with_db().await;
         let key = (
             "api".to_string(),

@@ -1,0 +1,1 @@
+-- This compatibility cleanup is intentionally irreversible.

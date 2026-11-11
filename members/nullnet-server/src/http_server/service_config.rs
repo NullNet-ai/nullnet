@@ -28,8 +28,7 @@ pub(super) struct ServiceConfigRequest {
 }
 
 /// GET a stack's declared services, structured — the widget-config UI's
-/// read side, backed by the normalized `services`/`service_triggers`/
-/// `service_dependencies` tables.
+/// read side, backed by the normalized `services` and `service_triggers` tables.
 pub(super) async fn service_config_handler(
     Extension(ctx): Extension<AuthContext>,
     Path(stack): Path<String>,

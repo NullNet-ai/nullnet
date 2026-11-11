@@ -16,7 +16,7 @@ const HOSTS_PATH: &str = "/etc/hosts";
 ///
 /// Installing and removing a mapping is a read-modify-write: read the file,
 /// edit it in memory, write it back. Every `VxlanSetup`/`VxlanTeardown` is
-/// handled in its own `tokio::spawn`, so bringing up a chain with N
+/// handled in its own `tokio::spawn`, so bringing up N edges with
 /// dependencies on the same container runs N of those cycles concurrently.
 /// Without a lock they each start from a snapshot taken before the others
 /// wrote, and the last writer silently drops everyone else's entries — the

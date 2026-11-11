@@ -5,7 +5,7 @@
 //! `certs.rs` still owns the on-disk file storage it always has; nothing
 //! calls into `CertRepository` yet, so that part of this module's API
 //! surface is unused until that migration happens. `stacks`/`services`/
-//! `service_triggers`/`service_dependencies`/`routes` back per-stack
+//! `service_triggers`/`routes` back per-stack
 //! service config (issue #140) as normalized rows — the on-disk
 //! `./services/*.toml` files are no longer read at all; move config in or
 //! out as TOML text via the Config page's Export/Import buttons (or
@@ -39,7 +39,7 @@ pub(crate) use models::NewSessionRow;
 /// code goes through `SessionStore`, which hands out `SessionRecordJson`.
 #[cfg(test)]
 pub(crate) use models::SessionRow;
-pub(crate) use models::{RouteRow, ServiceDependencyRow, ServiceRow, ServiceTriggerRow};
+pub(crate) use models::{RouteRow, ServiceRow, ServiceTriggerRow};
 pub(crate) use observations::{ObservationRepository, ObservationRow, ObservedEdge};
 pub(crate) use refresh_tokens::RefreshTokenRepository;
 pub(crate) use session_mutations::SessionMutation;
@@ -181,6 +181,15 @@ fn now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::Db;
+    use diesel::QueryableByName;
+    use diesel::sql_types::BigInt;
+    use diesel_async::RunQueryDsl;
+
+    #[derive(QueryableByName)]
+    struct TableCount {
+        #[diesel(sql_type = BigInt)]
+        count: i64,
+    }
 
     #[tokio::test]
     async fn open_runs_migrations_and_is_reusable() {
@@ -191,6 +200,16 @@ mod tests {
         drop(db);
         let db = Db::open(path.to_str().unwrap()).await.unwrap();
         assert!(db.certs().domains().await.unwrap().is_empty());
+
+        let mut conn = db.conn.lock().await;
+        let legacy: TableCount = diesel::sql_query(
+            "SELECT COUNT(*) AS count FROM sqlite_master \
+             WHERE type = 'table' AND name = 'service_dependencies'",
+        )
+        .get_result(&mut *conn)
+        .await
+        .unwrap();
+        assert_eq!(legacy.count, 0);
     }
 
     fn tempfile_dir() -> std::path::PathBuf {

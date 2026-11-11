@@ -41,8 +41,8 @@ function eventDetail(e: EventJson): string {
       return `net ${e.net_id} · ${e.service} · ${e.latency_ms}ms`;
     case 'setup_timeout':
       return `net ${e.net_id} · ${e.service}`;
-    case 'chain_owner_lost':
-      return `${e.stack} · chain unwound, its client was gone`;
+    case 'ingress_owner_lost':
+      return `${e.stack} · ingress edge unwound, its client was gone`;
     case 'egress_reservation_reclaimed':
       return `${e.service} · ${e.initiator_ip} · stranded ${e.stranded_secs}s, egress rebuilt`;
     case 'edge_promotion_lost':
@@ -68,8 +68,6 @@ function eventDetail(e: EventJson): string {
       return `${e.service} · ${e.stack} · ${e.reachable ? 'reachable' : 'unreachable'}`;
     case 'proxy_client_timed_out':
       return `${e.service} · ${e.client_ip}`;
-    case 'stale_session_evicted':
-      return `${e.service} · ${e.client_ip} via ${e.proxy_ip}`;
     case 'max_networks_limit_enforced':
       return `${e.service} · proxy ${e.proxy_ip} · net ${e.net_id} · limit ${e.limit}`;
     case 'ingress_congestion_control_changed':
@@ -79,7 +77,7 @@ function eventDetail(e: EventJson): string {
     case 'ingress_congestion_recovery_started':
       return `${e.node_ip} · dedicated setup recovery test started`;
     case 'net_id_pool_exhausted':
-    case 'proxy_chain_setup_failed':
+    case 'ingress_setup_failed':
       return `${e.service} · ${e.client_ip}`;
     case 'backend_trigger_setup_bailed':
       return `${e.service} · port ${e.port}`;

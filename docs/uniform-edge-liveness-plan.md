@@ -93,33 +93,21 @@ an upstream**, never during data transfer:
 So ingress refreshes on **routing events**, not byte flow — structurally the
 same mistake. It has shipped tolerably only because typical HTTP is short.
 
-### 2.5 Backend chains — two cases, and only one of them inherits
+### 2.5 Backend edges
 
-Backend chains have **no idle timeout at all** — `collect_timed_out_clients` only
-reaps `c.is_proxy().is_some()` entries; service-to-service chain entries are never
+Backend edges have **no idle timeout at all** — `collect_timed_out_clients` only
+reaps `c.is_proxy().is_some()` entries; service-to-service edge entries are never
 collected (`timeout.rs`, `service_info.rs::expired_proxy_clients`). They are torn
 down only by explicit chain-decrement or node/container loss.
 
-That is benign for one case and a real gap for the other. **The two must not be
-conflated** — an earlier revision of this doc did, and concluded backend needed no
-work of its own:
-
-- **`proxy_dependencies` chains — inherited, no work needed.** Built alongside the
-  proxy client that fronts them, so `ProxyClientTimedOut` →`teardown_chain`
-  →`decrement_chain` takes the chain down with its parent. It inherits the ingress
-  flaw of §2.4 (reaped mid-transfer when the parent is), and inherits the Step 1
-  fix for free. Nothing further to do.
-- **`backend_trigger` chains — autonomous, and never reaped on liveness.** Fired
+This is a real gap for **autonomous backend-triggered edges**. They are fired
   by the client's NFQUEUE when a container dials a watched trigger port
   (`nfqueue/listener.rs` → `BackendTrigger` RPC → `handle_backend_trigger` →
-  `setup_backend_chain`), with **no proxy client involved and no parent to inherit
-  from**. Verified: `ProxyClientTimedOut` calls `teardown_chain`, *not*
-  `teardown_backend_chain`; the only callers of `teardown_backend_chain` /
-  `teardown_all_backend_chains_for` are config-change handlers (`Removed`,
-  `ProxyDepsChanged`, `TriggersChanged`, `ReachabilityChanged`) and replica/node
-  loss (`ReplicasRemoved`, `ReplicaRemoved`).
+  `setup_backend_edge`). They are independent from ingress. The callers of
+  `teardown_backend_edges` / `teardown_all_backend_edges_for` are config-change
+  handlers and replica/node loss.
 
-So a container that autonomously dials a backend service builds a chain that
+So a container that autonomously dials a backend service builds an edge that
 survives until config changes or the container dies — **structurally the same hole
 egress had.** It gets the same treatment, in Step 4; §5's preamble and Step 4
 explain why it is not a copy of the egress design.
@@ -142,12 +130,11 @@ count reaches zero.**
 | Ingress — HTTP | `Proxy` RPC (existing) per request      | pingora `logging` hook                                   | proxy          | same |
 | Ingress — UDP  | `Proxy` RPC (existing) per new session  | session evicted from the `sessions` map (idle sweep / relay abort) | proxy | same |
 | Egress   | NFQUEUE `NEW` packet (existing)              | conntrack `DESTROY` netlink event                        | client         | **reap immediately** — no configurable grace |
-| Backend — `proxy_dependencies` | inherited from parent ingress client | inherited                       | —              | inherited |
 | Backend — `backend_trigger`    | NFQUEUE trigger-port packet (existing) | conntrack `DESTROY` netlink event | client   | **decrement immediately** (not teardown — see Step 4) |
 
 Note the last row's "at zero" wording: an autonomous backend-trigger chain is
-reaped by **decrementing `active_chains`**, not by removing an owned edge. The
-same edge may be held up by an ingress proxy chain at the same time, so the
+reaped by **decrementing `active_holds`**, not by removing an owned edge. The
+same edge may be held by multiple trigger ports at the same time, so the
 liveness signal contributes one decrement matched to the one increment that
 trigger caused. Egress has no such sharing — see Step 4.
 
@@ -189,7 +176,7 @@ grace period actually comes from (§4d.2).
    promoted to a direct `nullnet-client` dependency.
 6. **Ingress close signal = bare count delta (+1 / −1)**. Server keeps an integer
    `open_connections` per proxy client (mirrors how it already refcounts
-   `active_chains`). No per-connection ids. Retry-on-close prevents leaks.
+   `active_holds`). No per-connection ids. Retry-on-close prevents leaks.
 
 ---
 
@@ -271,7 +258,7 @@ sockets had nothing to do with it. Two measurements closed it out:
   drops it. The zombies originally seen came from *abnormal* churn (mass teardown
   of 40 edges, client restarts mid-flight) leaving half-torn edges.
 - Six full expire→rebuild cycles: **12/12 requests 200**, and a later 200 s burn
-  at 16 workers over a 12-edge multi-hop chain with `timeout = 20`: **7,975
+  at 16 workers over a 12-edge topology with `timeout = 20`: **7,975
   requests, 0 non-200, 0 ghost SCIs, 0 unconfirmed teardowns**.
 
 What still stands, and why it matters here:
@@ -316,13 +303,8 @@ sessions expired and rebuilt continuously:
 errors, 0 ghost SCIs.** The reaper machinery is sound at production-like rates;
 whatever liveness changes, it is not fixing a broken teardown path.
 
-Two config-shape facts confirmed while doing it, both worth knowing before
-writing config for the liveness tests:
-- **`proxy_dependencies` do not resolve across stacks.** A dep in another TOML
-  parses fine and then fails at runtime with a generic 500 "Dependency not
-  registered". Keep a chain and its deps in one file.
-- **An entry point that is also another chain's dependency works** (the
-  `api-v2` / `upload-v2` shape in instaprotek) — verified explicitly, same stack.
+A config-shape fact confirmed while doing it: an entry point can also be a
+backend target in the same stack (`api-v2` / `upload-v2` in instaprotek).
 
 ---
 
@@ -850,24 +832,20 @@ Same principle as egress, but **four structural differences make it a distinct
 piece of work, not a copy.**
 
 - **1. Backend edges are refcounted; egress edges are owned.** An `EgressEdge` has
-  one owner, so zero means teardown. A backend dep edge lives in `active_chains`
-  and may be held simultaneously by an ingress proxy chain *and* one or more
-  backend triggers. So the liveness signal must produce a **decrement matched 1:1
-  to the increment that trigger caused** (`decrement_chain`, exactly as
-  `teardown_backend_chain` does today) — never a direct teardown. A double
+  one owner, so zero means teardown. A backend dep edge lives in `active_holds`
+  and may be held simultaneously by more than one backend trigger. So the
+  liveness signal must produce a **decrement matched 1:1
+  to the increment that trigger caused** (`release_hold`, exactly as
+  `teardown_backend_edges` does today) — never a direct teardown. A double
   decrement kills an edge another path still needs.
   - This is the **third** appearance of the open/close pairing discipline, after
     Step 1's ingress counter and Step 2's add-only-on-Accept rule, and the most
     delicate: here the refcount is shared across two different mechanisms. Reuse
     the same discipline — one increment, one guaranteed matching decrement, on
     every exit path.
-- **2. One trigger builds a whole chain; conntrack sees only the first hop.** A
-  trigger on A→B:port builds the entire declared chain A→B→C
-  (`build_backend_dep_chain`). Connection existence on A→B says nothing about
-  B→C. Reaping the whole chain when the first hop goes quiet is consistent with
-  what `decrement_chain` already does on every other teardown path — **adopt it
-  deliberately**, and record it here rather than letting it fall out of where the
-  signal happens to originate.
+- **2. One trigger builds one direct backend edge.** A trigger on A→B:port owns
+  only A→B. If B later connects to C, that traffic has its own trigger and
+  liveness lifecycle.
 - **3. ⚠️ The self-flush hazard is worse here than for egress.** `dnat::flush_conntrack`
   fires **twice per trigger-edge lifecycle** (§4b.2's table), scoped
   `-s <container_ip> --dport <port>` — precisely this open-set's key. For egress
@@ -896,8 +874,8 @@ liveness RPC shape.
 
 **Server side** is the real work: a handler that resolves the `EgressKey`-analogue
 `(initiator_name, initiator_ip, initiator_docker, port)` back to the chain built by
-`setup_backend_chain`, and decrements it once — mirroring `teardown_backend_chain`,
-which already walks exactly this structure via `collect_backend_chain_edges`.
+`setup_backend_edge`, and decrements it once — mirroring `teardown_backend_edges`,
+which already walks exactly this structure via `collect_backend_edges`.
 
 ---
 
@@ -948,38 +926,37 @@ which already walks exactly this structure via `collect_backend_chain_edges`.
   request is involved at any point: a container dialling a watched trigger port
   directly, with the fronting service's proxy session absent or already expired.
   A test driven through the proxy exercises the *inherited* path and will pass
-  whether or not Step 4 works. Confirm: the chain is built, survives an
+  whether or not Step 4 works. Confirm: the edge is built, survives an
   idle-but-open connection indefinitely, and is decremented once when the last
   flow closes.
-- **Step 4 — shared-edge refcount (Step 4, difference 1):** hold one dep edge up
-  via *both* an ingress proxy chain and an autonomous backend trigger, then close
-  only the trigger's connection. The edge must survive on the proxy chain's
-  reference. This is the double-decrement failure, and it is invisible in any
-  single-path test.
+- **Step 4 — shared-edge refcount (Step 4, difference 1):** hold one backend edge
+  through two autonomous trigger ports, then close only one trigger's connection.
+  The edge must survive on the other trigger's reference. This is the
+  double-decrement failure, and it is invisible in any single-path test.
 - **Step 4 — trigger-lifecycle self-flush (Step 4, difference 3):** `dnat::flush_conntrack`
   fires twice per trigger-edge lifecycle on this open-set's exact key, so exercise
   a full trigger edge up/down cycle with a live second flow present and confirm it
   is not decremented out from under it.
 - **Explicitly test the idle-tab case (§4b.1):** hold an HTTP entry point idle
   past `timeout` with a browser tab open and confirm the behaviour is
-  what you intend (chain reaped, next click pays the rebuild) rather than what
+  what you intend (edge reaped, next click pays the rebuild) rather than what
   the "connection existence" framing might suggest.
 
 ## 7. Key file map
 
 ⚠️ Paths are current; the `file:line` references throughout §5 are not (§4c.4).
 
-- Backend trigger RPC + chain build: `members/nullnet-server/src/nullnet_grpc_impl.rs`
-  (`handle_backend_trigger`, `setup_backend_chain`, `build_backend_dep_chain`)
-- Backend chain teardown / refcount: `members/nullnet-server/src/services/changes.rs`
-  (`teardown_backend_chain`, `collect_backend_chain_edges`), `service_info.rs`
-  (`decrement_chain`, `add_active_chain`)
+- Backend trigger RPC + edge build: `members/nullnet-server/src/nullnet_grpc_impl.rs`
+  (`handle_backend_trigger`, `setup_backend_edge`)
+- Backend edge teardown / refcount: `members/nullnet-server/src/services/changes.rs`
+  (`teardown_backend_edges`, `collect_backend_edges`), `service_info.rs`
+  (`release_hold`, `add_hold`)
 - Trigger NFQUEUE rules (ESTABLISHED bypass + watched-port ipset):
   `members/nullnet-client/src/commands/nfqueue.rs`
 - Trigger listener: `members/nullnet-client/src/nfqueue/listener.rs`,
   `members/nullnet-client/src/triggers.rs`
 - Ingress timer: `members/nullnet-server/src/timeout.rs`
-- Client state / `latest` / `active_chains`: `members/nullnet-server/src/services/clients.rs`
+- Client state / `latest` / `active_holds`: `members/nullnet-server/src/services/clients.rs`
 - Service model: `members/nullnet-server/src/services/service_info.rs`
 - Config parse / `ServiceToml`: `members/nullnet-server/src/services/input.rs`
 - Proxy RPC handlers: `members/nullnet-server/src/nullnet_grpc_impl.rs`
@@ -1175,7 +1152,7 @@ and worth its own issue.
 - `CHANGELOG.md`: one line for the PR, under `Changed`.
 - `README.md` documents that `timeout` is a grace window from the last close,
   that a UDP mapping with `idle_timeout_secs = 0` therefore pins its edge, and
-  that backend chains are released on conntrack liveness rather than `timeout`.
+  that backend edges are released on conntrack liveness rather than `timeout`.
 - **Event decision.** A liveness *report* that fails gets **no** event: the
   failure direction is safe (the edge lives too long), it self-heals on the next
   open/close cycle, and one event per transition is telemetry, not Events-tab

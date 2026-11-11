@@ -178,7 +178,7 @@ pub async fn report_liveness(grpc: &NullnetGrpcInterface, container: String, act
     }
 }
 
-/// Backend twin of [`report_liveness`], for one trigger-built chain.
+/// Backend twin of [`report_liveness`], for one trigger-built edge.
 pub async fn report_backend_liveness(
     grpc: &NullnetGrpcInterface,
     service: String,
@@ -199,12 +199,11 @@ pub async fn report_backend_liveness(
 /// The open-flow set for egress, keyed by container.
 pub type EgressOpenFlows = Arc<Mutex<OpenFlows<String>>>;
 
-/// A trigger-built chain's owner: the initiator container and the trigger port
-/// whose chain it opened. Per port, not per container — one replica can hold
-/// several trigger chains at once and they go quiet independently.
+/// A trigger-built edge's owner: the initiator container and trigger port.
+/// Per port, not per container: several edges can go quiet independently.
 pub type TriggerKey = (String, u16);
 
-/// The open-flow set for autonomous `backend_trigger` chains.
+/// The open-flow set for autonomous backend edges.
 pub type TriggerOpenFlows = Arc<Mutex<OpenFlows<TriggerKey>>>;
 
 /// Everything the liveness machinery needs, in one place: the two open-flow
@@ -841,7 +840,7 @@ mod tests {
         );
     }
 
-    /// The trigger set's whole reason for being keyed per port: two chains from
+    /// The trigger set's whole reason for being keyed per port: two edges from
     /// the same container are independent, so one going quiet must not report
     /// the other idle.
     #[test]
@@ -857,14 +856,14 @@ mod tests {
             Some(Transition::Idle(k5555)),
             "5555 closing reports only 5555"
         );
-        assert!(o.is_active(&k6666), "6666's chain is untouched");
+        assert!(o.is_active(&k6666), "6666's edge is untouched");
     }
 
     /// The §4d.3 hazard, in the shape it takes for triggers: `dnat::install`
     /// and `dnat::remove` each flush conntrack on exactly this key, so it
     /// happens twice per edge lifecycle rather than only on a policy reload.
     #[test]
-    fn a_dnat_flush_does_not_report_a_trigger_chain_idle() {
+    fn a_dnat_flush_does_not_report_a_trigger_edge_idle() {
         let mut o: OpenFlows<TriggerKey> = OpenFlows::new();
         let key = ("c1".to_string(), 5555u16);
         o.insert(key.clone(), flow(1000, [10, 0, 0, 1], 5555));
@@ -874,7 +873,7 @@ mod tests {
         assert_eq!(
             o.remove(&flow(1000, [10, 0, 0, 1], 5555)).owner,
             None,
-            "our own flush must not release the chain's refcount"
+            "our own flush must not release the edge's refcount"
         );
     }
 
@@ -1163,7 +1162,7 @@ async fn reconcile_container(
     }
 
     // One bucket per trigger port this container actually owns. A port it does
-    // not own is someone else's chain and must not be attributed here.
+    // not own is someone else's edge and must not be attributed here.
     for &(port, revision) in trigger_revisions {
         let on_port = flows.iter().copied().filter(|f| f.dst_port == port);
         let transition = sets

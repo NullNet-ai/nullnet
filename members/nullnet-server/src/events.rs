@@ -116,11 +116,11 @@ pub(crate) enum Event {
         service: String,
         timestamp: u64,
     },
-    /// A chain finished building but the proxy client that owns it had been
-    /// torn down meanwhile, so the whole chain was unwound. Means a teardown
+    /// An ingress edge finished building but its proxy client had been torn
+    /// down meanwhile, so the edge was unwound. Means a teardown
     /// crossed a setup; repeated occurrences point at a timeout shorter than
-    /// the time the chain takes to come up.
-    ChainOwnerLost {
+    /// the time the edge takes to come up.
+    IngressOwnerLost {
         stack: String,
         timestamp: u64,
     },
@@ -194,8 +194,8 @@ pub(crate) enum Event {
         path: String,
         timestamp: u64,
     },
-    /// Two stacks declare (or reference, via a dependency/trigger chain) a
-    /// service of the same name. Name-based lookups carry no stack, so both
+    /// Two stacks declare or reference the same backend service name.
+    /// Name-based lookups carry no stack, so both
     /// stacks are dropped rather than served from an arbitrary one.
     ServiceNameConflict {
         stack_a: String,
@@ -220,12 +220,6 @@ pub(crate) enum Event {
         client_ip: String,
         timestamp: u64,
     },
-    StaleSessionEvicted {
-        service: String,
-        client_ip: String,
-        proxy_ip: String,
-        timestamp: u64,
-    },
     MaxNetworksLimitEnforced {
         service: String,
         proxy_ip: String,
@@ -247,7 +241,7 @@ pub(crate) enum Event {
         client_ip: String,
         timestamp: u64,
     },
-    ProxyChainSetupFailed {
+    IngressSetupFailed {
         service: String,
         client_ip: String,
         timestamp: u64,
@@ -371,7 +365,7 @@ pub(crate) enum Event {
         error_message: String,
         timestamp: u64,
     },
-    /// A held first packet was dropped because the chain never became active in
+    /// A held first packet was dropped because the edge never became active in
     /// time. The trigger itself was accepted — this is the setup not landing,
     /// not the RPC failing (see [`Self::BackendTriggerSendFailed`]).
     BackendTriggerSetupTimedOut {
@@ -568,7 +562,7 @@ impl Event {
             Self::SetupTimeout { .. } => "setup_timeout",
             Self::EgressReservationReclaimed { .. } => "egress_reservation_reclaimed",
             Self::EdgePromotionLost { .. } => "edge_promotion_lost",
-            Self::ChainOwnerLost { .. } => "chain_owner_lost",
+            Self::IngressOwnerLost { .. } => "ingress_owner_lost",
             Self::SessionCreated { .. } => "session_created",
             Self::SessionTornDown { .. } => "session_torn_down",
             Self::NetTeardownUnconfirmed { .. } => "net_teardown_unconfirmed",
@@ -581,12 +575,11 @@ impl Event {
             Self::AllReplicasRemoved { .. } => "all_replicas_removed",
             Self::ServiceReachabilityToggled { .. } => "service_reachability_toggled",
             Self::ProxyClientTimedOut { .. } => "proxy_client_timed_out",
-            Self::StaleSessionEvicted { .. } => "stale_session_evicted",
             Self::MaxNetworksLimitEnforced { .. } => "max_networks_limit_enforced",
             Self::IngressCongestionControlChanged { .. } => "ingress_congestion_control_changed",
             Self::IngressCongestionRecoveryStarted { .. } => "ingress_congestion_recovery_started",
             Self::NetIdPoolExhausted { .. } => "net_id_pool_exhausted",
-            Self::ProxyChainSetupFailed { .. } => "proxy_chain_setup_failed",
+            Self::IngressSetupFailed { .. } => "ingress_setup_failed",
             Self::BackendTriggerSetupBailed { .. } => "backend_trigger_setup_bailed",
             Self::FileWatchFailed { .. } => "file_watch_failed",
             Self::BackendTriggerSetupTimedOut { .. } => "backend_trigger_setup_timed_out",
@@ -697,7 +690,6 @@ impl Event {
             Self::NodeDisconnected { .. }
             | Self::ServiceDeclarationSkipped { .. }
             | Self::AllReplicasRemoved { .. }
-            | Self::StaleSessionEvicted { .. }
             | Self::EgressReservationReclaimed { .. }
             | Self::BackendTriggerSetupBailed { .. }
             | Self::ControlChannelClosed { .. }
@@ -711,7 +703,7 @@ impl Event {
             | Self::PersistenceFailed { .. }
             | Self::SetupTimeout { .. }
             | Self::EdgePromotionLost { .. }
-            | Self::ChainOwnerLost { .. }
+            | Self::IngressOwnerLost { .. }
             | Self::NetTeardownUnconfirmed { .. }
             | Self::ConntrackFlushFailed { .. }
             | Self::CertificateCredentialsStoreFailed { .. }
@@ -725,7 +717,7 @@ impl Event {
             | Self::MssClampInstallFailed { .. }
             | Self::EgressPolicyCheckFailed { .. }
             | Self::CertificateRenewalFailed { .. }
-            | Self::ProxyChainSetupFailed { .. }
+            | Self::IngressSetupFailed { .. }
             | Self::VxlanSetupFailed { .. }
             | Self::VlanSetupFailed { .. }
             | Self::VxlanTeardownFailed { .. }
@@ -822,8 +814,8 @@ impl Event {
         }
     }
 
-    pub(crate) fn chain_owner_lost(stack: String) -> Self {
-        Self::ChainOwnerLost {
+    pub(crate) fn ingress_owner_lost(stack: String) -> Self {
+        Self::IngressOwnerLost {
             stack,
             timestamp: now_secs(),
         }
@@ -961,19 +953,6 @@ impl Event {
         }
     }
 
-    pub(crate) fn stale_session_evicted(
-        service: String,
-        client_ip: String,
-        proxy_ip: String,
-    ) -> Self {
-        Self::StaleSessionEvicted {
-            service,
-            client_ip,
-            proxy_ip,
-            timestamp: now_secs(),
-        }
-    }
-
     pub(crate) fn max_networks_limit_enforced(
         service: String,
         proxy_ip: String,
@@ -1012,8 +991,8 @@ impl Event {
         }
     }
 
-    pub(crate) fn proxy_chain_setup_failed(service: String, client_ip: String) -> Self {
-        Self::ProxyChainSetupFailed {
+    pub(crate) fn ingress_setup_failed(service: String, client_ip: String) -> Self {
+        Self::IngressSetupFailed {
             service,
             client_ip,
             timestamp: now_secs(),

@@ -1,9 +1,0 @@
-[[services]]
-name = "A"
-timeout = 0
-proxy_dependencies = [["B", "E"]]
-
-[[services]]
-name = "D"
-timeout = 0
-proxy_dependencies = [["C"]]

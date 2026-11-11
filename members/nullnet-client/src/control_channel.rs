@@ -773,7 +773,7 @@ async fn handle_vxlan_setup(
             // live flows re-evaluate against the new rule. That deletes the
             // liveness evidence rather than recording a close, so mark the key
             // untrustworthy first — otherwise a rebuild under open connections
-            // reads as 1->0 and decrements the chain out from under them.
+            // reads as 1->0 and decrements the edge out from under them.
             sets.suppress_trigger(container_key, dnat_port, FLUSH_SUPPRESSION);
             // Only record prepared steering if the DNAT rule is actually live. Waking
             // the held packet without it would release the SYN into a missing
@@ -913,7 +913,7 @@ async fn handle_vxlan_teardown(
         && port != crate::triggers::EGRESS_TRIGGER_PORT
     {
         // Second of the two flushes per trigger-edge lifecycle. Without
-        // suppression the DESTROYs it raises report idle for a chain the server
+        // suppression the DESTROYs it raises report idle for an edge the server
         // is already tearing down, and that stray decrement lands on whatever
         // holds the refcount next. Must precede `dnat::remove`, which is what
         // issues the flush.

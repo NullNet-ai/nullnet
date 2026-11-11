@@ -1,4 +1,4 @@
-use crate::nullnet_grpc_impl::ChainBranch;
+use crate::nullnet_grpc_impl::BackendEdge;
 use crate::orchestrator::Orchestrator;
 use crate::services::clients::{Client, ClientInfo, Clients};
 use crate::services::firewall::FilterPolicy;
@@ -47,7 +47,6 @@ pub(crate) enum ServiceInfo {
 impl ServiceInfo {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        proxy_deps: Vec<Vec<String>>,
         triggers: HashMap<u16, String>,
         timeout: Option<u64>,
         max_networks: Option<u32>,
@@ -57,7 +56,6 @@ impl ServiceInfo {
         ingress_policy: FilterPolicy,
     ) -> Self {
         ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
-            proxy_deps,
             triggers,
             timeout,
             max_networks,
@@ -94,7 +92,6 @@ impl ServiceInfo {
         match self {
             ServiceInfo::Unregistered(unreg) => {
                 *self = ServiceInfo::Registered(RegisteredServiceInfo {
-                    proxy_deps: unreg.proxy_deps.clone(),
                     triggers: unreg.triggers.clone(),
                     timeout: unreg.timeout,
                     max_networks: unreg.max_networks,
@@ -137,7 +134,6 @@ impl ServiceInfo {
             reg.replicas.retain(|r| r.ip != ip);
             if reg.replicas.is_empty() {
                 *self = ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
-                    reg.proxy_deps.clone(),
                     reg.triggers.clone(),
                     reg.timeout,
                     reg.max_networks,
@@ -159,7 +155,6 @@ impl ServiceInfo {
                 .retain(|r| !r.matches_identity(ip, docker_container));
             if reg.replicas.is_empty() {
                 *self = ServiceInfo::Unregistered(UnregisteredServiceInfo::new(
-                    reg.proxy_deps.clone(),
                     reg.triggers.clone(),
                     reg.timeout,
                     reg.max_networks,
@@ -189,7 +184,6 @@ impl ServiceInfo {
         let loaded_ingress_policy = loaded.ingress_policy().clone();
         match self {
             ServiceInfo::Unregistered(unreg) => {
-                unreg.proxy_deps = loaded.proxy_deps().to_vec();
                 unreg.triggers.clone_from(loaded.triggers());
                 unreg.timeout = loaded_timeout;
                 unreg.pausable = loaded.pausable();
@@ -200,7 +194,6 @@ impl ServiceInfo {
                 unreg.ingress_policy = loaded_ingress_policy;
             }
             ServiceInfo::Registered(reg) => {
-                reg.proxy_deps = loaded.proxy_deps().to_vec();
                 reg.triggers.clone_from(loaded.triggers());
                 reg.timeout = loaded_timeout;
                 reg.pausable = loaded.pausable();
@@ -256,32 +249,16 @@ impl ServiceInfo {
         }
     }
 
-    pub(crate) fn proxy_deps(&self) -> &[Vec<String>] {
-        match self {
-            ServiceInfo::Unregistered(unreg) => &unreg.proxy_deps,
-            ServiceInfo::Registered(reg) => &reg.proxy_deps,
-        }
-    }
-
     pub(crate) fn triggers(&self) -> &HashMap<u16, String> {
         match self {
             ServiceInfo::Unregistered(unreg) => &unreg.triggers,
             ServiceInfo::Registered(reg) => &reg.triggers,
         }
     }
-
-    /// True iff `other` appears in any of this service's dep lists (proxy or backend).
-    pub(crate) fn deps_contain(&self, other: &str) -> bool {
-        self.proxy_deps().iter().flatten().any(|d| d == other)
-            || self.triggers().values().any(|peer| peer == other)
-    }
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct UnregisteredServiceInfo {
-    /// Independent dep chains walked on proxy-triggered setup. Each inner `Vec`
-    /// is one linear branch; all branches are brought up in parallel.
-    proxy_deps: Vec<Vec<String>>,
     /// Backend peers keyed by the trigger port observed on the
     /// initiator's host. One peer per port; no implicit fan-out.
     triggers: HashMap<u16, String>,
@@ -303,7 +280,6 @@ pub(crate) struct UnregisteredServiceInfo {
 impl UnregisteredServiceInfo {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        proxy_deps: Vec<Vec<String>>,
         triggers: HashMap<u16, String>,
         timeout: Option<u64>,
         max_networks: Option<u32>,
@@ -314,7 +290,6 @@ impl UnregisteredServiceInfo {
         pausable: bool,
     ) -> Self {
         Self {
-            proxy_deps,
             triggers,
             timeout,
             max_networks,
@@ -453,9 +428,6 @@ impl Replica {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RegisteredServiceInfo {
-    /// Independent dep chains walked on proxy-triggered setup. Each inner `Vec`
-    /// is one linear branch; all branches are brought up in parallel.
-    proxy_deps: Vec<Vec<String>>,
     /// Backend peers keyed by the trigger port observed on the
     /// initiator's host. One peer per port; no implicit fan-out.
     triggers: HashMap<u16, String>,
@@ -483,60 +455,36 @@ impl RegisteredServiceInfo {
         }
     }
 
-    /// The branches of a proxy-triggered chain, rooted at this replica. Each
-    /// entry of `proxy_deps` is one independent linear branch.
-    ///
-    /// Structure only — no replica is chosen here. Each hop's target is picked
-    /// when that hop is claimed, so it can be rooted on where its predecessor
-    /// actually landed (see `run_net_chain_setup`).
-    pub(crate) fn proxy_branches(
-        &self,
-        service_name: &str,
-        service_ip: IpAddr,
-        service_docker: Option<&str>,
-    ) -> Vec<ChainBranch> {
-        self.proxy_deps
-            .iter()
-            .map(|branch| ChainBranch {
-                root_name: service_name.to_string(),
-                root_ip: service_ip,
-                root_docker: service_docker.map(String::from),
-                deps: branch.clone(),
-                entry_port: None,
-            })
-            .collect()
-    }
-
     /// Adapt the peer to the shared edge builder, carrying the observed DNAT port.
     /// No edge is dispatched until the peer has a registered replica.
-    pub(crate) fn backend_branch(
+    pub(crate) fn backend_edge(
         &self,
         service_name: &str,
         service_ip: IpAddr,
         service_docker: Option<&str>,
         port: u16,
         services: &HashMap<String, ServiceInfo>,
-    ) -> Option<ChainBranch> {
+    ) -> Option<BackendEdge> {
         let peer = self.triggers.get(&port)?;
         if !matches!(services.get(peer), Some(ServiceInfo::Registered(reg)) if !reg.replicas.is_empty())
         {
             return None;
         }
-        Some(ChainBranch {
+        Some(BackendEdge {
             root_name: service_name.to_string(),
             root_ip: service_ip,
             root_docker: service_docker.map(String::from),
-            deps: vec![peer.clone()],
+            dependency: peer.clone(),
             entry_port: Some(u32::from(port)),
         })
     }
 
     /// Invariant: a given `Client` exists on exactly one replica (sticky sessions).
     /// These methods search across replicas and update the first (only) match.
-    pub(crate) fn add_chain(&mut self, client: &Client) {
+    pub(crate) fn add_hold(&mut self, client: &Client) {
         for replica in &mut self.replicas {
             if let Some(client_info) = replica.clients.clients_mut().get_mut(client) {
-                client_info.add_active_chain();
+                client_info.add_hold();
                 return;
             }
         }
@@ -575,9 +523,9 @@ impl RegisteredServiceInfo {
         }
     }
 
-    /// Decrement `active_chains` for a specific client entry.
+    /// Decrement `active_holds` for a specific client entry.
     /// If it reaches 0, the VXLAN is torn down and the entry is removed.
-    pub(crate) async fn decrement_chain(&mut self, client: &Client, orchestrator: &Orchestrator) {
+    pub(crate) async fn release_hold(&mut self, client: &Client, orchestrator: &Orchestrator) {
         for replica in &mut self.replicas {
             if let Some(ci) = replica.clients.clients_mut().get_mut(client) {
                 // A reservation's single refcount belongs to the task building
@@ -585,8 +533,8 @@ impl RegisteredServiceInfo {
                 if ci.is_pending() {
                     return;
                 }
-                ci.remove_active_chains(1);
-                if ci.active_chains() == 0
+                ci.remove_holds(1);
+                if ci.active_holds() == 0
                     && let Some(ci) = replica.clients.remove_client(client)
                 {
                     orchestrator
@@ -626,8 +574,8 @@ impl RegisteredServiceInfo {
     }
 
     /// Find which server replica hosts a given client entry, reservations
-    /// included. Used when resolving a chain, where a reservation is exactly
-    /// the binding a concurrent chain must agree with.
+    /// included. Used when resolving an edge, where a reservation is exactly
+    /// the binding a concurrent setup must agree with.
     pub(crate) fn client_replica(&self, client: &Client) -> Option<(IpAddr, Option<String>)> {
         self.replicas
             .iter()

@@ -78,7 +78,7 @@ pub async fn flush_container_conntrack(
     // raise are indistinguishable from real closes, and with no grace window a
     // false zero is an immediate reap of a live edge.
     // `-D -s <ip>` is not port-scoped, so it empties the container's trigger
-    // chains as well as its egress flows: both sets are marked.
+    // backend edges as well as its egress flows: both sets are marked.
     for ip in &ips {
         if let Some(container) = cache.get(*ip) {
             sets.suppress_container(&container, FLUSH_SUPPRESSION);

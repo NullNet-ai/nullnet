@@ -71,8 +71,8 @@ pub(super) fn route_conflict_message(candidate: &RouteMap, stack: &str) -> Optio
 
 /// Same idea as [`port_conflict_message`], for service names: they're global
 /// too, because every name-based lookup (proxy upstream, backend trigger,
-/// ingress policy) carries no stack. Dependency and trigger-chain names count
-/// — see [`detect_name_conflicts`].
+/// ingress policy) carries no stack. Backend names count too — see
+/// [`detect_name_conflicts`].
 pub(super) fn name_conflict_message(candidate: &StackMap, stack: &str) -> Option<String> {
     detect_name_conflicts(candidate)
         .into_iter()

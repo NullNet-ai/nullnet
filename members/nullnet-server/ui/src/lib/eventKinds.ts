@@ -55,19 +55,18 @@ export const EVENT_KIND_GROUPS = defineEventKindGroups([
     kinds: [
       'ingress_congestion_control_changed',
       'ingress_congestion_recovery_started',
+      'ingress_setup_failed',
       'max_networks_limit_enforced',
-      'proxy_chain_setup_failed',
       'proxy_client_timed_out',
-      'stale_session_evicted',
     ],
   },
   {
     label: 'Edge Lifecycle',
     kinds: [
       'backend_trigger_setup_bailed',
-      'chain_owner_lost',
       'edge_promotion_lost',
       'egress_reservation_reclaimed',
+      'ingress_owner_lost',
       'net_id_pool_exhausted',
       'net_teardown_unconfirmed',
       'setup_ack',

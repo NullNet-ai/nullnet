@@ -119,7 +119,7 @@ host `Hp`.
 |---|---|---|
 | First-packet observe + hold | NFQUEUE listener, `triggers.rs` | eBPF match: dst ∉ peers ∧ ≠ server |
 | Control RPC | `BackendTrigger` shape | `EgressTrigger(svc, dst_ip, dst_port)` |
-| Overlay edge | `net_chain_setup`, `commands/vxlan.rs` | edge type = egress (1 tunnel, no dep chain) |
+| Overlay edge | `run_net_edge_setup`, `commands/vxlan.rs` | edge type = egress (one tunnel) |
 | Steering on initiator | — | **policy route** (fwmark→table), *not* DNAT |
 | Interception on proxy | — | TPROXY rules + `IP_TRANSPARENT` L4 loop |
 | Policy / identity | proxy already maps overlay IP → svc | per-service egress allowlist |

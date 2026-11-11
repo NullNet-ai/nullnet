@@ -6,8 +6,4 @@ digraph G {
 	"A" [label=<A<BR/><FONT POINT-SIZE="9">0 active / 0 paused / 1 total</FONT>>] [style=solid, color=green];
 
 	"B" [label=<B<BR/><FONT POINT-SIZE="9">0 active / 0 paused / 1 total</FONT>>] [style=solid, color=green];
-
-	"C" [label=<C<BR/><FONT POINT-SIZE="9">0 active / 0 paused / 1 total</FONT>>] [style=dashed, color=green];
-
-	"D" [label=<D<BR/><FONT POINT-SIZE="9">0 active / 0 paused / 1 total</FONT>>] [style=dashed, color=green];
 }

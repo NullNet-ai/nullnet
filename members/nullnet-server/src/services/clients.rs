@@ -15,12 +15,12 @@ impl Clients {
     pub(super) fn add_client(&mut self, client: Client, mut client_info: ClientInfo) {
         // Preserve counts accumulated on an existing entry so promoting a
         // reservation to a live entry doesn't reset them and cause a premature
-        // teardown. Open connections matter as much as chains: dropping them
+        // teardown. Open connections matter as much as holds: dropping them
         // would strand a live connection's close, underflowing to zero and
         // reaping under it.
         let waiters = match self.clients.get(&client) {
             Some(existing) => {
-                client_info.set_active_chains(existing.active_chains());
+                client_info.set_holds(existing.active_holds());
                 client_info.set_open_connections(existing.open_connections());
                 existing.pending.clone()
             }
@@ -182,7 +182,7 @@ pub(crate) struct ClientInfo {
     net_id: u32,
     pool_generation: u64,
     time_ms: u128,
-    active_chains: usize,
+    active_holds: usize,
     /// Front connections currently open through the proxy for this client.
     /// The idle grace only starts once this reaches zero, so an edge is never
     /// reaped under a live connection (long download, WebSocket, UDP session).
@@ -256,7 +256,7 @@ impl ClientInfo {
             net_id,
             pool_generation,
             time_ms,
-            active_chains: 0,
+            active_holds: 0,
             open_connections: 0,
             latest: Instant::now(),
             created_at: SystemTime::now(),
@@ -278,7 +278,7 @@ impl ClientInfo {
             net_id: 0,
             pool_generation: 0,
             time_ms: 0,
-            active_chains: 1,
+            active_holds: 1,
             open_connections: 0,
             latest: Instant::now(),
             created_at: SystemTime::now(),
@@ -337,8 +337,8 @@ impl ClientInfo {
         self.time_ms
     }
 
-    pub(super) fn add_active_chain(&mut self) {
-        self.active_chains += 1;
+    pub(super) fn add_hold(&mut self) {
+        self.active_holds += 1;
         self.set_latest_now();
     }
 
@@ -346,20 +346,20 @@ impl ClientInfo {
         self.latest = Instant::now();
     }
 
-    pub(super) fn remove_active_chains(&mut self, num_chains: usize) {
-        self.active_chains = self.active_chains.saturating_sub(num_chains);
+    pub(super) fn remove_holds(&mut self, num_holds: usize) {
+        self.active_holds = self.active_holds.saturating_sub(num_holds);
     }
 
-    pub(super) fn set_active_chains(&mut self, num_chains: usize) {
-        self.active_chains = num_chains;
+    pub(super) fn set_holds(&mut self, num_holds: usize) {
+        self.active_holds = num_holds;
     }
 
     pub(super) fn set_open_connections(&mut self, num: usize) {
         self.open_connections = num;
     }
 
-    pub(crate) fn active_chains(&self) -> usize {
-        self.active_chains
+    pub(crate) fn active_holds(&self) -> usize {
+        self.active_holds
     }
 
     pub(super) fn open_connection(&mut self) {

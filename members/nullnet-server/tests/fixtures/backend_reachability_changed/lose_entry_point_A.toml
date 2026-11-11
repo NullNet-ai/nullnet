@@ -1,4 +1,7 @@
 [[services]]
 name = "Z"
 timeout = 0
-proxy_dependencies = [["A", "C"]]
+
+[[services]]
+name = "C"
+port = 5555

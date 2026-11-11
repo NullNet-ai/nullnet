@@ -255,7 +255,7 @@ impl NullnetGrpcInterface {
     /// Report a trigger-built chain's open-connection transition (0<->1).
     ///
     /// Keyed by trigger port, not by initiator: one replica can hold several
-    /// trigger chains at once and they go quiet independently.
+    /// trigger-built edges at once and they go quiet independently.
     #[allow(clippy::missing_errors_doc)]
     pub async fn backend_liveness(
         &self,

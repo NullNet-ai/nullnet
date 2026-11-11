@@ -6,7 +6,6 @@ backends = ["C"]
 [[services]]
 name = "Z"
 timeout = 0
-proxy_dependencies = [["A", "C"]]
 
 [[services]]
 name = "C"

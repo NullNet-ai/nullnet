@@ -68,7 +68,7 @@ pub fn spawn_listener(
     sets: LivenessSets,
 ) {
     // Shared with the liveness machinery, which resolves the same
-    // container -> service/port ownership when a chain goes quiet.
+    // container -> service/port ownership when an edge goes quiet.
     let trigger_owners: TriggerOwners = sets.owners.clone();
 
     // Initial cache populate + long-running docker-events watcher. The

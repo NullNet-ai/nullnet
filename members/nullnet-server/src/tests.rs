@@ -2,12 +2,11 @@
 
 use crate::graphviz::render_graphviz;
 use crate::nullnet_grpc_impl::{NullnetGrpcImpl, build_service_triggers};
-use crate::services::changes::dep_chain_intact;
 use crate::services::clients::Client;
 use crate::services::firewall::FilterPolicy;
 use crate::services::input::{ServicesToml, StackMap, apply_config_update};
 use crate::services::service_info::ServiceInfo;
-use crate::timeout::{apply_timeouts, reap_idle_backend_chains};
+use crate::timeout::{apply_timeouts, reap_idle_backend_edges};
 use nullnet_grpc_lib::nullnet_grpc::{NetMessage, ServiceProtocol, net_message};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
@@ -108,6 +107,11 @@ fn assert_graphviz(services: &StackMap, fixture: &str, expected_file: &str) {
 
     println!("--- {expected_file} ---\n{actual}");
 
+    if std::env::var_os("UPDATE_GRAPHVIZ").is_some() {
+        std::fs::write(&expected_path, &actual).expect("failed to update expected dot file");
+        return;
+    }
+
     let expected = std::fs::read_to_string(&expected_path).unwrap_or_else(|_| {
         std::fs::write(&expected_path, &actual).expect("failed to write expected dot file");
         println!("BOOTSTRAPPED: wrote {expected_path}");
@@ -121,11 +125,33 @@ fn assert_graphviz(services: &StackMap, fixture: &str, expected_file: &str) {
     );
 }
 
+fn client_entry_holds(guard: &StackMap, service: &str, client: &Client) -> Option<usize> {
+    match stack_view(guard).get(service) {
+        Some(ServiceInfo::Registered(reg)) => reg.replicas().iter().find_map(|replica| {
+            replica
+                .clients()
+                .get(client)
+                .map(crate::services::clients::ClientInfo::active_holds)
+        }),
+        _ => None,
+    }
+}
+
+fn setup_net_ids(log: &[NetMessage]) -> Vec<u32> {
+    log.iter()
+        .filter_map(|message| match &message.message {
+            Some(net_message::Message::VxlanSetup(setup)) => Some(setup.vxlan_id),
+            Some(net_message::Message::VlanSetup(setup)) => Some(setup.vlan_id),
+            _ => None,
+        })
+        .collect()
+}
+
 /// A *completed* request: the proxy resolves an upstream, then the connection
 /// closes. Both halves matter — the server pins a client while it has open
 /// connections, so a helper that only ever opened would leave every client
 /// unreapable and quietly disable the timeout tests below.
-async fn setup_proxy_chain(
+async fn setup_proxy_edge(
     server: &NullnetGrpcImpl,
     service_name: &str,
     proxy_ip: IpAddr,
@@ -140,57 +166,9 @@ async fn setup_proxy_chain(
         .await;
 }
 
-#[tokio::test]
-async fn portless_proxy_dependency_builds_an_edge() {
-    let (inner, _, _) = crate::services::input::validate_stack_toml(
-        r#"
-[[services]]
-name = "entry"
-port = 8080
-timeout = 0
-proxy_dependencies = [["dep"]]
-
-[[services]]
-name = "dep"
-"#,
-    )
-    .unwrap();
-    let server = NullnetGrpcImpl::new_for_test(into_stack_map(inner));
-    let entry_ip = ip(1, 1, 1, 1);
-    let dep_ip = ip(2, 2, 2, 2);
-    let proxy_ip = ip(3, 3, 3, 3);
-    {
-        let mut services = server.services().write().await;
-        let stack = stack_view_mut(&mut services);
-        stack
-            .get_mut("entry")
-            .unwrap()
-            .add_replica(entry_ip, 8080, None);
-        stack
-            .get_mut("dep")
-            .unwrap()
-            .add_replica(dep_ip, None::<u16>, None);
-    }
-    for host in [entry_ip, dep_ip, proxy_ip] {
-        server.orchestrator().register_fake_client(host).await;
-    }
-
-    server
-        .handle_proxy_request("entry", proxy_ip, "10.0.0.1")
-        .await
-        .unwrap();
-
-    let services = server.services().read().await;
-    let ServiceInfo::Registered(dep) = &stack_view(&services)["dep"] else {
-        panic!("dependency did not register");
-    };
-    assert_eq!(dep.replicas()[0].port(), None);
-    assert_eq!(dep.replicas()[0].clients().len(), 1);
-}
-
-/// Trigger the backend chain at `port` from `initiator_ip` (acting as the
+/// Trigger the backend edge at `port` from `initiator_ip` (acting as the
 /// announcing host). Mirrors the gRPC `BackendTrigger` entry point.
-async fn trigger_backend_chain(
+async fn trigger_backend_edge(
     server: &NullnetGrpcImpl,
     initiator_name: &str,
     initiator_ip: IpAddr,
@@ -202,9 +180,9 @@ async fn trigger_backend_chain(
         .expect("backend trigger failed");
 }
 
-/// Set up a backend chain initiated by a specific replica (ip + optional
-/// docker container). Used when co-located replicas need independent chains.
-async fn setup_backend_chain_for_replica(
+/// Set up a backend edge initiated by a specific replica (ip + optional
+/// docker container). Used when co-located replicas need independent edges.
+async fn setup_backend_edge_for_replica(
     server: &NullnetGrpcImpl,
     initiator_name: &str,
     initiator_ip: IpAddr,
@@ -212,7 +190,7 @@ async fn setup_backend_chain_for_replica(
     port: u16,
 ) {
     server
-        .setup_backend_chain(
+        .setup_backend_edge(
             TEST_STACK,
             initiator_name,
             initiator_ip,
@@ -220,549 +198,11 @@ async fn setup_backend_chain_for_replica(
             port,
         )
         .await
-        .expect("setup_backend_chain failed");
+        .expect("setup_backend_edge failed");
 }
 
 // ===========================================================================
-// service_removed: A→C→D, B→D (D shared). proxy1→A+B, proxy2→A
-// ===========================================================================
-
-const SERVICE_REMOVED: &str = "service_removed";
-
-async fn service_removed_setup() -> NullnetGrpcImpl {
-    let services = load_fixture(SERVICE_REMOVED).await;
-    let server = NullnetGrpcImpl::new_for_test(services);
-
-    let ip_map = HashMap::from([
-        ("A", ip(1, 1, 1, 1)),
-        ("B", ip(2, 2, 2, 2)),
-        ("C", ip(3, 3, 3, 3)),
-        ("D", ip(4, 4, 4, 4)),
-    ]);
-    let proxy1 = ip(5, 5, 5, 5);
-    let proxy2 = ip(6, 6, 6, 6);
-    register_services(&server, &ip_map, 8080).await;
-    server.orchestrator().register_fake_client(proxy1).await;
-    server.orchestrator().register_fake_client(proxy2).await;
-
-    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
-    setup_proxy_chain(&server, "B", proxy1, "10.0.0.1").await;
-    setup_proxy_chain(&server, "A", proxy2, "10.0.0.2").await;
-
-    // A→C, C→D, proxy1→A, B→D, proxy1→B, proxy2→A = 6 IDs
-    assert_net_ids_in_use(&server, 6).await;
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, SERVICE_REMOVED, "start.dot");
-    drop(guard);
-
-    server
-}
-
-/// Remove A from config. A and C removed (C only dep of A). D stays (dep of B).
-/// proxy1→B→D survives.
-#[tokio::test]
-async fn service_removed_remove_A() {
-    let server = service_removed_setup().await;
-    let new_config = load_config(SERVICE_REMOVED, "remove_A.toml").await;
-
-    let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
-    assert_graphviz(&guard, SERVICE_REMOVED, "after_remove_A.dot");
-    drop(guard);
-
-    // A→C, C→D, proxy1→A, proxy2→A freed; B→D, proxy1→B survive = 2 IDs
-    assert_net_ids_in_use(&server, 2).await;
-
-    let guard = server.services().read().await;
-    assert!(!stack_view(&guard).contains_key("A"));
-    assert!(!stack_view(&guard).contains_key("C"));
-    assert!(stack_view(&guard).contains_key("B"));
-    assert!(stack_view(&guard).contains_key("D"));
-}
-
-/// Remove B from config. D stays (dep of A). A chains survive.
-#[tokio::test]
-async fn service_removed_remove_B() {
-    let server = service_removed_setup().await;
-    let new_config = load_config(SERVICE_REMOVED, "remove_B.toml").await;
-
-    let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
-    assert_graphviz(&guard, SERVICE_REMOVED, "after_remove_B.dot");
-    drop(guard);
-
-    // B→D, proxy1→B freed; A→C, C→D, proxy1→A, proxy2→A survive = 4 IDs
-    assert_net_ids_in_use(&server, 4).await;
-
-    let guard = server.services().read().await;
-    assert!(!stack_view(&guard).contains_key("B"));
-    assert!(stack_view(&guard).contains_key("A"));
-    assert!(stack_view(&guard).contains_key("C"));
-    assert!(stack_view(&guard).contains_key("D"));
-}
-
-// ===========================================================================
-// dep_changed: A→B→C, D→C (C shared). proxy1→A+D, proxy2→A
-// ===========================================================================
-
-const DEP_CHANGED: &str = "dep_changed";
-
-async fn dep_changed_setup() -> NullnetGrpcImpl {
-    let services = load_fixture(DEP_CHANGED).await;
-    let server = NullnetGrpcImpl::new_for_test(services);
-
-    let ip_map = HashMap::from([
-        ("A", ip(1, 1, 1, 1)),
-        ("B", ip(2, 2, 2, 2)),
-        ("C", ip(3, 3, 3, 3)),
-        ("D", ip(4, 4, 4, 4)),
-    ]);
-    let proxy1 = ip(5, 5, 5, 5);
-    let proxy2 = ip(6, 6, 6, 6);
-    register_services(&server, &ip_map, 8080).await;
-    server.orchestrator().register_fake_client(proxy1).await;
-    server.orchestrator().register_fake_client(proxy2).await;
-
-    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
-    setup_proxy_chain(&server, "D", proxy1, "10.0.0.1").await;
-    setup_proxy_chain(&server, "A", proxy2, "10.0.0.2").await;
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, DEP_CHANGED, "start.dot");
-    drop(guard);
-
-    server
-}
-
-/// Add E to A's deps: [B,C] → [B,C,E]. A's chain cleaned up (dep change).
-/// E added as unregistered. D→C survives.
-#[tokio::test]
-async fn dep_changed_add_E_to_A() {
-    let server = dep_changed_setup().await;
-    let new_config = load_config(DEP_CHANGED, "add_E_to_A.toml").await;
-
-    let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
-    assert_graphviz(&guard, DEP_CHANGED, "after_add_E_to_A.dot");
-
-    assert_eq!(
-        stack_view(&guard)["A"].proxy_deps(),
-        vec![vec!["B".to_string(), "C".to_string(), "E".to_string()]]
-    );
-    assert!(stack_view(&guard).contains_key("E"));
-    assert!(matches!(
-        stack_view(&guard)["E"],
-        ServiceInfo::Unregistered(_)
-    ));
-}
-
-/// Drop C from A's deps: [B,C] → [B]. A's chain cleaned up but A stays registered.
-/// D→C survives.
-#[tokio::test]
-async fn dep_changed_drop_C_from_A() {
-    let server = dep_changed_setup().await;
-    let new_config = load_config(DEP_CHANGED, "drop_C_from_A.toml").await;
-
-    let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
-    assert_graphviz(&guard, DEP_CHANGED, "after_drop_C_from_A.dot");
-
-    assert!(stack_view(&guard).contains_key("A"));
-    assert_eq!(
-        stack_view(&guard)["A"].proxy_deps(),
-        vec![vec!["B".to_string()]]
-    );
-    assert!(stack_view(&guard).contains_key("C"));
-}
-
-/// Drop all deps from D: [C] → []. D's chain cleaned up but D stays registered.
-/// A chains survive.
-#[tokio::test]
-async fn dep_changed_drop_all_from_D() {
-    let server = dep_changed_setup().await;
-    let new_config = load_config(DEP_CHANGED, "drop_all_from_D.toml").await;
-
-    let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
-    assert_graphviz(&guard, DEP_CHANGED, "after_drop_all_from_D.dot");
-
-    assert!(stack_view(&guard)["D"].proxy_deps().is_empty());
-    assert!(stack_view(&guard).contains_key("C"));
-}
-
-/// Swap C for E in A's deps: [B,C] → [B,E]. A's chain cleaned up.
-/// E added as unregistered. D→C survives.
-#[tokio::test]
-async fn dep_changed_swap_C_for_E() {
-    let server = dep_changed_setup().await;
-    let new_config = load_config(DEP_CHANGED, "swap_C_for_E.toml").await;
-
-    let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
-    assert_graphviz(&guard, DEP_CHANGED, "after_swap_C_for_E.dot");
-
-    assert_eq!(
-        stack_view(&guard)["A"].proxy_deps(),
-        vec![vec!["B".to_string(), "E".to_string()]]
-    );
-    assert!(stack_view(&guard).contains_key("E"));
-    assert!(matches!(
-        stack_view(&guard)["E"],
-        ServiceInfo::Unregistered(_)
-    ));
-}
-
-// ===========================================================================
-// reachability_changed: A→B→C, D→E. proxy1→A+D, proxy2→B.
-// B is both proxy-reachable and a dep of A.
-// ===========================================================================
-
-const REACHABILITY_CHANGED: &str = "reachability_changed";
-
-async fn reachability_changed_setup() -> NullnetGrpcImpl {
-    let services = load_fixture(REACHABILITY_CHANGED).await;
-    let server = NullnetGrpcImpl::new_for_test(services);
-
-    let ip_map = HashMap::from([
-        ("A", ip(1, 1, 1, 1)),
-        ("B", ip(2, 2, 2, 2)),
-        ("C", ip(3, 3, 3, 3)),
-        ("D", ip(4, 4, 4, 4)),
-        ("E", ip(5, 5, 5, 5)),
-    ]);
-    let proxy1 = ip(6, 6, 6, 6);
-    let proxy2 = ip(7, 7, 7, 7);
-    register_services(&server, &ip_map, 8080).await;
-    server.orchestrator().register_fake_client(proxy1).await;
-    server.orchestrator().register_fake_client(proxy2).await;
-
-    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
-    setup_proxy_chain(&server, "D", proxy1, "10.0.0.1").await;
-    setup_proxy_chain(&server, "B", proxy2, "10.0.0.2").await;
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, REACHABILITY_CHANGED, "start.dot");
-    drop(guard);
-
-    server
-}
-
-/// B becomes unreachable (loses its [[services]] entry). B's own proxy chain
-/// (proxy2→B) is torn down, but A's chain survives because B's deps are
-/// correctly inferred from A's dependency list. D→E also survives.
-#[tokio::test]
-async fn reachability_changed_unreachable_B() {
-    let server = reachability_changed_setup().await;
-    let new_config = load_config(REACHABILITY_CHANGED, "unreachable_B.toml").await;
-
-    let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
-    assert_graphviz(&guard, REACHABILITY_CHANGED, "after_unreachable_B.dot");
-
-    assert!(stack_view(&guard).contains_key("B"));
-    assert!(stack_view(&guard)["B"].timeout().is_none());
-}
-
-/// D removed from [[services]] and no other service depends on it, so D and E
-/// are fully removed from the map. proxy1→D and D→E torn down.
-/// A and B chains survive.
-#[tokio::test]
-async fn reachability_changed_unreachable_D() {
-    let server = reachability_changed_setup().await;
-    let new_config = load_config(REACHABILITY_CHANGED, "unreachable_D.toml").await;
-
-    let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
-    assert_graphviz(&guard, REACHABILITY_CHANGED, "after_unreachable_D.dot");
-
-    assert!(!stack_view(&guard).contains_key("D"));
-    assert!(!stack_view(&guard).contains_key("E"));
-}
-
-// ===========================================================================
-// service_unregistered: A→C→D, B→D (D shared). A+B co-located at 1.1.1.1.
-// proxy1→A+B, proxy2→A
-// ===========================================================================
-
-const SERVICE_UNREGISTERED: &str = "service_unregistered";
-
-async fn service_unregistered_setup() -> NullnetGrpcImpl {
-    let services = load_fixture(SERVICE_UNREGISTERED).await;
-    let server = NullnetGrpcImpl::new_for_test(services);
-
-    // A and B co-located at 1.1.1.1
-    let ip_map = HashMap::from([
-        ("A", ip(1, 1, 1, 1)),
-        ("B", ip(1, 1, 1, 1)),
-        ("C", ip(2, 2, 2, 2)),
-        ("D", ip(3, 3, 3, 3)),
-    ]);
-    let proxy1 = ip(5, 5, 5, 5);
-    let proxy2 = ip(6, 6, 6, 6);
-    register_services(&server, &ip_map, 8080).await;
-    server.orchestrator().register_fake_client(proxy1).await;
-    server.orchestrator().register_fake_client(proxy2).await;
-
-    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
-    setup_proxy_chain(&server, "B", proxy1, "10.0.0.1").await;
-    setup_proxy_chain(&server, "A", proxy2, "10.0.0.2").await;
-
-    assert_net_ids_in_use(&server, 6).await;
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, SERVICE_UNREGISTERED, "start.dot");
-    drop(guard);
-
-    server
-}
-
-/// Node 1.1.1.1 re-registers with only B (drops A selectively).
-/// A's chains cleaned up. B→D survives.
-#[tokio::test]
-async fn service_unregistered_drop_A() {
-    let server = service_unregistered_setup().await;
-
-    server
-        .apply_services_list(ip(1, 1, 1, 1), &[("B".into(), 8080, None)])
-        .await
-        .expect("apply_services_list failed");
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, SERVICE_UNREGISTERED, "after_drop_A.dot");
-
-    assert!(matches!(
-        stack_view(&guard)["A"],
-        ServiceInfo::Unregistered(_)
-    ));
-    assert!(matches!(
-        stack_view(&guard)["B"],
-        ServiceInfo::Registered(_)
-    ));
-}
-
-/// Node 1.1.1.1 re-registers with only A (drops B selectively).
-/// B's chain cleaned up. A chains survive.
-#[tokio::test]
-async fn service_unregistered_drop_B() {
-    let server = service_unregistered_setup().await;
-
-    server
-        .apply_services_list(ip(1, 1, 1, 1), &[("A".into(), 8080, None)])
-        .await
-        .expect("apply_services_list failed");
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, SERVICE_UNREGISTERED, "after_drop_B.dot");
-
-    assert!(matches!(
-        stack_view(&guard)["A"],
-        ServiceInfo::Registered(_)
-    ));
-    assert!(matches!(
-        stack_view(&guard)["B"],
-        ServiceInfo::Unregistered(_)
-    ));
-}
-
-/// Leaf dep host 2.2.2.2 re-registers with empty list (C unregistered).
-/// Cascades to A (depends on C). B→D survives (B doesn't depend on C).
-#[tokio::test]
-async fn service_unregistered_drop_C() {
-    let server = service_unregistered_setup().await;
-
-    server
-        .apply_services_list(ip(2, 2, 2, 2), &[])
-        .await
-        .expect("apply_services_list failed");
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, SERVICE_UNREGISTERED, "after_drop_C.dot");
-
-    assert!(matches!(
-        stack_view(&guard)["C"],
-        ServiceInfo::Unregistered(_)
-    ));
-    assert!(matches!(
-        stack_view(&guard)["B"],
-        ServiceInfo::Registered(_)
-    ));
-}
-
-/// Shared dep host 3.3.3.3 re-registers with empty list (D unregistered).
-/// Cascades to A (deps on D) and B (deps on D). All chains torn down.
-/// All 6 NET IDs freed.
-#[tokio::test]
-async fn service_unregistered_drop_D() {
-    let server = service_unregistered_setup().await;
-
-    server
-        .apply_services_list(ip(3, 3, 3, 3), &[])
-        .await
-        .expect("apply_services_list failed");
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, SERVICE_UNREGISTERED, "after_drop_D.dot");
-    drop(guard);
-
-    // all 6 IDs freed
-    assert_net_ids_in_use(&server, 0).await;
-
-    let guard = server.services().read().await;
-    assert!(matches!(
-        stack_view(&guard)["D"],
-        ServiceInfo::Unregistered(_)
-    ));
-}
-
-// ===========================================================================
-// node_disconnected: same topology as service_unregistered (A+B co-located).
-// Contrasts: disconnect kills ALL services at that IP.
-// ===========================================================================
-
-const NODE_DISCONNECTED: &str = "node_disconnected";
-
-async fn node_disconnected_setup() -> NullnetGrpcImpl {
-    let services = load_fixture(NODE_DISCONNECTED).await;
-    let server = NullnetGrpcImpl::new_for_test(services);
-
-    // A and B co-located at 1.1.1.1
-    let ip_map = HashMap::from([
-        ("A", ip(1, 1, 1, 1)),
-        ("B", ip(1, 1, 1, 1)),
-        ("C", ip(2, 2, 2, 2)),
-        ("D", ip(3, 3, 3, 3)),
-    ]);
-    let proxy1 = ip(5, 5, 5, 5);
-    let proxy2 = ip(6, 6, 6, 6);
-    register_services(&server, &ip_map, 8080).await;
-    server.orchestrator().register_fake_client(proxy1).await;
-    server.orchestrator().register_fake_client(proxy2).await;
-
-    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
-    setup_proxy_chain(&server, "B", proxy1, "10.0.0.1").await;
-    setup_proxy_chain(&server, "A", proxy2, "10.0.0.2").await;
-
-    assert_net_ids_in_use(&server, 6).await;
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, NODE_DISCONNECTED, "start.dot");
-    drop(guard);
-
-    server
-}
-
-/// A+B host (1.1.1.1) disconnects. BOTH A and B cleaned up (unlike
-/// service_unregistered which can drop selectively).
-/// All 6 NET IDs freed.
-#[tokio::test]
-async fn node_disconnected_A_B() {
-    let server = node_disconnected_setup().await;
-
-    server
-        .orchestrator()
-        .handle_node_disconnect(ip(1, 1, 1, 1), server.services())
-        .await;
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, NODE_DISCONNECTED, "after_disconnect_A_B.dot");
-    drop(guard);
-
-    assert_net_ids_in_use(&server, 0).await;
-
-    let guard = server.services().read().await;
-    assert!(matches!(
-        stack_view(&guard)["A"],
-        ServiceInfo::Unregistered(_)
-    ));
-    assert!(matches!(
-        stack_view(&guard)["B"],
-        ServiceInfo::Unregistered(_)
-    ));
-}
-
-/// C host (2.2.2.2) disconnects. C cleaned up, cascades to A (depends on C).
-/// B→D survives (B doesn't depend on C).
-#[tokio::test]
-async fn node_disconnected_C() {
-    let server = node_disconnected_setup().await;
-
-    server
-        .orchestrator()
-        .handle_node_disconnect(ip(2, 2, 2, 2), server.services())
-        .await;
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, NODE_DISCONNECTED, "after_disconnect_C.dot");
-
-    assert!(matches!(
-        stack_view(&guard)["C"],
-        ServiceInfo::Unregistered(_)
-    ));
-    assert!(matches!(
-        stack_view(&guard)["B"],
-        ServiceInfo::Registered(_)
-    ));
-}
-
-/// D host (3.3.3.3) disconnects. D cleaned up, cascades to A and B (both depend on D).
-#[tokio::test]
-async fn node_disconnected_D() {
-    let server = node_disconnected_setup().await;
-
-    server
-        .orchestrator()
-        .handle_node_disconnect(ip(3, 3, 3, 3), server.services())
-        .await;
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, NODE_DISCONNECTED, "after_disconnect_D.dot");
-
-    assert!(matches!(
-        stack_view(&guard)["D"],
-        ServiceInfo::Unregistered(_)
-    ));
-}
-
-/// Proxy1 (5.5.5.5) disconnects. proxy1→A and proxy1→B chains torn down.
-/// proxy2→A survives, so A→C→D edges survive. All services stay registered.
-#[tokio::test]
-async fn node_disconnected_proxy1() {
-    let server = node_disconnected_setup().await;
-
-    server
-        .orchestrator()
-        .handle_node_disconnect(ip(5, 5, 5, 5), server.services())
-        .await;
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, NODE_DISCONNECTED, "after_disconnect_proxy1.dot");
-    drop(guard);
-
-    // proxy1→A, proxy1→B, B→D freed; A→C, C→D, proxy2→A survive = 3 IDs
-    assert_net_ids_in_use(&server, 3).await;
-
-    let guard = server.services().read().await;
-    assert!(matches!(
-        stack_view(&guard)["A"],
-        ServiceInfo::Registered(_)
-    ));
-    assert!(matches!(
-        stack_view(&guard)["B"],
-        ServiceInfo::Registered(_)
-    ));
-    assert!(matches!(
-        stack_view(&guard)["C"],
-        ServiceInfo::Registered(_)
-    ));
-    assert!(matches!(
-        stack_view(&guard)["D"],
-        ServiceInfo::Registered(_)
-    ));
-}
-
-// ===========================================================================
-// proxy_timeout: A→C→D, B→D (D shared). proxy1→A+B, proxy2→A.
+// proxy_timeout: proxy1→A+B, proxy2→A.
 // A has timeout=1, B has timeout=5 (B kept well above A so the "B survives A's
 // timeout" assertions have a wide margin under real-wall-clock CI contention).
 // ===========================================================================
@@ -773,23 +213,18 @@ pub(crate) async fn proxy_timeout_setup() -> NullnetGrpcImpl {
     let services = load_fixture(PROXY_TIMEOUT).await;
     let server = NullnetGrpcImpl::new_for_test(services);
 
-    let ip_map = HashMap::from([
-        ("A", ip(1, 1, 1, 1)),
-        ("B", ip(2, 2, 2, 2)),
-        ("C", ip(3, 3, 3, 3)),
-        ("D", ip(4, 4, 4, 4)),
-    ]);
+    let ip_map = HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]);
     let proxy1 = ip(5, 5, 5, 5);
     let proxy2 = ip(6, 6, 6, 6);
     register_services(&server, &ip_map, 8080).await;
     server.orchestrator().register_fake_client(proxy1).await;
     server.orchestrator().register_fake_client(proxy2).await;
 
-    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
-    setup_proxy_chain(&server, "B", proxy1, "10.0.0.1").await;
-    setup_proxy_chain(&server, "A", proxy2, "10.0.0.2").await;
+    setup_proxy_edge(&server, "A", proxy1, "10.0.0.1").await;
+    setup_proxy_edge(&server, "B", proxy1, "10.0.0.1").await;
+    setup_proxy_edge(&server, "A", proxy2, "10.0.0.2").await;
 
-    assert_net_ids_in_use(&server, 6).await;
+    assert_net_ids_in_use(&server, 3).await;
 
     let guard = server.services().read().await;
     assert_graphviz(&guard, PROXY_TIMEOUT, "start.dot");
@@ -803,7 +238,7 @@ async fn mass_expiry_allows_reads_between_client_teardowns() {
     let server = proxy_timeout_setup().await;
     let proxy = ip(5, 5, 5, 5);
     for i in 3..131 {
-        setup_proxy_chain(&server, "A", proxy, &format!("10.0.0.{i}")).await;
+        setup_proxy_edge(&server, "A", proxy, &format!("10.0.0.{i}")).await;
     }
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let (log, gate) = server.orchestrator().register_gated_client(proxy).await;
@@ -831,8 +266,7 @@ async fn mass_expiry_allows_reads_between_client_teardowns() {
 }
 
 /// After A's timeout (1s), both proxy clients on A expire. B's proxy client
-/// survives (timeout=5). A→C→D edges removed (no more proxy clients on A).
-/// B→D edge survives.
+/// survives (timeout=5).
 #[tokio::test]
 async fn proxy_timeout_A() {
     let server = proxy_timeout_setup().await;
@@ -912,7 +346,7 @@ async fn unmatched_close_does_not_underflow() {
     let server = proxy_timeout_setup().await;
     let proxy1 = ip(5, 5, 5, 5);
 
-    // setup_proxy_chain already closed once; close twice more.
+    // setup_proxy_edge already closed once; close twice more.
     server.mark_connection_closed("A", proxy1, "10.0.0.1").await;
     server.mark_connection_closed("A", proxy1, "10.0.0.1").await;
 
@@ -928,7 +362,7 @@ async fn unmatched_close_does_not_underflow() {
 }
 
 /// After B's timeout (5s), B's proxy client also expires.
-/// All proxy chains gone; all services still registered.
+/// All ingress connections are gone; all services remain registered.
 #[tokio::test]
 async fn proxy_timeout_A_then_B() {
     let server = proxy_timeout_setup().await;
@@ -958,12 +392,12 @@ async fn proxy_timeout_A_then_B() {
     }
     drop(guard);
 
-    // all 6 IDs freed
+    // All ingress IDs are freed.
     assert_net_ids_in_use(&server, 0).await;
 }
 
 /// After 5s+ both A and B expire simultaneously in a single apply.
-/// All 6 NET IDs freed.
+/// All ingress NET IDs are freed.
 #[tokio::test]
 async fn proxy_timeout_all_at_once() {
     let server = proxy_timeout_setup().await;
@@ -1038,798 +472,7 @@ async fn proxy_timeout_config_remove_timeout_A() {
 }
 
 // ===========================================================================
-// multi_replica: A→B, C→B. B has 3 replicas across 2 IPs:
-//   - 2.2.2.2 container "b1"
-//   - 2.2.2.2 container "b2"  (Docker Swarm: two containers, same host)
-//   - 4.4.4.4 (no container)
-// Tests round-robin, sticky sessions, and partial replica removal.
-// ===========================================================================
-
-const MULTI_REPLICA: &str = "multi_replica";
-
-/// Replicas:
-///   A: "a1" and "a2" on 1.1.1.1 (Docker Swarm)
-///   B: "b1" on 2.2.2.2, standalone on 4.4.4.4, "b2" on 2.2.2.2
-///   C: standalone on 3.3.3.3
-///   D: standalone on 6.6.6.6
-async fn multi_replica_setup() -> NullnetGrpcImpl {
-    let services = load_fixture(MULTI_REPLICA).await;
-    let server = NullnetGrpcImpl::new_for_test(services);
-
-    // A: 2 replicas on same IP (Docker Swarm containers "a1", "a2")
-    {
-        let mut services = server.services().write().await;
-        stack_view_mut(&mut services)
-            .get_mut("A")
-            .unwrap()
-            .add_replica(ip(1, 1, 1, 1), 8080, Some("a1".into()));
-        stack_view_mut(&mut services)
-            .get_mut("A")
-            .unwrap()
-            .add_replica(ip(1, 1, 1, 1), 8080, Some("a2".into()));
-    }
-    server
-        .orchestrator()
-        .register_fake_client(ip(1, 1, 1, 1))
-        .await;
-
-    // B: 3 replicas — insertion order matters for least-clients tie-breaking
-    {
-        let mut services = server.services().write().await;
-        stack_view_mut(&mut services)
-            .get_mut("B")
-            .unwrap()
-            .add_replica(ip(2, 2, 2, 2), 8080, Some("b1".into()));
-        stack_view_mut(&mut services)
-            .get_mut("B")
-            .unwrap()
-            .add_replica(ip(4, 4, 4, 4), 8080, None);
-        stack_view_mut(&mut services)
-            .get_mut("B")
-            .unwrap()
-            .add_replica(ip(2, 2, 2, 2), 8080, Some("b2".into()));
-    }
-    server
-        .orchestrator()
-        .register_fake_client(ip(2, 2, 2, 2))
-        .await;
-    server
-        .orchestrator()
-        .register_fake_client(ip(4, 4, 4, 4))
-        .await;
-
-    // C: 1 replica on 3.3.3.3
-    {
-        let mut services = server.services().write().await;
-        stack_view_mut(&mut services)
-            .get_mut("C")
-            .unwrap()
-            .add_replica(ip(3, 3, 3, 3), 8080, None);
-    }
-    server
-        .orchestrator()
-        .register_fake_client(ip(3, 3, 3, 3))
-        .await;
-
-    // D: 1 replica on 6.6.6.6
-    {
-        let mut services = server.services().write().await;
-        stack_view_mut(&mut services)
-            .get_mut("D")
-            .unwrap()
-            .add_replica(ip(6, 6, 6, 6), 8080, None);
-    }
-    server
-        .orchestrator()
-        .register_fake_client(ip(6, 6, 6, 6))
-        .await;
-
-    server
-}
-
-/// B has 3 replicas across 2 IPs. Verify all are present.
-#[tokio::test]
-async fn multi_replica_register() {
-    let server = multi_replica_setup().await;
-    let guard = server.services().read().await;
-
-    let ServiceInfo::Registered(reg) = &stack_view(&guard)["B"] else {
-        panic!("B should be registered");
-    };
-    assert_eq!(reg.replicas().len(), 3);
-    // 2 replicas on 2.2.2.2 (containers "b1" and "b2"), 1 on 4.4.4.4
-    assert!(reg.has_replica_on_ip(ip(2, 2, 2, 2)));
-    assert!(reg.has_replica_on_ip(ip(4, 4, 4, 4)));
-    let on_2: Vec<_> = reg
-        .replicas()
-        .iter()
-        .filter(|r| r.ip() == ip(2, 2, 2, 2))
-        .collect();
-    assert_eq!(
-        on_2.len(),
-        2,
-        "2.2.2.2 should have 2 replicas (Docker Swarm)"
-    );
-    let containers: HashSet<_> = on_2.iter().filter_map(|r| r.docker_container()).collect();
-    assert!(containers.contains("b1"));
-    assert!(containers.contains("b2"));
-}
-
-/// Least-clients: proxy requests and dependency chains pick the replica
-/// with the fewest active clients.  After two proxy chains (A and C both
-/// depend on B), B's 3 replicas should spread: the second chain picks a
-/// different replica than the first.
-#[tokio::test]
-async fn multi_replica_least_clients() {
-    let server = multi_replica_setup().await;
-    let proxy1 = ip(5, 5, 5, 5);
-    server.orchestrator().register_fake_client(proxy1).await;
-
-    // First chain: proxy1 -> A -> B (picks least-loaded B replica, all empty)
-    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
-
-    {
-        let guard = server.services().read().await;
-        let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
-            panic!("B should be registered");
-        };
-        assert_eq!(
-            reg_b.client_count(),
-            1,
-            "B should have 1 client after first chain"
-        );
-    }
-
-    // Second chain: proxy1 -> C -> B (picks a *different* B replica since the
-    // first now has 1 client while two others have 0)
-    setup_proxy_chain(&server, "C", proxy1, "10.0.0.2").await;
-
-    let guard = server.services().read().await;
-
-    let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
-        panic!("B should be registered");
-    };
-
-    // B should now have 2 clients spread across replicas
-    assert_eq!(reg_b.client_count(), 2, "B should have 2 clients total");
-
-    // No single replica should hold both
-    for replica in reg_b.replicas() {
-        assert!(
-            replica.clients().len() <= 1,
-            "each B replica should have at most 1 client, got {}",
-            replica.clients().len()
-        );
-    }
-}
-
-/// Sticky session: same proxy client reconnects to the same replica.
-#[tokio::test]
-async fn multi_replica_sticky_session() {
-    let server = multi_replica_setup().await;
-    let proxy1 = ip(5, 5, 5, 5);
-    server.orchestrator().register_fake_client(proxy1).await;
-
-    // First request from client 10.0.0.1
-    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
-
-    // Record which upstream the client got
-    let first_upstream = {
-        let guard = server.services().read().await;
-        let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] else {
-            panic!("A should be registered");
-        };
-        let client = crate::services::clients::Client::new("10.0.0.1".to_string(), Some(proxy1));
-        reg.is_client_setup(&client)
-            .expect("client should be set up")
-    };
-
-    // Second lookup from same client — should be sticky (same upstream)
-    let second_upstream = {
-        let guard = server.services().read().await;
-        let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] else {
-            panic!("A should be registered");
-        };
-        let client = crate::services::clients::Client::new("10.0.0.1".to_string(), Some(proxy1));
-        reg.is_client_setup(&client)
-            .expect("client should still be set up")
-    };
-
-    assert_eq!(
-        first_upstream, second_upstream,
-        "sticky session should return same upstream"
-    );
-}
-
-/// Partial replica removal: disconnect 2.2.2.2 removes two of B's replicas
-/// ("b1" and "b2"), but B stays registered via the replica at 4.4.4.4.
-///
-/// With least-clients distribution:
-///   A→B lands on "b1" (2.2.2.2)  — affected by disconnect
-///   C→B lands on 4.4.4.4         — NOT affected, chain survives
-#[tokio::test]
-async fn multi_replica_partial_disconnect() {
-    let server = multi_replica_setup().await;
-    let proxy1 = ip(5, 5, 5, 5);
-    server.orchestrator().register_fake_client(proxy1).await;
-
-    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
-    setup_proxy_chain(&server, "C", proxy1, "10.0.0.2").await;
-
-    // A→B, proxy→A, C→B, proxy→C = 4 NET IDs
-    assert_net_ids_in_use(&server, 4).await;
-
-    // Disconnect 2.2.2.2 — removes "b1" and "b2" replicas.
-    // Only A→B (on "b1") is affected; C→B (on 4.4.4.4) survives.
-    server
-        .orchestrator()
-        .handle_node_disconnect(ip(2, 2, 2, 2), server.services())
-        .await;
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, MULTI_REPLICA, "after_partial_disconnect.dot");
-
-    // B should still be registered (has replica at 4.4.4.4)
-    assert!(
-        matches!(stack_view(&guard)["B"], ServiceInfo::Registered(_)),
-        "B should still be registered with remaining replica"
-    );
-    if let ServiceInfo::Registered(reg) = &stack_view(&guard)["B"] {
-        assert_eq!(reg.replicas().len(), 1, "B should have 1 replica left");
-        assert!(reg.has_replica_on_ip(ip(4, 4, 4, 4)));
-        assert!(!reg.has_replica_on_ip(ip(2, 2, 2, 2)));
-        // C→B on 4.4.4.4 survived — B still has 1 client
-        assert_eq!(reg.client_count(), 1, "C→B chain should survive");
-    }
-
-    // A's chain was torn down (A→B was on removed replica)
-    if let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] {
-        assert!(!reg.has_clients(), "A should have no proxy clients");
-    }
-
-    // C's chain survived (C→B was on 4.4.4.4)
-    if let ServiceInfo::Registered(reg) = &stack_view(&guard)["C"] {
-        assert_eq!(
-            reg.client_count(),
-            1,
-            "C should still have its proxy client"
-        );
-    }
-
-    // A→B and proxy→A freed; C→B and proxy→C survive = 2 NET IDs
-    drop(guard);
-    assert_net_ids_in_use(&server, 2).await;
-}
-
-/// Full replica removal: disconnect 2.2.2.2 (removes "b1" + "b2"), then
-/// disconnect 4.4.4.4 (removes last replica). B becomes unregistered and
-/// cascades to A and C.
-#[tokio::test]
-async fn multi_replica_full_disconnect() {
-    let server = multi_replica_setup().await;
-    let proxy1 = ip(5, 5, 5, 5);
-    server.orchestrator().register_fake_client(proxy1).await;
-
-    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
-    setup_proxy_chain(&server, "C", proxy1, "10.0.0.2").await;
-
-    // Disconnect 2.2.2.2 (partial) — removes 2 of 3 replicas, cascades chains through B
-    server
-        .orchestrator()
-        .handle_node_disconnect(ip(2, 2, 2, 2), server.services())
-        .await;
-
-    {
-        let guard = server.services().read().await;
-        assert_graphviz(&guard, MULTI_REPLICA, "after_partial_disconnect.dot");
-        // B should still be registered (has replica at 4.4.4.4)
-        assert!(matches!(
-            stack_view(&guard)["B"],
-            ServiceInfo::Registered(_)
-        ));
-        if let ServiceInfo::Registered(reg) = &stack_view(&guard)["B"] {
-            assert_eq!(reg.replicas().len(), 1);
-        }
-    }
-
-    // Disconnect 4.4.4.4 — last replica, full teardown
-    server
-        .orchestrator()
-        .handle_node_disconnect(ip(4, 4, 4, 4), server.services())
-        .await;
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, MULTI_REPLICA, "after_full_disconnect.dot");
-
-    // B should be unregistered (no replicas)
-    assert!(
-        matches!(stack_view(&guard)["B"], ServiceInfo::Unregistered(_)),
-        "B should be unregistered with no replicas"
-    );
-
-    // All NET IDs should be freed
-    drop(guard);
-    assert_net_ids_in_use(&server, 0).await;
-}
-
-/// ServicesList from two hosts: host 2.2.2.2 sends two containers ("b1", "b2"),
-/// host 4.4.4.4 sends one standalone replica. Then host 2.2.2.2 re-registers
-/// with empty list — both its replicas are removed, but 4.4.4.4's stays.
-#[tokio::test]
-async fn multi_replica_via_services_list() {
-    let services = load_fixture(MULTI_REPLICA).await;
-    let server = NullnetGrpcImpl::new_for_test(services);
-
-    // Host 2.2.2.2 registers B in two containers
-    server
-        .orchestrator()
-        .register_fake_client(ip(2, 2, 2, 2))
-        .await;
-    server
-        .apply_services_list(
-            ip(2, 2, 2, 2),
-            &[
-                ("B".into(), 8080, Some("b1".into())),
-                ("B".into(), 8080, Some("b2".into())),
-            ],
-        )
-        .await
-        .expect("apply_services_list failed");
-
-    // Host 4.4.4.4 registers B standalone
-    server
-        .orchestrator()
-        .register_fake_client(ip(4, 4, 4, 4))
-        .await;
-    server
-        .apply_services_list(ip(4, 4, 4, 4), &[("B".into(), 9090, None)])
-        .await
-        .expect("apply_services_list failed");
-
-    {
-        let guard = server.services().read().await;
-        let ServiceInfo::Registered(reg) = &stack_view(&guard)["B"] else {
-            panic!("B should be registered");
-        };
-        assert_eq!(reg.replicas().len(), 3);
-        let on_2: Vec<_> = reg
-            .replicas()
-            .iter()
-            .filter(|r| r.ip() == ip(2, 2, 2, 2))
-            .collect();
-        assert_eq!(on_2.len(), 2, "2.2.2.2 should have 2 replicas");
-        assert!(reg.has_replica_on_ip(ip(4, 4, 4, 4)));
-    }
-
-    // Host 2.2.2.2 re-registers WITHOUT B → both its replicas removed
-    server
-        .apply_services_list(ip(2, 2, 2, 2), &[])
-        .await
-        .expect("apply_services_list failed");
-
-    let guard = server.services().read().await;
-    let ServiceInfo::Registered(reg) = &stack_view(&guard)["B"] else {
-        panic!("B should still be registered");
-    };
-    assert_eq!(
-        reg.replicas().len(),
-        1,
-        "only 4.4.4.4 replica should remain"
-    );
-    assert!(reg.has_replica_on_ip(ip(4, 4, 4, 4)));
-    assert!(!reg.has_replica_on_ip(ip(2, 2, 2, 2)));
-}
-
-/// Docker Swarm: host 2.2.2.2 runs containers "b1" and "b2". Container "b1"
-/// dies, so the host re-registers with only "b2". Only "b1" is removed;
-/// "b2" and the standalone 4.4.4.4 replica survive.
-#[tokio::test]
-async fn multi_replica_single_container_removed() {
-    let services = load_fixture(MULTI_REPLICA).await;
-    let server = NullnetGrpcImpl::new_for_test(services);
-
-    // Host 2.2.2.2 registers B in two containers
-    server
-        .orchestrator()
-        .register_fake_client(ip(2, 2, 2, 2))
-        .await;
-    server
-        .apply_services_list(
-            ip(2, 2, 2, 2),
-            &[
-                ("B".into(), 8080, Some("b1".into())),
-                ("B".into(), 8080, Some("b2".into())),
-            ],
-        )
-        .await
-        .expect("apply_services_list failed");
-
-    // Host 4.4.4.4 registers B standalone
-    server
-        .orchestrator()
-        .register_fake_client(ip(4, 4, 4, 4))
-        .await;
-    server
-        .apply_services_list(ip(4, 4, 4, 4), &[("B".into(), 9090, None)])
-        .await
-        .expect("apply_services_list failed");
-
-    {
-        let guard = server.services().read().await;
-        let ServiceInfo::Registered(reg) = &stack_view(&guard)["B"] else {
-            panic!("B should be registered");
-        };
-        assert_eq!(reg.replicas().len(), 3);
-    }
-
-    // Container "b1" dies — host re-registers with only "b2"
-    server
-        .apply_services_list(ip(2, 2, 2, 2), &[("B".into(), 8080, Some("b2".into()))])
-        .await
-        .expect("apply_services_list failed");
-
-    let guard = server.services().read().await;
-    let ServiceInfo::Registered(reg) = &stack_view(&guard)["B"] else {
-        panic!("B should still be registered");
-    };
-
-    // "b1" removed, "b2" and 4.4.4.4 survive → 2 replicas left
-    assert_eq!(reg.replicas().len(), 2, "should have 2 replicas left");
-    assert!(
-        reg.has_replica_on_ip(ip(2, 2, 2, 2)),
-        "2.2.2.2 should still have a replica"
-    );
-    assert!(
-        reg.has_replica_on_ip(ip(4, 4, 4, 4)),
-        "4.4.4.4 should still have a replica"
-    );
-
-    // The surviving 2.2.2.2 replica should be "b2"
-    let on_2: Vec<_> = reg
-        .replicas()
-        .iter()
-        .filter(|r| r.ip() == ip(2, 2, 2, 2))
-        .collect();
-    assert_eq!(on_2.len(), 1, "only one replica on 2.2.2.2");
-    assert_eq!(on_2[0].docker_container(), Some("b2"));
-}
-
-/// Helper: set up all 5 proxy chains for the multi-replica topology.
-///
-/// Chain order is chosen so A's two replicas land on different B replicas:
-///   proxy1→A(a1)→B(b1), proxy1→C→B(4.4.4.4), proxy2→A(a2)→B(b2),
-///   proxy1→D→B(b1), proxy2→C→B(4.4.4.4 reuse, add_chain)
-///
-/// B's load: b1 has A(a1)+D, 4.4.4.4 has C(chains=2), b2 has A(a2)
-async fn setup_all_chains(server: &NullnetGrpcImpl) {
-    let proxy1 = ip(5, 5, 5, 5);
-    let proxy2 = ip(7, 7, 7, 7);
-    server.orchestrator().register_fake_client(proxy1).await;
-    server.orchestrator().register_fake_client(proxy2).await;
-
-    // proxy1→A(a1)→B(b1):  all B replicas at 0, b1 wins tie
-    setup_proxy_chain(server, "A", proxy1, "10.0.0.1").await;
-    // proxy1→C→B(4.4.4.4): b1=1, 4.4.4.4=0, b2=0 → 4.4.4.4
-    setup_proxy_chain(server, "C", proxy1, "10.0.0.2").await;
-    // proxy2→A(a2)→B(b2):  b1=1, 4.4.4.4=1, b2=0 → b2
-    setup_proxy_chain(server, "A", proxy2, "10.0.0.4").await;
-    // proxy1→D→B(b1):      b1=1, 4.4.4.4=1, b2=1 → b1 (tie)
-    setup_proxy_chain(server, "D", proxy1, "10.0.0.3").await;
-    // proxy2→C→B(4.4.4.4): C already on 4.4.4.4 → add_chain
-    setup_proxy_chain(server, "C", proxy2, "10.0.0.5").await;
-}
-
-/// Verify the comprehensive topology's initial state: replica counts,
-/// client distribution, and mixed load across B's replicas.
-///
-/// Each A replica (a1, a2) creates a separate VXLAN to B since they are
-/// distinct physical connections. B ends up with 4 client entries:
-///   b1: A(a1) + D  — overloaded
-///   4.4.4.4: C (chains=2, shared across both proxy chains)
-///   b2: A(a2)
-#[tokio::test]
-async fn multi_replica_comprehensive_register() {
-    let server = multi_replica_setup().await;
-    setup_all_chains(&server).await;
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, MULTI_REPLICA, "start.dot");
-
-    // A: 2 replicas, 2 proxy clients (one per replica)
-    let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] else {
-        panic!("A should be registered");
-    };
-    assert_eq!(reg_a.replicas().len(), 2);
-    assert_eq!(reg_a.client_count(), 2, "A should have 2 proxy clients");
-
-    // B: 3 replicas, 4 client entries.
-    // A(a1) and A(a2) are distinct Clients (different source replicas),
-    // each with their own VXLAN to b1.
-    let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
-        panic!("B should be registered");
-    };
-    assert_eq!(reg_b.replicas().len(), 3);
-    assert_eq!(
-        reg_b.client_count(),
-        4,
-        "B should have 4 client entries: A(a1)+D on b1, C on 4.4.4.4, A(a2) on b2"
-    );
-    // b1 is overloaded (2 clients: A(a1) + D), b2 has A(a2), 4.4.4.4 has C
-    let b1 = reg_b
-        .replicas()
-        .iter()
-        .find(|r| r.ip() == ip(2, 2, 2, 2) && r.docker_container() == Some("b1"))
-        .expect("b1 should exist");
-    assert_eq!(b1.clients().len(), 2, "b1 should have 2 clients: A(a1) + D");
-    let on_444 = reg_b
-        .replicas()
-        .iter()
-        .find(|r| r.ip() == ip(4, 4, 4, 4))
-        .expect("4.4.4.4 should exist");
-    assert_eq!(
-        on_444.clients().len(),
-        1,
-        "4.4.4.4 should have 1 client (C)"
-    );
-    let b2 = reg_b
-        .replicas()
-        .iter()
-        .find(|r| r.ip() == ip(2, 2, 2, 2) && r.docker_container() == Some("b2"))
-        .expect("b2 should exist");
-    assert_eq!(b2.clients().len(), 1, "b2 should have 1 client: A(a2)");
-
-    // C: 1 replica, 2 proxy clients (overloaded)
-    let ServiceInfo::Registered(reg_c) = &stack_view(&guard)["C"] else {
-        panic!("C should be registered");
-    };
-    assert_eq!(reg_c.replicas().len(), 1);
-    assert_eq!(
-        reg_c.client_count(),
-        2,
-        "C should have 2 proxy clients (overloaded)"
-    );
-
-    // D: 1 replica, 1 proxy client (minimal)
-    let ServiceInfo::Registered(reg_d) = &stack_view(&guard)["D"] else {
-        panic!("D should be registered");
-    };
-    assert_eq!(reg_d.replicas().len(), 1);
-    assert_eq!(reg_d.client_count(), 1, "D should have 1 proxy client");
-
-    // 9 NET IDs: A(a1)→B, A(a2)→B, C→B, D→B,
-    //            proxy1→A, proxy2→A, proxy1→C, proxy2→C, proxy1→D
-    drop(guard);
-    assert_net_ids_in_use(&server, 9).await;
-}
-
-/// Same-IP container disconnect on dependency B: container "b1" on 2.2.2.2
-/// dies while "b2" (same IP) survives.
-///
-/// b1 hosted A(a1)→B and D→B. Only chains through a1 and D are torn down.
-/// proxy2→A(a2)→B(b2) survives because its dep chain goes through b2.
-/// C→B on 4.4.4.4 also survives.
-#[tokio::test]
-async fn multi_replica_b_same_ip_container_disconnect() {
-    let server = multi_replica_setup().await;
-    setup_all_chains(&server).await;
-    assert_net_ids_in_use(&server, 9).await;
-
-    {
-        let guard = server.services().read().await;
-        assert_graphviz(&guard, MULTI_REPLICA, "start.dot");
-    }
-
-    // Container "b1" dies — host 2.2.2.2 re-registers with only "b2"
-    server
-        .apply_services_list(ip(2, 2, 2, 2), &[("B".into(), 8080, Some("b2".into()))])
-        .await
-        .expect("apply_services_list failed");
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, MULTI_REPLICA, "after_b_same_ip_disconnect.dot");
-
-    // B: 2 replicas left (b2 + 4.4.4.4).
-    // A(a1)→B and D→B on b1 torn down. A(a2)→B on b2 and C→B on 4.4.4.4 survive.
-    let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
-        panic!("B should still be registered");
-    };
-    assert_eq!(reg_b.replicas().len(), 2, "B should have 2 replicas left");
-    assert!(reg_b.has_replica_on_ip(ip(2, 2, 2, 2)), "b2 should survive");
-    assert!(
-        reg_b.has_replica_on_ip(ip(4, 4, 4, 4)),
-        "standalone should survive"
-    );
-    let on_2: Vec<_> = reg_b
-        .replicas()
-        .iter()
-        .filter(|r| r.ip() == ip(2, 2, 2, 2))
-        .collect();
-    assert_eq!(on_2.len(), 1, "only b2 should remain on 2.2.2.2");
-    assert_eq!(on_2[0].docker_container(), Some("b2"));
-    assert_eq!(
-        reg_b.client_count(),
-        2,
-        "A(a2)→B on b2 and C→B on 4.4.4.4 should survive"
-    );
-
-    // A: only proxy1→A(a1) torn down; proxy2→A(a2) survives (its chain goes through b2)
-    if let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] {
-        assert_eq!(
-            reg_a.client_count(),
-            1,
-            "proxy2→A(a2) should survive (chain through b2)"
-        );
-    }
-
-    // C: both proxies survive (C→B on 4.4.4.4 unaffected by b1 removal)
-    if let ServiceInfo::Registered(reg_c) = &stack_view(&guard)["C"] {
-        assert_eq!(
-            reg_c.client_count(),
-            2,
-            "C should still have 2 proxy clients"
-        );
-    }
-
-    // D: proxy torn down (D→B was on b1)
-    if let ServiceInfo::Registered(reg_d) = &stack_view(&guard)["D"] {
-        assert!(
-            !reg_d.has_clients(),
-            "D should have no clients after b1 removal"
-        );
-    }
-
-    // Freed: A(a1)→B, D→B, proxy1→A, proxy1→D = 4
-    // Remaining: A(a2)→B, C→B, proxy2→A, proxy1→C, proxy2→C = 5
-    drop(guard);
-    assert_net_ids_in_use(&server, 5).await;
-}
-
-/// Different-IP disconnect on dependency B: node 4.4.4.4 goes offline.
-///
-/// C→B was on 4.4.4.4 → teardown_chain("C") tears down C's chain.
-/// A(a1)→B on b1, A(a2)→B on b2, and D→B on b1 all survive.
-#[tokio::test]
-async fn multi_replica_b_different_ip_disconnect() {
-    let server = multi_replica_setup().await;
-    setup_all_chains(&server).await;
-    assert_net_ids_in_use(&server, 9).await;
-
-    {
-        let guard = server.services().read().await;
-        assert_graphviz(&guard, MULTI_REPLICA, "start.dot");
-    }
-
-    // Disconnect 4.4.4.4 — removes B's standalone replica
-    server
-        .orchestrator()
-        .handle_node_disconnect(ip(4, 4, 4, 4), server.services())
-        .await;
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, MULTI_REPLICA, "after_b_different_ip_disconnect.dot");
-
-    // B: 2 replicas left (b1 + b2 on 2.2.2.2).
-    // C fully torn down (was on 4.4.4.4).
-    // A(a1)+D on b1 and A(a2) on b2 survive.
-    let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
-        panic!("B should still be registered");
-    };
-    assert_eq!(reg_b.replicas().len(), 2, "B should have 2 replicas left");
-    assert!(reg_b.has_replica_on_ip(ip(2, 2, 2, 2)));
-    assert!(!reg_b.has_replica_on_ip(ip(4, 4, 4, 4)));
-    assert_eq!(
-        reg_b.client_count(),
-        3,
-        "A(a1)+D on b1 and A(a2) on b2 should survive"
-    );
-
-    // A: both proxies survive (A→B edges on b1 and b2 unaffected)
-    if let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] {
-        assert_eq!(
-            reg_a.client_count(),
-            2,
-            "A should still have 2 proxy clients"
-        );
-    }
-
-    // C: all proxy chains torn down (C→B was on 4.4.4.4)
-    if let ServiceInfo::Registered(reg_c) = &stack_view(&guard)["C"] {
-        assert!(
-            !reg_c.has_clients(),
-            "C should have no clients after 4.4.4.4 removal"
-        );
-    }
-
-    // D: proxy survives (D→B on b1 at 2.2.2.2)
-    if let ServiceInfo::Registered(reg_d) = &stack_view(&guard)["D"] {
-        assert_eq!(
-            reg_d.client_count(),
-            1,
-            "D should still have its proxy client"
-        );
-    }
-
-    // Freed: C→B, proxy1→C, proxy2→C = 3
-    // Remaining: A(a1)→B, A(a2)→B, proxy1→A, proxy2→A, D→B, proxy1→D = 6
-    drop(guard);
-    assert_net_ids_in_use(&server, 6).await;
-}
-
-/// Same-IP container disconnect on first-step service A: container "a1"
-/// on 1.1.1.1 dies while "a2" (same IP) survives.
-///
-/// Only the proxy client on a1 is torn down. The proxy on a2 survives,
-/// and the underlying A→B dependency is unaffected.
-#[tokio::test]
-async fn multi_replica_first_step_container_disconnect() {
-    let server = multi_replica_setup().await;
-    setup_all_chains(&server).await;
-    assert_net_ids_in_use(&server, 9).await;
-
-    {
-        let guard = server.services().read().await;
-        assert_graphviz(&guard, MULTI_REPLICA, "start.dot");
-    }
-
-    // Container "a1" dies — host 1.1.1.1 re-registers with only "a2"
-    server
-        .apply_services_list(ip(1, 1, 1, 1), &[("A".into(), 8080, Some("a2".into()))])
-        .await
-        .expect("apply_services_list failed");
-
-    let guard = server.services().read().await;
-    assert_graphviz(&guard, MULTI_REPLICA, "after_first_step_disconnect.dot");
-
-    // A: 1 replica left (a2), 1 proxy client survives (the one on a2)
-    let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] else {
-        panic!("A should still be registered");
-    };
-    assert_eq!(
-        reg_a.replicas().len(),
-        1,
-        "A should have 1 replica left (a2)"
-    );
-    let surviving = &reg_a.replicas()[0];
-    assert_eq!(surviving.docker_container(), Some("a2"));
-    assert_eq!(reg_a.client_count(), 1, "only proxy on a2 should survive");
-
-    // B: A(a1)→B(b1) also torn down (orphaned VXLAN). A(a2)→B(b1) survives.
-    // 3 client entries remain: A(a2) on b1, C on 4.4.4.4, D on b2.
-    let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
-        panic!("B should still be registered");
-    };
-    assert_eq!(reg_b.replicas().len(), 3);
-    assert_eq!(
-        reg_b.client_count(),
-        3,
-        "A(a1)→B should be torn down, 3 clients remain"
-    );
-
-    // C: unaffected
-    if let ServiceInfo::Registered(reg_c) = &stack_view(&guard)["C"] {
-        assert_eq!(
-            reg_c.client_count(),
-            2,
-            "C should still have 2 proxy clients"
-        );
-    }
-
-    // D: unaffected
-    if let ServiceInfo::Registered(reg_d) = &stack_view(&guard)["D"] {
-        assert_eq!(
-            reg_d.client_count(),
-            1,
-            "D should still have its proxy client"
-        );
-    }
-
-    // Freed: proxy1→A + A(a1)→B = 2; remaining = 7
-    drop(guard);
-    assert_net_ids_in_use(&server, 7).await;
-}
-
-// ===========================================================================
-// max_networks: A→B, max_networks=1, timeout=1.
+// max_networks: A has max_networks=1 and timeout=1.
 // Standard ingress groups seed carriers; overflow balances across them.
 // ===========================================================================
 
@@ -1842,7 +485,6 @@ async fn max_networks_balances_groups_across_standard_carriers() {
 name = "A"
 timeout = 60
 max_networks = 10
-proxy_dependencies = [["B"]]
 "#,
     )
     .unwrap();
@@ -1850,29 +492,24 @@ proxy_dependencies = [["B"]]
         config.services_map().unwrap(),
     )));
     let proxy = ip(5, 5, 5, 5);
-    register_services(
-        &server,
-        &HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]),
-        8080,
-    )
-    .await;
+    register_services(&server, &HashMap::from([("A", ip(1, 1, 1, 1))]), 8080).await;
     let proxy_log = server.orchestrator().register_recording_client(proxy).await;
     for i in 1..=10 {
-        setup_proxy_chain(&server, "A", proxy, &format!("10.0.0.{i}")).await;
+        setup_proxy_edge(&server, "A", proxy, &format!("10.0.0.{i}")).await;
     }
-    assert_net_ids_in_use(&server, 11).await;
+    assert_net_ids_in_use(&server, 10).await;
 
     let mut requests = tokio::task::JoinSet::new();
     for i in 11..=200 {
         let server = server.clone();
         requests.spawn(async move {
-            setup_proxy_chain(&server, "A", proxy, &format!("10.0.0.{i}")).await;
+            setup_proxy_edge(&server, "A", proxy, &format!("10.0.0.{i}")).await;
         });
     }
     while let Some(result) = requests.join_next().await {
         result.unwrap();
     }
-    assert_net_ids_in_use(&server, 201).await;
+    assert_net_ids_in_use(&server, 200).await;
     let guard = server.services().read().await;
     let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] else {
         panic!("A should be registered");
@@ -1935,20 +572,6 @@ proxy_dependencies = [["B"]]
     assert_eq!(carrier_users.len(), 10);
     assert!(carrier_users.values().all(|users| *users == 20));
     drop(messages);
-    let guard = server.services().read().await;
-    let ServiceInfo::Registered(dep) = &stack_view(&guard)["B"] else {
-        panic!("B should be registered");
-    };
-    assert_eq!(dep.client_count(), 1);
-    assert_eq!(
-        dep.replicas()[0]
-            .clients()
-            .values()
-            .next()
-            .unwrap()
-            .active_chains(),
-        200
-    );
 }
 
 #[tokio::test]
@@ -1956,19 +579,14 @@ async fn max_networks_reuses_one_overflow_group_for_the_same_client_ip() {
     let services = load_fixture(MAX_NETWORKS).await;
     let server = NullnetGrpcImpl::new_for_test(services);
     let proxy = ip(5, 5, 5, 5);
-    register_services(
-        &server,
-        &HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]),
-        8080,
-    )
-    .await;
+    register_services(&server, &HashMap::from([("A", ip(1, 1, 1, 1))]), 8080).await;
     let proxy_log = server.orchestrator().register_recording_client(proxy).await;
 
-    setup_proxy_chain(&server, "A", proxy, "10.0.0.1").await;
-    setup_proxy_chain(&server, "A", proxy, "10.0.0.2").await;
-    setup_proxy_chain(&server, "A", proxy, "10.0.0.2").await;
+    setup_proxy_edge(&server, "A", proxy, "10.0.0.1").await;
+    setup_proxy_edge(&server, "A", proxy, "10.0.0.2").await;
+    setup_proxy_edge(&server, "A", proxy, "10.0.0.2").await;
 
-    assert_net_ids_in_use(&server, 3).await;
+    assert_net_ids_in_use(&server, 2).await;
     let guard = server.services().read().await;
     let ServiceInfo::Registered(reg) = &stack_view(&guard)["A"] else {
         panic!("A should be registered");
@@ -2009,23 +627,23 @@ async fn max_networks_reuses_one_overflow_group_for_the_same_client_ip() {
 }
 
 /// Full lifecycle:
-///   1. First client creates network (2 net IDs: proxy→A, A→B)
-///   2. Second client gets an overflow group (3 IDs including the dependency)
-///   3. First client times out (policy edge and dependency survive)
+///   1. First client creates one ingress network
+///   2. Second client gets an overflow group
+///   3. First client times out while the policy edge survives
 ///   4. Second client times out (all edges are torn down)
 #[tokio::test]
 async fn max_networks_reuse_lifecycle() {
     let services = load_fixture(MAX_NETWORKS).await;
     let server = NullnetGrpcImpl::new_for_test(services);
 
-    let ip_map = HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]);
+    let ip_map = HashMap::from([("A", ip(1, 1, 1, 1))]);
     let proxy1 = ip(5, 5, 5, 5);
     register_services(&server, &ip_map, 8080).await;
     server.orchestrator().register_fake_client(proxy1).await;
 
     // 1. First proxy client — creates fresh networks
-    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
-    assert_net_ids_in_use(&server, 2).await; // proxy→A + A→B
+    setup_proxy_edge(&server, "A", proxy1, "10.0.0.1").await;
+    assert_net_ids_in_use(&server, 1).await;
 
     {
         let guard = server.services().read().await;
@@ -2034,10 +652,6 @@ async fn max_networks_reuse_lifecycle() {
             panic!("A should be registered");
         };
         assert_eq!(reg_a.client_count(), 1, "A should have 1 proxy client");
-        let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
-            panic!("B should be registered");
-        };
-        assert_eq!(reg_b.client_count(), 1, "B should have 1 dep client (A→B)");
     }
 
     // 2. Second proxy client on the same proxy — policy overflow.
@@ -2046,8 +660,8 @@ async fn max_networks_reuse_lifecycle() {
     //    `Instant` (not tokio's pausable clock), so wide margins are needed to
     //    survive wall-clock jitter on loaded CI runners.
     tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-    setup_proxy_chain(&server, "A", proxy1, "10.0.0.2").await;
-    assert_net_ids_in_use(&server, 3).await;
+    setup_proxy_edge(&server, "A", proxy1, "10.0.0.2").await;
+    assert_net_ids_in_use(&server, 2).await;
 
     {
         let guard = server.services().read().await;
@@ -2063,15 +677,6 @@ async fn max_networks_reuse_lifecycle() {
             .flat_map(|r| r.clients().values().map(|ci| ci.net_id()))
             .collect();
         assert_eq!(net_ids.len(), 2, "overflow clients must not share a group");
-
-        let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
-            panic!("B should be registered");
-        };
-        assert_eq!(
-            reg_b.client_count(),
-            1,
-            "B should still have 1 dep client entry"
-        );
     }
 
     // 3. First client times out — network should stay up.
@@ -2093,17 +698,9 @@ async fn max_networks_reuse_lifecycle() {
             1,
             "A should have 1 proxy client after first timeout"
         );
-        let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
-            panic!("B should be registered");
-        };
-        assert_eq!(
-            reg_b.client_count(),
-            1,
-            "B dep edge should survive (active_chains > 0)"
-        );
     }
-    // The policy ingress edge and shared dependency remain.
-    assert_net_ids_in_use(&server, 2).await;
+    // The policy ingress edge remains.
+    assert_net_ids_in_use(&server, 1).await;
 
     // 4. Second client times out — network should be torn down.
     //    C2 is aged ≈0.2s here; sleep 1.2s → ≈1.4s total (> 1s → expired).
@@ -2122,13 +719,6 @@ async fn max_networks_reuse_lifecycle() {
             !reg_a.has_clients(),
             "A should have no clients after both timeouts"
         );
-        let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
-            panic!("B should be registered");
-        };
-        assert!(
-            !reg_b.has_clients(),
-            "B should have no clients after both timeouts"
-        );
     }
     // All networks torn down
     assert_net_ids_in_use(&server, 0).await;
@@ -2140,14 +730,14 @@ async fn max_networks_proxy_disconnect() {
     let services = load_fixture(MAX_NETWORKS).await;
     let server = NullnetGrpcImpl::new_for_test(services);
 
-    let ip_map = HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]);
+    let ip_map = HashMap::from([("A", ip(1, 1, 1, 1))]);
     let proxy1 = ip(5, 5, 5, 5);
     register_services(&server, &ip_map, 8080).await;
     server.orchestrator().register_fake_client(proxy1).await;
 
-    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
-    setup_proxy_chain(&server, "A", proxy1, "10.0.0.2").await;
-    assert_net_ids_in_use(&server, 3).await;
+    setup_proxy_edge(&server, "A", proxy1, "10.0.0.1").await;
+    setup_proxy_edge(&server, "A", proxy1, "10.0.0.2").await;
+    assert_net_ids_in_use(&server, 2).await;
 
     {
         let guard = server.services().read().await;
@@ -2174,25 +764,18 @@ async fn max_networks_proxy_disconnect() {
             !reg_a.has_clients(),
             "A should have no clients after proxy disconnect"
         );
-        let ServiceInfo::Registered(reg_b) = &stack_view(&guard)["B"] else {
-            panic!("B should be registered");
-        };
-        assert!(
-            !reg_b.has_clients(),
-            "B should have no clients after proxy disconnect"
-        );
     }
     assert_net_ids_in_use(&server, 0).await;
 }
 
 /// When max_networks is reached on one proxy, a different proxy with no
-/// existing network falls through to new_proxy_chain (soft limit).
+/// existing network falls through to a new ingress edge (soft limit).
 #[tokio::test]
 async fn max_networks_different_proxy_bypasses() {
     let services = load_fixture(MAX_NETWORKS).await;
     let server = NullnetGrpcImpl::new_for_test(services);
 
-    let ip_map = HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]);
+    let ip_map = HashMap::from([("A", ip(1, 1, 1, 1))]);
     let proxy1 = ip(5, 5, 5, 5);
     let proxy2 = ip(6, 6, 6, 6);
     register_services(&server, &ip_map, 8080).await;
@@ -2200,8 +783,8 @@ async fn max_networks_different_proxy_bypasses() {
     server.orchestrator().register_fake_client(proxy2).await;
 
     // First client on proxy1 — creates network
-    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
-    assert_net_ids_in_use(&server, 2).await;
+    setup_proxy_edge(&server, "A", proxy1, "10.0.0.1").await;
+    assert_net_ids_in_use(&server, 1).await;
 
     {
         let guard = server.services().read().await;
@@ -2210,8 +793,8 @@ async fn max_networks_different_proxy_bypasses() {
 
     // proxy2 connects — max_networks=1 is reached, but proxy2 has no existing
     // network to reuse, so it falls through and creates a new one
-    setup_proxy_chain(&server, "A", proxy2, "10.0.0.2").await;
-    assert_net_ids_in_use(&server, 3).await; // proxy1→A, proxy2→A, A→B (shared dep)
+    setup_proxy_edge(&server, "A", proxy2, "10.0.0.2").await;
+    assert_net_ids_in_use(&server, 2).await;
 
     {
         let guard = server.services().read().await;
@@ -2239,9 +822,8 @@ async fn max_networks_different_proxy_bypasses() {
 }
 
 // ===========================================================================
-// triggers_changed: A entry-point with proxy_dependencies=[["B"]] and
-// triggers=[{5555, ["C"]}]; D entry-point with triggers=[{6666, ["C"]}].
-// proxy1→A→B (proxy chain), A→C and D→C (backend chains).
+// triggers_changed: A routes backend port 5555 to C; D routes port 5555 to C.
+// The topology contains proxy1→A, A→C, and D→C.
 // ===========================================================================
 
 const TRIGGERS_CHANGED: &str = "triggers_changed";
@@ -2252,7 +834,6 @@ async fn triggers_changed_setup() -> NullnetGrpcImpl {
 
     let ip_map = HashMap::from([
         ("A", ip(1, 1, 1, 1)),
-        ("B", ip(2, 2, 2, 2)),
         ("C", ip(3, 3, 3, 3)),
         ("D", ip(4, 4, 4, 4)),
     ]);
@@ -2260,12 +841,11 @@ async fn triggers_changed_setup() -> NullnetGrpcImpl {
     register_services(&server, &ip_map, 8080).await;
     server.orchestrator().register_fake_client(proxy1).await;
 
-    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
-    trigger_backend_chain(&server, "A", ip(1, 1, 1, 1), 5555).await;
-    trigger_backend_chain(&server, "D", ip(4, 4, 4, 4), 5555).await;
+    setup_proxy_edge(&server, "A", proxy1, "10.0.0.1").await;
+    trigger_backend_edge(&server, "A", ip(1, 1, 1, 1), 5555).await;
+    trigger_backend_edge(&server, "D", ip(4, 4, 4, 4), 5555).await;
 
-    // proxy1→A, A→B, A→C, D→C = 4 IDs
-    assert_net_ids_in_use(&server, 4).await;
+    assert_net_ids_in_use(&server, 3).await;
 
     let guard = server.services().read().await;
     assert_graphviz(&guard, TRIGGERS_CHANGED, "start.dot");
@@ -2275,7 +855,7 @@ async fn triggers_changed_setup() -> NullnetGrpcImpl {
 }
 
 /// Drop A's triggers entirely. TriggersChanged{A} tears down A→C.
-/// A's proxy chain (proxy1→A, A→B) and D→C survive.
+/// A's ingress edge and D→C survive.
 #[tokio::test]
 async fn triggers_changed_remove_A_trigger() {
     let server = triggers_changed_setup().await;
@@ -2287,12 +867,11 @@ async fn triggers_changed_remove_A_trigger() {
     assert!(stack_view(&guard)["A"].triggers().is_empty());
     drop(guard);
 
-    // A→C freed; proxy1→A, A→B, D→C survive = 3 IDs
-    assert_net_ids_in_use(&server, 3).await;
+    assert_net_ids_in_use(&server, 2).await;
 }
 
-/// Swap A's chain [C]→[D]. TriggersChanged{A} tears down the existing A→C.
-/// New chain isn't auto-rebuilt (no fresh trigger fire). Other chains untouched.
+/// Swap A's edge C→D. TriggersChanged{A} tears down the existing A→C.
+/// The new edge is not auto-built without fresh trigger traffic; other edges remain.
 #[tokio::test]
 async fn triggers_changed_swap_A_trigger() {
     let server = triggers_changed_setup().await;
@@ -2307,12 +886,12 @@ async fn triggers_changed_swap_A_trigger() {
     );
     drop(guard);
 
-    assert_net_ids_in_use(&server, 3).await;
+    assert_net_ids_in_use(&server, 2).await;
 }
 
 /// Add a second port to A's triggers. TriggersChanged still fires (map differs)
-/// and tears down ALL of A's existing backend chains, even though the addition
-/// didn't touch port 5555. The new port=7777 chain is not auto-built.
+/// and tears down all of A's existing backend edges, even though the addition
+/// didn't touch port 5555. The new port=7777 edge is not auto-built.
 #[tokio::test]
 async fn triggers_changed_add_A_trigger() {
     let server = triggers_changed_setup().await;
@@ -2324,11 +903,11 @@ async fn triggers_changed_add_A_trigger() {
     assert_eq!(stack_view(&guard)["A"].triggers().len(), 2);
     drop(guard);
 
-    assert_net_ids_in_use(&server, 3).await;
+    assert_net_ids_in_use(&server, 2).await;
 }
 
 /// Drop D's trigger. TriggersChanged{D} tears down D→C only.
-/// A's chains (proxy + backend) untouched.
+/// A's ingress and backend edges are untouched.
 #[tokio::test]
 async fn triggers_changed_drop_D_trigger() {
     let server = triggers_changed_setup().await;
@@ -2340,14 +919,12 @@ async fn triggers_changed_drop_D_trigger() {
     assert!(stack_view(&guard)["D"].triggers().is_empty());
     drop(guard);
 
-    assert_net_ids_in_use(&server, 3).await;
+    assert_net_ids_in_use(&server, 2).await;
 }
 
 // ===========================================================================
-// backend_reachability_changed: A entry-point with triggers=[{5555, ["C"]}].
-// Z is also an entry-point with proxy_dependencies=[["A","C"]], used to keep A
-// and C in the map after A loses its [[services]] entry. Z's chains are not
-// activated; it serves only as a config-level reference holder.
+// backend_reachability_changed: A routes backend port 5555 to C, then loses its
+// service declaration while C and an unrelated entry point remain configured.
 // ===========================================================================
 
 const BACKEND_REACHABILITY_CHANGED: &str = "backend_reachability_changed";
@@ -2363,7 +940,7 @@ async fn backend_reachability_changed_setup() -> NullnetGrpcImpl {
     ]);
     register_services(&server, &ip_map, 8080).await;
 
-    trigger_backend_chain(&server, "A", ip(1, 1, 1, 1), 5555).await;
+    trigger_backend_edge(&server, "A", ip(1, 1, 1, 1), 5555).await;
 
     // A→C = 1 ID
     assert_net_ids_in_use(&server, 1).await;
@@ -2375,9 +952,7 @@ async fn backend_reachability_changed_setup() -> NullnetGrpcImpl {
     server
 }
 
-/// A loses its [[services]] entry. Detected as TriggersChanged{A} +
-/// ReachabilityChanged{A}; both run teardown_all_backend_chains_for(A).
-/// A→C is torn down. A stays in the map as an implicit dep (referenced by Z).
+/// A loses its service declaration, so A→C is torn down and A leaves the map.
 #[tokio::test]
 async fn backend_reachability_changed_lose_entry_point_A() {
     let server = backend_reachability_changed_setup().await;
@@ -2391,19 +966,16 @@ async fn backend_reachability_changed_lose_entry_point_A() {
         "after_lose_entry_point_A.dot",
     );
 
-    assert!(stack_view(&guard).contains_key("A"));
-    assert_eq!(stack_view(&guard)["A"].timeout(), None);
-    assert!(stack_view(&guard)["A"].triggers().is_empty());
+    assert!(!stack_view(&guard).contains_key("A"));
     drop(guard);
 
     assert_net_ids_in_use(&server, 0).await;
 }
 
 // ===========================================================================
-// backend_service_unregistered: A entry-point with co-located replicas a1, a2
-// at 1.1.1.1, proxy_dependencies=[["B"]], triggers=[{5555, ["C"]}]. Tests
-// selective replica/service removal via apply_services_list while backend
-// chains coexist with a proxy chain.
+// backend_service_unregistered: A has co-located replicas a1 and a2 and routes
+// backend port 5555 to C. B is unrelated. Tests selective replica/service
+// removal while backend edges coexist with an ingress edge.
 // ===========================================================================
 
 const BACKEND_SERVICE_UNREGISTERED: &str = "backend_service_unregistered";
@@ -2433,14 +1005,13 @@ async fn backend_service_unregistered_setup() -> NullnetGrpcImpl {
     let proxy1 = ip(5, 5, 5, 5);
     server.orchestrator().register_fake_client(proxy1).await;
 
-    // proxy chain: proxy1 → A → B (lands on a1 — first inserted, least-clients tie)
-    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
-    // Backend chains explicit per replica so both a1 and a2 initiate chains
-    setup_backend_chain_for_replica(&server, "A", ip(1, 1, 1, 1), Some("a1"), 5555).await;
-    setup_backend_chain_for_replica(&server, "A", ip(1, 1, 1, 1), Some("a2"), 5555).await;
+    // The ingress edge lands on a1 (first inserted, least-clients tie).
+    setup_proxy_edge(&server, "A", proxy1, "10.0.0.1").await;
+    // Backend edges are explicit per replica so both a1 and a2 initiate edges.
+    setup_backend_edge_for_replica(&server, "A", ip(1, 1, 1, 1), Some("a1"), 5555).await;
+    setup_backend_edge_for_replica(&server, "A", ip(1, 1, 1, 1), Some("a2"), 5555).await;
 
-    // proxy1→A, A→B, A(a1)→C, A(a2)→C = 4 IDs
-    assert_net_ids_in_use(&server, 4).await;
+    assert_net_ids_in_use(&server, 3).await;
 
     let guard = server.services().read().await;
     assert_graphviz(&guard, BACKEND_SERVICE_UNREGISTERED, "start.dot");
@@ -2450,8 +1021,8 @@ async fn backend_service_unregistered_setup() -> NullnetGrpcImpl {
 }
 
 /// Re-register host 1.1.1.1 with only a1 (drops a2). ReplicaRemoved{A,1.1.1.1,a2}
-/// fires partial teardown: A(a2)→C is torn down via teardown_backend_chain.
-/// A(a1)→C and the proxy chain (which landed on a1) survive.
+/// fires partial teardown: A(a2)→C is torn down via teardown_backend_edges.
+/// A(a1)→C and the ingress edge (which landed on a1) survive.
 #[tokio::test]
 async fn backend_service_unregistered_drop_a2() {
     let server = backend_service_unregistered_setup().await;
@@ -2477,14 +1048,10 @@ async fn backend_service_unregistered_drop_a2() {
     assert_eq!(reg_c.client_count(), 1, "only A(a1)→C should remain");
     drop(guard);
 
-    // A(a2)→C freed; proxy1→A, A→B, A(a1)→C survive = 3
-    assert_net_ids_in_use(&server, 3).await;
+    assert_net_ids_in_use(&server, 2).await;
 }
 
-/// Re-register host 2.2.2.2 with empty list (drops B). B is the last replica
-/// of B → ReplicaRemoved is_last → teardown_invalidated_service. A's proxy
-/// chain (proxy1→A, A→B) is torn down via teardown_chain. A's backend chains
-/// (A(a1)→C, A(a2)→C) are NOT through B → both survive.
+/// Removing unrelated service B does not disturb A's ingress or backend edges.
 #[tokio::test]
 async fn backend_service_unregistered_drop_B() {
     let server = backend_service_unregistered_setup().await;
@@ -2502,26 +1069,22 @@ async fn backend_service_unregistered_drop_B() {
         ServiceInfo::Unregistered(_)
     ));
 
-    // A's proxy chain torn down — no proxy clients left on A's replicas
     if let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] {
-        assert!(!reg_a.has_clients(), "A should have no proxy clients");
+        assert_eq!(reg_a.client_count(), 1, "A's ingress edge should survive");
     }
 
-    // Backend chains survive: C still has both A(a1) and A(a2) entries
+    // Backend edges survive: C still has both A(a1) and A(a2) entries.
     let ServiceInfo::Registered(reg_c) = &stack_view(&guard)["C"] else {
         panic!("C should be registered");
     };
-    assert_eq!(reg_c.client_count(), 2, "both A→C backend chains survive");
+    assert_eq!(reg_c.client_count(), 2, "both A→C backend edges survive");
     drop(guard);
 
-    // proxy1→A, A→B freed; A(a1)→C, A(a2)→C survive = 2
-    assert_net_ids_in_use(&server, 2).await;
+    assert_net_ids_in_use(&server, 3).await;
 }
 
 /// Re-register host 3.3.3.3 with empty list (drops C). C is_last →
-/// teardown_invalidated_service cascades to A (which deps_contain C via
-/// triggers). A's backend chains AND proxy chain are torn down (the cascade
-/// uses ProxyFilter::All on dependents). C ends up Unregistered.
+/// C's backend edges are torn down, but A's independent ingress edge survives.
 #[tokio::test]
 async fn backend_service_unregistered_drop_C() {
     let server = backend_service_unregistered_setup().await;
@@ -2539,11 +1102,11 @@ async fn backend_service_unregistered_drop_C() {
         ServiceInfo::Unregistered(_)
     ));
     if let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] {
-        assert!(!reg_a.has_clients(), "A should have no clients");
+        assert_eq!(reg_a.client_count(), 1, "A's ingress edge should survive");
     }
     drop(guard);
 
-    assert_net_ids_in_use(&server, 0).await;
+    assert_net_ids_in_use(&server, 1).await;
 }
 
 // ===========================================================================
@@ -2551,12 +1114,12 @@ async fn backend_service_unregistered_drop_C() {
 // a1, a2 at 1.1.1.1, trigger 5555 → C. Drives handle_backend_trigger directly
 // to exercise initiator-replica resolution by (ip, container) — the path the
 // NFQUEUE client takes when it supplies the container name it resolved from
-// the source IP. The other backend tests reach setup_backend_chain with an
+// the source IP. The other backend tests reach setup_backend_edge with an
 // already-resolved replica, so this is the only coverage of the resolution
 // `.find` itself.
 // ===========================================================================
 
-/// Topology only: A(a1, a2 @ 1.1.1.1), B, C registered, no chains pre-built so
+/// Topology only: A(a1, a2 @ 1.1.1.1), B, C registered, no edges pre-built so
 /// each test owns the trigger that resolves the initiator replica.
 async fn backend_disambiguation_setup() -> NullnetGrpcImpl {
     let services = load_fixture(BACKEND_SERVICE_UNREGISTERED).await;
@@ -2583,7 +1146,7 @@ async fn backend_disambiguation_setup() -> NullnetGrpcImpl {
 }
 
 /// A container name picks its own replica out of two co-located ones: a trigger
-/// carrying "a2" must build the A(a2)→C chain and leave A(a1) untouched.
+/// carrying "a2" must build the A(a2)→C edge and leave A(a1) untouched.
 #[tokio::test]
 async fn backend_trigger_disambiguates_colocated_replica_by_container() {
     let server = backend_disambiguation_setup().await;
@@ -2609,11 +1172,11 @@ async fn backend_trigger_disambiguates_colocated_replica_by_container() {
     );
     assert!(
         reg_c.is_client_setup(&a2_client).is_some(),
-        "A(a2)→C chain should be set up"
+        "A(a2)→C edge should be set up"
     );
     assert!(
         reg_c.is_client_setup(&a1_client).is_none(),
-        "A(a1) must not have a chain — only a2 fired"
+        "A(a1) must not have an edge — only a2 fired"
     );
     assert_eq!(reg_c.client_count(), 1, "exactly one initiator (a2) on C");
     drop(guard);
@@ -2674,7 +1237,7 @@ async fn backend_trigger_without_container_falls_back_to_ip_only() {
 // ===========================================================================
 // backend_node_disconnected: same mixed topology as backend_service_unregistered
 // (A co-located a1, a2 on 1.1.1.1, B on 2.2.2.2, C on 3.3.3.3, proxy1 on
-// 5.5.5.5). Tests handle_node_disconnect's interaction with backend chains.
+// 5.5.5.5). Tests handle_node_disconnect's interaction with backend edges.
 // ===========================================================================
 
 const BACKEND_NODE_DISCONNECTED: &str = "backend_node_disconnected";
@@ -2702,11 +1265,11 @@ async fn backend_node_disconnected_setup() -> NullnetGrpcImpl {
     let proxy1 = ip(5, 5, 5, 5);
     server.orchestrator().register_fake_client(proxy1).await;
 
-    setup_proxy_chain(&server, "A", proxy1, "10.0.0.1").await;
-    setup_backend_chain_for_replica(&server, "A", ip(1, 1, 1, 1), Some("a1"), 5555).await;
-    setup_backend_chain_for_replica(&server, "A", ip(1, 1, 1, 1), Some("a2"), 5555).await;
+    setup_proxy_edge(&server, "A", proxy1, "10.0.0.1").await;
+    setup_backend_edge_for_replica(&server, "A", ip(1, 1, 1, 1), Some("a1"), 5555).await;
+    setup_backend_edge_for_replica(&server, "A", ip(1, 1, 1, 1), Some("a2"), 5555).await;
 
-    assert_net_ids_in_use(&server, 4).await;
+    assert_net_ids_in_use(&server, 3).await;
 
     let guard = server.services().read().await;
     assert_graphviz(&guard, BACKEND_NODE_DISCONNECTED, "start.dot");
@@ -2717,7 +1280,7 @@ async fn backend_node_disconnected_setup() -> NullnetGrpcImpl {
 
 /// Disconnect 1.1.1.1 (initiator host). Both a1 and a2 vanish at once →
 /// ReplicasRemoved{A,1.1.1.1} with is_last=true → teardown_invalidated_service.
-/// All chains torn down; A becomes Unregistered.
+/// All edges torn down; A becomes Unregistered.
 #[tokio::test]
 async fn backend_node_disconnected_initiator_host() {
     let server = backend_node_disconnected_setup().await;
@@ -2749,9 +1312,8 @@ async fn backend_node_disconnected_initiator_host() {
     assert_net_ids_in_use(&server, 0).await;
 }
 
-/// Disconnect 3.3.3.3 (backend dep host). C is_last → teardown_invalidated_service
-/// cascades to A. Backend chains AND proxy chain torn down (matches the
-/// service_unregistered_drop_C semantics).
+/// Disconnecting backend host C tears down A's backend edges while preserving
+/// A's independent ingress edge.
 #[tokio::test]
 async fn backend_node_disconnected_backend_dep_host() {
     let server = backend_node_disconnected_setup().await;
@@ -2773,16 +1335,15 @@ async fn backend_node_disconnected_backend_dep_host() {
         ServiceInfo::Unregistered(_)
     ));
     if let ServiceInfo::Registered(reg_a) = &stack_view(&guard)["A"] {
-        assert!(!reg_a.has_clients());
+        assert_eq!(reg_a.client_count(), 1, "A's ingress edge should survive");
     }
     drop(guard);
 
-    assert_net_ids_in_use(&server, 0).await;
+    assert_net_ids_in_use(&server, 1).await;
 }
 
 /// Disconnect proxy host 5.5.5.5. Only ProxyDisconnected fires (no replicas
-/// at that IP). proxy1→A and A→B torn down via the proxy filter; backend
-/// chains A(a1)→C and A(a2)→C are untouched.
+/// at that IP). The ingress edge is torn down; backend edges are untouched.
 #[tokio::test]
 async fn backend_node_disconnected_proxy_host() {
     let server = backend_node_disconnected_setup().await;
@@ -2810,20 +1371,20 @@ async fn backend_node_disconnected_proxy_host() {
     assert_eq!(
         reg_c.client_count(),
         2,
-        "both backend chains should survive proxy disconnect"
+        "both backend edges should survive proxy disconnect"
     );
     drop(guard);
 
-    // proxy1→A, A→B freed; A(a1)→C, A(a2)→C survive = 2
+    // The two backend edges survive.
     assert_net_ids_in_use(&server, 2).await;
 }
 
 // ===========================================================================
 // backend_multi_replica: A, D, E are entry-points each backend-triggering to B.
 // B has 3 replicas: b1, b2 on 2.2.2.2 (Docker Swarm), standalone on 4.4.4.4.
-// Least-clients spreads chains: A→B(b1), D→B(4.4.4.4), E→B(b2). Tests the
+// Least-clients spreads edges: A→B(b1), D→B(4.4.4.4), E→B(b2). Tests the
 // `only_through` filter in teardown_partial_replicas — partial removal of B's
-// replicas tears down only chains routing through them.
+// replicas tears down only edges routing through them.
 // ===========================================================================
 
 const BACKEND_MULTI_REPLICA: &str = "backend_multi_replica";
@@ -2860,12 +1421,12 @@ async fn backend_multi_replica_setup() -> NullnetGrpcImpl {
         .register_fake_client(ip(4, 4, 4, 4))
         .await;
 
-    // Fire backend chains. Least-clients spreads: A→b1, D→4.4.4.4, E→b2.
-    trigger_backend_chain(&server, "A", ip(1, 1, 1, 1), 5555).await;
-    trigger_backend_chain(&server, "D", ip(5, 5, 5, 5), 5555).await;
-    trigger_backend_chain(&server, "E", ip(6, 6, 6, 6), 5555).await;
+    // Fire backend edges. Least-clients spreads: A→b1, D→4.4.4.4, E→b2.
+    trigger_backend_edge(&server, "A", ip(1, 1, 1, 1), 5555).await;
+    trigger_backend_edge(&server, "D", ip(5, 5, 5, 5), 5555).await;
+    trigger_backend_edge(&server, "E", ip(6, 6, 6, 6), 5555).await;
 
-    // 3 backend chains = 3 NET IDs
+    // Three backend edges use three NET IDs.
     assert_net_ids_in_use(&server, 3).await;
 
     let guard = server.services().read().await;
@@ -2880,7 +1441,7 @@ async fn backend_multi_replica_setup() -> NullnetGrpcImpl {
         assert_eq!(
             replica.clients().len(),
             1,
-            "each B replica should host exactly 1 backend chain"
+            "each B replica should host exactly one backend edge"
         );
     }
     drop(guard);
@@ -2890,7 +1451,7 @@ async fn backend_multi_replica_setup() -> NullnetGrpcImpl {
 
 /// Disconnect 4.4.4.4 (B's standalone replica). ReplicasRemoved{B,4.4.4.4}
 /// partial → teardown_partial_replicas finds D-keyed client on B's 4.4.4.4
-/// replica and tears down D's chain through B (only_through=Some("B")).
+/// replica and tears down D's edge through B (only_through=Some("B")).
 /// A→B(b1) and E→B(b2) survive.
 #[tokio::test]
 async fn backend_multi_replica_disconnect_standalone_dep() {
@@ -2926,7 +1487,7 @@ async fn backend_multi_replica_disconnect_standalone_dep() {
 
 /// Disconnect 2.2.2.2 (host of b1 and b2). ReplicasRemoved{B,2.2.2.2} partial.
 /// teardown_partial_replicas finds A-keyed (on b1) and E-keyed (on b2) clients;
-/// each upstream's chain through B is torn down via `only_through`.
+/// each upstream's edge through B is torn down via `only_through`.
 /// D→B(4.4.4.4) survives untouched.
 #[tokio::test]
 async fn backend_multi_replica_disconnect_swarm_host() {
@@ -2954,77 +1515,6 @@ async fn backend_multi_replica_disconnect_swarm_host() {
 
     // A→B and E→B freed; D→B survives = 1
     assert_net_ids_in_use(&server, 1).await;
-}
-
-// ===========================================================================
-// proxy_branches: A fans out into two parallel proxy chains, A→B→C and A→D.
-// Exercises construction (one linear chain per branch) and teardown (the
-// multi-branch walk in collect_dep_chain_edges).
-// ===========================================================================
-
-const PROXY_BRANCHES: &str = "proxy_branches";
-
-async fn proxy_branches_setup() -> NullnetGrpcImpl {
-    let services = load_fixture(PROXY_BRANCHES).await;
-    let server = NullnetGrpcImpl::new_for_test(services);
-
-    let ip_map = HashMap::from([
-        ("A", ip(1, 1, 1, 1)),
-        ("B", ip(2, 2, 2, 2)),
-        ("C", ip(3, 3, 3, 3)),
-        ("D", ip(4, 4, 4, 4)),
-    ]);
-    let proxy = ip(5, 5, 5, 5);
-    register_services(&server, &ip_map, 8080).await;
-    server.orchestrator().register_fake_client(proxy).await;
-
-    setup_proxy_chain(&server, "A", proxy, "10.0.0.1").await;
-
-    // Both branches come up: proxy→A, A→B, B→C, A→D = 4 IDs. If only one
-    // branch were walked, this would be 2 or 3.
-    assert_net_ids_in_use(&server, 4).await;
-
-    server
-}
-
-/// Construction fans out across both branches; the entry point keeps both.
-#[tokio::test]
-async fn proxy_branches_setup_fans_out() {
-    let server = proxy_branches_setup().await;
-
-    let guard = server.services().read().await;
-    assert_eq!(
-        stack_view(&guard)["A"].proxy_deps(),
-        vec![
-            vec!["B".to_string(), "C".to_string()],
-            vec!["D".to_string()],
-        ]
-    );
-    // Every dep across both branches is registered with a replica.
-    for name in ["B", "C", "D"] {
-        assert!(matches!(
-            stack_view(&guard)[name],
-            ServiceInfo::Registered(_)
-        ));
-    }
-}
-
-/// Removing A tears down BOTH branches — the walker must follow each one or
-/// edges leak. Asserts every NET ID is freed.
-#[tokio::test]
-async fn proxy_branches_remove_A_tears_down_both() {
-    let server = proxy_branches_setup().await;
-    let new_config = load_config(PROXY_BRANCHES, "remove_A.toml").await;
-
-    let mut guard = server.services().write().await;
-    apply_config_update(&mut guard, new_config, server.orchestrator()).await;
-    drop(guard);
-
-    // proxy→A, A→B, B→C, A→D all freed = 0 IDs (a single-branch walk would leak).
-    assert_net_ids_in_use(&server, 0).await;
-
-    let guard = server.services().read().await;
-    assert!(!stack_view(&guard).contains_key("A"));
 }
 
 // ===========================================================================
@@ -3094,7 +1584,6 @@ fn suspend_test_server() -> NullnetGrpcImpl {
     inner.insert(
         "svc".to_string(),
         ServiceInfo::new(
-            vec![],
             HashMap::new(),
             Some(30),
             None,
@@ -3108,7 +1597,6 @@ fn suspend_test_server() -> NullnetGrpcImpl {
     inner.insert(
         "host_svc".to_string(),
         ServiceInfo::new(
-            vec![],
             HashMap::new(),
             Some(30),
             None,
@@ -3175,11 +1663,10 @@ async fn docker_replica_suspended_on_registration() {
 #[tokio::test]
 async fn backend_services_follow_pause_checkbox() {
     let mut inner = HashMap::new();
-    // initiator declares a trigger chain → dep (so it "has backend deps")
+    // initiator declares a backend edge → dep (so it "has backend deps")
     inner.insert(
         "initiator".to_string(),
         ServiceInfo::new(
-            vec![],
             HashMap::from([(8080u16, "dep".to_string())]),
             Some(30),
             None,
@@ -3189,11 +1676,10 @@ async fn backend_services_follow_pause_checkbox() {
             FilterPolicy::None,
         ),
     );
-    // dep is named in the trigger chain (so it "is a backend dep")
+    // dep is named by the backend edge (so it "is a backend dep")
     inner.insert(
         "dep".to_string(),
         ServiceInfo::new(
-            vec![],
             HashMap::new(),
             None,
             None,
@@ -3207,7 +1693,6 @@ async fn backend_services_follow_pause_checkbox() {
     inner.insert(
         "plain".to_string(),
         ServiceInfo::new(
-            vec![],
             HashMap::new(),
             Some(30),
             None,
@@ -3296,192 +1781,6 @@ async fn proxy_request_resumes_suspended_replica() {
         );
     }
     assert_eq!(count_resumes(&log.lock().await, "svc_c1"), 1);
-}
-
-// ===========================================================================
-// stale_session: A entry-point with proxy_dependencies=[["B","C"]] (reusing the
-// reachability_changed fixture, A's chain only). Covers the sticky-session
-// path: it must reuse an intact chain, and evict + rebuild a broken one rather
-// than serving a replica whose dependency mappings are gone.
-// ===========================================================================
-
-async fn stale_session_setup() -> (NullnetGrpcImpl, IpAddr) {
-    let services = load_fixture(REACHABILITY_CHANGED).await;
-    let server = NullnetGrpcImpl::new_for_test(services);
-
-    let ip_map = HashMap::from([
-        ("A", ip(1, 1, 1, 1)),
-        ("B", ip(2, 2, 2, 2)),
-        ("C", ip(3, 3, 3, 3)),
-    ]);
-    let proxy = ip(6, 6, 6, 6);
-    register_services(&server, &ip_map, 8080).await;
-    server.orchestrator().register_fake_client(proxy).await;
-
-    // proxy→A, A→B, B→C
-    setup_proxy_chain(&server, "A", proxy, "10.0.0.1").await;
-    assert_net_ids_in_use(&server, 3).await;
-
-    (server, proxy)
-}
-
-/// Whether A's dependency chain, walked from its only replica, is complete.
-async fn a_chain_intact(server: &NullnetGrpcImpl) -> bool {
-    let guard = server.services().read().await;
-    dep_chain_intact("A", ip(1, 1, 1, 1), None, stack_view(&guard))
-}
-
-/// An intact chain is reused as-is: same upstream, no new networks.
-#[tokio::test]
-async fn stale_session_intact_chain_is_reused() {
-    let (server, proxy) = stale_session_setup().await;
-
-    let first = server
-        .handle_proxy_request("A", proxy, "10.0.0.1")
-        .await
-        .expect("proxy request failed");
-    let second = server
-        .handle_proxy_request("A", proxy, "10.0.0.1")
-        .await
-        .expect("proxy request failed");
-
-    assert_eq!(
-        first.ip, second.ip,
-        "sticky reuse must keep serving the same network"
-    );
-    assert!(a_chain_intact(&server).await);
-    assert_net_ids_in_use(&server, 3).await;
-}
-
-/// A dep edge torn down independently of the entry edge leaves the session
-/// stale. The next request must evict it and rebuild the whole chain instead
-/// of reusing an entry whose dependency mappings no longer exist.
-#[tokio::test]
-async fn stale_session_broken_chain_is_evicted_and_rebuilt() {
-    let (server, proxy) = stale_session_setup().await;
-
-    // Drop B→C the way a real teardown would, leaving proxy→A and A→B up.
-    {
-        let mut guard = server.services().write().await;
-        let b_client = Client::new_service("B".to_string(), ip(2, 2, 2, 2), None);
-        let Some(ServiceInfo::Registered(c_reg)) = stack_view_mut(&mut guard).get_mut("C") else {
-            panic!("C is not registered");
-        };
-        c_reg
-            .decrement_chain(&b_client, server.orchestrator())
-            .await;
-    }
-    assert!(
-        !a_chain_intact(&server).await,
-        "B→C should be gone after the teardown"
-    );
-    assert_net_ids_in_use(&server, 2).await;
-
-    server
-        .handle_proxy_request("A", proxy, "10.0.0.1")
-        .await
-        .expect("proxy request failed");
-
-    assert!(
-        a_chain_intact(&server).await,
-        "the stale session should have been evicted and the chain rebuilt"
-    );
-    assert_net_ids_in_use(&server, 3).await;
-}
-
-// ===========================================================================
-// concurrent_setup: A→B reached by four routes, cycles A→B→A and B→D→B, B
-// shared between three sources. Covers concurrent first-time setup: a browser
-// opens several connections to the same host at once, so the proxy issues
-// concurrent `proxy` RPCs for one (client_ip, service) before the first chain
-// finishes.
-// ===========================================================================
-
-const CONCURRENT_SETUP: &str = "concurrent_setup";
-
-/// Every surviving client entry as `service <- client (chains=N)`, sorted.
-fn live_edges(guard: &StackMap) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for (name, si) in stack_view(guard) {
-        if let ServiceInfo::Registered(reg) = si {
-            for (client, ci, _, _) in reg.all_clients_owned() {
-                out.push(format!(
-                    "{name} <- {} (chains={})",
-                    client.display_name(),
-                    ci.active_chains()
-                ));
-            }
-        }
-    }
-    out.sort();
-    out
-}
-
-/// Concurrent requests for the same client collapse into ONE proxy client
-/// entry, so they must also leave the dependency edges at a count teardown can
-/// fully unwind — otherwise the whole dependency mesh stays connected after
-/// the session expires.
-#[tokio::test]
-async fn concurrent_requests_same_client_tear_down_cleanly() {
-    let services = load_fixture(CONCURRENT_SETUP).await;
-    let server = std::sync::Arc::new(NullnetGrpcImpl::new_for_test(services));
-
-    let ip_map = HashMap::from([
-        ("A", ip(1, 1, 1, 1)),
-        ("B", ip(2, 2, 2, 2)),
-        ("C", ip(3, 3, 3, 3)),
-        ("D", ip(4, 4, 4, 4)),
-    ]);
-    let proxy = ip(5, 5, 5, 5);
-    register_services(&server, &ip_map, 8080).await;
-    server.orchestrator().register_fake_client(proxy).await;
-
-    let mut set = tokio::task::JoinSet::new();
-    for _ in 0..6 {
-        let server = server.clone();
-        set.spawn(async move {
-            server
-                .handle_proxy_request("A", proxy, "10.0.0.1")
-                .await
-                .expect("proxy request failed");
-            // Each racing request closes its own connection, as the proxy does.
-            // Six opens need six closes: the client stays pinned until the last
-            // one lands, which is the behaviour being relied on below.
-            server.mark_connection_closed("A", proxy, "10.0.0.1").await;
-        });
-    }
-    while set.join_next().await.is_some() {}
-
-    // proxy→A, A→B, A→C, B→A, B→C, B→D, D→B, C→B — one network each, however
-    // many requests raced to build them.
-    assert_net_ids_in_use(&server, 8).await;
-    {
-        let guard = server.services().read().await;
-        assert_eq!(
-            stack_view(&guard)["A"]
-                .proxy_deps()
-                .iter()
-                .filter(|b| b.first().is_some_and(|d| d == "B"))
-                .count(),
-            4,
-            "fixture should reach B by four routes"
-        );
-    }
-
-    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-    let mut guard = server.services().write().await;
-    apply_timeouts(stack_view_mut(&mut guard), server.orchestrator(), "default").await;
-    let residual = live_edges(&guard);
-    drop(guard);
-
-    server.orchestrator().settle_teardowns().await;
-    let in_use = server.orchestrator().net_ids_in_use().await;
-    assert!(
-        residual.is_empty() && in_use == 0,
-        "still connected after the session expired: {in_use} NET ID(s), {} edge(s):\n{}",
-        residual.len(),
-        residual.join("\n")
-    );
 }
 
 // ===========================================================================
@@ -3597,7 +1896,7 @@ async fn backend_reap_history_wait_releases_topology() {
         .set_backend_liveness(&key, false)
         .await;
     let db_guard = db.hold_connection().await;
-    let reap = reap_idle_backend_chains(
+    let reap = reap_idle_backend_edges(
         server.services(),
         server.orchestrator(),
         std::time::Duration::ZERO,
@@ -3667,7 +1966,7 @@ async fn backend_pending_history_allows_teardown_and_replacement() {
         {
             tokio::task::yield_now().await;
         }
-        reap_idle_backend_chains(
+        reap_idle_backend_edges(
             server.services(),
             server.orchestrator(),
             std::time::Duration::ZERO,
@@ -3722,9 +2021,9 @@ async fn trigger_atomic_concurrent_backend_claims_release_once() {
     a.unwrap();
     b.unwrap();
     let client = Client::new_service("A".into(), ip(1, 1, 1, 1), None);
-    let chains = client_entry_chains(&*server.services().read().await, "B", &client);
+    let holds = client_entry_holds(&*server.services().read().await, "B", &client);
     report_backend_idle_and_reap(&server, "A", ip(1, 1, 1, 1), 5555).await;
-    assert_eq!(chains, Some(1), "duplicate trigger acquired two holds");
+    assert_eq!(holds, Some(1), "duplicate trigger acquired two holds");
     assert_net_ids_in_use(&server, 0).await;
 }
 
@@ -3757,7 +2056,7 @@ async fn trigger_atomic_backend_idle_during_setup_is_preserved() {
     gate.add_permits(64);
     build.await.unwrap().unwrap();
     {
-        reap_idle_backend_chains(
+        reap_idle_backend_edges(
             server.services(),
             server.orchestrator(),
             std::time::Duration::ZERO,
@@ -3811,7 +2110,7 @@ async fn backend_liveness_setup() -> NullnetGrpcImpl {
     let ip_map = HashMap::from([("A", ip(1, 1, 1, 1)), ("B", ip(2, 2, 2, 2))]);
     register_services(&server, &ip_map, 8080).await;
 
-    trigger_backend_chain(&server, "A", ip(1, 1, 1, 1), 5555).await;
+    trigger_backend_edge(&server, "A", ip(1, 1, 1, 1), 5555).await;
     server
 }
 
@@ -3822,7 +2121,7 @@ fn client_count_of(guard: &StackMap, name: &str) -> usize {
     }
 }
 
-/// Gate 1 for Step 4: a chain built by an autonomous trigger is reaped by
+/// Gate 1 for Step 4: an edge built by an autonomous trigger is reaped by
 /// nothing. Both services carry `timeout = 1`, so the idle path is armed and
 /// running — it simply never considers this edge, because
 /// `expired_proxy_clients` filters on `Client::is_proxy` and a trigger-built
@@ -3831,7 +2130,7 @@ fn client_count_of(guard: &StackMap, name: &str) -> usize {
 /// The failure this documents: the edge survives every idle pass forever, and
 /// only a config change or the container dying takes it down.
 #[tokio::test]
-async fn autonomous_trigger_chain_is_never_reaped_on_idle() {
+async fn autonomous_trigger_edge_is_never_reaped_on_idle() {
     let server = backend_liveness_setup().await;
 
     assert_eq!(
@@ -3866,7 +2165,7 @@ async fn report_backend_idle_and_reap(
         .orchestrator()
         .set_backend_liveness(&(service.to_string(), ip, None, port), false)
         .await;
-    reap_idle_backend_chains(
+    reap_idle_backend_edges(
         server.services(),
         server.orchestrator(),
         std::time::Duration::ZERO,
@@ -3875,10 +2174,10 @@ async fn report_backend_idle_and_reap(
 }
 
 /// The Step 4 path: once the initiator's connections on the trigger port are
-/// provably gone, the chain it built is released and — nothing else holding it
+/// provably gone, the edge it built is released and — nothing else holding it
 /// — comes down. The idle timer plays no part; the client's conntrack view does.
 #[tokio::test]
-async fn trigger_chain_is_released_once_its_connections_close() {
+async fn trigger_edge_is_released_once_its_connections_close() {
     let server = backend_liveness_setup().await;
     assert_eq!(
         client_count_of(&*server.services().read().await, "B"),
@@ -3896,10 +2195,10 @@ async fn trigger_chain_is_released_once_its_connections_close() {
     assert_net_ids_in_use(&server, 0).await;
 }
 
-/// A close for a chain we hold no refcount on must not decrement anything.
+/// A close for an edge we hold no refcount on must not decrement anything.
 ///
 /// This is what keeps the liveness signal from consuming an increment it never
-/// contributed — a chain built by an ingress proxy client, or one whose hold a
+/// contributed — an edge already present for another reason, or one whose hold a
 /// config-change teardown already released. `set_backend_liveness` drops the
 /// report rather than inventing a session for it.
 #[tokio::test]
@@ -3931,7 +2230,7 @@ async fn a_second_reap_pass_releases_nothing_more() {
     // as that entry vanishing too.
     let ip_map = HashMap::from([("D", ip(4, 4, 4, 4))]);
     register_services(&server, &ip_map, 8080).await;
-    trigger_backend_chain(&server, "D", ip(4, 4, 4, 4), 5555).await;
+    trigger_backend_edge(&server, "D", ip(4, 4, 4, 4), 5555).await;
     assert_eq!(
         client_count_of(&*server.services().read().await, "B"),
         2,
@@ -3943,7 +2242,7 @@ async fn a_second_reap_pass_releases_nothing_more() {
         .set_backend_liveness(&("A".to_string(), ip(1, 1, 1, 1), None, 5555), false)
         .await;
     for _ in 0..3 {
-        reap_idle_backend_chains(
+        reap_idle_backend_edges(
             server.services(),
             server.orchestrator(),
             std::time::Duration::ZERO,
@@ -3958,20 +2257,20 @@ async fn a_second_reap_pass_releases_nothing_more() {
     );
 }
 
-/// A trigger whose chain cannot be built takes no increment, so it must record
+/// A trigger whose edge cannot be built takes no increment, so it must record
 /// no hold. A phantom hold is worse than useless: it makes the later
 /// `claim_backend_session` a no-op, so the trigger rides on an increment
 /// something else contributed and its close consumes that one instead.
 ///
 /// `G` triggers into `Ghost`, which no fixture registers, so
-/// `build_backend_dep_chain` bails.
+/// backend edge setup bails.
 #[tokio::test]
 async fn a_bailed_setup_records_no_hold() {
     let server = backend_liveness_setup().await;
     let ip_map = HashMap::from([("G", ip(7, 7, 7, 7))]);
     register_services(&server, &ip_map, 8080).await;
 
-    trigger_backend_chain(&server, "G", ip(7, 7, 7, 7), 7777).await;
+    trigger_backend_edge(&server, "G", ip(7, 7, 7, 7), 7777).await;
 
     assert!(
         !server
@@ -3986,506 +2285,7 @@ async fn a_bailed_setup_records_no_hold() {
             .orchestrator()
             .holds_backend_session(&("A".to_string(), ip(1, 1, 1, 1), None, 5555))
             .await,
-        "a setup that built the chain holds exactly one refcount"
-    );
-}
-
-// ===========================================================================
-// setup_teardown_race: entry --> a --> b.
-//
-// Setup releases the services lock for the whole time it waits on the two
-// endpoints of an edge, so a teardown can run while a chain is half built.
-// These tests park the a->b edge in exactly that window (its host acks only
-// when the test hands out a permit) and drive a real teardown against it.
-// ===========================================================================
-
-const SETUP_TEARDOWN_RACE: &str = "setup_teardown_race";
-
-/// The `Client` key for the a->b edge: keyed by the *source* replica.
-fn a_to_b_client(a_ip: IpAddr) -> Client {
-    Client::new_service("a".to_string(), a_ip, None)
-}
-
-/// The net id of `client`'s entry on `service`, if one exists. A slot that has
-/// been reserved but not yet promoted (the edge is still being built) reads
-/// back as net id 0.
-fn client_entry_net_id(guard: &StackMap, service: &str, client: &Client) -> Option<u32> {
-    match stack_view(guard).get(service) {
-        Some(ServiceInfo::Registered(reg)) => reg.replicas().iter().find_map(|r| {
-            r.clients()
-                .get(client)
-                .map(crate::services::clients::ClientInfo::net_id)
-        }),
-        _ => None,
-    }
-}
-
-fn client_entry_chains(guard: &StackMap, service: &str, client: &Client) -> Option<usize> {
-    match stack_view(guard).get(service) {
-        Some(ServiceInfo::Registered(reg)) => reg.replicas().iter().find_map(|r| {
-            r.clients()
-                .get(client)
-                .map(crate::services::clients::ClientInfo::active_chains)
-        }),
-        _ => None,
-    }
-}
-
-/// Net ids carried by every teardown message in the log, either net type.
-fn teardown_net_ids(log: &[NetMessage]) -> Vec<u32> {
-    log.iter()
-        .filter_map(|m| match &m.message {
-            Some(net_message::Message::VxlanTeardown(t)) => Some(t.vxlan_id),
-            Some(net_message::Message::VlanTeardown(t)) => Some(t.vlan_id),
-            _ => None,
-        })
-        .collect()
-}
-
-fn setup_net_ids(log: &[NetMessage]) -> Vec<u32> {
-    log.iter()
-        .filter_map(|m| match &m.message {
-            Some(net_message::Message::VxlanSetup(s)) => Some(s.vxlan_id),
-            Some(net_message::Message::VlanSetup(s)) => Some(s.vlan_id),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Poll until the a->b slot has been reserved, i.e. the chain is now parked in
-/// the window where setup holds no lock. Bounded so a failure terminates.
-async fn wait_for_reserved_slot(server: &NullnetGrpcImpl, a_ip: IpAddr) {
-    for _ in 0..400 {
-        {
-            let guard = server.services().read().await;
-            if client_entry_net_id(&guard, "b", &a_to_b_client(a_ip)) == Some(0) {
-                return;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
-    panic!("the a->b slot was never reserved");
-}
-
-/// entry@1, a@2, b@3, proxy@5. Host `b` is gated: the a->b edge cannot finish
-/// until the returned semaphore is topped up. The other two edges of the chain
-/// (proxy->entry and entry->a) complete normally, which is what leaves one
-/// edge of a single chain in flight while the rest of it is live.
-#[allow(clippy::type_complexity)]
-async fn race_server(
-    config: &str,
-) -> (
-    std::sync::Arc<NullnetGrpcImpl>,
-    std::sync::Arc<tokio::sync::Mutex<Vec<NetMessage>>>,
-    std::sync::Arc<tokio::sync::Semaphore>,
-    std::sync::Arc<tokio::sync::Mutex<Vec<NetMessage>>>,
-) {
-    let services = load_config(SETUP_TEARDOWN_RACE, config).await;
-    let server = NullnetGrpcImpl::new_for_test(services);
-    {
-        let mut guard = server.services().write().await;
-        let stack = stack_view_mut(&mut guard);
-        stack
-            .get_mut("entry")
-            .unwrap()
-            .add_replica(ip(1, 1, 1, 1), 8080, None);
-        stack
-            .get_mut("a")
-            .unwrap()
-            .add_replica(ip(2, 2, 2, 2), 8080, None);
-        stack
-            .get_mut("b")
-            .unwrap()
-            .add_replica(ip(3, 3, 3, 3), 8080, None);
-    }
-    server
-        .orchestrator()
-        .register_fake_client(ip(1, 1, 1, 1))
-        .await;
-    let a_log = server
-        .orchestrator()
-        .register_recording_client(ip(2, 2, 2, 2))
-        .await;
-    let (b_log, gate) = server
-        .orchestrator()
-        .register_gated_client(ip(3, 3, 3, 3))
-        .await;
-    server
-        .orchestrator()
-        .register_fake_client(ip(5, 5, 5, 5))
-        .await;
-    (std::sync::Arc::new(server), b_log, gate, a_log)
-}
-
-/// Finding 1. A teardown walk cannot tell a reserved slot from a live edge:
-/// `collect_dep_chain_edges` probes `client_replica`, which matches both. It
-/// then decrements the reservation's zero refcount, removes the entry, and
-/// dispatches a teardown for net id 0 — an id the pool never issues
-/// (`MIN_NET_ID` is 101), naming kernel objects that do not exist.
-#[tokio::test]
-async fn teardown_must_not_fire_for_an_unallocated_net_id() {
-    let (server, _b_log, gate, a_log) = race_server("services.toml").await;
-    let a_ip = ip(2, 2, 2, 2);
-
-    let srv = std::sync::Arc::clone(&server);
-    let chain = tokio::spawn(async move {
-        srv.handle_proxy_request("entry", ip(5, 5, 5, 5), "10.0.0.1")
-            .await
-    });
-    wait_for_reserved_slot(&server, a_ip).await;
-
-    // A teardown walks the mesh while this chain is still building: host 1
-    // stops reporting its replica of `entry`, which tears down every chain
-    // rooted there. The walk reaches the a->b hop that is still in flight.
-    server
-        .apply_services_list(ip(1, 1, 1, 1), &[])
-        .await
-        .expect("apply_services_list failed");
-
-    // Wait for the teardown burst to drain, then inspect what was sent.
-    wait_for_log(&a_log, |l| !teardown_net_ids(l).is_empty()).await;
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let ids = teardown_net_ids(&a_log.lock().await);
-    assert!(
-        !ids.contains(&0),
-        "a teardown was dispatched for net id 0, which the pool never issues: \
-         the walk decremented an edge that was still being set up (saw {ids:?})"
-    );
-
-    gate.add_permits(64);
-    let _ = chain.await.expect("chain task panicked");
-}
-
-/// Finding 1, second half. Once the walk has removed the reservation, the
-/// setup task that owns it promotes anyway and re-inserts the edge — now held
-/// by a chain whose proxy client no longer exists. Nothing will ever decrement
-/// it again, so both the edge and its net id are stranded.
-#[tokio::test]
-async fn an_edge_torn_down_mid_setup_is_not_stranded() {
-    let (server, _b_log, gate, _a_log) = race_server("services.toml").await;
-    let a_ip = ip(2, 2, 2, 2);
-
-    let srv = std::sync::Arc::clone(&server);
-    let chain = tokio::spawn(async move {
-        srv.handle_proxy_request("entry", ip(5, 5, 5, 5), "10.0.0.1")
-            .await
-    });
-    wait_for_reserved_slot(&server, a_ip).await;
-
-    // Same mid-setup teardown as above.
-    server
-        .apply_services_list(ip(1, 1, 1, 1), &[])
-        .await
-        .expect("apply_services_list failed");
-
-    gate.add_permits(64);
-    let _ = chain.await.expect("chain task panicked");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    let guard = server.services().read().await;
-    let held = client_entry_chains(&guard, "b", &a_to_b_client(a_ip));
-    let entry_has_clients = stack_view(&guard)
-        .get("entry")
-        .is_some_and(|si| matches!(si, ServiceInfo::Registered(r) if r.has_clients()));
-    drop(guard);
-    server.orchestrator().settle_teardowns().await;
-    let in_use = server.orchestrator().net_ids_in_use().await;
-
-    assert!(
-        held.is_none() || entry_has_clients,
-        "the a->b edge finished with {held:?} chain(s) but the client that \
-         owns it is gone, so no teardown path will ever reach it again; \
-         {in_use} net id(s) still held"
-    );
-    assert_eq!(in_use, 0, "{in_use} net id(s) leaked");
-}
-
-/// Finding 3. The chain is built by a `JoinSet` owned by the request future,
-/// so a caller that goes away mid-setup aborts the tasks and leaves the
-/// reservation behind. With reaping disabled (`timeout = 0`, what the deployed
-/// stack runs) nothing ever revisits it — and the next chain *reuses* it,
-/// completing over a hop whose tunnel was never built.
-#[tokio::test]
-async fn an_abandoned_reservation_is_not_reused_by_the_next_chain() {
-    let (server, b_log, _gate, _a_log) = race_server("services_pinned.toml").await;
-    let a_ip = ip(2, 2, 2, 2);
-
-    let srv = std::sync::Arc::clone(&server);
-    let chain = tokio::spawn(async move {
-        srv.handle_proxy_request("entry", ip(5, 5, 5, 5), "10.0.0.1")
-            .await
-    });
-    wait_for_reserved_slot(&server, a_ip).await;
-
-    // The proxy hangs up / times out: tonic drops the handler future.
-    chain.abort();
-    let _ = chain.await;
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    {
-        let mut guard = server.services().write().await;
-        apply_timeouts(
-            stack_view_mut(&mut guard),
-            server.orchestrator(),
-            TEST_STACK,
-        )
-        .await;
-    }
-
-    // A second, unrelated client asks for the same entry point.
-    let second = server
-        .handle_proxy_request("entry", ip(5, 5, 5, 5), "10.0.0.2")
-        .await;
-
-    let guard = server.services().read().await;
-    let net_id = client_entry_net_id(&guard, "b", &a_to_b_client(a_ip));
-    let held = client_entry_chains(&guard, "b", &a_to_b_client(a_ip));
-    let intact = dep_chain_intact("entry", ip(1, 1, 1, 1), None, stack_view(&guard));
-    drop(guard);
-    // b was told to set the tunnel up but never acked, so it is not there.
-    let attempted = setup_net_ids(&b_log.lock().await);
-
-    assert!(
-        !(second.is_ok() && net_id == Some(0)),
-        "the second chain reported success over an a->b hop that was never \
-         built (reservation net id {net_id:?}, now held by {held:?} chain(s), \
-         dep_chain_intact={intact}, only setup attempt to b was {attempted:?})"
-    );
-}
-
-/// Finding 4. If the target replica disappears while the edge is in flight,
-/// promotion silently no-ops: `add_client_to_replica` finds no matching
-/// replica and drops the entry on the floor, while the guard above it only
-/// checks that the *service* is still registered. The tunnel exists on both
-/// hosts, the chain reports success, and the server has no record of it.
-#[tokio::test]
-async fn a_replica_lost_mid_setup_does_not_strand_its_tunnel() {
-    let (server, b_log, gate, _a_log) = race_server("services.toml").await;
-    let a_ip = ip(2, 2, 2, 2);
-    // A second replica of `b`, so losing the first leaves `b` registered.
-    {
-        let mut guard = server.services().write().await;
-        stack_view_mut(&mut guard)
-            .get_mut("b")
-            .unwrap()
-            .add_replica(ip(4, 4, 4, 4), 8080, None);
-    }
-    server
-        .orchestrator()
-        .register_fake_client(ip(4, 4, 4, 4))
-        .await;
-
-    let srv = std::sync::Arc::clone(&server);
-    let chain = tokio::spawn(async move {
-        srv.handle_proxy_request("entry", ip(5, 5, 5, 5), "10.0.0.1")
-            .await
-    });
-    wait_for_reserved_slot(&server, a_ip).await;
-
-    // Host 3 stops reporting its replica of `b` (Swarm rescheduled the task).
-    server
-        .apply_services_list(ip(3, 3, 3, 3), &[])
-        .await
-        .expect("apply_services_list failed");
-
-    gate.add_permits(64);
-    let res = chain.await.expect("chain task panicked");
-
-    let built = setup_net_ids(&b_log.lock().await);
-    let guard = server.services().read().await;
-    let recorded = client_entry_net_id(&guard, "b", &a_to_b_client(a_ip));
-    drop(guard);
-    server.orchestrator().settle_teardowns().await;
-    let in_use = server.orchestrator().net_ids_in_use().await;
-
-    assert!(!built.is_empty(), "no setup ever reached host b");
-    assert!(
-        !(res.is_ok() && recorded.is_none()),
-        "the chain reported success with no server-side record of the a->b \
-         edge (tunnel {built:?} was built on b, {in_use} net id(s) now held \
-         with no owner)"
-    );
-}
-
-/// Finding 2. Every failure path in `net_chain_setup` rolls its edge back with
-/// `remove_client`, which drops the whole entry rather than the one refcount
-/// the failing chain contributed. A second chain that reused the edge while it
-/// was in flight has already been told the hop is up, and loses it.
-///
-/// Slow by construction: host `b` is registered but never acks, so the failing
-/// chain only gives up after `send_net_setup`'s 30s timeout.
-#[tokio::test]
-async fn a_failed_edge_rollback_keeps_a_concurrent_holder() {
-    let services = load_config(SETUP_TEARDOWN_RACE, "services.toml").await;
-    let server = std::sync::Arc::new(NullnetGrpcImpl::new_for_test(services));
-    {
-        let mut guard = server.services().write().await;
-        let stack = stack_view_mut(&mut guard);
-        stack
-            .get_mut("entry")
-            .unwrap()
-            .add_replica(ip(1, 1, 1, 1), 8080, None);
-        stack
-            .get_mut("a")
-            .unwrap()
-            .add_replica(ip(2, 2, 2, 2), 8080, None);
-        stack
-            .get_mut("b")
-            .unwrap()
-            .add_replica(ip(3, 3, 3, 3), 8080, None);
-    }
-    server
-        .orchestrator()
-        .register_fake_client(ip(1, 1, 1, 1))
-        .await;
-    let a_log = server
-        .orchestrator()
-        .register_recording_client(ip(2, 2, 2, 2))
-        .await;
-    // Registered but wedged: it receives the setup and never answers.
-    server
-        .orchestrator()
-        .register_silent_client(ip(3, 3, 3, 3))
-        .await;
-    server
-        .orchestrator()
-        .register_fake_client(ip(5, 5, 5, 5))
-        .await;
-
-    let a_ip = ip(2, 2, 2, 2);
-    let srv = std::sync::Arc::clone(&server);
-    let doomed = tokio::spawn(async move {
-        srv.handle_proxy_request("entry", ip(5, 5, 5, 5), "10.0.0.1")
-            .await
-    });
-    wait_for_reserved_slot(&server, a_ip).await;
-
-    // A second client arrives while a->b is still in flight. It must not be
-    // handed a hop that has no tunnel: either it waits for the first chain and
-    // then gets a real edge, or it fails — but success and a missing edge can
-    // never both be true.
-    let srv = std::sync::Arc::clone(&server);
-    let second = tokio::spawn(async move {
-        srv.handle_proxy_request("entry", ip(5, 5, 5, 5), "10.0.0.2")
-            .await
-    });
-
-    let first = doomed.await.expect("chain task panicked");
-    assert!(first.is_err(), "the wedged chain was expected to fail");
-    let second = second.await.expect("second chain task panicked");
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    let guard = server.services().read().await;
-    let net_id = client_entry_net_id(&guard, "b", &a_to_b_client(a_ip));
-    let held = client_entry_chains(&guard, "b", &a_to_b_client(a_ip));
-    let live = match stack_view(&guard).get("b") {
-        Some(ServiceInfo::Registered(reg)) => reg.client_replica_live(&a_to_b_client(a_ip)),
-        _ => None,
-    };
-    drop(guard);
-    let torn = teardown_net_ids(&a_log.lock().await);
-    server.orchestrator().settle_teardowns().await;
-    let in_use = server.orchestrator().net_ids_in_use().await;
-
-    assert!(
-        !(second.is_ok() && live.is_none()),
-        "the second chain reported success while the a->b edge is absent or \
-         still only reserved (net id {net_id:?}, held by {held:?}, \
-         teardowns sent: {torn:?})"
-    );
-    // No assertion on the pool here: host b never acks its teardown either, so
-    // the id is deliberately held until cleanup or disconnect. What must
-    // hold immediately is that no entry is left behind for it.
-    let _ = in_use;
-    assert_eq!(
-        net_id, None,
-        "an entry for the a->b edge survived both chains giving up"
-    );
-}
-
-/// Finding 5. Two chains that meet at a shared hop must both hold a refcount
-/// on the edge they actually traverse, and no edge may be built from a replica
-/// nothing routes through.
-///
-/// The old code resolved every hop from one read-locked snapshot and applied
-/// the result later. With `b` bound to a different replica in between, the
-/// stale snapshot reused that binding for the shared hop but kept building the
-/// rest of the branch from the replica it had picked — orphaning `b->c` on one
-/// replica while the `b->c` both chains really used carried a single refcount.
-/// Hops are now resolved as they are claimed, so the two cannot disagree.
-#[tokio::test]
-async fn chains_sharing_a_hop_agree_on_the_replica_after_it() {
-    let services = load_config(SETUP_TEARDOWN_RACE, "services_shared_dep.toml").await;
-    let server = std::sync::Arc::new(NullnetGrpcImpl::new_for_test(services));
-    let (entry_ip, a_ip, b1, b2, c_ip, d_ip, proxy) = (
-        ip(1, 1, 1, 1),
-        ip(2, 2, 2, 2),
-        ip(3, 3, 3, 3),
-        ip(4, 4, 4, 4),
-        ip(7, 7, 7, 7),
-        ip(8, 8, 8, 8),
-        ip(5, 5, 5, 5),
-    );
-    {
-        let mut guard = server.services().write().await;
-        let stack = stack_view_mut(&mut guard);
-        stack
-            .get_mut("entry")
-            .unwrap()
-            .add_replica(entry_ip, 8080, None);
-        stack.get_mut("a").unwrap().add_replica(a_ip, 8080, None);
-        stack.get_mut("b").unwrap().add_replica(b1, 8080, None);
-        stack.get_mut("b").unwrap().add_replica(b2, 8080, None);
-        stack.get_mut("c").unwrap().add_replica(c_ip, 8080, None);
-        stack.get_mut("d").unwrap().add_replica(d_ip, 8080, None);
-    }
-    for host in [entry_ip, a_ip, b1, b2, c_ip, d_ip, proxy] {
-        server.orchestrator().register_fake_client(host).await;
-    }
-
-    // Two chains through entry->a->b->c, concurrent with an independent
-    // consumer of `b` that shifts which of its replicas is least loaded.
-    let s1 = std::sync::Arc::clone(&server);
-    let s2 = std::sync::Arc::clone(&server);
-    let s3 = std::sync::Arc::clone(&server);
-    let one =
-        tokio::spawn(async move { s1.handle_proxy_request("entry", proxy, "10.0.0.1").await });
-    let other = tokio::spawn(async move { s2.handle_proxy_request("d", proxy, "10.0.0.9").await });
-    let two =
-        tokio::spawn(async move { s3.handle_proxy_request("entry", proxy, "10.0.0.2").await });
-    one.await.unwrap().expect("first entry chain failed");
-    other.await.unwrap().expect("d chain failed");
-    two.await.unwrap().expect("second entry chain failed");
-
-    let guard = server.services().read().await;
-    let bound = match stack_view(&guard).get("b") {
-        Some(ServiceInfo::Registered(reg)) => reg.client_replica_live(&a_to_b_client(a_ip)),
-        _ => None,
-    };
-    let bound_ip = bound.map(|(i, _)| i).expect("a->b was never bound");
-    let other_ip = if bound_ip == b1 { b2 } else { b1 };
-
-    let live_src = Client::new_service("b".to_string(), bound_ip, None);
-    let orphan_src = Client::new_service("b".to_string(), other_ip, None);
-    let live_held = client_entry_chains(&guard, "c", &live_src);
-    let orphan_held = client_entry_chains(&guard, "c", &orphan_src);
-    let shared_held = client_entry_chains(&guard, "b", &a_to_b_client(a_ip));
-    drop(guard);
-
-    assert!(
-        orphan_held.is_none(),
-        "a b->c edge was built from {other_ip} (held by {orphan_held:?} chain(s)), \
-         a replica nothing routes through"
-    );
-    assert_eq!(
-        shared_held,
-        Some(2),
-        "both chains traverse the shared a->b edge but it carries {shared_held:?} refcount(s)"
-    );
-    assert_eq!(
-        live_held,
-        Some(2),
-        "both chains traverse b({bound_ip})->c but it carries {live_held:?} refcount(s): \
-         the first chain's teardown would take it down under the second"
+        "a setup that built the edge holds exactly one refcount"
     );
 }
 
@@ -4536,10 +2336,9 @@ async fn an_ingress_session_opens_and_closes_a_row() {
     register_services(&server, &ip_map, 8080).await;
     server.orchestrator().register_fake_client(proxy).await;
 
-    setup_proxy_chain(&server, "A", proxy, "10.0.0.1").await;
+    setup_proxy_edge(&server, "A", proxy, "10.0.0.1").await;
 
-    // Exactly one row: the proxy→A edge. A→B is a dependency hop, not a
-    // session, and must not produce one.
+    // Exactly one row is written for the ingress edge.
     let rows = session_rows(&server, &db).await;
     assert_eq!(rows.len(), 1, "expected one ingress row, got {rows:?}");
     let row = &rows[0];
@@ -4588,9 +2387,9 @@ async fn max_networks_overflow_closes_each_client_session() {
     // Two clients, 2s apart so the first is comfortably expired while the
     // second is comfortably alive (same margins as max_networks_reuse_lifecycle
     // — timeouts use real `Instant`, not tokio's pausable clock).
-    setup_proxy_chain(&server, "A", proxy, "10.0.0.1").await;
+    setup_proxy_edge(&server, "A", proxy, "10.0.0.1").await;
     tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-    setup_proxy_chain(&server, "A", proxy, "10.0.0.2").await;
+    setup_proxy_edge(&server, "A", proxy, "10.0.0.2").await;
 
     let rows = session_rows(&server, &db).await;
     assert_eq!(rows.len(), 2, "one row per client, got {rows:?}");
@@ -4936,7 +2735,7 @@ pausable = true
 }
 
 #[tokio::test]
-async fn backend_peer_does_not_expand_its_dependencies() {
+async fn backend_peer_does_not_expand_its_backends() {
     let config: ServicesToml = toml::from_str(
         r#"
 [[services]]
@@ -4946,7 +2745,6 @@ backends = ["peer"]
 name = "peer"
 port = 5555
 timeout = 0
-proxy_dependencies = [["proxy-dep"]]
 backends = ["backend-dep"]
 [[services]]
 name = "backend-dep"
@@ -4962,7 +2760,7 @@ port = 6666
         8080,
     )
     .await;
-    trigger_backend_chain(&server, "source", source_ip, 5555).await;
+    trigger_backend_edge(&server, "source", source_ip, 5555).await;
     assert_net_ids_in_use(&server, 1).await;
     {
         let guard = server.services().read().await;
@@ -4975,10 +2773,6 @@ port = 6666
                 .is_some()
         );
         assert!(matches!(
-            &services["proxy-dep"],
-            ServiceInfo::Unregistered(_)
-        ));
-        assert!(matches!(
             &services["backend-dep"],
             ServiceInfo::Unregistered(_)
         ));
@@ -4987,13 +2781,55 @@ port = 6666
         .orchestrator()
         .set_backend_liveness(&("source".into(), source_ip, None, 5555), false)
         .await;
-    reap_idle_backend_chains(
+    reap_idle_backend_edges(
         server.services(),
         server.orchestrator(),
         std::time::Duration::ZERO,
     )
     .await;
     assert_net_ids_in_use(&server, 0).await;
+}
+
+#[tokio::test]
+async fn proxy_request_does_not_open_declared_backends() {
+    let config: ServicesToml = toml::from_str(
+        r#"
+[[services]]
+name = "entry"
+port = 8080
+timeout = 0
+backends = ["peer"]
+
+[[services]]
+name = "peer"
+port = 5555
+"#,
+    )
+    .unwrap();
+    let server = NullnetGrpcImpl::new_for_test(into_stack_map(config.services_map().unwrap()));
+    let entry_ip = ip(1, 1, 1, 1);
+    let peer_ip = ip(2, 2, 2, 2);
+    let proxy_ip = ip(3, 3, 3, 3);
+    register_services(
+        &server,
+        &HashMap::from([("entry", entry_ip), ("peer", peer_ip)]),
+        8080,
+    )
+    .await;
+    server.orchestrator().register_fake_client(proxy_ip).await;
+
+    setup_proxy_edge(&server, "entry", proxy_ip, "10.0.0.1").await;
+
+    assert_net_ids_in_use(&server, 1).await;
+    let guard = server.services().read().await;
+    let ServiceInfo::Registered(entry) = &stack_view(&guard)["entry"] else {
+        panic!("entry must be registered");
+    };
+    let ServiceInfo::Registered(peer) = &stack_view(&guard)["peer"] else {
+        panic!("peer must be registered");
+    };
+    assert_eq!(entry.client_count(), 1);
+    assert_eq!(peer.client_count(), 0);
 }
 
 #[tokio::test]
@@ -5019,7 +2855,7 @@ port = 5555
         5555,
     )
     .await;
-    trigger_backend_chain(&server, "source", source_ip, 5555).await;
+    trigger_backend_edge(&server, "source", source_ip, 5555).await;
     assert_net_ids_in_use(&server, 1).await;
     server.orchestrator().sessions.flush().await;
     assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 1);
@@ -5042,7 +2878,7 @@ port = 5555
     server.orchestrator().sessions.flush().await;
     assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 0);
     register_services(&server, &HashMap::from([("peer", ip(2, 2, 2, 2))]), 6666).await;
-    trigger_backend_chain(&server, "source", source_ip, 6666).await;
+    trigger_backend_edge(&server, "source", source_ip, 6666).await;
     assert_net_ids_in_use(&server, 1).await;
     server.orchestrator().sessions.flush().await;
     assert_eq!(db.sessions().count_active(TEST_STACK).await.unwrap(), 1);

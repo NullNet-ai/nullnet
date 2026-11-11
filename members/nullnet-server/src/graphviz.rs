@@ -27,7 +27,7 @@ use tokio::sync::RwLock;
 // ---------------------------------------------------------------------------
 
 /// Set of `(service_name, replica_ip, docker_container)` triples that are
-/// acting as a client in at least one dependency edge. Used to mark replicas
+/// acting as a client in at least one backend edge. Used to mark replicas
 /// as "active" even when their own client map is empty.
 fn initiators(
     services: &HashMap<String, ServiceInfo>,

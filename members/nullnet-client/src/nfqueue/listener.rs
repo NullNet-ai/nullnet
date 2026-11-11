@@ -31,8 +31,7 @@ const QUEUE_MAX_LEN: u32 = 4096;
 /// How long the handler waits for `backend_trigger` to return.
 ///
 /// Matches the server's per-hop `send_net_setup` ack budget (30s), which is the
-/// work this RPC is waiting on — a multi-hop chain returns only after its
-/// slowest edge. At the old 5s this expired on builds that were merely slow,
+/// work this RPC is waiting on. At the old 5s this expired on builds that were merely slow,
 /// and abandoning the RPC cancels the server's handler mid-build.
 const TRIGGER_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long the handler waits for the matching `VxlanSetup` to land before
@@ -56,7 +55,7 @@ pub type TriggerMap = HashMap<u16, Vec<TriggerOwner>>;
 
 /// The hot-swapped port → owners lookup, shared by the packet path and by the
 /// liveness reporters (which need the same container→service resolution when a
-/// chain goes quiet as when it opened).
+/// edge goes quiet as when it opened).
 pub type TriggerOwners = Arc<RwLock<TriggerMap>>;
 
 /// [`owner_for`] against the shared lookup, taking the lock.
@@ -98,7 +97,7 @@ pub struct ListenerCtx {
     pub triggers_state: Arc<TriggersState>,
     pub semaphore: Arc<Semaphore>,
     /// Open connections per `(container, trigger_port)`. Fed here on Accept and
-    /// drained by conntrack DESTROY — the chain lives while any remain.
+    /// drained by conntrack DESTROY — the edge lives while any remain.
     pub open_flows: TriggerOpenFlows,
 }
 
@@ -167,7 +166,7 @@ async fn handle_packet(mut msg: Message, ctx: ListenerCtx, verdict_tx: Sender<Me
 
     // Record on Accept only. A dropped packet's conntrack entry is never
     // confirmed, so no DESTROY follows it and recording one would leave a
-    // phantom open flow pinning the chain until the next reconcile. Same
+    // phantom open flow pinning the edge until the next reconcile. Same
     // add-only-on-Accept rule as the egress listener.
     if matches!(verdict, Verdict::Accept) {
         let transition = ctx
@@ -293,8 +292,8 @@ async fn decide_verdict(
 /// Mirrors the egress listener: the RPC failing says nothing about the
 /// `VxlanSetup`, which can land, install DNAT and `mark_active` while that RPC
 /// is still in flight. Clear the entry only while it is still `Pending` —
-/// dropping an `Active` one loses the record that the chain is live, and the
-/// server sends no second setup for a chain it already considers up.
+/// dropping an `Active` one loses the record that the edge is live, and the
+/// server sends no second setup for an edge it already considers up.
 fn after_failed_trigger(
     ctx: &ListenerCtx,
     container: &str,

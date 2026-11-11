@@ -1,5 +1,4 @@
 DROP TABLE routes;
-DROP TABLE service_dependencies;
 DROP TABLE service_triggers;
 DROP TABLE services;
 DROP TABLE stacks;
