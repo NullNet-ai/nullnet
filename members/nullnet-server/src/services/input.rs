@@ -1397,12 +1397,14 @@ proxy_dependencies = [["a", "b"], ["c", "d"]]
 [[services]]
 name = "a.svc"
 timeout = 0
+port = 8001
 proxy_dependencies = [["a.dep"]]
 "#;
         let stack_b = r#"
 [[services]]
 name = "b.svc"
 timeout = 30
+port = 8002
 "#;
         tokio::fs::write(dir.join("alpha.toml"), stack_a)
             .await
@@ -1591,6 +1593,7 @@ port = 8080
 [[services]]
 name = "grafana"
 timeout = 30
+port = 3000
 
 [[route]]
 host = "ops.example.com"
@@ -1617,6 +1620,7 @@ service = "grafana"
 [[services]]
 name = "grafana"
 timeout = 30
+port = 3000
 
 [[route]]
 host = "ops.example.com"
@@ -1655,6 +1659,7 @@ redirect_to = "https://new.example.com/"
 [[services]]
 name = "grafana"
 timeout = 30
+port = 3000
 
 [[route]]
 host = "ops.example.com"
@@ -1701,6 +1706,7 @@ service = "grafana"
 [[services]]
 name = "redis.internal"
 timeout = 0
+port = 6379
 protocol = "tcp"
 listen_port = 6379
 
@@ -1721,6 +1727,7 @@ service = "redis.internal"
 [[services]]
 name = "api"
 timeout = 0
+port = 3000
 
 [[route]]
 host = "ops.example.com"
@@ -1765,6 +1772,7 @@ strip_prefix = true
 [[services]]
 name = "api"
 timeout = 0
+port = 3000
 
 [[route]]
 host = "ops.example.com"
@@ -1784,6 +1792,7 @@ preserve_path = true
 [[services]]
 name = "api"
 timeout = 0
+port = 3000
 
 [[route]]
 host = "ops.example.com"

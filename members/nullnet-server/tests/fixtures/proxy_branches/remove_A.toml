@@ -2,3 +2,4 @@
 [[services]]
 name = "Z"
 timeout = 0
+port = 8026

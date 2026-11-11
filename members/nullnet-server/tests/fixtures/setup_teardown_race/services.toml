@@ -4,6 +4,7 @@
 [[services]]
 name = "entry"
 timeout = 1
+port = 8080
 proxy_dependencies = [["a", "b"]]
 
 [[services]]
