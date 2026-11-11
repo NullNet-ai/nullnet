@@ -1,4 +1,5 @@
 [[services]]
 name = "B"
 timeout = 0
+port = 8002
 proxy_dependencies = [["D"]]

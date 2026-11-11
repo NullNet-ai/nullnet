@@ -84,7 +84,13 @@ impl ServiceInfo {
         }
     }
 
-    pub(crate) fn add_replica(&mut self, ip: IpAddr, port: u16, docker_container: Option<String>) {
+    pub(crate) fn add_replica<P: Into<Option<u16>>>(
+        &mut self,
+        ip: IpAddr,
+        port: P,
+        docker_container: Option<String>,
+    ) {
+        let port = port.into();
         match self {
             ServiceInfo::Unregistered(unreg) => {
                 *self = ServiceInfo::Registered(RegisteredServiceInfo {
@@ -344,7 +350,7 @@ impl Resume {
 #[derive(Clone, Debug)]
 pub(crate) struct Replica {
     ip: IpAddr,
-    port: u16,
+    port: Option<u16>,
     docker_container: Option<String>,
     clients: Clients,
     /// Actual pause state, independent of permission to pause.
@@ -352,10 +358,10 @@ pub(crate) struct Replica {
 }
 
 impl Replica {
-    fn new(ip: IpAddr, port: u16, docker_container: Option<String>) -> Self {
+    fn new<P: Into<Option<u16>>>(ip: IpAddr, port: P, docker_container: Option<String>) -> Self {
         Self {
             ip,
-            port,
+            port: port.into(),
             docker_container,
             clients: Clients::default(),
             pause: Arc::default(),
@@ -366,7 +372,7 @@ impl Replica {
         self.ip
     }
 
-    pub(crate) fn port(&self) -> u16 {
+    pub(crate) fn port(&self) -> Option<u16> {
         self.port
     }
 
@@ -471,6 +477,12 @@ pub(crate) struct RegisteredServiceInfo {
 }
 
 impl RegisteredServiceInfo {
+    pub(crate) fn set_replica_port(&mut self, port: Option<u16>) {
+        for replica in &mut self.replicas {
+            replica.port = port;
+        }
+    }
+
     /// The branches of a proxy-triggered chain, rooted at this replica. Each
     /// entry of `proxy_deps` is one independent linear branch.
     ///
@@ -734,10 +746,11 @@ impl RegisteredServiceInfo {
             info.net_id(),
             info.time_ms(),
         );
+        let port = replica.port?;
         Some((
             Upstream {
                 ip: server_net.to_string(),
-                port: u32::from(replica.port),
+                port: u32::from(port),
                 pool_generation: info.pool_generation(),
             },
             client_net,
@@ -815,9 +828,10 @@ impl RegisteredServiceInfo {
     pub(crate) fn is_client_setup(&self, client: &Client) -> Option<Upstream> {
         for replica in &self.replicas {
             if let Some((server_net, pool_generation)) = replica.clients.is_client_setup(client) {
+                let port = replica.port?;
                 return Some(Upstream {
                     ip: server_net.to_string(),
-                    port: u32::from(replica.port),
+                    port: u32::from(port),
                     pool_generation,
                 });
             }

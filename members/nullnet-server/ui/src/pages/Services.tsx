@@ -119,7 +119,7 @@ export default function Services() {
                                       {svc.replicas.map((r, i) => (
                                         <tr key={i}>
                                           <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--cyan)' }}>{r.ip}</td>
-                                          <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--t1)' }}>:{r.port}</td>
+                                          <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--t1)' }}>{r.port == null ? '—' : `:${r.port}`}</td>
                                           <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--green)' }}>{r.active_sessions}</td>
                                           <td><span className={`badge ${r.suspended ? 'b-amber' : 'b-green'}`}>{r.suspended ? 'Paused' : 'Running'}</span></td>
                                           {r.docker_container && <td style={{ color: 'var(--t2)', fontSize: 10 }}>{r.docker_container}</td>}

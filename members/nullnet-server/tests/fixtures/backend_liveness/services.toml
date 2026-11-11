@@ -4,6 +4,7 @@
 [[services]]
 name = "A"
 timeout = 1
+port = 8001
 backends = ["B"]
 
 [[services]]
@@ -17,17 +18,20 @@ timeout = 1
 [[services]]
 name = "F"
 timeout = 1
+port = 8006
 backends = ["B"]
 
 [[services]]
 name = "G"
 timeout = 1
+port = 8007
 backends = ["Ghost"]
 # An independent initiator into the same dep, so B keeps a client entry after
 # A's hold is released.
 [[services]]
 name = "D"
 timeout = 1
+port = 8004
 backends = ["B"]
 
 [[services]]

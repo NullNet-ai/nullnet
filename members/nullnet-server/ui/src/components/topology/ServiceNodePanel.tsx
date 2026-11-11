@@ -92,7 +92,7 @@ export default function ServiceNodePanel({ node, service, onDepClick }: Props) {
               {service.replicas.map((r, i) => (
                 <tr key={i}>
                   <td style={{ fontSize: 11, padding: '5px 0', borderBottom: '1px solid rgba(255,255,255,.03)', color: 'var(--cyan)', fontFamily: "'JetBrains Mono',monospace", maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{r.ip}</td>
-                  <td style={{ fontSize: 11, padding: '5px 0', borderBottom: '1px solid rgba(255,255,255,.03)', color: 'var(--t1)', fontFamily: "'JetBrains Mono',monospace" }}>{r.port}</td>
+                  <td style={{ fontSize: 11, padding: '5px 0', borderBottom: '1px solid rgba(255,255,255,.03)', color: 'var(--t1)', fontFamily: "'JetBrains Mono',monospace" }}>{r.port ?? '—'}</td>
                   <td style={{ fontSize: 11, padding: '5px 0', borderBottom: '1px solid rgba(255,255,255,.03)', color: 'var(--green)' }}>{r.active_sessions}</td>
                 </tr>
               ))}

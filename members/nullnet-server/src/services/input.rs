@@ -16,12 +16,12 @@ use std::path::Path;
 /// Top-level state: stack name → per-stack service map.
 pub(crate) type StackMap = HashMap<String, HashMap<String, ServiceInfo>>;
 
-/// A service's host-match keys + backend port, used to join client observations
-/// to `(stack, service)`. Built from config; an observation may match several.
+/// A service's host-match keys and optional backend port, used to join client
+/// observations to `(stack, service)`. An observation may match several.
 #[derive(Clone, Debug)]
 pub(crate) struct MatchEntry {
     pub(crate) name: String,
-    pub(crate) port: u16,
+    pub(crate) port: Option<u16>,
     pub(crate) docker_container: Option<String>,
     pub(crate) process_path: Option<String>,
     pub(crate) host_ip: Option<Ipv4Addr>,
@@ -213,8 +213,7 @@ pub(crate) fn detect_route_conflicts(routes: &RouteMap) -> Vec<RouteConflict> {
     conflicts
 }
 
-/// Match entries for one file: only services with a match key are hostable, and
-/// such a service must declare a `port`.
+/// Match entries for one file: only services with a match key are hostable.
 fn build_match_entries(services: &[ServiceToml]) -> Result<Vec<MatchEntry>, Error> {
     let mut entries = Vec::new();
     for s in services {
@@ -227,19 +226,19 @@ fn build_match_entries(services: &[ServiceToml]) -> Result<Vec<MatchEntry>, Erro
             })
             .transpose()
             .handle_err(location!())?;
-        if s.docker_container.is_none() && s.process_path.is_none() {
-            continue;
-        }
-        let Some(port) = s.port else {
+        if s.timeout.is_some() && s.port.is_none() {
             return Err(format!(
-                "service '{}': has a host-match key (docker_container/process_path) but no 'port'",
+                "service '{}': proxy-reachable service requires a nonzero 'port'",
                 s.name
             ))
             .handle_err(location!());
-        };
+        }
+        if s.docker_container.is_none() && s.process_path.is_none() {
+            continue;
+        }
         entries.push(MatchEntry {
             name: s.name.clone(),
-            port,
+            port: s.port,
             docker_container: s.docker_container.clone(),
             process_path: s.process_path.clone(),
             host_ip,
@@ -452,10 +451,10 @@ impl ServicesToml {
         // Referenced peers and proxy dependencies are registrable placeholders.
         // Proxy branches live on their entry point; a backend trigger reaches
         // only its peer, without following that peer's dependencies.
-        let peer_ports: HashMap<String, u16> = self
+        let peer_ports: HashMap<String, Option<u16>> = self
             .services
             .iter()
-            .filter_map(|service| service.port.map(|port| (service.name.clone(), port)))
+            .map(|service| (service.name.clone(), service.port))
             .collect();
         let mut dep_names: std::collections::HashSet<String> = std::collections::HashSet::new();
         for s in &self.services {
@@ -492,6 +491,10 @@ impl ServicesToml {
         // proxy-reachable entry point, `None` (omitted) leaves it backend-only.
         // A declared service can thus host triggers without being reachable.
         for s in self.services {
+            if s.port == Some(0) {
+                return Err(format!("service '{}': 'port' must be nonzero", s.name))
+                    .handle_err(location!());
+            }
             if s.pausable && s.docker_container.is_none() {
                 return Err(format!(
                     "service '{}': pausable requires docker_container",
@@ -534,18 +537,32 @@ impl ServicesToml {
                 .handle_err(location!());
             }
             let mut triggers = HashMap::new();
+            let mut backend_names = std::collections::HashSet::new();
             for peer in s.backends {
-                let port = peer_ports
-                    .get(&peer)
-                    .copied()
-                    .filter(|port| *port != 0)
-                    .ok_or_else(|| {
-                        format!(
-                            "service '{}': backend peer '{}' must declare a nonzero port",
-                            s.name, peer
-                        )
-                    })
-                    .handle_err(location!())?;
+                if !backend_names.insert(peer.clone()) {
+                    return Err(format!(
+                        "service '{}': backend peer '{}' is declared more than once",
+                        s.name, peer
+                    ))
+                    .handle_err(location!());
+                }
+                let Some(port) = peer_ports.get(&peer).copied() else {
+                    return Err(format!(
+                        "service '{}': backend peer '{}' must be declared",
+                        s.name, peer
+                    ))
+                    .handle_err(location!());
+                };
+                let Some(port) = port else {
+                    continue;
+                };
+                if port == 0 {
+                    return Err(format!(
+                        "service '{}': backend peer '{}' must declare a nonzero port",
+                        s.name, peer
+                    ))
+                    .handle_err(location!());
+                }
                 if let Some(previous) = triggers.insert(port, peer.clone()) {
                     return Err(format!(
                         "service '{}': backend peers '{}' and '{}' both use port {port}",
@@ -1041,10 +1058,11 @@ pub(crate) struct ServiceToml {
     /// Allow idle Docker replicas to be paused. Opt-in only.
     #[serde(default)]
     pausable: bool,
-    /// Backend port the overlay/proxy connects to on this service's replicas.
-    /// Required when any host-match key is set. Distinct from `listen_port`
-    /// (the proxy's external tcp/udp front port).
-    port: Option<u16>,
+    /// Backend port the proxy connects to on this service's replicas. Required
+    /// for proxy reachability; optional otherwise. A portless `backends` target
+    /// remains configured but has no runtime trigger. Distinct from
+    /// `listen_port` (the proxy's external tcp/udp front port).
+    pub(crate) port: Option<u16>,
     /// Proxy-reachability for this service. Present → reachable entry point
     /// with this per-client timeout in seconds (0 disables the timeout).
     /// Omitted → not proxy-reachable (backend-only); the service is still
@@ -1090,27 +1108,27 @@ pub(crate) fn observation_backends(services: &mut [ServiceToml]) -> Result<(), V
     }
     for source in services.iter() {
         let mut ports = HashMap::new();
-        for peer in services.iter().filter(|peer| peer.name != source.name) {
-            match peer.port.filter(|port| *port != 0) {
-                None => errors.push(format!(
-                    "{} → {}: destination must declare a nonzero port",
-                    source.name, peer.name
-                )),
-                Some(port) => {
-                    if let Some(previous) = ports.insert(port, &peer.name) {
-                        errors.push(format!(
-                            "{}: {} and {} both use backend port {port}",
-                            source.name, previous, peer.name
-                        ));
-                    }
-                }
+        for peer in services
+            .iter()
+            .filter(|peer| peer.name != source.name)
+            .filter_map(|peer| peer.port.map(|port| (peer, port)))
+        {
+            if let Some(previous) = ports.insert(peer.1, &peer.0.name) {
+                errors.push(format!(
+                    "{}: {} and {} both use backend port {}",
+                    source.name, previous, peer.0.name, peer.1
+                ));
             }
         }
     }
     if !errors.is_empty() {
         return Err(errors);
     }
-    let names: Vec<_> = services.iter().map(|s| s.name.clone()).collect();
+    let names: Vec<_> = services
+        .iter()
+        .filter(|s| s.port.is_some())
+        .map(|s| s.name.clone())
+        .collect();
     for service in services {
         service.backends = names
             .iter()
@@ -1175,6 +1193,7 @@ mod tests {
 backends = ["ts.color.com"]
 name = "color.com"
 timeout = 0
+port = 3001
 proxy_dependencies = [["pre.fs.color.com", "fs.color.com"]]
 
 [[services]]
@@ -1184,6 +1203,7 @@ port = 5555
 [[services]]
 name = "fs.color.com"
 timeout = 30
+port = 8080
 "#;
         let parsed: ServicesToml = toml::from_str(toml_str).unwrap();
         let map = parsed.services_map().unwrap();
@@ -1210,7 +1230,7 @@ timeout = 30
         for suffix in [
             "backends = [' ']",
             "backends = ['a']",
-            "backends = ['a']\n[[services]]\nname = 'a'",
+            "backends = ['a', 'a']\n[[services]]\nname = 'a'",
             "backends = ['a']\n[[services]]\nname = 'a'\nport = 0",
             "backends = ['a', 'b']\n[[services]]\nname = 'a'\nport = 5555\n[[services]]\nname = 'b'\nport = 5555",
         ] {
@@ -1227,6 +1247,88 @@ timeout = 30
         let services = parsed.services_map().unwrap();
         assert_eq!(services["source"].triggers()[&5555], "a");
         assert_eq!(services["source"].triggers()[&6666], "b");
+
+        let parsed: ServicesToml = toml::from_str(&format!(
+            "{prefix}backends = ['a']\n[[services]]\nname = 'a'"
+        ))
+        .unwrap();
+        let services = parsed.services_map().unwrap();
+        assert!(services["source"].triggers().is_empty());
+    }
+
+    #[test]
+    fn port_is_optional_except_for_proxy_reachable_services() {
+        let (_, matches, _) = validate_stack(
+            stack_services(
+                r#"
+[[services]]
+name = "source"
+docker_container = "source"
+proxy_dependencies = [["dep"]]
+
+[[services]]
+name = "dep"
+docker_container = "dep"
+"#,
+            )
+            .unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(matches.len(), 2);
+        assert!(matches.iter().all(|entry| entry.port.is_none()));
+
+        let error = validate_stack(
+            stack_services(
+                r#"
+[[services]]
+name = "web"
+docker_container = "web"
+timeout = 0
+"#,
+            )
+            .unwrap(),
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_str().contains("proxy-reachable service requires"));
+
+        let error = validate_stack(
+            stack_services(
+                r#"
+[[services]]
+name = "web"
+timeout = 0
+"#,
+            )
+            .unwrap(),
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_str().contains("proxy-reachable service requires"));
+    }
+
+    #[test]
+    fn observation_skips_portless_destinations_but_keeps_them_as_sources() {
+        let mut services = stack_services(
+            r#"
+[[services]]
+name = "portless-a"
+
+[[services]]
+name = "portless-b"
+
+[[services]]
+name = "target"
+port = 8080
+"#,
+        )
+        .unwrap();
+        observation_backends(&mut services).unwrap();
+
+        assert_eq!(services[0].backends, ["target"]);
+        assert_eq!(services[1].backends, ["target"]);
+        assert!(services[2].backends.is_empty());
     }
 
     #[test]
@@ -1295,12 +1397,14 @@ proxy_dependencies = [["a", "b"], ["c", "d"]]
 [[services]]
 name = "a.svc"
 timeout = 0
+port = 8001
 proxy_dependencies = [["a.dep"]]
 "#;
         let stack_b = r#"
 [[services]]
 name = "b.svc"
 timeout = 30
+port = 8002
 "#;
         tokio::fs::write(dir.join("alpha.toml"), stack_a)
             .await
@@ -1489,6 +1593,7 @@ port = 8080
 [[services]]
 name = "grafana"
 timeout = 30
+port = 3000
 
 [[route]]
 host = "ops.example.com"
@@ -1515,6 +1620,7 @@ service = "grafana"
 [[services]]
 name = "grafana"
 timeout = 30
+port = 3000
 
 [[route]]
 host = "ops.example.com"
@@ -1553,6 +1659,7 @@ redirect_to = "https://new.example.com/"
 [[services]]
 name = "grafana"
 timeout = 30
+port = 3000
 
 [[route]]
 host = "ops.example.com"
@@ -1599,6 +1706,7 @@ service = "grafana"
 [[services]]
 name = "redis.internal"
 timeout = 0
+port = 6379
 protocol = "tcp"
 listen_port = 6379
 
@@ -1619,6 +1727,7 @@ service = "redis.internal"
 [[services]]
 name = "api"
 timeout = 0
+port = 3000
 
 [[route]]
 host = "ops.example.com"
@@ -1663,6 +1772,7 @@ strip_prefix = true
 [[services]]
 name = "api"
 timeout = 0
+port = 3000
 
 [[route]]
 host = "ops.example.com"
@@ -1682,6 +1792,7 @@ preserve_path = true
 [[services]]
 name = "api"
 timeout = 0
+port = 3000
 
 [[route]]
 host = "ops.example.com"

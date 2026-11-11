@@ -185,6 +185,9 @@ pub(super) async fn apply_loaded(
             let stack_map = services_mut.get_mut(stack).unwrap();
             let mut changes = Vec::new();
             for entry in entries {
+                if let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&entry.name) {
+                    reg.set_replica_port(entry.port);
+                }
                 if let Some(host_ip) = entry.host_ip
                     && let Some(ServiceInfo::Registered(reg)) = stack_map.get(&entry.name)
                 {

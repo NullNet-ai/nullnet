@@ -116,7 +116,7 @@ pub(crate) fn detect_config_changes(
 pub(crate) fn detect_services_list_changes(
     current: &HashMap<String, ServiceInfo>,
     sender_ip: IpAddr,
-    service_list: &[(String, u16, Option<String>)],
+    service_list: &[(String, Option<u16>, Option<String>)],
 ) -> Vec<ServiceChange> {
     let mut changes = Vec::new();
 

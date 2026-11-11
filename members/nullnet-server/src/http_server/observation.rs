@@ -87,17 +87,31 @@ fn links(services: &[ServiceToml]) -> Vec<Link> {
 
 fn suggested(mut services: Vec<ServiceToml>, counts: &[ObservedEdge]) -> Vec<ServiceToml> {
     let names: HashSet<_> = services.iter().map(|s| s.name.clone()).collect();
+    let observable: HashSet<_> = services
+        .iter()
+        .filter(|s| s.port.is_some())
+        .map(|s| s.name.clone())
+        .collect();
     for service in &mut services {
-        service.backends = counts
+        let mut backends: Vec<_> = service
+            .backends
             .iter()
-            .filter(|edge| {
-                edge.source == service.name
-                    && edge.destination != service.name
-                    && names.contains(&edge.destination)
-                    && edge.count > 0
-            })
-            .map(|edge| edge.destination.clone())
+            .filter(|peer| !observable.contains(*peer))
+            .cloned()
             .collect();
+        backends.extend(
+            counts
+                .iter()
+                .filter(|edge| {
+                    edge.source == service.name
+                        && edge.destination != service.name
+                        && names.contains(&edge.destination)
+                        && observable.contains(&edge.destination)
+                        && edge.count > 0
+                })
+                .map(|edge| edge.destination.clone()),
+        );
+        service.backends = backends;
     }
     services
 }
@@ -152,7 +166,15 @@ pub(super) async fn list_handler(
     require_scope(&ctx, Scope::SessionsRead)?;
     let _guard = state.config_lock.lock().await;
     let mut services = saved_services(&state, &stack).await?;
-    let trigger_count = services.len() * services.len().saturating_sub(1);
+    let trigger_count = services
+        .iter()
+        .map(|source| {
+            services
+                .iter()
+                .filter(|peer| peer.name != source.name && peer.port.is_some())
+                .count()
+        })
+        .sum();
     let conflicts = observation_backends(&mut services)
         .err()
         .unwrap_or_default();
@@ -300,6 +322,34 @@ mod tests {
             role: Role::Admin,
             scopes: vec![],
         })
+    }
+
+    #[test]
+    fn suggestions_preserve_unobservable_portless_backends() {
+        let services = stack_services(
+            r#"
+[[services]]
+name = "source"
+backends = ["portless"]
+
+[[services]]
+name = "portless"
+
+[[services]]
+name = "observed"
+port = 8080
+"#,
+        )
+        .unwrap();
+        let next = suggested(
+            services,
+            &[ObservedEdge {
+                source: "source".into(),
+                destination: "observed".into(),
+                count: 1,
+            }],
+        );
+        assert_eq!(next[0].backends, ["portless", "observed"]);
     }
 
     async fn state() -> AppState {

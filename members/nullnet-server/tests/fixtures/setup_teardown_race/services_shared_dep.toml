@@ -4,6 +4,7 @@
 [[services]]
 name = "entry"
 timeout = 0
+port = 8080
 proxy_dependencies = [["a", "b", "c"]]
 
 # A second, independent consumer of `b`. Its chain coming up is what shifts
@@ -11,6 +12,7 @@ proxy_dependencies = [["a", "b", "c"]]
 [[services]]
 name = "d"
 timeout = 0
+port = 8004
 proxy_dependencies = [["b"]]
 
 [[services]]
