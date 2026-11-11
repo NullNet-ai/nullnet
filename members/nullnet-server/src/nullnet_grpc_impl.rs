@@ -88,6 +88,9 @@ pub(crate) struct NullnetGrpcImpl {
 /// keys the resulting `Client` entry, so one key ⇔ one proxy session.
 type ProxyKey = (String, String, IpAddr);
 
+type ReportedService = (String, Option<u16>, Option<String>);
+type ReportedServicesByStack = HashMap<String, Vec<ReportedService>>;
+
 struct DedicatedAdmission {
     counts: Arc<StdMutex<HashMap<(String, String), usize>>>,
     key: (String, String),
@@ -267,10 +270,9 @@ fn build_http_route_bundle(stacks: &StackMap, routes: &RouteMap) -> HttpRouteBun
 /// skipped: its trigger can never fire (the NFQUEUE path passes host traffic
 /// straight through), and shipping it would claim the port with an owner that
 /// matches every container instead of none.
-#[allow(clippy::type_complexity)]
 pub(crate) fn build_service_triggers(
     services: &StackMap,
-    declared: &HashMap<String, Vec<(String, u16, Option<String>)>>,
+    declared: &ReportedServicesByStack,
 ) -> Vec<ServiceTrigger> {
     let mut containers_by_service: HashMap<(&str, &str), Vec<&str>> = HashMap::new();
     for (stack, list) in declared {
@@ -974,8 +976,7 @@ impl NullnetGrpcImpl {
         // Join the sender's raw observations against the config match index. A
         // container/listener may match several services across stacks; every
         // match registers a replica.
-        let mut service_list_by_stack: HashMap<String, Vec<(String, u16, Option<String>)>> =
-            HashMap::new();
+        let mut service_list_by_stack = ReportedServicesByStack::new();
         let index = self.match_index.read().await;
         for (stack, entries) in index.iter() {
             for entry in entries {
@@ -1945,21 +1946,19 @@ impl NullnetGrpcImpl {
     }
 
     #[cfg(test)]
-    #[allow(clippy::type_complexity)]
     pub(crate) async fn apply_services_list_by_stack(
         &self,
         sender_ip: IpAddr,
-        service_list_by_stack: &HashMap<String, Vec<(String, u16, Option<String>)>>,
+        service_list_by_stack: &ReportedServicesByStack,
     ) -> Result<(), Error> {
         self.apply_services_report(sender_ip, service_list_by_stack, &HashSet::new())
             .await
     }
 
-    #[allow(clippy::type_complexity)]
     async fn apply_services_report(
         &self,
         sender_ip: IpAddr,
-        service_list_by_stack: &HashMap<String, Vec<(String, u16, Option<String>)>>,
+        service_list_by_stack: &ReportedServicesByStack,
         paused: &HashSet<String>,
     ) -> Result<(), Error> {
         let mut services_mut = self.services.write().await;
@@ -1967,7 +1966,7 @@ impl NullnetGrpcImpl {
         // For every known stack, detect what this sender no longer hosts.
         // Stacks the sender dropped entirely show up with an empty list and
         // get their replicas torn down.
-        let empty: Vec<(String, u16, Option<String>)> = Vec::new();
+        let empty = Vec::<ReportedService>::new();
         let stack_names: Vec<String> = services_mut.keys().cloned().collect();
         for stack in &stack_names {
             let stack_list = service_list_by_stack.get(stack).unwrap_or(&empty);
@@ -2852,7 +2851,13 @@ impl NullnetGrpcImpl {
         sender_ip: IpAddr,
         service_list: &[(String, u16, Option<String>)],
     ) -> Result<(), Error> {
-        let by_stack = HashMap::from([("default".to_string(), service_list.to_vec())]);
+        let by_stack = HashMap::from([(
+            "default".to_string(),
+            service_list
+                .iter()
+                .map(|(name, port, docker)| (name.clone(), Some(*port), docker.clone()))
+                .collect(),
+        )]);
         self.apply_services_list_by_stack(sender_ip, &by_stack)
             .await
     }

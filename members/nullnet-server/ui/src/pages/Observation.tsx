@@ -81,7 +81,7 @@ function ObservationPage({ stack }: { stack: string }) {
                 if (active) void action(`${active.id}/stop`);
                 else { setActionError(null); setConfirmStart(true); }
               }} />
-            Allow every service to trigger every other service ({current.trigger_count} directed backend links)
+            Allow every service to trigger every port-configured service ({current.trigger_count} directed backend links)
           </label>
           <div style={{ color: 'var(--t2)', fontSize: 12, marginTop: 12 }}>
             {latest ? `Last activated ${date(latest.started_at)}${latest.ended_at == null ? ' · active' : ` · stopped ${date(latest.ended_at)}`}` : 'Never activated'}
@@ -110,7 +110,7 @@ function ObservationPage({ stack }: { stack: string }) {
       </>}
     </div>
     <Modal open={confirmStart} onClose={() => { if (!busy) setConfirmStart(false); }} title="Start observation?">
-      <p>Enable {current?.trigger_count} directed backend triggers in <strong>{stack}</strong>?</p>
+      <p>Enable {current?.trigger_count} directed backend triggers to port-configured services in <strong>{stack}</strong>?</p>
       <p>The saved configuration will be read-only until observation stops. Existing proxy dependencies stay unchanged.</p>
       {actionError && <div className="modal-err" role="alert">{actionError}</div>}
       <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>

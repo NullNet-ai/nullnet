@@ -11,7 +11,7 @@ use std::collections::HashMap;
 #[derive(Serialize)]
 struct ReplicaJson {
     ip: String,
-    port: u16,
+    port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     docker_container: Option<String>,
     active_sessions: usize,

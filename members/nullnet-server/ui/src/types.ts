@@ -4,7 +4,7 @@ export interface HealthJson {
 
 export interface ReplicaJson {
   ip: string;
-  port: number;
+  port: number | null;
   docker_container?: string;
   active_sessions: number;
   suspended: boolean;

@@ -280,10 +280,12 @@ backward-compatible stages.
   ] } }
   ```
 
-- a service is **hostable** when it declares a match key plus a `port` (the backend port replicas
-  are reached on). Clients hold no service file: each reports its raw local observations and the
-  server matches them against these keys. A container/process may match several services across
-  stacks; every match registers a replica:
+- a service is **hostable** when it declares a match key. `port` is required when `timeout` makes
+  the service proxy-reachable; otherwise it is optional. A portless service can participate in
+  proxy dependency chains and initiate backend/egress traffic, but a portless entry in `backends`
+  has no runtime trigger and cannot be reached that way. Clients hold no service file: each reports
+  its raw local observations and the server matches them against these keys. A container/process
+  may match several services across stacks; every match registers a replica:
   - `docker_container` — the Swarm service label (`com.docker.swarm.service.name`) or, standalone,
     the container name; matched against a running container
   - `process_path` — a listening process's exe path (`/proc/<pid>/exe`); matched against a host
@@ -312,9 +314,10 @@ backward-compatible stages.
 - `proxy_dependencies` is a list of independent dep chains walked when the service is reached via a
   `Proxy` RPC from nullnet-proxy; each inner array is one linear branch and all branches are brought
   up in parallel
-- `backends = ["peer-a", "peer-b"]` lists services this service may trigger. Each peer must declare
-  a nonzero `port`; that port identifies its trigger. One source cannot target different peers on
-  the same port. A trigger opens only the direct connection, without following the peer's dependencies.
+- `backends = ["peer-a", "peer-b"]` lists services this service may trigger. A peer with a nonzero
+  `port` uses that port as its trigger; a declared portless peer remains saved but installs no
+  trigger. One source cannot target different port-configured peers on the same port. A trigger
+  opens only the direct connection, without following the peer's dependencies.
 - service names must be globally unique across every stack, and dependency chains stay intra-stack.
 - `protocol` selects how a proxy-reachable service is exposed: `http` (the default — routed by
   `Host` header on the shared 80/443 listeners) or `tcp`/`udp`, which each require `listen_port` —
@@ -468,9 +471,10 @@ client's cleanup need a one-time restart (Swarm: `docker service update --force 
 ### Observation mode
 
 Open **Observation** below Config and confirm the checkbox to enable all directed
-backend links within the selected stack. Activation lists any port conflicts;
-every destination must have a declared nonzero port. Proxy dependencies stay
-unchanged. The saved configuration is read-only until observation stops.
+backend links to port-configured services within the selected stack. Portless services still act
+as sources, but are skipped as destinations; saved portless backend links are preserved because
+they cannot be observed. Activation lists any port conflicts. Proxy dependencies stay unchanged.
+The saved configuration is read-only until observation stops.
 
 The service-only matrix counts backend sessions since activation (including ones
 already open). Gray borders mark saved backend links. Counts persist across

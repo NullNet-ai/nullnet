@@ -1,12 +1,7 @@
 # Static audit next steps
 
-Status: static findings recorded on 2026-10-28. No fixes have been implemented or
-end-to-end tested. Reproduce each failure before changing code, then follow the
-four PR gates in `AGENTS.md`.
-
-The audit found no second instance of the broad `10.0.0.0/8` container route
-fixed in PR #217. Startup and teardown link selectors also appeared scoped to
-Nullnet-owned devices. The following items remain to investigate.
+No fixes for the findings below have been implemented or end-to-end tested.
+Reproduce each failure before changing code, then follow the four PR gates in `AGENTS.md`.
 
 ## 1. Docker discovery failures can withdraw every service
 
@@ -118,92 +113,116 @@ Relevant code:
 
 - `members/nullnet-client/src/main.rs:270-281,385-506`
 
-## 7. Recycled overlay addresses can reuse stale proxy sockets
+## 7. A stale control-channel close can remove its replacement
 
-Live evidence on the LJP deployment on 2026-11-04 confirms that intermittent
-Portainer hangs come from a lifecycle mismatch between ingress edges and
-Pingora's upstream connection pool. During an observed hang, public TCP and TLS
-completed but no HTTP bytes arrived for 15 seconds. The selected proxy socket
-to the currently assigned `10.0.3.49:9000` had request bytes stuck in `Send-Q`
-and retransmitting, with no matching Portainer-side TCP state. A fresh direct
-connection through the same overlay returned HTTP 200 in 1.4 ms. The session
-history showed addresses cycling through `10.0.3.41`, `.49`, `.57`, and `.65`,
-while the proxy retained sockets to every generation. Abandoned HTTP/2 requests
-also produced secondary `unexpected frame type` error-response failures.
+`add_client` replaces the `clients` entry for an IP when a new control stream
+arrives. The task serving the old stream later handles its close by removing
+that IP unconditionally and applying node-disconnect changes. If old and new
+streams overlap, the stale close can therefore remove the replacement channel,
+withdraw its replicas, and tear down its edges. The replacement stream remains
+open but is no longer addressable through `clients`.
 
-Portainer is the visible LJP case because it is currently the only HTTP service
-with ingress history: 24 Portainer sessions versus 16/10 raw-TCP node1/node2
-SSH sessions, and no ingress sessions yet for the configured LJP application
-services. SSH does not use Pingora's HTTP pool. Portainer also opens several
-parallel asset/API requests and then goes idle; in about two hours its five
-overlay addresses had already been recycled repeatedly (`.41`, `.49`, and `.57`
-six times each), while Portainer accounted for 32 of the proxy's 36 established
-upstream sockets.
-
-Instaprotek production is not immune. At the same observation time it returned
-HTTP 200, but its five-day-old proxy retained 28 Portainer sockets across many
-retired overlay addresses and 2,017 established proxy sockets overall. Its
-Portainer history also reuses addresses, including the current `.105` from a
-separate session two days earlier, and its journal contains the same HTTP/2
-error-response symptom. The larger live edge/net-id population (47 active
-ingress edges) and much higher traffic make a particular address collision less
-frequent and consume or evict stale pooled connections more aggressively, so
-the defect is easier to miss and self-recovers more often; it is not specific to
-LJP.
-
-The source explains how this state persists. Every request obtains the current
-overlay address from the `Proxy` RPC and constructs a Pingora `HttpPeer`.
-Pingora 0.9 keys connection reuse by the peer hash, which includes the upstream
-address, while `PeerOptions::idle_timeout` defaults to `None`. Its idle pool
-waits for peer closure when no timeout is configured. Nullnet reports the HTTP
-request closed and starts the server-side edge idle grace, but the pooled
-upstream socket is not part of that open-connection count. Edge teardown removes
-the overlay without notifying the proxy pool or closing its sockets. When the
-finite net-id pool later assigns the same overlay address to a new edge, its
-peer hash matches the old generation and the old TCP socket becomes eligible
-for reuse even though the new backend has no connection state for it.
-
-The failure was reproduced through the real 103/104 Nullnet path. After net 101
-was reaped and its backend TCP state removed, the unchanged proxy reused source
-port 51412 and sent HTTP data without a SYN. The same 174 bytes retransmitted
-for 10 seconds and the request timed out. With the correction, the same recycled
-`10.0.3.41:80` address opened source port 50808 with a new SYN and returned HTTP
-200 in 16.5 ms, while the stale socket was still present in Pingora's pool.
-
-The correction carries a random edge-generation token in `Upstream` and assigns
-it to `HttpPeer::group_key`, which Pingora already includes in its connection
-reuse hash. Sticky requests keep one token, and clients intentionally sharing a
-physical `max_networks` edge inherit its token. A rebuilt edge gets a new token,
-so it cannot select sockets from an earlier lifetime. This preserves pooling
-within a live edge, avoids replaying non-idempotent requests, and requires no
-client, kernel, retry, or configuration change. Pingora's pool remains capped at
-128 entries per HTTP/HTTPS proxy service; teardown-driven purging can remain a
-future resource-cleanup optimization because Pingora 0.9 has no public purge by
-peer key.
-
-Lab verification also held a 12-second response across a 3-second idle timeout,
-then observed normal reap after close. Warm requests reused one TCP socket. At
-concurrency 20, both builds served 200/200 requests: baseline p95 14.86 ms and
-candidate p95 13.28 ms.
+Reproduce with two control streams from one source IP: register the replacement
+before closing the original, then confirm whether the replacement remains in
+`clients` and its replicas and edges remain live. Disconnect handling should
+only mutate node state when the closing stream is still the current stream.
 
 Relevant code:
 
-- `members/nullnet-proxy/src/main.rs:328-397,428-443`
-- `members/nullnet-proxy/src/nullnet_proxy.rs:33-70`
-- `members/nullnet-grpc-lib/proto/nullnet_grpc.proto:325-328`
-- `members/nullnet-server/src/nullnet_grpc_impl.rs:489-587,643-675`
-- `members/nullnet-server/src/services/service_info.rs:842-885`
-- Pingora 0.9 `upstreams/peer.rs`, `connectors/http/v1.rs`, and
-  `pingora-pool/src/connection.rs`
+- `members/nullnet-server/src/orchestrator.rs:203-274`
+
+## 8. Partial XFRM installation can leave unowned kernel state
+
+XFRM setup submits inbound/outbound states and the outbound policy as a batch.
+If a later request fails after an earlier one succeeded, the error path removes
+the in-memory owner before the ordinary endpoint cleanup calls `remove`. The
+partial kernel objects are then no longer discoverable through `EDGES`, so a
+rollback teardown can acknowledge without deleting them. Reuse may subsequently
+hit stale state or policy created with an earlier key.
+
+Fault-inject failure on each request in the XFRM batch and inspect state and
+policy after setup rollback and net-id reuse. Cleanup must retain enough exact
+identity to remove every successfully applied object before ownership is
+dropped.
+
+Relevant code:
+
+- `members/nullnet-client/src/commands/native_xfrm.rs:404-524`
+- `members/nullnet-client/src/commands/vxlan.rs:364-371,649-682`
+
+## 9. Reported edge failure does not invalidate the active edge
+
+Neighbor failure diagnostics emit an event and snapshots, but do not change
+client trigger state or server topology. Backend and egress listeners continue
+accepting packets immediately for an `Active` entry, and ingress can continue
+reusing the server's live edge. A failed edge can therefore remain selected
+after Nullnet has reported it unreachable.
+
+Reproduce by breaking an acknowledged edge until it reaches `NUD_FAILED`, then
+issue new backend, egress, and ingress traffic without restarting either client.
+Confirm how long each path continues reusing the edge. Decide recovery semantics
+only from that evidence; automatic teardown needs debouncing and must not turn a
+transient neighbor transition into destructive flapping.
+
+Relevant code:
+
+- `members/nullnet-client/src/edge_diagnostics.rs:106-230`
+- `members/nullnet-client/src/nfqueue/listener.rs:184-214`
+- `members/nullnet-client/src/nfqueue/egress_listener.rs:253-285`
+- `members/nullnet-server/src/nullnet_grpc_impl.rs:3087-3144`
+
+## 10. Edge diagnostics do not cover every VXLAN path
+
+Dedicated container endpoints call `add_observed_overlay`, which registers the
+expected peer addresses for neighbor monitoring. Shared policy-group endpoints
+call only `add_overlay`, and egress-steer endpoints deliberately remain in the
+host root namespace with no container observer. Failures on those paths can be
+invisible to `edge_data_plane_status` even when they produce the same traffic
+symptom.
+
+Reproduce a remote blackhole for a policy-group edge and for a cross-host egress
+edge, and confirm which kernel signals remain available without active probes.
+Any added observation must stay bounded and avoid per-packet or per-flow work.
+
+Relevant code:
+
+- `members/nullnet-client/src/commands/vxlan.rs:373-383`
+- `members/nullnet-client/src/commands/policy.rs:873-875`
+- `members/nullnet-client/src/control_channel.rs:584-592`
+- `members/nullnet-client/src/nfqueue/cache.rs:182-228`
+
+## 11. A connected client does not retry failed teardown cleanup
+
+VXLAN teardown consumes the recorded egress, DNAT, and host-mapping ownership
+before running their removals. If cleanup fails, the client correctly withholds
+the acknowledgement and the server keeps the net id reserved, but neither side
+retries while the control channel remains connected. This prevents unsafe reuse
+but can leave stale rules and resources indefinitely and eventually exhaust the
+net-id pool.
+
+Fault-inject one failure in each local cleanup operation, restore the command or
+kernel path, and confirm whether cleanup ever completes without restarting the
+client. A retry must preserve exact ownership until successful cleanup and stay
+outside topology locks.
+
+Relevant code:
+
+- `members/nullnet-client/src/control_channel.rs:865-990`
+- `members/nullnet-client/src/egress_state.rs:25-34`
+- `members/nullnet-client/src/triggers.rs:203-226`
+- `members/nullnet-server/src/orchestrator.rs:1230-1368`
 
 ## Recommended order
 
-1. Merge generation-safe proxy pooling; consider teardown-driven stale-socket retirement later.
-2. Docker discovery failure handling and declaration-worker lifecycle.
-3. Cross-host multi-network egress source selection.
-4. Host-wide conntrack cleanup scoping.
-5. eBPF IPv4 parsing and fragment policy.
-6. Transactional/recoverable firewall map updates and capacity validation.
+1. Make control-channel replacement and stale disconnect handling generation-safe.
+2. Prove and close partial XFRM installation cleanup.
+3. Docker discovery failure handling and declaration-worker lifecycle.
+4. Transactional/recoverable firewall map updates and capacity validation.
+5. Cross-host multi-network egress source selection.
+6. Define recovery behavior and coverage for reported data-plane failures.
+7. Make connected teardown failures retryable without losing ownership.
+8. Host-wide conntrack cleanup scoping.
+9. eBPF IPv4 parsing and fragment policy.
 
 ## Ruled out during this audit
 

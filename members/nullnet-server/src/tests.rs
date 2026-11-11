@@ -140,6 +140,54 @@ async fn setup_proxy_chain(
         .await;
 }
 
+#[tokio::test]
+async fn portless_proxy_dependency_builds_an_edge() {
+    let (inner, _, _) = crate::services::input::validate_stack_toml(
+        r#"
+[[services]]
+name = "entry"
+port = 8080
+timeout = 0
+proxy_dependencies = [["dep"]]
+
+[[services]]
+name = "dep"
+"#,
+    )
+    .unwrap();
+    let server = NullnetGrpcImpl::new_for_test(into_stack_map(inner));
+    let entry_ip = ip(1, 1, 1, 1);
+    let dep_ip = ip(2, 2, 2, 2);
+    let proxy_ip = ip(3, 3, 3, 3);
+    {
+        let mut services = server.services().write().await;
+        let stack = stack_view_mut(&mut services);
+        stack
+            .get_mut("entry")
+            .unwrap()
+            .add_replica(entry_ip, 8080, None);
+        stack
+            .get_mut("dep")
+            .unwrap()
+            .add_replica(dep_ip, None::<u16>, None);
+    }
+    for host in [entry_ip, dep_ip, proxy_ip] {
+        server.orchestrator().register_fake_client(host).await;
+    }
+
+    server
+        .handle_proxy_request("entry", proxy_ip, "10.0.0.1")
+        .await
+        .unwrap();
+
+    let services = server.services().read().await;
+    let ServiceInfo::Registered(dep) = &stack_view(&services)["dep"] else {
+        panic!("dependency did not register");
+    };
+    assert_eq!(dep.replicas()[0].port(), None);
+    assert_eq!(dep.replicas()[0].clients().len(), 1);
+}
+
 /// Trigger the backend chain at `port` from `initiator_ip` (acting as the
 /// announcing host). Mirrors the gRPC `BackendTrigger` entry point.
 async fn trigger_backend_chain(
@@ -3076,12 +3124,12 @@ fn suspend_test_server() -> NullnetGrpcImpl {
 
 fn declared_list(
     entries: Vec<(&str, u16, Option<&str>)>,
-) -> HashMap<String, Vec<(String, u16, Option<String>)>> {
+) -> HashMap<String, Vec<(String, Option<u16>, Option<String>)>> {
     HashMap::from([(
         TEST_STACK.to_string(),
         entries
             .into_iter()
-            .map(|(n, p, d)| (n.to_string(), p, d.map(ToString::to_string)))
+            .map(|(n, p, d)| (n.to_string(), Some(p), d.map(ToString::to_string)))
             .collect(),
     )])
 }
@@ -3447,12 +3495,12 @@ const TRIGGER_SCOPING: &str = "trigger_scoping";
 
 fn declared_by_stack(
     entries: Vec<(&str, u16, Option<&str>)>,
-) -> HashMap<String, Vec<(String, u16, Option<String>)>> {
+) -> HashMap<String, Vec<(String, Option<u16>, Option<String>)>> {
     HashMap::from([(
         TEST_STACK.to_string(),
         entries
             .into_iter()
-            .map(|(n, p, d)| (n.to_string(), p, d.map(ToString::to_string)))
+            .map(|(n, p, d)| (n.to_string(), Some(p), d.map(ToString::to_string)))
             .collect(),
     )])
 }

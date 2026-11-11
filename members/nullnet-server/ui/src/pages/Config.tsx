@@ -608,7 +608,9 @@ export default function Config() {
     setForm(f => ({ ...f, backends: f.backends.filter((_, idx) => idx !== i) }));
   }
 
-  const formValid = form.name.trim() !== '' && form.port.trim() !== '' && form.matchValue.trim() !== '';
+  const formValid = form.name.trim() !== ''
+    && (!form.reachable || form.port.trim() !== '')
+    && form.matchValue.trim() !== '';
 
   const createErrorLine = createError && (
     <span className="cfg-err">
@@ -823,13 +825,14 @@ export default function Config() {
             <small>Register only on this node's IPv4 address.</small>
           </label>
           <label className="modal-field">
-            <span>Backend port</span>
+            <span>Backend port{form.reachable ? '' : ' (optional)'}</span>
             <input
               type="number"
               value={form.port}
               onChange={e => setForm(f => ({ ...f, port: e.target.value }))}
               placeholder="8080"
             />
+            <small>Required for proxy reachability. Portless backend links remain configured but cannot trigger an edge.</small>
           </label>
 
           {form.matchKind === 'docker' && (
