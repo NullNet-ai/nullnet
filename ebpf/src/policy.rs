@@ -1,7 +1,7 @@
 //! Permission-gated IPv4 forwarding over reusable group carriers.
 use aya_ebpf::{
     EbpfContext,
-    bindings::{TC_ACT_SHOT, bpf_tunnel_key},
+    bindings::{__sk_buff, TC_ACT_SHOT, bpf_tunnel_key},
     helpers::{
         bpf_ktime_get_ns, bpf_redirect, bpf_skb_get_tunnel_key, bpf_skb_get_tunnel_opt,
         bpf_skb_set_tunnel_key, bpf_skb_set_tunnel_opt,
@@ -86,8 +86,8 @@ fn flow(
         remote_port: if incoming { source } else { dest },
     };
     if flags & 0x02 != 0 {
-        POLICY_FLOWS.insert(key, rule.generation, 0)?;
-    } else if unsafe { POLICY_FLOWS.get(key) }.copied() != Some(rule.generation) {
+        POLICY_FLOWS.insert(&key, &rule.generation, 0)?;
+    } else if unsafe { POLICY_FLOWS.get(&key) }.copied() != Some(rule.generation) {
         return Err(-1);
     }
     Ok(())
@@ -106,12 +106,12 @@ fn outgoing(ctx: &TcContext) -> Result<i32, i64> {
     if u32::from_be(ctx.load::<u32>(26)?) != APP_IP {
         return Err(-1);
     }
-    let interface = unsafe { (*ctx.skb.skb).ifindex };
+    let interface = unsafe { (*ctx.as_ptr().cast::<__sk_buff>()).ifindex };
     let key = OutKey {
         interface,
         peer: u32::from_be(ctx.load::<u32>(30)?),
     };
-    let rule = unsafe { POLICY_OUT.get(key) }.copied().ok_or(-1)?;
+    let rule = unsafe { POLICY_OUT.get(&key) }.copied().ok_or(-1)?;
     if rule.enabled == 0 {
         return Err(-1);
     }
@@ -152,11 +152,11 @@ fn incoming(ctx: &TcContext) -> Result<i32, i64> {
     }
     let (len, proto) = header(ctx)?;
     let local = u32::from_be(ctx.load::<u32>(30)?);
-    let rule = unsafe { POLICY_IN.get(local) }.copied().ok_or(-1)?;
+    let rule = unsafe { POLICY_IN.get(&local) }.copied().ok_or(-1)?;
     let mut tunnel: bpf_tunnel_key = unsafe { zeroed() };
     let mut option = 0u32;
-    let skb = ctx.as_ptr().cast();
-    if unsafe { (*ctx.skb.skb).mark } != rule.mark
+    let skb = ctx.as_ptr().cast::<__sk_buff>();
+    if unsafe { (*skb).mark } != rule.mark
         || u32::from_be(ctx.load::<u32>(26)?) != rule.peer
         || unsafe {
             bpf_skb_get_tunnel_key(skb, &mut tunnel, size_of::<bpf_tunnel_key>() as u32, 0)

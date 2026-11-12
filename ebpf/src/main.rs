@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 mod device_events;
 mod endpoint_tc;
@@ -123,7 +124,7 @@ fn is_gateway() -> bool {
 #[inline(always)]
 fn try_firewall(ctx: &TcContext, is_egress: bool) -> Result<i32, ()> {
     let eth_header: *const EthHdr = ptr_at(ctx, 0)?;
-    let ether_type = EtherType::try_from(unsafe { (*eth_header).ether_type }).map_err(|_| ())?;
+    let ether_type = unsafe { (*eth_header).ether_type() }.map_err(|_| ())?;
 
     match ether_type {
         // ARP must pass: without next-hop resolution nothing flows.
@@ -133,32 +134,33 @@ fn try_firewall(ctx: &TcContext, is_egress: bool) -> Result<i32, ()> {
             let src = u32::from_be_bytes(unsafe { (*ipv4_header).src_addr });
             let dst = u32::from_be_bytes(unsafe { (*ipv4_header).dst_addr });
 
-            let (proto, src_port, dst_port) = match unsafe { (*ipv4_header).proto } {
-                IpProto::Tcp => {
-                    let tcp: *const TcpHdr = ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
-                    (
-                        PROTO_TCP,
-                        u16::from_be_bytes(unsafe { (*tcp).source }),
-                        u16::from_be_bytes(unsafe { (*tcp).dest }),
-                    )
-                }
-                IpProto::Udp => {
-                    let udp: *const UdpHdr = ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
-                    (
-                        PROTO_UDP,
-                        u16::from_be_bytes(unsafe { (*udp).src }),
-                        u16::from_be_bytes(unsafe { (*udp).dst }),
-                    )
-                }
-                // ICMP is portless and always allowed (echo + PMTUD/errors, both
-                // directions). Not CT-tracked. Simpler than gating it for now.
-                IpProto::Icmp => return Ok(TC_ACT_OK),
-                // ESP (cross-host VXLAN IPsec) is portless too, but unlike ICMP
-                // it carries real tunnel data, so it stays peer-scoped rather
-                // than unconditionally allowed — see the PROTO_ESP check below.
-                IpProto::Esp => (PROTO_ESP, 0u16, 0u16),
-                _ => return Ok(TC_ACT_SHOT),
-            };
+            let (proto, src_port, dst_port) =
+                match unsafe { (*ipv4_header).proto() }.map_err(|_| ())? {
+                    IpProto::Tcp => {
+                        let tcp: *const TcpHdr = ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+                        (
+                            PROTO_TCP,
+                            u16::from_be_bytes(unsafe { (*tcp).source }),
+                            u16::from_be_bytes(unsafe { (*tcp).dest }),
+                        )
+                    }
+                    IpProto::Udp => {
+                        let udp: *const UdpHdr = ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+                        (
+                            PROTO_UDP,
+                            u16::from_be_bytes(unsafe { (*udp).src }),
+                            u16::from_be_bytes(unsafe { (*udp).dst }),
+                        )
+                    }
+                    // ICMP is portless and always allowed (echo + PMTUD/errors, both
+                    // directions). Not CT-tracked. Simpler than gating it for now.
+                    IpProto::Icmp => return Ok(TC_ACT_OK),
+                    // ESP (cross-host VXLAN IPsec) is portless too, but unlike ICMP
+                    // it carries real tunnel data, so it stays peer-scoped rather
+                    // than unconditionally allowed — see the PROTO_ESP check below.
+                    IpProto::Esp => (PROTO_ESP, 0u16, 0u16),
+                    _ => return Ok(TC_ACT_SHOT),
+                };
 
             let key = ct_key(src, dst, src_port, dst_port, proto);
             if ct_hit(&key) || base_allow(is_egress, proto, src, dst, src_port, dst_port) {
@@ -220,14 +222,14 @@ fn data_plane(src: u32, dst: u32, src_port: u16, dst_port: u16) -> bool {
 
 #[inline]
 fn is_peer(ip: u32) -> bool {
-    unsafe { PEERS.get(ip) }.is_some()
+    unsafe { PEERS.get(&ip) }.is_some()
 }
 
 // Is `port` allowed as a destination in this direction/proto? (ALLOW_PORTS key
 // layout must match userspace `allow_key` in members/nullnet-client/src/ebpf.)
 #[inline]
 fn is_port_allowed(is_egress: bool, proto: u8, port: u16) -> bool {
-    unsafe { ALLOW_PORTS.get(allow_key(is_egress, proto, port)) }.is_some()
+    unsafe { ALLOW_PORTS.get(&allow_key(is_egress, proto, port)) }.is_some()
 }
 
 #[inline]
@@ -260,7 +262,7 @@ fn ct_hit(key: &CtKey) -> bool {
 
 #[inline]
 fn ct_insert(key: &CtKey) {
-    let _ = CT.insert(key, 1u8, 0);
+    let _ = CT.insert(key, &1u8, 0);
 }
 
 #[panic_handler]

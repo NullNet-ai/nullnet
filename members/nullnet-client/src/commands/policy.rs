@@ -6,8 +6,8 @@ use aya::{
     Ebpf,
     maps::{Array, HashMap as BpfMap, MapData},
     programs::{
-        SchedClassifier, TcAttachType,
-        tc::{self, NlOptions, TcAttachOptions},
+        SchedClassifier, TcAttach, TcAttachType,
+        tc::{self, NlOptions},
     },
 };
 use futures::TryStreamExt;
@@ -21,6 +21,7 @@ use rtnetlink::{
 };
 use std::{
     collections::{HashMap, HashSet},
+    ffi::CString,
     net::Ipv4Addr,
     os::{fd::AsRawFd, unix::fs::MetadataExt},
     sync::{
@@ -187,7 +188,7 @@ async fn engine() -> Result<Arc<Engine>, String> {
         )
         .map_err(error)?;
         deadline
-            .set(0, HEARTBEAT.load(Ordering::Acquire), 0)
+            .set(0, &HEARTBEAT.load(Ordering::Acquire), 0)
             .map_err(error)?;
         let maps = Maps {
             outgoing: BpfMap::try_from(
@@ -218,7 +219,8 @@ async fn engine() -> Result<Arc<Engine>, String> {
 
 impl Engine {
     fn attach(&self, name: &str, program: &str) -> Result<(), String> {
-        tc::qdisc_add_clsact(name).map_err(error)?;
+        let name = CString::new(name).map_err(error)?;
+        tc::qdisc_add_clsact(name.as_c_str()).map_err(error)?;
         let mut bpf = self.bpf.lock().unwrap();
         let program: &mut SchedClassifier = bpf
             .program_mut(program)
@@ -227,10 +229,12 @@ impl Engine {
             .map_err(error)?;
         // A classic TC filter survives SIGKILL; its deadline still fails closed.
         program
-            .attach_with_options(
-                name,
-                TcAttachType::Ingress,
-                TcAttachOptions::Netlink(NlOptions::default()),
+            .attach(
+                name.as_c_str(),
+                TcAttach::Netlink {
+                    parent: TcAttachType::Ingress.into(),
+                    options: NlOptions::default(),
+                },
             )
             .map_err(error)?;
         Ok(())
@@ -792,13 +796,13 @@ pub(crate) async fn setup(
                     peer.rule.output = target.outer;
                     peer.rule.mac = target.mac;
                     maps.outgoing
-                        .insert(peer.key, peer.rule, 0)
+                        .insert(&peer.key, &peer.rule, 0)
                         .map_err(error)?;
                     let mut local_rule = rule;
                     let target = delivery.as_ref().unwrap_or(&peer.attachment);
                     local_rule.output = target.outer;
                     local_rule.mac = target.mac;
-                    maps.outgoing.insert(key, local_rule, 0).map_err(error)?;
+                    maps.outgoing.insert(&key, &local_rule, 0).map_err(error)?;
                     edges.insert(
                         message.ns_name.clone(),
                         GroupEdge {
@@ -812,7 +816,7 @@ pub(crate) async fn setup(
                         },
                     );
                 } else {
-                    maps.outgoing.insert(key, rule, 0).map_err(error)?;
+                    maps.outgoing.insert(&key, &rule, 0).map_err(error)?;
                     edges.insert(
                         message.ns_name.clone(),
                         GroupEdge {
@@ -827,8 +831,8 @@ pub(crate) async fn setup(
                     );
                 }
             } else {
-                maps.outgoing.insert(key, rule, 0).map_err(error)?;
-                if let Err(map_error) = maps.incoming.insert(local_ip, rule, 0) {
+                maps.outgoing.insert(&key, &rule, 0).map_err(error)?;
+                if let Err(map_error) = maps.incoming.insert(&local_ip, &rule, 0) {
                     let _ = maps.outgoing.remove(&key);
                     return Err(error(map_error));
                 }
@@ -931,7 +935,7 @@ pub(crate) async fn heartbeat(server_epoch: &[u8], cache: &BridgeIpCache) -> Res
             .lock()
             .unwrap()
             .deadline
-            .set(0, deadline, 0)
+            .set(0, &deadline, 0)
             .map_err(error)?;
     }
     Ok(())
@@ -944,7 +948,7 @@ pub(crate) async fn disable() -> Result<(), String> {
             .lock()
             .unwrap()
             .deadline
-            .set(0, 0, 0)
+            .set(0, &0, 0)
             .map_err(error)?;
     }
     Ok(())
@@ -965,7 +969,7 @@ pub(crate) async fn ready(id: u32) -> Result<bool, String> {
             edge.rule.enabled = 1;
         }
         maps.outgoing
-            .insert(edge.key, edge.rule, 0)
+            .insert(&edge.key, &edge.rule, 0)
             .map_err(error)?;
         found = true;
     }
@@ -1617,7 +1621,7 @@ mod tests {
             .lock()
             .unwrap()
             .incoming
-            .insert(rule.local, rule, 0)
+            .insert(&rule.local, &rule, 0)
             .unwrap();
         assert!(retire("ns_192_c", &cache).await.unwrap());
         assert!(!retire("ns_192_c", &cache).await.unwrap());
