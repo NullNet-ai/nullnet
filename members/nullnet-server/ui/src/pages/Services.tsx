@@ -17,7 +17,8 @@ export default function Services() {
   const toggle = (name: string) =>
     setExpanded(prev => {
       const next = new Set(prev);
-      next.has(name) ? next.delete(name) : next.add(name);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
       return next;
     });
 
@@ -60,7 +61,7 @@ export default function Services() {
                 <th>Name</th>
                 <th>Status</th>
                 <th>Replicas</th>
-                <th>Dependencies</th>
+                <th>Backends</th>
                 <th>Sessions</th>
                 <th>Timeout</th>
               </tr>
@@ -92,8 +93,8 @@ export default function Services() {
                         )}
                       </td>
                       <td>
-                        {svc.proxy_dependencies.flat().length > 0
-                          ? svc.proxy_dependencies.flat().map((d, i) => <span key={`${d}-${i}`} className="dep-tag">{d}</span>)
+                        {Object.values(svc.triggers).length > 0
+                          ? [...new Set(Object.values(svc.triggers))].map(d => <span key={d} className="dep-tag">{d}</span>)
                           : <span style={{ color: 'var(--t2)', fontSize: 11 }}>—</span>}
                       </td>
                       <td style={{ fontFamily: "'JetBrains Mono',monospace", color: 'var(--green)' }}>
@@ -147,12 +148,6 @@ export default function Services() {
                                         <td style={{ color: 'var(--cyan)', fontSize: 10 }}>{peer}</td>
                                       </tr>
                                     ))}
-                                    {svc.proxy_dependencies.flat().length > 0 && (
-                                      <tr>
-                                        <td style={{ color: 'var(--t2)' }}>Dependencies</td>
-                                        <td>{svc.proxy_dependencies.flat().map((d, i) => <span key={`${d}-${i}`} className="dep-tag">{d}</span>)}</td>
-                                      </tr>
-                                    )}
                                   </tbody>
                                 </table>
                               </div>

@@ -209,8 +209,8 @@ pub(super) async fn install(
                 .lock()
                 .unwrap()
                 .insert(
-                    index,
-                    EndpointConfig {
+                    &index,
+                    &EndpointConfig {
                         gateway: u32::from_ne_bytes(ip.octets()),
                         output,
                         mark,
@@ -325,8 +325,8 @@ mod tests {
         for (index, output, crypto) in [(indices[0], indices[1], mark), (indices[1], indices[0], 0)]
         {
             map.insert(
-                index,
-                EndpointConfig {
+                &index,
+                &EndpointConfig {
                     gateway: u32::from_ne_bytes(gateway.octets()),
                     output,
                     mark: crypto,

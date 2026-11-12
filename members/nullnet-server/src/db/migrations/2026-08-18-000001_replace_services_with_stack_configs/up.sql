@@ -1,7 +1,7 @@
 -- `services` was created ahead of need and never wired up (no code path ever
 -- wrote to it), so dropping it is safe. Issue #140 moves stack service
 -- config here as real, normalized tables — one stack's full config
--- (services + their triggers/dependency branches + routes) is the atomic
+-- (services + their triggers + routes) is the atomic
 -- unit the app always loads/saves as a whole, but each part gets its own
 -- table so editing one never risks the others.
 DROP TABLE services;
@@ -38,16 +38,6 @@ CREATE TABLE service_triggers (
     port       INTEGER NOT NULL,
     chain      TEXT NOT NULL,
     UNIQUE (service_id, port)
-);
-
--- Proxy-triggered dependency branches: one row per independent branch of
--- `proxy_dependencies`. `branch_index` preserves branch order; `chain` is
--- a JSON-encoded ordered list, same rationale as `service_triggers.chain`.
-CREATE TABLE service_dependencies (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    service_id   INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
-    branch_index INTEGER NOT NULL,
-    chain        TEXT NOT NULL
 );
 
 CREATE TABLE routes (

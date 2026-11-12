@@ -416,13 +416,13 @@ src 10.20.30.1/32 dst 10.20.30.2/32
 }
 
 /// Clamp TCP MSS on forwarded SYN / SYN-ACK packets so traffic over the VXLAN
-/// service chains can't exceed the underlay MTU. The chains (see
+/// service edges can't exceed the underlay MTU. The interfaces (see
 /// `vxlan::setup`) leave the veth/bridge/vxlan at the default
 /// 1500 MTU, but VXLAN adds 50 bytes of encap → a full-size segment becomes
 /// 1550, the DF bit blocks fragmentation, and it's silently dropped. The
 /// result: small requests work while large payloads (big responses,
 /// JWT-bearing calls) black-hole. This generic forwarding-path fix applies to
-/// every chain (proxy_dependency or trigger) and must run on every node.
+/// every ingress or backend edge and must run on every node.
 /// Idempotent via `-C`; one rule covers both directions (SYN and SYN-ACK both
 /// traverse FORWARD with the SYN flag set). Rules written by earlier builds are
 /// removed first — `-C` only matches a rule verbatim, so without that an
@@ -432,7 +432,7 @@ fn install_mss_clamp() -> Option<String> {
     prune_superseded_mss_rules();
     // Must match OVERLAY_MTU in commands/vxlan.rs (1080) minus the
     // 40-byte IP+TCP headers. The previous 1400 came from a theoretical
-    // 1500-VXLAN budget and exceeds what the chain interfaces actually carry,
+    // 1500-VXLAN budget and exceeds what the edge interfaces actually carry,
     // so `--set-mss` could raise an endpoint's advertised MSS above the path.
     // `--clamp-mss-to-pmtu` is tempting here but is not equivalent: it drops
     // the packet when the route MTU is unusable, and on non-overlay forwarded

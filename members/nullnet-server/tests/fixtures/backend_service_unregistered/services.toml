@@ -2,9 +2,12 @@
 name = "A"
 timeout = 0
 port = 8001
-proxy_dependencies = [["B"]]
 backends = ["C"]
 
 [[services]]
 name = "C"
 port = 5555
+
+[[services]]
+name = "B"
+port = 4444

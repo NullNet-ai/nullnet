@@ -93,7 +93,7 @@ impl SessionRepository {
             .handle_err(location!())
     }
 
-    /// Close one backend generation without affecting chains sharing its edge.
+    /// Close one backend generation without affecting sessions sharing its edge.
     #[cfg(test)]
     pub(crate) async fn close_backend(&self, id: i64, timestamp: i64) -> Result<usize, Error> {
         self.conn

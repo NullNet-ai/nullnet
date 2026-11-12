@@ -6,8 +6,8 @@ pub(crate) struct RegisteredEdge {
     pub(crate) server: (IpAddr, Client),
     pub(crate) client_docker: Option<String>,
     pub(crate) server_docker: Option<String>,
-    /// `Some(port)` iff this edge is the entry point of a backend-triggered
-    /// chain. The port is the trigger port observed by the initiator and is
+    /// `Some(port)` iff this is a backend-triggered edge. The port is the
+    /// trigger port observed by the initiator and is
     /// echoed in the client-side `VxlanSetup.dnat_port` so the receiver can
     /// install DNAT(port -> `overlay_ip`).
     pub(crate) backend_entry_port: Option<u32>,

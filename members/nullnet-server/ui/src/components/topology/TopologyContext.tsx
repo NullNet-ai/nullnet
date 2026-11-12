@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import type { ChainJson, GraphJson, ServiceJson, SessionJson, SessionRecordJson, SessionsHistoryPage, ServiceConfigListJson } from '../../types';
+import type { GraphJson, ServiceJson, SessionJson, SessionRecordJson, SessionsHistoryPage, ServiceConfigListJson } from '../../types';
 import type { LayoutMode, PanelState } from './types';
 import { LAYOUT_MODES } from './types';
 
@@ -25,7 +25,6 @@ interface TopologyData {
   graph: GraphJson | null;
   services: ServiceJson[] | null;
   sessions: SessionJson[] | null;
-  chains: ChainJson[] | null;
 }
 
 const TopologyDataContext = createContext<TopologyData>({
@@ -34,7 +33,6 @@ const TopologyDataContext = createContext<TopologyData>({
   graph: null,
   services: null,
   sessions: null,
-  chains: null,
 });
 
 // ── UI reducer ────────────────────────────────────────────────────────────────
@@ -144,7 +142,6 @@ export function TopologyProvider({
   const allowedLinks = useMemo(() => new Set((savedConfig?.services ?? []).flatMap(s => s.backends.map(peer => `${s.name}\0${peer}`))), [savedConfig]);
   const { data: liveGraph, error: graphError, updatedAt: graphUpdated } = useApi<GraphJson>(`/api/graph/${stack}`, range ? undefined : 5000);
   const { data: services, updatedAt: servicesUpdated, error: servicesError } = useApi<ServiceJson[]>(`/api/services/${stack}`, range ? undefined : 5000);
-  const { data: chains, updatedAt: chainsUpdated, error: chainsError } = useApi<ChainJson[]>(`/api/chains/${stack}`, range ? undefined : 5000);
   const records = useMemo(() => (data?.sessions ?? []).filter(s => !s.blocked), [data]);
   const graph = useMemo(() => {
     if (!data || !liveGraph) return null;
@@ -155,7 +152,7 @@ export function TopologyProvider({
     .map(s => ({
       id: s.id, network_id: s.net_id, client_ip: s.peer_ip, service: s.service,
       client_net: s.detail.client_net ?? '', server_net: s.detail.server_net ?? '',
-      chain_depth: s.detail.chain_depth ?? 1, created_at: s.started_at,
+      created_at: s.started_at,
       country_code: s.country_code, asn: s.asn, org: s.org,
     })), [records, range]);
 
@@ -202,17 +199,8 @@ export function TopologyProvider({
 
   const focusedNetIds = useMemo<Set<number> | null>(() => {
     if (!focusedSessions) return null;
-    const proxyNetIds = new Set(focusedSessions.map(s => s.network_id));
-    const all = new Set(proxyNetIds);
-    if (chains) {
-      for (const chain of chains) {
-        if (proxyNetIds.has(chain.proxy_net_id)) {
-          for (const id of chain.all_net_ids) all.add(id);
-        }
-      }
-    }
-    return all;
-  }, [focusedSessions, chains]);
+    return new Set(focusedSessions.map(s => s.network_id));
+  }, [focusedSessions]);
 
   const selectedNodeId =
     uiState.panel?.type === 'node' ? uiState.panel.nodeId :
@@ -224,7 +212,7 @@ export function TopologyProvider({
       : null;
 
   return (
-    <TopologyDataContext.Provider value={{ updatedAt: [sessionsUpdated, configUpdated, graphUpdated, servicesUpdated, chainsUpdated].every(t => t != null) ? Math.min(sessionsUpdated!, configUpdated!, graphUpdated!, servicesUpdated!, chainsUpdated!) : null, sessionHistory: data, refreshSessions, allowedLinks, graph, services, sessions, chains, records, range, setRange, loading, error: error ?? graphError ?? configError ?? servicesError ?? chainsError }}>
+    <TopologyDataContext.Provider value={{ updatedAt: [sessionsUpdated, configUpdated, graphUpdated, servicesUpdated].every(t => t != null) ? Math.min(sessionsUpdated!, configUpdated!, graphUpdated!, servicesUpdated!) : null, sessionHistory: data, refreshSessions, allowedLinks, graph, services, sessions, records, range, setRange, loading, error: error ?? graphError ?? configError ?? servicesError }}>
       <TopologyUIContext.Provider
         value={{
           ...uiState,

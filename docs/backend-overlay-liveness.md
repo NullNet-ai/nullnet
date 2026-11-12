@@ -80,7 +80,7 @@ and API `10.0.3.73`, replacing edge 101's `.43` and `.41`. Another 160-second
 request through these new addresses returned HTTP 200 in 160.005 seconds.
 
 A separate topology used two initiator replicas and four backend replicas
-across both hosts, three backend services, and a two-hop dependency path.
+across both hosts, three backend services, and two successive direct backend edges.
 It passed 2,520 backend requests plus 200 proxy ingress requests with zero
 failures. A 160-second cross-host overlay request also returned HTTP 200.
 The graph captured eight backend edges plus an egress edge during the run.
@@ -98,7 +98,7 @@ The final rerun also exposed these limitations, retained in the evidence:
 
 - An initial load started before the remote HTTP fixtures were ready and
   received 800 connection refusals; the ready-fixture rerun passed all 1,200.
-- When `b -> c` was triggered during proxy dependency activity, 12 of 60
+- When `b -> c` was triggered during concurrent ingress activity, 12 of 60
   requests timed out waiting for trigger activation. The server received the
   trigger but did not dispatch setup until the later retry; that retry passed
   all 60 requests. This is not evidence of an active edge being reaped, and

@@ -2,4 +2,7 @@
 name = "Z"
 timeout = 0
 port = 8026
-proxy_dependencies = [["A", "C"]]
+
+[[services]]
+name = "C"
+port = 5555

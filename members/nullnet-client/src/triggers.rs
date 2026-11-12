@@ -46,7 +46,7 @@ pub enum TriggerState {
     Fresh,
     /// Setup is in flight.
     Pending,
-    /// Chain is up — listener can verdict ACCEPT immediately.
+    /// Edge is up — listener can verdict ACCEPT immediately.
     Active,
 }
 

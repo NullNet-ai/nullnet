@@ -10,7 +10,7 @@ interface Props {
 
 export default function ServiceNodePanel({ node, service, onDepClick }: Props) {
   const totalSessions = service?.replicas.reduce((s, r) => s + r.active_sessions, 0) ?? 0;
-  const deps = service ? [...new Set(service.proxy_dependencies.flat())] : [];
+  const backends = service ? [...new Set(Object.values(service.triggers))] : [];
 
   return (
     <>
@@ -63,13 +63,13 @@ export default function ServiceNodePanel({ node, service, onDepClick }: Props) {
         </div>
       )}
 
-      {deps.length > 0 && (
+      {backends.length > 0 && (
         <div style={spRow}>
-          <div style={spKey}>Dependencies</div>
+          <div style={spKey}>Backends</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 2 }}>
-            {deps.map(dep => (
-              <button key={dep} onClick={() => onDepClick(dep)} className="dep-tag" style={{ cursor: 'pointer' }}>
-                {dep}
+            {backends.map(backend => (
+              <button key={backend} onClick={() => onDepClick(backend)} className="dep-tag" style={{ cursor: 'pointer' }}>
+                {backend}
               </button>
             ))}
           </div>

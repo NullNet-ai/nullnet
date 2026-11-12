@@ -108,7 +108,7 @@ client skips the alias. No coordinated rollout needed.
   `vxlan_setup` / `vlan_setup`. Both need the callee's port threaded in from
   `send_net_setup`.
 - The value is the target **replica's** port, already resolvable where the edge
-  is built: `net_chain_setup` (`nullnet_grpc_impl.rs:1107`) holds
+  is built: `run_net_edge_setup` holds
   `(server_ethernet, server_docker)` and calls
   `reg.replica_suspended(server_ethernet, server_docker.as_deref())`
   (`:1165`) — add a sibling `reg.replica_port(...)` and pass it down the same
@@ -235,7 +235,7 @@ Both parts need Linux (103/104); the server halves build and unit-test on macOS.
 - Container-to-container `curl http://<dep-name>/` with no port in the URL
   reaches the dep's backend port. `iptables -t nat -L NULLNET_DNAT -n` shows one
   alias rule per edge.
-- Repeated chain setup for the same edge does not stack duplicate rules.
+- Repeated setup for the same edge does not stack duplicate rules.
 - After teardown, the rule is gone and `conntrack` shows no stale NAT entry.
 - `svc_port == 80` installs nothing; host-targeted mapping installs nothing.
 - Existing backend-trigger DNAT still works unchanged (it shares `run_iptables`).
@@ -309,13 +309,7 @@ working untouched.
    URL correct from both a browser and a container, and unblocks aliasing :443
    (§2.3.1). This is the "onboard a stack without touching any app config"
    endgame.
-2. **Adjacency-list dependencies.** Replace enumerated linear
-   `proxy_dependencies` paths with a per-service allowed-dep list, building each
-   edge on first packet (which B makes safe at scale). On the instaprotek stack
-   this collapses 14 branches to 4 names on one service, and 11 to 1 on another;
-   it is also *more* least-privilege, since today one proxy request to an entry
-   point opens its entire transitive closure of tunnels.
-3. **Observation mode.** With B in place, watch all ports for a service for a
+2. **Observation mode.** With B in place, watch all ports for a service for a
    window, record `container → host:port` flows, emit a suggested TOML. Would
    have surfaced three wrong hostnames in the instaprotek configs in minutes.
 
@@ -325,7 +319,7 @@ working untouched.
 
 - Proto: `members/nullnet-grpc-lib/proto/nullnet_grpc.proto` (`HostMapping:236`, `ServiceTrigger:231`)
 - Edge construction / `HostMapping` build: `members/nullnet-server/src/net.rs:151,224`
-- Chain setup, replica resolution: `members/nullnet-server/src/nullnet_grpc_impl.rs:1107,1165`
+- Edge setup and replica resolution: `members/nullnet-server/src/nullnet_grpc_impl.rs`
 - Trigger config response: `members/nullnet-server/src/nullnet_grpc_impl.rs:455-482`
 - Backend-trigger handler: `members/nullnet-server/src/nullnet_grpc_impl.rs:657,686-701`
 - Hosts entry (+ per-file lock) / DNAT install: `members/nullnet-client/src/control_channel.rs:558-575,844,850`

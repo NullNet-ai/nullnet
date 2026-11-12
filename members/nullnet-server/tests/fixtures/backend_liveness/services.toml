@@ -1,6 +1,6 @@
 # A dials B on 5555 with no proxy anywhere in the picture: the autonomous
 # `backend_trigger` shape. Both timeouts are non-zero so the idle path is
-# demonstrably armed and still never touches the chain.
+# demonstrably armed and still never touches the direct edge.
 [[services]]
 name = "A"
 timeout = 1
@@ -12,9 +12,7 @@ name = "B"
 port = 5555
 timeout = 1
 
-# Two trigger ports whose chains share their first hop. Before the refcount
-# claim, the port that built B held the only increment and the other rode free,
-# so the builder going quiet tore B down under the free-rider's connections.
+# A second initiator for the same backend target exercises independent holds.
 [[services]]
 name = "F"
 timeout = 1

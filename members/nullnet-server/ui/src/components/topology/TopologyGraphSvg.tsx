@@ -247,7 +247,7 @@ export default function TopologyGraphSvg({
             const session: SessionJson | null = isFocusedEdge
               ? (focusedSessions?.find(s => e.originalIndices.some(idx => graph.edges[idx]?.net_id === s.network_id)) ?? null)
               : null;
-            // For chain hops the session is null (chain sessions don't carry the client IP),
+            // Backend edges have no ingress session or external client IP,
             // but we can still display the VNI by pulling it directly from the graph edge.
             const focusedNetId: number | null = isFocusedEdge
               ? (session?.network_id ??

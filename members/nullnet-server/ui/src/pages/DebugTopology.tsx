@@ -27,7 +27,7 @@ const EXAMPLE_MINIMAL: GraphJson = {
 };
 
 // Mirrors the shape that actually triggers overlapping arrows in layered
-// mode: a proxy edge straight into a service two dependency-layers deep
+// mode: a proxy edge straight into a service two backend layers deep
 // (upload), plus a short cycle (core <-> audit) — the two patterns worth
 // stress-testing long-edge routing against.
 const EXAMPLE_DENSE: GraphJson = {

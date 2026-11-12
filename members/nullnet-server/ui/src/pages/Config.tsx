@@ -15,9 +15,7 @@ import type {
 
 // A service is only ever discoverable via a host match — `build_match_entries`
 // (server-side) never registers a replica for a service without one. There is
-// no third "no match" option: a service that only needs to exist as a chain
-// placeholder doesn't need declaring at all (referencing its name in a
-// dependency branch or trigger peer already registers it implicitly).
+// no third "no match" option.
 type MatchKind = 'docker' | 'process';
 type ProtocolKind = 'http' | 'tcp' | 'udp';
 
@@ -228,7 +226,7 @@ function FilterPolicyEditor({
   );
 }
 
-// Sentinel for "+ Type a custom name…", picked from a chain step's <select>
+// Sentinel for "+ Type a custom name…", picked from a backend's <select>
 // below — never a real value, replaced with '' on save if left untouched.
 const CUSTOM_STEP = '\u0000custom';
 
@@ -244,7 +242,6 @@ interface ServiceFormState {
   maxNetworks: string;
   protocol: ProtocolKind;
   listenPort: string;
-  dependencies: string[][];
   backends: string[];
   egressFilter: FilterPolicyForm;
   ingressFilter: FilterPolicyForm;
@@ -262,13 +259,12 @@ const EMPTY_FORM: ServiceFormState = {
   maxNetworks: '',
   protocol: 'http',
   listenPort: '',
-  dependencies: [],
   backends: [],
   egressFilter: EMPTY_FILTER,
   ingressFilter: EMPTY_FILTER,
 };
 
-// Shared by proxy dependency steps and backend peers, including custom names.
+// Backend peer picker, including custom names.
 function ServiceNamePicker({ value, onChange, knownNames }: {
   value: string;
   onChange: (next: string) => void;
@@ -289,45 +285,6 @@ function ServiceNamePicker({ value, onChange, knownNames }: {
       {knownNames.map(name => <option key={name} value={name}>{name}</option>)}
       <option value={CUSTOM_STEP}>+ Type a custom name…</option>
     </select>
-  );
-}
-
-function ChainStepList({
-  steps,
-  onChange,
-  knownNames,
-}: {
-  steps: string[];
-  onChange: (next: string[]) => void;
-  knownNames: string[];
-}) {
-  function update(i: number, value: string) {
-    onChange(steps.map((s, idx) => (idx === i ? value : s)));
-  }
-  function remove(i: number) {
-    onChange(steps.filter((_, idx) => idx !== i));
-  }
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      {steps.map((step, i) => {
-        return (
-          <div key={i} style={{ display: 'flex', gap: 6 }}>
-            <ServiceNamePicker value={step} onChange={next => update(i, next)} knownNames={knownNames} />
-            <button type="button" className="teardown-btn" onClick={() => remove(i)}>
-              ×
-            </button>
-          </div>
-        );
-      })}
-      <button
-        type="button"
-        className="card-action"
-        style={{ background: 'none', border: 'none', cursor: 'pointer', alignSelf: 'start' }}
-        onClick={() => onChange([...steps, ''])}
-      >
-        + Add step
-      </button>
-    </div>
   );
 }
 
@@ -363,7 +320,6 @@ function serviceToForm(s: ServiceConfigJson): ServiceFormState {
     maxNetworks: s.max_networks != null ? String(s.max_networks) : '',
     protocol: s.protocol ?? 'http',
     listenPort: s.listen_port != null ? String(s.listen_port) : '',
-    dependencies: s.proxy_dependencies.map(branch => [...branch]),
     backends: [...s.backends],
     egressFilter: filterToForm(s.egress_filter),
     ingressFilter: filterToForm(s.ingress_filter),
@@ -373,8 +329,6 @@ function serviceToForm(s: ServiceConfigJson): ServiceFormState {
 function formToService(f: ServiceFormState): ServiceConfigJson {
   // CUSTOM_STEP left untouched (the "+ Type a custom name…" option picked,
   // but nothing typed into the text box it dropped to) counts as unset.
-  const chain = (steps: string[]) =>
-    steps.map(s => (s === CUSTOM_STEP ? '' : s.trim())).filter(Boolean);
   return {
     name: f.name.trim(),
     docker_container: f.matchKind === 'docker' ? f.matchValue.trim() : null,
@@ -383,7 +337,6 @@ function formToService(f: ServiceFormState): ServiceConfigJson {
     pausable: f.matchKind === 'docker' && f.pausable,
     port: f.port.trim() !== '' ? Number(f.port) : null,
     timeout: f.reachable ? Number(f.timeout || '0') : null,
-    proxy_dependencies: f.dependencies.map(chain).filter(branch => branch.length > 0),
     backends: f.backends.map(peer => peer === CUSTOM_STEP ? '' : peer.trim()),
     max_networks: f.maxNetworks.trim() !== '' ? Number(f.maxNetworks) : null,
     protocol: f.protocol,
@@ -429,13 +382,11 @@ export default function Config() {
   const noStack = !stack.trim();
   const notFound = !noStack && !loading && !!error && error.includes('404');
 
-  // Every name already declared or referenced anywhere in this stack —
-  // suggestions for the dependency and peer inputs.
+  // Every name already declared or referenced as a backend in this stack.
   const knownServiceNames = useMemo(() => {
     const names = new Set<string>();
     for (const s of services) {
       names.add(s.name);
-      for (const branch of s.proxy_dependencies) for (const step of branch) names.add(step);
       for (const peer of s.backends) names.add(peer);
     }
     return Array.from(names).sort();
@@ -586,16 +537,6 @@ export default function Config() {
       setListError(String(e));
     }
     setImporting(false);
-  }
-
-  function addDependencyBranch() {
-    setForm(f => ({ ...f, dependencies: [...f.dependencies, ['']] }));
-  }
-  function updateDependencyBranch(i: number, next: string[]) {
-    setForm(f => ({ ...f, dependencies: f.dependencies.map((d, idx) => (idx === i ? next : d)) }));
-  }
-  function removeDependencyBranch(i: number) {
-    setForm(f => ({ ...f, dependencies: f.dependencies.filter((_, idx) => idx !== i) }));
   }
 
   function addBackend() {
@@ -896,38 +837,6 @@ export default function Config() {
               />
             </label>
           )}
-
-          <div className="modal-field">
-            <span>Proxy dependencies — independent branches, each an ordered chain</span>
-            {form.dependencies.map((branch, i) => (
-              <div
-                key={i}
-                style={{ border: '1px solid var(--t3)', borderRadius: 6, padding: 8, marginBottom: 8 }}
-              >
-                <ChainStepList
-                  steps={branch}
-                  onChange={next => updateDependencyBranch(i, next)}
-                  knownNames={knownServiceNames}
-                />
-                <button
-                  type="button"
-                  className="teardown-btn"
-                  style={{ marginTop: 6 }}
-                  onClick={() => removeDependencyBranch(i)}
-                >
-                  Remove branch
-                </button>
-              </div>
-            ))}
-            <button
-              type="button"
-              className="card-action"
-              style={{ background: 'none', border: 'none', cursor: 'pointer', alignSelf: 'start' }}
-              onClick={addDependencyBranch}
-            >
-              + Add branch
-            </button>
-          </div>
 
           <div className="modal-field">
             <span>Backends</span>

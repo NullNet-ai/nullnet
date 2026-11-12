@@ -1,5 +1,6 @@
 //! Filter owned multicast notifications before host consumers are awakened.
 use aya_ebpf::{
+    EbpfContext,
     helpers::{bpf_get_socket_cookie, bpf_ktime_get_ns},
     macros::{map, socket_filter},
     maps::{Array, LruHashMap, PerCpuArray},
@@ -83,8 +84,8 @@ fn route(ctx: &SkBuffContext) -> Option<u32> {
     if len != ctx.len() || len < 32 || ctx.load::<u16>(6).ok()? & 2 != 0 {
         return None;
     }
-    let cookie = unsafe { bpf_get_socket_cookie(ctx.skb.skb.cast()) };
-    let recipient = unsafe { EVENT_SOCKETS.get(cookie) }.copied()?;
+    let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
+    let recipient = unsafe { EVENT_SOCKETS.get(&cookie) }.copied()?;
     let sender = ctx.load::<u32>(12).ok()?;
     if sender == recipient || (sender == 0 && ctx.load::<u32>(8).ok()? != 0) {
         return None;
@@ -108,10 +109,10 @@ fn route(ctx: &SkBuffContext) -> Option<u32> {
             }
             let index = ctx.load::<u32>(20).ok()?;
             if names::owned_name(&name, false) {
-                EVENT_OWNED.insert(index, 1, 0).ok()?;
+                EVENT_OWNED.insert(&index, &1, 0).ok()?;
                 Some(1)
             } else {
-                let _ = EVENT_OWNED.remove(index);
+                let _ = EVENT_OWNED.remove(&index);
                 None
             }
         }
@@ -142,5 +143,5 @@ fn route(ctx: &SkBuffContext) -> Option<u32> {
 
 #[inline(always)]
 fn owned_index(index: u32, kind: u32) -> Option<u32> {
-    unsafe { EVENT_OWNED.get(index) }.map(|_| kind)
+    unsafe { EVENT_OWNED.get(&index) }.map(|_| kind)
 }

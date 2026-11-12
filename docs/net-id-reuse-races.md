@@ -59,7 +59,7 @@ so no proxy client ever expires.
 
 It does **not** stop net-id reuse. These paths still free ids:
 
-- `changes.rs:316` `teardown_chain`, `changes.rs:472,545` `decrement_chain` —
+- `changes.rs:316` `teardown_proxy_sessions`, `changes.rs:472,545` `release_hold` —
   config changes, including live edits via the Config UI
 - `nullnet_grpc_impl.rs:1498` — chain decrement on deregistration
 - `orchestrator.rs:431,472` — node disconnect, missing containers
@@ -173,7 +173,7 @@ VERIFIED on 103, 2026-08-05:
 (`control_channel.rs:677-680` → `remove_host_mapping`). So a paused container
 strands its entry on the normal per-edge teardown too, not just on a restart.
 
-Worse, this races with pause/resume by design. `decrement_chain`
+Worse, this races with pause/resume by design. `release_hold`
 (`service_info.rs:484-494`) calls `send_net_teardown` and then
 `reconcile_suspend` — both fire-and-forget, no ack — and the client spawns each
 inbound message in its own task (`control_channel.rs:71-127`), so ordering is

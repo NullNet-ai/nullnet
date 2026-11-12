@@ -9,10 +9,7 @@ use crate::graphviz::generate_graphviz;
 use crate::net::EgressRole;
 use crate::net_id_pool::generate_key;
 use crate::orchestrator::{BackendKey, Orchestrator};
-use crate::services::changes::{
-    ServiceChange, apply_changes, collect_dep_chain_edges, dep_chain_intact,
-    detect_services_list_changes,
-};
+use crate::services::changes::{apply_changes, detect_services_list_changes};
 use crate::services::clients::{Client, ClientInfo};
 use crate::services::edge::RegisteredEdge;
 use crate::services::firewall::{FilterContext, FilterPolicy};
@@ -33,7 +30,6 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{Notify, RwLock, mpsc, oneshot, watch};
-use tokio::task::JoinSet;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
@@ -66,7 +62,7 @@ pub(crate) struct NullnetGrpcImpl {
     /// subscribe for updates. See docs/http-path-routing-design.md.
     http_routes: watch::Receiver<HttpRouteBundle>,
     /// One lock per in-flight proxy request identity, so concurrent duplicates
-    /// are serialized rather than each building the same chain. See
+    /// are serialized rather than each building the same ingress edge. See
     /// [`NullnetGrpcImpl::handle_proxy_request`].
     inflight_proxy: Arc<StdMutex<HashMap<ProxyKey, Arc<tokio::sync::Mutex<()>>>>>,
     dedicated_admissions: Arc<StdMutex<HashMap<(String, String), usize>>>,
@@ -107,7 +103,7 @@ struct ProxyReplica {
     docker: Option<String>,
 }
 
-struct ProxyChainRequest<'a> {
+struct ProxyEdgeRequest<'a> {
     stack: &'a str,
     service_name: &'a str,
     proxy_ip: IpAddr,
@@ -428,7 +424,7 @@ impl NullnetGrpcImpl {
             }
         });
 
-        // periodically check for timed-out proxy clients and tear down their chains
+        // Periodically expire idle ingress sessions and backend edges.
         let services_2 = services.clone();
         let orchestrator_2 = orchestrator.clone();
         tokio::spawn(async move {
@@ -483,11 +479,6 @@ impl NullnetGrpcImpl {
         Ok(Response::new(stream))
     }
 
-    // Concurrent first-time setup is race-safe for single-hop deps (check-and-
-    // reserve is atomic under the write lock with an all-replicas reuse check).
-    // TODO: multi-hop chains can still leave a bounded phantom at hop 2+ under
-    // concurrency, since deeper-edge source identity is fixed during phase-1
-    // selection. Closing it needs whole-chain reservation under one lock.
     async fn proxy_impl(
         &self,
         request: Request<ProxyRequest>,
@@ -532,11 +523,9 @@ impl NullnetGrpcImpl {
     ///
     /// A browser opens several connections to the same host at once and the
     /// proxy issues one `proxy` RPC per request, so duplicates routinely arrive
-    /// before the first chain is built. Without this they each miss the sticky
-    /// check, each build the full chain — incrementing every dependency edge
-    /// once per branch — and then collapse into a single `Client` entry that
-    /// teardown decrements only once. The surplus never comes off and the whole
-    /// dependency mesh stays connected after the session expires.
+    /// before the first ingress edge is built. Without this they each miss the
+    /// sticky check, build duplicate edges, and then collapse into a single
+    /// `Client` entry whose teardown releases only one edge.
     ///
     /// Followers re-enter [`Self::proxy_request_locked`] rather than reusing the
     /// leader's answer, so a leader that failed (or whose session was evicted
@@ -563,7 +552,7 @@ impl NullnetGrpcImpl {
 
         // +1 here, not inside `proxy_request_locked`: that function has three
         // distinct success paths (sticky reuse, max_networks reuse, fresh
-        // chain) and this is the single point every one of them passes through.
+        // edge) and this is the single point every one of them passes through.
         // Pairs with `ProxyConnectionClosed`, which the proxy guarantees to send
         // on every exit path once this call has returned Ok.
         if result.is_ok() {
@@ -627,7 +616,7 @@ impl NullnetGrpcImpl {
                 .handle_err(location!())?
                 .to_string()
         };
-        let (existing, replica, mut max_networks, mut dedicated_count) = {
+        let (existing, max_networks, mut dedicated_count) = {
             let guard = self.services.read().await;
             let service_info = &guard[&stack][service_name];
             if service_info.timeout().is_none() {
@@ -638,83 +627,21 @@ impl NullnetGrpcImpl {
             };
             (
                 reg.is_client_setup(&proxy_client),
-                reg.client_replica(&proxy_client),
                 reg.max_networks(),
                 reg.dedicated_proxy_networks_count(),
             )
         };
 
-        // Sticky session: reuse the network this client is already on — but only
-        // while the dependency chain built alongside it is still complete.
-        //
-        // A dep edge can come down independently of the entry edge (its container
-        // restarting, a chain torn down through an unregistered service), and this
-        // path never rebuilds one. Serving the request anyway hands it to a replica
-        // whose `/etc/hosts` no longer maps its dependencies, so the name silently
-        // falls through to public DNS. Evict the session instead and let the setup
-        // path below rebuild entry and chain together: repairing just the missing
-        // edges here would double-count `active_chains` on the edges still up,
-        // since teardown decrements once per branch per proxy client.
+        // Sticky session: reuse the network this client is already on.
         if let Some(upstream) = existing {
-            let intact = match replica {
-                Some((replica_ip, replica_docker)) => {
-                    self.services.read().await.get(&stack).is_some_and(|sm| {
-                        dep_chain_intact(service_name, replica_ip, replica_docker.as_deref(), sm)
-                    })
-                }
-                None => false,
-            };
-
-            if intact {
-                routine_log!("'{client_ip}' ---> '{service_name}' is already set up");
-
-                // update the latest timestamp for this client since it's being used again
-                let mut services_mut = self.services.write().await;
-                if let Some(stack_map) = services_mut.get_mut(&stack)
-                    && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(service_name)
-                {
-                    reg.set_latest_now(&proxy_client);
-                }
-
-                return Ok(upstream);
-            }
-
-            self.orchestrator
-                .events
-                .emit(Event::stale_session_evicted(
-                    service_name.to_string(),
-                    client_ip.to_string(),
-                    proxy_ip.to_string(),
-                ))
-                .await;
-
+            routine_log!("'{client_ip}' ---> '{service_name}' is already set up");
             let mut services_mut = self.services.write().await;
-            if let Some(stack_map) = services_mut.get_mut(&stack) {
-                apply_changes(
-                    vec![ServiceChange::StaleSessionEvicted {
-                        name: service_name.to_string(),
-                        client: proxy_client.clone(),
-                    }],
-                    stack_map,
-                    None,
-                    &self.orchestrator,
-                    &stack,
-                )
-                .await;
+            if let Some(stack_map) = services_mut.get_mut(&stack)
+                && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(service_name)
+            {
+                reg.set_latest_now(&proxy_client);
             }
-            drop(services_mut);
-
-            // The eviction dropped this client and may have freed its network, so
-            // the snapshot the max-networks check below reads has to be re-taken.
-            (max_networks, dedicated_count) = {
-                let guard = self.services.read().await;
-                let Some(ServiceInfo::Registered(reg)) =
-                    guard.get(&stack).and_then(|sm| sm.get(service_name))
-                else {
-                    Err("Service is not registered").handle_err(location!())?
-                };
-                (reg.max_networks(), reg.dedicated_proxy_networks_count())
-            };
+            return Ok(upstream);
         }
 
         let policy_eligible = *NET_TYPE == Net::Vxlan && *ENCRYPTION_ENABLED;
@@ -753,18 +680,7 @@ impl NullnetGrpcImpl {
                         upstream.pool_generation,
                     ),
                 );
-                reg.add_chain(&proxy_client);
-                let dep_edges = collect_dep_chain_edges(
-                    service_name,
-                    *replica_ip,
-                    replica_docker.as_deref(),
-                    stack_map,
-                );
-                for (dep_client, dep_name) in dep_edges {
-                    if let Some(ServiceInfo::Registered(dep_reg)) = stack_map.get_mut(&dep_name) {
-                        dep_reg.add_chain(&dep_client);
-                    }
-                }
+                reg.add_hold(&proxy_client);
                 Some((max, network))
             });
             if let Some((_, (_, client_net, server_net, net_id, _, _, setup_ms))) = &reuse {
@@ -806,8 +722,8 @@ impl NullnetGrpcImpl {
             return Ok(upstream);
         }
 
-        // One retry. A chain unwound because its client entry was torn down
-        // mid-build handed every edge back, so building again is the whole
+        // One retry. An ingress edge unwound because its client entry was torn
+        // down mid-build, so building again is the whole
         // repair — and the request that triggered it still deserves an
         // upstream. Bounded at one attempt so a teardown loop cannot spin here.
         for attempt in 0..2 {
@@ -860,8 +776,8 @@ impl NullnetGrpcImpl {
             let policy_overflow =
                 policy_eligible && (!hard_cap_allows_dedicated || adaptive_overflow);
             match self
-                .new_proxy_chain(
-                    ProxyChainRequest {
+                .new_proxy_edge(
+                    ProxyEdgeRequest {
                         stack: &stack,
                         service_name,
                         proxy_ip,
@@ -928,14 +844,14 @@ impl NullnetGrpcImpl {
                 Ok(None) => {
                     self.orchestrator
                         .events
-                        .emit(Event::chain_owner_lost(stack.clone()))
+                        .emit(Event::ingress_owner_lost(stack.clone()))
                         .await;
                     break;
                 }
                 Err(e) => {
                     self.orchestrator
                         .events
-                        .emit(Event::proxy_chain_setup_failed(
+                        .emit(Event::ingress_setup_failed(
                             service_name.to_string(),
                             client_ip.to_string(),
                         ))
@@ -946,12 +862,12 @@ impl NullnetGrpcImpl {
         }
         self.orchestrator
             .events
-            .emit(Event::proxy_chain_setup_failed(
+            .emit(Event::ingress_setup_failed(
                 service_name.to_string(),
                 client_ip.to_string(),
             ))
             .await;
-        Err("Chain was torn down while it was being built").handle_err(location!())?
+        Err("Ingress edge was torn down while it was being built").handle_err(location!())?
     }
 
     async fn services_list_impl(
@@ -1048,9 +964,9 @@ impl NullnetGrpcImpl {
         }))
     }
 
-    async fn new_proxy_chain(
+    async fn new_proxy_edge(
         &self,
-        request: ProxyChainRequest<'_>,
+        request: ProxyEdgeRequest<'_>,
         admission: Option<DedicatedAdmission>,
     ) -> Result<Option<Response<Upstream>>, Error> {
         let key = (
@@ -1058,14 +974,13 @@ impl NullnetGrpcImpl {
             request.client_ip.to_string(),
             request.proxy_ip,
         );
-        let outcome = self.setup_proxy_chain(&request, &key, admission).await?;
+        let outcome = self.setup_proxy_edge(&request, &key, admission).await?;
 
-        // Suspended replicas are unpaused per-edge inside `net_chain_setup`, so by
-        // the time the chain is built every container in it is already serving.
+        // Suspended replicas are unpaused while the edge is set up.
 
         let upstream_ip = match outcome {
-            ChainOutcome::Built(Some(ip)) => ip,
-            ChainOutcome::Built(None) | ChainOutcome::OwnerLost => return Ok(None),
+            EdgeSetupOutcome::Built(Some(ip)) => ip,
+            EdgeSetupOutcome::Built(None) | EdgeSetupOutcome::OwnerLost => return Ok(None),
         };
 
         let proxy_client = Client::new(request.client_ip.to_string(), Some(request.proxy_ip));
@@ -1110,29 +1025,7 @@ impl NullnetGrpcImpl {
         })
     }
 
-    async fn proxy_branches(
-        &self,
-        stack: &str,
-        service_name: &str,
-        service_ip: IpAddr,
-        service_docker: Option<&str>,
-    ) -> Result<Vec<ChainBranch>, Error> {
-        let guard = self.services.read().await;
-        let stack_map = guard
-            .get(stack)
-            .ok_or("Stack not found")
-            .handle_err(location!())?;
-        let service_info = stack_map
-            .get(service_name)
-            .ok_or("Service not found")
-            .handle_err(location!())?;
-        let ServiceInfo::Registered(registered) = service_info else {
-            Err("Service is not registered").handle_err(location!())?
-        };
-        Ok(registered.proxy_branches(service_name, service_ip, service_docker))
-    }
-
-    /// The trigger chain at `port`, if the trigger exists.
+    /// The direct backend edge at `port`, if the trigger exists.
     async fn backend_branch(
         &self,
         stack: &str,
@@ -1140,7 +1033,7 @@ impl NullnetGrpcImpl {
         service_ip: IpAddr,
         service_docker: Option<&str>,
         port: u16,
-    ) -> Result<Option<ChainBranch>, Error> {
+    ) -> Result<Option<BackendEdge>, Error> {
         let guard = self.services.read().await;
         let stack_map = guard
             .get(stack)
@@ -1153,25 +1046,16 @@ impl NullnetGrpcImpl {
         let ServiceInfo::Registered(registered) = service_info else {
             Err("Service is not registered").handle_err(location!())?
         };
-        Ok(registered.backend_branch(service_name, service_ip, service_docker, port, stack_map))
+        Ok(registered.backend_edge(service_name, service_ip, service_docker, port, stack_map))
     }
 
-    async fn setup_proxy_chain(
+    async fn setup_proxy_edge(
         &self,
-        request: &ProxyChainRequest<'_>,
+        request: &ProxyEdgeRequest<'_>,
         key: &ProxyKey,
         admission: Option<DedicatedAdmission>,
-    ) -> Result<ChainOutcome, Error> {
+    ) -> Result<EdgeSetupOutcome, Error> {
         let (service_name, client_ip, proxy_ip) = key;
-        let branches = self
-            .proxy_branches(
-                request.stack,
-                service_name,
-                request.replica.ip,
-                request.replica.docker.as_deref(),
-            )
-            .await?;
-
         let mut entry = RegisteredEdge::new(
             *proxy_ip,
             Client::new(client_ip.clone(), Some(*proxy_ip)),
@@ -1187,11 +1071,11 @@ impl NullnetGrpcImpl {
             pressure: request.measure_congestion.then(|| self.congestion.clone()),
         };
         match self
-            .net_chain_setup_with_admission(request.stack, entry, branches, entry_setup)
+            .net_edge_setup_with_admission(request.stack, entry, entry_setup)
             .await?
         {
-            ChainOutcome::Built(None) => {
-                Err("No valid upstream IP found after NET chain setup").handle_err(location!())
+            EdgeSetupOutcome::Built(None) => {
+                Err("No valid upstream IP found after NET edge setup").handle_err(location!())
             }
             other => Ok(other),
         }
@@ -1302,12 +1186,12 @@ impl NullnetGrpcImpl {
         let container = (!req.initiator_container.is_empty()).then_some(req.initiator_container);
 
         // Resolve to the same replica identity the trigger keyed the session
-        // under, or the decrement would target a different replica's chain.
+        // under, or the decrement would target a different replica's edge.
         let Some((initiator_ip, initiator_docker)) = self
             .resolve_trigger_replica(&req.service_name, sender_ip, container.as_deref())
             .await
         else {
-            // The replica is gone; its chains came down with it.
+            // The replica is gone; its edges came down with it.
             return Ok(Response::new(Empty {}));
         };
 
@@ -1364,7 +1248,7 @@ impl NullnetGrpcImpl {
 
         // One write guard resolves the initiator replica, refreshes heartbeat
         // on the first-dep edge if already set up, and decides whether the
-        // chain for this trigger port needs rebuilding.
+        // edge for this trigger port needs rebuilding.
         let (stack, initiator_ip, initiator_docker, claim) = {
             let guard = self.services.write().await;
             let stack = find_service_stack(&guard, initiator_name)
@@ -1412,7 +1296,7 @@ impl NullnetGrpcImpl {
             // `client_replica`, not `is_client_setup`: a reservation counts as
             // already building. Rebuilding on top of one would take a second
             // refcount on every hop while the backend session records only
-            // one, pinning the chain forever.
+            // one, pinning the edge forever.
             let needs_rebuild = match first_dep {
                 None => false,
                 Some(name) => !matches!(
@@ -1457,7 +1341,7 @@ impl NullnetGrpcImpl {
                     initiator_docker.as_deref(),
                 )
                 .await?;
-                this.setup_backend_chain_owned(
+                this.setup_backend_edge_owned(
                     &stack,
                     &initiator_name,
                     initiator_ip,
@@ -1485,14 +1369,14 @@ impl NullnetGrpcImpl {
         Ok(())
     }
 
-    /// Build the chain for one trigger port.
+    /// Build the direct edge for one trigger port.
     ///
-    /// Returns whether a chain was actually built, i.e. whether the caller now
-    /// holds one increment on every hop. The bail paths below return `Ok(false)`
+    /// Returns whether an edge was actually built, i.e. whether the caller now
+    /// holds one refcount. The bail paths below return `Ok(false)`
     /// precisely so a session is never recorded as holding a refcount that was
     /// never taken — that would let a later close consume somebody else's.
     #[cfg(test)]
-    pub(crate) async fn setup_backend_chain(
+    pub(crate) async fn setup_backend_edge(
         &self,
         stack: &str,
         initiator_name: &str,
@@ -1500,7 +1384,7 @@ impl NullnetGrpcImpl {
         initiator_docker: Option<&str>,
         port: u16,
     ) -> Result<bool, Error> {
-        self.setup_backend_chain_owned(
+        self.setup_backend_edge_owned(
             stack,
             initiator_name,
             initiator_ip,
@@ -1512,7 +1396,7 @@ impl NullnetGrpcImpl {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn setup_backend_chain_owned(
+    async fn setup_backend_edge_owned(
         &self,
         stack: &str,
         initiator_name: &str,
@@ -1521,11 +1405,11 @@ impl NullnetGrpcImpl {
         port: u16,
         owner: Option<(BackendKey, uuid::Uuid)>,
     ) -> Result<bool, Error> {
-        let Some(branch) = self
+        let Some(edge) = self
             .backend_branch(stack, initiator_name, initiator_ip, initiator_docker, port)
             .await?
         else {
-            routine_log!("[trigger] no chain to build for '{initiator_name}' port {port}");
+            routine_log!("[trigger] no edge to build for '{initiator_name}' port {port}");
             self.orchestrator
                 .events
                 .emit(Event::backend_trigger_setup_bailed(
@@ -1536,24 +1420,14 @@ impl NullnetGrpcImpl {
             return Ok(false);
         };
 
-        routine_log!(
-            "[trigger] dispatching net_chain_setup for '{initiator_name}' port {port} \
-             ({} hop(s))",
-            branch.deps.len()
-        );
+        routine_log!("[trigger] dispatching backend edge for '{initiator_name}' port {port}");
         // An invalidated owner unwinds its increments instead of retaining a hold.
         let built = matches!(
-            self.net_chain_setup_owned(
-                stack,
-                None,
-                vec![branch],
-                owner,
-                EntrySetupContext::default(),
-            )
-            .await?,
-            ChainOutcome::Built(_)
+            self.net_edge_setup_owned(stack, EdgeSetupRequest::Backend(edge), owner,)
+                .await?,
+            EdgeSetupOutcome::Built(_)
         );
-        routine_log!("[trigger] net_chain_setup completed for '{initiator_name}' port {port}");
+        routine_log!("[trigger] backend edge completed for '{initiator_name}' port {port}");
         Ok(built)
     }
 
@@ -2016,45 +1890,34 @@ impl NullnetGrpcImpl {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
-    /// Detached wrapper around [`run_net_chain_setup`] — see its docs for why
-    /// the chain must not be able to die with its caller.
-    async fn net_chain_setup_with_admission(
+    /// Detached wrapper around [`run_net_edge_setup`].
+    async fn net_edge_setup_with_admission(
         &self,
         stack: &str,
         entry: RegisteredEdge,
-        branches: Vec<ChainBranch>,
         entry_setup: EntrySetupContext,
-    ) -> Result<ChainOutcome, Error> {
-        self.net_chain_setup_owned(stack, Some(entry), branches, None, entry_setup)
-            .await
+    ) -> Result<EdgeSetupOutcome, Error> {
+        self.net_edge_setup_owned(
+            stack,
+            EdgeSetupRequest::Proxy(Box::new(entry), entry_setup),
+            None,
+        )
+        .await
     }
 
-    async fn net_chain_setup_owned(
+    async fn net_edge_setup_owned(
         &self,
         stack: &str,
-        entry: Option<RegisteredEdge>,
-        branches: Vec<ChainBranch>,
+        request: EdgeSetupRequest,
         owner: Option<(BackendKey, uuid::Uuid)>,
-        entry_setup: EntrySetupContext,
-    ) -> Result<ChainOutcome, Error> {
+    ) -> Result<EdgeSetupOutcome, Error> {
         let services = self.services.clone();
         let orchestrator = self.orchestrator.clone();
         let stack = stack.to_string();
         let (tx, rx) = oneshot::channel();
         tokio::spawn(async move {
-            let _ = tx.send(
-                run_net_chain_setup(
-                    services,
-                    orchestrator,
-                    stack,
-                    entry,
-                    branches,
-                    owner,
-                    entry_setup,
-                )
-                .await,
-            );
+            let _ =
+                tx.send(run_net_edge_setup(services, orchestrator, stack, request, owner).await);
         });
         rx.await.handle_err(location!())?
     }
@@ -2066,7 +1929,7 @@ impl NullnetGrpcImpl {
 /// NFQUEUE listeners do when their trigger times out. Any handler that mutates
 /// shared state between an insert and the cleanup that unwinds it must
 /// therefore not live on the caller's future: `ensure_egress_edge` would leave
-/// its reservation behind, and `handle_backend_trigger` would leave a chain
+/// its reservation behind, and `handle_backend_trigger` would leave an edge
 /// refcount with no session holding it.
 async fn detached<F>(fut: F) -> Result<F::Output, Error>
 where
@@ -2093,24 +1956,22 @@ impl From<Error> for ProxyFailure {
     }
 }
 
-/// What building a chain produced.
-pub(crate) enum ChainOutcome {
-    /// Built (or reused). Carries the proxy upstream if the chain had an entry
-    /// edge, `None` for a chain of dependency hops only.
+/// What building an edge produced.
+pub(crate) enum EdgeSetupOutcome {
+    /// Built (or reused). Carries the proxy upstream for an ingress edge.
     Built(Option<Ipv4Addr>),
-    /// Unwound because the client entry that owns the chain was torn down while
-    /// it was still being built. Every edge this chain took was handed back, so
-    /// nothing is left behind and the caller may simply build it again — a
-    /// request should not fail because a teardown landed inside its window.
+    /// Unwound because the client entry was torn down during setup.
     OwnerLost,
+}
+
+enum EdgeSetupRequest {
+    Proxy(Box<RegisteredEdge>, EntrySetupContext),
+    Backend(BackendEdge),
 }
 
 /// Where an edge's server side comes from.
 enum EdgeTarget {
-    /// A dependency whose replica is chosen when the edge is claimed. Choosing
-    /// it any earlier is what finding 5 was: the pick and the binding have to
-    /// happen in the same locked pass, or the hop after this one gets rooted on
-    /// a replica that lost the race.
+    /// A backend dependency whose replica is chosen when the edge is claimed.
     Dependency,
     /// A replica the caller already fixed — the proxy entry edge, whose target
     /// is picked when the request selects an upstream.
@@ -2128,56 +1989,29 @@ impl EdgeTarget {
     }
 }
 
-/// One linear branch of a chain, rooted at a specific replica. Hops are walked
-/// in order and each is resolved only once its predecessor is bound.
-pub(crate) struct ChainBranch {
+/// One direct backend edge rooted at a specific service replica.
+pub(crate) struct BackendEdge {
     pub(crate) root_name: String,
     pub(crate) root_ip: IpAddr,
     pub(crate) root_docker: Option<String>,
-    pub(crate) deps: Vec<String>,
-    /// DNAT port for the first hop, set only on a backend-trigger chain.
+    pub(crate) dependency: String,
+    /// DNAT port observed for this backend trigger.
     pub(crate) entry_port: Option<u32>,
 }
 
-struct BranchOutcome {
-    edges: Vec<SuccessfulEdge>,
-    ok: bool,
-}
-
-/// Build every branch of a chain, plus the proxy entry edge if there is one,
-/// and return the upstream that entry edge resolved to.
-///
-/// Branches run in parallel; the hops *within* a branch run in order, because
-/// a hop cannot be resolved before the one it hangs off is bound. That
-/// ordering is the fix for finding 5 — the old code resolved every hop up
-/// front from one read-locked snapshot and applied the result later, so a
-/// shared hop that got bound to a different replica in between left the rest
-/// of the branch rooted on a replica nothing routes through.
-///
-/// A free function, and always run detached (see `net_chain_setup`): the tasks
-/// spawned here live in a `JoinSet` owned by this future, and dropping a
-/// `JoinSet` aborts its tasks. If a request future could carry it, a proxy that
-/// hung up mid-setup would abort edges that had already reserved their slot,
-/// leaving reservations with nothing left to resolve them.
-async fn run_net_chain_setup(
+/// Build one ingress or backend edge in a detached task.
+async fn run_net_edge_setup(
     services: Arc<RwLock<StackMap>>,
     orchestrator: Orchestrator,
     stack: String,
-    entry: Option<RegisteredEdge>,
-    branches: Vec<ChainBranch>,
+    request: EdgeSetupRequest,
     owner: Option<(BackendKey, uuid::Uuid)>,
-    entry_setup: EntrySetupContext,
-) -> Result<ChainOutcome, Error> {
-    let mut join_set_outer = JoinSet::new();
-
-    if let Some(edge) = entry {
-        let (client_ethernet, client) = edge.client;
-        let (server_ethernet, server) = edge.server;
-        let services = services.clone();
-        let orchestrator = orchestrator.clone();
-        let stack = stack.clone();
-        join_set_outer.spawn(async move {
-            let outcome = setup_edge(
+) -> Result<EdgeSetupOutcome, Error> {
+    let outcome = match request {
+        EdgeSetupRequest::Proxy(edge, entry_setup) => {
+            let (client_ethernet, client) = edge.client;
+            let (server_ethernet, server) = edge.server;
+            setup_edge(
                 &services,
                 &orchestrator,
                 &stack,
@@ -2192,106 +2026,50 @@ async fn run_net_chain_setup(
                 entry_setup.admission,
                 entry_setup.pressure,
             )
-            .await;
-            match outcome {
-                EdgeOutcome::Success {
-                    net_id,
-                    client,
-                    server_name,
-                    ingress,
-                    ..
-                } => BranchOutcome {
-                    edges: vec![SuccessfulEdge {
-                        net_id,
-                        client,
-                        server_name,
-                        ingress,
-                    }],
-                    ok: true,
-                },
-                EdgeOutcome::Failed => BranchOutcome {
-                    edges: Vec::new(),
-                    ok: false,
-                },
-            }
-        });
-    }
-
-    for branch in branches {
-        let services = services.clone();
-        let orchestrator = orchestrator.clone();
-        let stack = stack.clone();
-        join_set_outer.spawn(async move {
-            let mut edges = Vec::new();
-            let mut current_name = branch.root_name;
-            let mut current_ip = branch.root_ip;
-            let mut current_docker = branch.root_docker;
-            for (i, dep) in branch.deps.iter().enumerate() {
-                let client =
-                    Client::new_service(current_name.clone(), current_ip, current_docker.clone());
-                let entry_port = if i == 0 { branch.entry_port } else { None };
-                let outcome = setup_edge(
-                    &services,
-                    &orchestrator,
-                    &stack,
-                    current_ip,
-                    client,
-                    current_docker.clone(),
-                    dep.clone(),
-                    EdgeTarget::Dependency,
-                    entry_port,
-                    false,
-                    false,
-                    None,
-                    None,
-                )
-                .await;
-                match outcome {
-                    EdgeOutcome::Success {
-                        net_id,
-                        client,
-                        server_name,
-                        server,
-                        ingress,
-                    } => {
-                        edges.push(SuccessfulEdge {
-                            net_id,
-                            client,
-                            server_name,
-                            ingress,
-                        });
-                        // The next hop hangs off wherever this one actually
-                        // landed, not off a guess made before it was claimed.
-                        current_name.clone_from(dep);
-                        current_ip = server.0;
-                        current_docker = server.1;
-                    }
-                    EdgeOutcome::Failed => return BranchOutcome { edges, ok: false },
-                }
-            }
-            BranchOutcome { edges, ok: true }
-        });
-    }
-
-    let mut successful: Vec<SuccessfulEdge> = Vec::new();
-    let mut any_failure = false;
-    while let Some(res) = join_set_outer.join_next().await {
-        match res {
-            Ok(BranchOutcome { edges, ok }) => {
-                successful.extend(edges);
-                any_failure |= !ok;
-            }
-            Err(_) => {
-                any_failure = true;
-            }
+            .await
         }
-    }
+        EdgeSetupRequest::Backend(edge) => {
+            let client =
+                Client::new_service(edge.root_name, edge.root_ip, edge.root_docker.clone());
+            setup_edge(
+                &services,
+                &orchestrator,
+                &stack,
+                edge.root_ip,
+                client,
+                edge.root_docker,
+                edge.dependency,
+                EdgeTarget::Dependency,
+                edge.entry_port,
+                false,
+                false,
+                None,
+                None,
+            )
+            .await
+        }
+    };
 
-    // A proxy chain is owned by the client entry its entry edge created. If
-    // that entry is gone by the time the chain finishes — its replica moved, a
-    // teardown walked through, config changed under it — every edge this chain
-    // built is holding a refcount nobody will ever spend. Hand them back
-    // instead of stranding them and their net ids.
+    let (successful, any_failure) = match outcome {
+        EdgeOutcome::Success {
+            net_id,
+            client,
+            server_name,
+            ingress,
+            ..
+        } => (
+            vec![SuccessfulEdge {
+                net_id,
+                client,
+                server_name,
+                ingress,
+            }],
+            false,
+        ),
+        EdgeOutcome::Failed => (Vec::new(), true),
+    };
+
+    // If ownership disappeared during setup, hand back the edge's refcount.
     let mut services_mut = services.write().await;
     let backend_history = if let Some((key, generation)) = &owner {
         if any_failure {
@@ -2301,7 +2079,7 @@ async fn run_net_chain_setup(
             let first = successful
                 .iter()
                 .find(|edge| edge.client == source)
-                .expect("a completed backend chain has an initiator edge");
+                .expect("a completed backend setup has an initiator edge");
             let setup_ms = services_mut
                 .get(&stack)
                 .and_then(|m| m.get(&first.server_name))
@@ -2346,20 +2124,20 @@ async fn run_net_chain_setup(
                 if let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&edge.server_name)
                     && reg.client_net_id(&edge.client) == Some(edge.net_id)
                 {
-                    reg.decrement_chain(&edge.client, &orchestrator).await;
+                    reg.release_hold(&edge.client, &orchestrator).await;
                 }
             }
         }
         if orphaned && !any_failure {
-            // Recoverable: nothing of this chain survives, so say so rather
+            // Recoverable: nothing of this edge survives, so say so rather
             // than failing the request outright.
-            return Ok(ChainOutcome::OwnerLost);
+            return Ok(EdgeSetupOutcome::OwnerLost);
         }
-        Err("NET chain setup failed").handle_err(location!())?;
+        Err("NET edge setup failed").handle_err(location!())?;
     }
 
     // Queue ingress history before a concurrent teardown can publish its close.
-    // Past the unwind check, so every branch is up and these sessions are real.
+    // Past the unwind check, so these sessions are real.
     for edge in &successful {
         let (Some(ingress), Some(proxy_ip)) = (&edge.ingress, edge.client.is_proxy()) else {
             continue;
@@ -2404,7 +2182,7 @@ async fn run_net_chain_setup(
         orchestrator.persist_backend_session(history).await;
     }
 
-    Ok(ChainOutcome::Built(
+    Ok(EdgeSetupOutcome::Built(
         successful
             .iter()
             .find_map(|e| e.ingress.as_ref().map(|i| i.net_ip_server)),
@@ -2442,9 +2220,9 @@ async fn setup_edge(
     // rather than reporting a hop that has no tunnel yet; or it is ours, and
     // we pick the replica and reserve it in one locked pass.
     //
-    // Reuse is across ALL replicas of the dependency: proxy clients are keyed
-    // by (client, proxy) and dep clients by source replica, and a source
-    // replica can only route to one replica of a given dep.
+    // Reuse is across all replicas of the target: ingress clients are keyed by
+    // (client, proxy) and backend clients by source replica. A source replica
+    // can route to only one replica of a given backend.
     let deadline = std::time::Instant::now() + EDGE_CLAIM_TIMEOUT;
     let (server_ethernet, server_docker, server_resume, reservation, reserved_carrier) = loop {
         let waiting_on = {
@@ -2455,13 +2233,12 @@ async fn setup_edge(
             let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name) else {
                 return EdgeOutcome::Failed;
             };
-            if let Some(bound) = reg.client_replica_live(&client) {
-                reg.add_chain(&client);
+            if reg.client_replica_live(&client).is_some() {
+                reg.add_hold(&client);
                 return EdgeOutcome::Success {
                     net_id: reg.client_net_id(&client).expect("live edge has a net id"),
                     client,
                     server_name,
-                    server: bound,
                     ingress: None,
                 };
             }
@@ -2706,7 +2483,7 @@ async fn setup_edge(
     }
 
     // Promote the reservation to a live edge. No refcount is added
-    // here — the reservation already carries this chain's one.
+    // here — the reservation already carries this edge's one.
     let mut guard = services.write().await;
     let promoted = match guard
         .get_mut(stack)
@@ -2773,8 +2550,7 @@ async fn setup_edge(
         return EdgeOutcome::Failed;
     }
 
-    // Carried rather than written here: the row is opened only once every
-    // branch of the chain is up (see `PendingIngress`).
+    // Carried rather than written here so teardown cannot race the open.
     let ingress = client.is_proxy().is_some().then_some(PendingIngress {
         setup_ms: setup_ms as u64,
         net_ip_client,
@@ -2785,15 +2561,11 @@ async fn setup_edge(
         net_id,
         client,
         server_name,
-        server: (server_ethernet, server_docker),
         ingress,
     }
 }
 
-/// The ingress session an entry edge will open once its whole chain is up.
-/// Deferred to the end of the build on purpose: a chain that fails after this
-/// edge is built unwinds it, and a row opened here would outlive the edge with
-/// no `ended_at` and no path that ever closes it.
+/// The ingress session an entry edge opens after setup succeeds.
 struct PendingIngress {
     setup_ms: u64,
     net_ip_client: Ipv4Addr,
@@ -2805,9 +2577,6 @@ enum EdgeOutcome {
         net_id: u32,
         client: Client,
         server_name: String,
-        /// The replica this edge is bound to. The next hop of the branch is
-        /// rooted here, so it must be what was claimed, not what was guessed.
-        server: (IpAddr, Option<String>),
         /// `Some` only on a freshly built proxy entry edge; a reused edge takes
         /// a refcount and opens no session of its own.
         ingress: Option<PendingIngress>,
@@ -3313,7 +3082,6 @@ mod http_route_bundle_tests {
 
     fn http_service(timeout: Option<u64>) -> ServiceInfo {
         ServiceInfo::new(
-            vec![],
             HashMap::new(),
             timeout,
             None,
@@ -3326,7 +3094,6 @@ mod http_route_bundle_tests {
 
     fn tcp_service(listen_port: u16) -> ServiceInfo {
         ServiceInfo::new(
-            vec![],
             HashMap::new(),
             Some(0),
             None,
@@ -3359,7 +3126,6 @@ listen_port = 6379
 
 [[services]]
 name = "backend.only"
-proxy_dependencies = [["color.com"]]
 "#;
         let parsed: ServicesToml = toml::from_str(toml_str).unwrap();
         let services = parsed.services_map().unwrap();

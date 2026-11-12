@@ -1,5 +1,0 @@
-[[services]]
-name = "A"
-timeout = 0
-port = 8001
-proxy_dependencies = [["C", "D"]]

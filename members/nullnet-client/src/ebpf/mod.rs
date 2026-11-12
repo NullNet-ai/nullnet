@@ -18,6 +18,7 @@ use aya::Ebpf;
 use aya::maps::{HashMap as AyaHashMap, MapData};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::{HashMap, HashSet};
+use std::ffi::{CStr, CString};
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
@@ -84,7 +85,7 @@ impl PeerInner {
         let count = self.refcounts.entry(key).or_insert(0);
         *count += 1;
         if *count == 1 {
-            let _ = self.map.insert(key, 0u8, 0);
+            let _ = self.map.insert(&key, &0u8, 0);
         }
     }
 
@@ -157,13 +158,25 @@ pub fn enable(iface: &str, cfg: &FirewallConfig) -> Result<Firewall, Error> {
         )))
         .handle_err(location!())?;
 
+    let iface = CString::new(iface).handle_err(location!())?;
+
     // clsact carries both the ingress and egress TC hooks; idempotent.
-    let _ = tc::qdisc_add_clsact(iface);
+    let _ = tc::qdisc_add_clsact(iface.as_c_str());
 
     // Direction-specific programs sharing the PEERS/ALLOW_PORTS/CT maps: the
     // ingress classifier enforces inbound, the egress one outbound.
-    attach_classifier(&mut bpf, INGRESS_PROG, iface, TcAttachType::Ingress)?;
-    attach_classifier(&mut bpf, EGRESS_PROG, iface, TcAttachType::Egress)?;
+    attach_classifier(
+        &mut bpf,
+        INGRESS_PROG,
+        iface.as_c_str(),
+        TcAttachType::Ingress,
+    )?;
+    attach_classifier(
+        &mut bpf,
+        EGRESS_PROG,
+        iface.as_c_str(),
+        TcAttachType::Egress,
+    )?;
     let allow_ports = populate_allow_ports(&mut bpf, cfg)?;
 
     let peers_map: AyaHashMap<MapData, u32, u8> = bpf
@@ -184,7 +197,7 @@ pub fn enable(iface: &str, cfg: &FirewallConfig) -> Result<Firewall, Error> {
 fn attach_classifier(
     bpf: &mut Ebpf,
     name: &str,
-    iface: &str,
+    iface: &CStr,
     hook: aya::programs::TcAttachType,
 ) -> Result<(), Error> {
     use aya::programs::SchedClassifier;
@@ -221,7 +234,7 @@ impl FirewallAllowPorts {
         }
         for key in desired {
             if !self.ingress.contains(&key) {
-                self.map.insert(key, 0u8, 0).handle_err(location!())?;
+                self.map.insert(&key, &0u8, 0).handle_err(location!())?;
                 self.ingress.insert(key);
             }
         }
@@ -246,7 +259,7 @@ fn populate_allow_ports(bpf: &mut Ebpf, cfg: &FirewallConfig) -> Result<Firewall
     for (is_egress, proto, ports) in sets {
         for &p in ports {
             let key = allow_key(is_egress, proto, p);
-            map.insert(key, 0u8, 0).handle_err(location!())?;
+            map.insert(&key, &0u8, 0).handle_err(location!())?;
             if !is_egress {
                 ingress.insert(key);
             }

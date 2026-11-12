@@ -35,7 +35,6 @@ struct SessionJson {
     client_net: String,
     server_net: String,
     service: String,
-    chain_depth: usize,
     created_at: u64,
     // Geo/ASN of the external client IP (flag + ASN in the UI), like egress.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,7 +78,6 @@ pub(super) async fn list_handler(
                 client_net: l.client_net,
                 server_net: l.server_net,
                 service: l.service,
-                chain_depth: l.chain_depth,
                 created_at: l.created_at as u64,
                 country_code: geo.country_code,
                 asn: geo.asn,
@@ -171,20 +169,11 @@ pub(super) async fn history_handler(
         )
         .await;
 
-    // Volatile per-session state that only the live map knows (chain depth
-    // grows and shrinks as dependency chains come and go). Persisted at open
-    // and refreshed here so an active row shows the current value rather than
-    // the one it was born with; ended rows keep their last recorded value.
+    // Keep the live map for filling any ingress row missing from persistence.
     let mut live = live_ingress_sessions(&state, &stack).await;
     for s in &mut page.sessions {
         if s.ended_at.is_some() {
             continue;
-        }
-        if s.direction == INGRESS
-            && let Some(l) = live.get(&(s.net_id, s.peer_ip.clone()))
-            && let Some(obj) = s.detail.as_object_mut()
-        {
-            obj.insert("chain_depth".into(), l.chain_depth.into());
         }
         // Geo resolves asynchronously and is usually still unknown when the row
         // is written; fill the response from the cache when it has landed since.
@@ -239,7 +228,6 @@ struct LiveSession {
     service: String,
     client_net: String,
     server_net: String,
-    chain_depth: usize,
     created_at: i64,
 }
 
@@ -270,7 +258,6 @@ async fn live_ingress_sessions(
                             service: name.clone(),
                             client_net: ci.client_net().to_string(),
                             server_net: ci.server_net().to_string(),
-                            chain_depth: ci.active_chains(),
                             created_at: ci
                                 .created_at()
                                 .duration_since(UNIX_EPOCH)
@@ -311,7 +298,6 @@ fn synthesize_live(
             detail: json!({
                 "client_net": l.client_net,
                 "server_net": l.server_net,
-                "chain_depth": l.chain_depth,
             }),
         })
         .collect();

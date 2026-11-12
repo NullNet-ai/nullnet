@@ -1,6 +1,6 @@
 use crate::db::schema::{
     certificates, dns_credentials, events, login_attempts, refresh_tokens, routes,
-    service_dependencies, service_triggers, services, sessions, stacks, user_scopes, users,
+    service_triggers, services, sessions, stacks, user_scopes, users,
 };
 use diesel::prelude::*;
 
@@ -118,26 +118,6 @@ pub(crate) struct ServiceTriggerRow {
 pub(crate) struct NewServiceTriggerRow {
     pub(crate) service_id: i32,
     pub(crate) peer: String,
-}
-
-#[derive(Queryable, Selectable, Identifiable, Debug, Clone)]
-#[diesel(table_name = service_dependencies)]
-#[diesel(primary_key(id))]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-pub(crate) struct ServiceDependencyRow {
-    pub(crate) id: i32,
-    pub(crate) service_id: i32,
-    pub(crate) branch_index: i32,
-    pub(crate) chain: String,
-}
-
-#[derive(Insertable, Debug, Clone)]
-#[diesel(table_name = service_dependencies)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-pub(crate) struct NewServiceDependencyRow {
-    pub(crate) service_id: i32,
-    pub(crate) branch_index: i32,
-    pub(crate) chain: String,
 }
 
 #[derive(Queryable, Selectable, Identifiable, Debug, Clone)]

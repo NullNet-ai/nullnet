@@ -7,7 +7,7 @@ authors.workspace = true
 
 [dependencies]
 sha2 = "0.11.0"
-tun-rs = { version = "=2.8.11", features = ["async_tokio"] }
+tun-rs = { version = "2.8.18", features = ["async_tokio"] }
 etherparse = "0.21.0"
 clap = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["net", "sync", "rt-multi-thread", "macros", "io-util", "time", "fs", "process"] }
@@ -16,11 +16,11 @@ nullnet-liberror.workspace = true
 nullnet-grpc-lib.workspace = true
 ipnetwork = { workspace = true, features = ["serde"] }
 listeners = "0.6.1"
-rtnetlink = "0.23.0"
+rtnetlink = "0.24.0"
 netlink-sys = { version = "0.9.0", features = ["tokio_socket"] }
 futures.workspace = true
 network-interface = "2.0.5"
 nfq = "0.2"
 aes-gcm.workspace = true
-aya = "0.14"
+aya = "0.16"
 libc = "0.2"

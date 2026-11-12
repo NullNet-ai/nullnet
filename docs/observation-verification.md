@@ -17,7 +17,7 @@ service configuration changes.
 
 Eight nginx services ran across Linux hosts 192.168.1.103 and 192.168.1.104,
 four on each host, with distinct ports 18100–18107. The saved configuration
-initially allowed only obs0 → obs7 and retained a separate proxy dependency.
+initially allowed only obs0 → obs7.
 
 - Before activation, obs0 → obs1 failed (curl exit 7, 3845 ms).
 - Activation installed 56 backend triggers while preserving the saved config.
@@ -26,7 +26,7 @@ initially allowed only obs0 → obs7 and retained a separate proxy dependency.
   Host 104 completed 240 requests in 2.50 s; host 103 in 2.35 s. The measured
   p95 command durations were 161.51 ms and 166.27 ms respectively.
 - Stop/apply reported 24 added edges and one unused edge removed. The resulting
-  config contained 24 backends; proxy dependencies were unchanged.
+  config contained 24 backends.
 - After application, obs0 → obs1 succeeded in 314.99 ms.
 
 Snapshots of `/api/graph/observation_e2e` contained eight registered service

@@ -1,7 +1,5 @@
 use crate::orchestrator::Orchestrator;
-use crate::services::changes::{
-    ServiceChange, apply_changes, dep_chain_has_pending, release_backend_chain,
-};
+use crate::services::changes::{ServiceChange, apply_changes, release_backend_edge};
 use crate::services::clients::Client;
 use crate::services::input::StackMap;
 use crate::services::service_info::ServiceInfo;
@@ -25,7 +23,7 @@ const MAX_POLL_INTERVAL: Duration = Duration::from_secs(60);
 /// constant, not a config key: it smooths kernel timing, it does not express
 /// policy.
 ///
-/// Shared by egress edges and trigger-built chains: the kernel timing it
+/// Shared by egress and trigger-built edges: the kernel timing it
 /// absorbs is the same for both.
 const LIVENESS_REAP_DEBOUNCE: Duration = Duration::from_secs(30);
 
@@ -43,7 +41,7 @@ pub(crate) async fn check_timeouts(
                 .min()
                 .unwrap_or(MAX_POLL_INTERVAL);
             drop(guard);
-            // A liveness-driven deadline (egress edge or trigger chain going
+            // A liveness-driven deadline (egress or backend edge going
             // idle) is usually sooner than any ingress one.
             let egress = orchestrator
                 .nearest_egress_expiry(LIVENESS_REAP_DEBOUNCE)
@@ -66,7 +64,7 @@ pub(crate) async fn check_timeouts(
             .reap_idle_egress_edges(LIVENESS_REAP_DEBOUNCE)
             .await;
 
-        reap_idle_backend_chains(&services, &orchestrator, LIVENESS_REAP_DEBOUNCE).await;
+        reap_idle_backend_edges(&services, &orchestrator, LIVENESS_REAP_DEBOUNCE).await;
         reap_ingress_timeouts(&services, &orchestrator).await;
         let mut services_mut = services.write().await;
         crate::services::service_info::reconcile_container_pauses(&mut services_mut, &orchestrator)
@@ -89,7 +87,7 @@ pub(crate) async fn reap_ingress_timeouts(
         })
         .collect();
     for (stack, change) in candidates {
-        // Keep each chain transaction ordered, but let routing run between clients.
+        // Keep each session teardown ordered, but let routing run between clients.
         let mut guard = services.write().await;
         if let Some(services) = guard.get_mut(&stack) {
             apply_timeout_candidate(change, services, orchestrator, &stack).await;
@@ -118,18 +116,15 @@ fn client_timed_out(services: &HashMap<String, ServiceInfo>, name: &str, client:
         return false;
     };
     reg.proxy_client_expired(client, Duration::from_secs(timeout))
-        && !reg.client_replica(client).is_some_and(|(ip, docker)| {
-            dep_chain_has_pending(name, ip, docker.as_deref(), services)
-        })
 }
 
-/// Release the hold of every trigger chain whose connections are provably gone.
+/// Release every backend edge whose connections are provably gone.
 ///
 /// Each session holds exactly one refcount, so this decrements by one — never a
-/// teardown, since an ingress chain or another trigger port may still hold the
+/// teardown, since another trigger port may still hold the
 /// same edges. Taking the session out of the map is what makes it happen
 /// exactly once, however many duplicate close reports arrive.
-pub(crate) async fn reap_idle_backend_chains(
+pub(crate) async fn reap_idle_backend_edges(
     services: &RwLock<StackMap>,
     orchestrator: &Orchestrator,
     debounce: Duration,
@@ -142,9 +137,9 @@ pub(crate) async fn reap_idle_backend_chains(
             continue;
         };
         routine_log!(
-            "Trigger chain '{service}' ({ip}) port {port} idle past the debounce; releasing its hold"
+            "Backend edge '{service}' ({ip}) port {port} idle past the debounce; releasing its hold"
         );
-        release_backend_chain(
+        release_backend_edge(
             service,
             *ip,
             docker.as_deref(),
@@ -188,14 +183,6 @@ fn collect_timed_out_clients(services: &HashMap<String, ServiceInfo>) -> Vec<Ser
         };
 
         for client in reg.expired_proxy_clients(Duration::from_secs(timeout)) {
-            // Skip a client whose chain still has a hop in flight — see
-            // `dep_chain_has_pending`. It becomes reapable the moment the
-            // chain settles, one poll later at worst.
-            if reg.client_replica(&client).is_some_and(|(ip, docker)| {
-                dep_chain_has_pending(name, ip, docker.as_deref(), services)
-            }) {
-                continue;
-            }
             changes.push(ServiceChange::ProxyClientTimedOut {
                 name: name.clone(),
                 client,

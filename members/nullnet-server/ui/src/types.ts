@@ -14,7 +14,6 @@ export interface ServiceJson {
   name: string;
   registered: boolean;
   replicas: ReplicaJson[];
-  proxy_dependencies: string[][];
   triggers: Record<string, string>;
   timeout_secs?: number;
   max_networks?: number;
@@ -88,7 +87,6 @@ export interface SessionJson {
   client_net: string;
   server_net: string;
   service: string;
-  chain_depth: number;
   created_at: number;
   country_code?: string;
   asn?: string;
@@ -127,7 +125,6 @@ export interface SessionDetail {
   // ingress
   client_net?: string;
   server_net?: string;
-  chain_depth?: number;
   // blocked ingress: denials folded into this row
   attempts?: number;
   // backend
@@ -195,7 +192,7 @@ export type EventJson =
   | WithSeverity & { type: 'setup_started'; net_id: number; service: string; client_ip: string }
   | WithSeverity & { type: 'setup_ack'; net_id: number; service: string; latency_ms: number }
   | WithSeverity & { type: 'setup_timeout'; net_id: number; service: string }
-  | WithSeverity & { type: 'chain_owner_lost'; stack: string }
+  | WithSeverity & { type: 'ingress_owner_lost'; stack: string }
   | WithSeverity & {
       type: 'egress_reservation_reclaimed'
       service: string
@@ -219,12 +216,11 @@ export type EventJson =
   | WithSeverity & { type: 'all_replicas_removed'; service: string; stack: string; ip: string }
   | WithSeverity & { type: 'service_reachability_toggled'; service: string; stack: string; reachable: boolean }
   | WithSeverity & { type: 'proxy_client_timed_out'; service: string; client_ip: string }
-  | WithSeverity & { type: 'stale_session_evicted'; service: string; client_ip: string; proxy_ip: string }
   | WithSeverity & { type: 'max_networks_limit_enforced'; service: string; proxy_ip: string; net_id: number; limit: number }
   | WithSeverity & { type: 'ingress_congestion_control_changed'; node_ip: string; active: boolean }
   | WithSeverity & { type: 'ingress_congestion_recovery_started'; node_ip: string }
   | WithSeverity & { type: 'net_id_pool_exhausted'; service: string; client_ip: string }
-  | WithSeverity & { type: 'proxy_chain_setup_failed'; service: string; client_ip: string }
+  | WithSeverity & { type: 'ingress_setup_failed'; service: string; client_ip: string }
   | WithSeverity & { type: 'backend_trigger_setup_bailed'; service: string; port: number }
   | WithSeverity & { type: 'file_watch_failed'; target: string; error_message: string }
   | WithSeverity & { type: 'port_mapping_conflict'; stack_a: string; service_a: string; stack_b: string; service_b: string; protocol: string; listen_port: number }
@@ -336,11 +332,6 @@ export interface GraphJson {
   edges: GraphEdgeJson[];
 }
 
-export interface ChainJson {
-  proxy_net_id: number;
-  all_net_ids: number[];
-}
-
 // Structured stack service config — the widget-based Config page.
 // Field-for-field mirror of the server's `ServiceToml`
 // (members/nullnet-server/src/services/input.rs), which is reused directly
@@ -373,7 +364,6 @@ export interface ServiceConfigJson {
   pausable?: boolean;
   port?: number | null;
   timeout?: number | null;
-  proxy_dependencies: string[][];
   backends: string[];
   max_networks?: number | null;
   protocol?: 'http' | 'tcp' | 'udp' | null;

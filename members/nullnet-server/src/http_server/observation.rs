@@ -364,7 +364,6 @@ docker_container = "web"
 port = 8001
 timeout = 0
 backends = ["old"]
-proxy_dependencies = [["old"]]
 [[services]]
 name = "old"
 docker_container = "old"
@@ -399,7 +398,7 @@ port = 8003
     }
 
     #[tokio::test]
-    async fn lifecycle_keeps_saved_config_and_proxy_deps_and_applies_only_observed_backends() {
+    async fn lifecycle_keeps_saved_config_and_applies_only_observed_backends() {
         let state = state().await;
         let baseline = ServicesToml::export_toml(&state.db, "mesh").await.unwrap();
         let Json(started) = start_handler(admin(), Path("mesh".into()), State(state.clone()))
@@ -411,10 +410,6 @@ port = 8003
                 .map(|s| s.triggers().len())
                 .sum::<usize>(),
             6
-        );
-        assert_eq!(
-            state.services.read().await["mesh"]["web"].proxy_deps(),
-            &[vec!["old".to_string()]]
         );
         assert_eq!(
             ServicesToml::export_toml(&state.db, "mesh").await.unwrap(),
@@ -531,10 +526,6 @@ port = 8003
         assert_eq!(
             saved.iter().find(|s| s.name == "web").unwrap().backends,
             vec!["new"]
-        );
-        assert_eq!(
-            state.services.read().await["mesh"]["web"].proxy_deps(),
-            &[vec!["old".to_string()]]
         );
         assert_eq!(
             state.services.read().await["mesh"]["web"].triggers()[&8003],

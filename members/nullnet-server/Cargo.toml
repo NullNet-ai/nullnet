@@ -24,7 +24,7 @@ rpn-predicate-interpreter.workspace = true
 notify.workspace = true
 chrono.workspace = true
 axum = "0.8"
-axum-server = { version = "0.8", features = ["tls-rustls"] }
+axum-server = { version = "0.9.2", features = ["tls-rustls"] }
 rcgen = "0.14"
 rust-embed = { version = "8.12", features = ["axum"] }
 mime_guess = "2.0"
@@ -37,7 +37,7 @@ instant-acme = { version = "0.8", features = ["hyper-rustls"] }
 reqwest = { version = "0.13", features = ["json", "query", "form"] }
 openssl.workspace = true
 quick-xml = "0.42"
-aws-sdk-route53 = "1"
+aws-sdk-route53 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
 diesel = { workspace = true, features = ["sqlite", "returning_clauses_for_sqlite_3_35"] }
 diesel-async = { workspace = true, features = ["sync-connection-wrapper", "tokio"] }
@@ -45,7 +45,7 @@ diesel_migrations = { workspace = true, features = ["sqlite"] }
 # not used in code: enables statically-linked SQLite for diesel
 libsqlite3-sys = { workspace = true, features = ["bundled"] }
 # auth: JWT + password hashing + TOTP MFA
-jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto", "use_pem"] }
+jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
 argon2 = "0.6"
 totp-rs = { version = "6", features = ["gen_secret", "otpauth"] }
 sha2 = "0.11"

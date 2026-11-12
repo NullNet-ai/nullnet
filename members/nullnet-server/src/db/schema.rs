@@ -53,15 +53,6 @@ diesel::table! {
 }
 
 diesel::table! {
-    service_dependencies (id) {
-        id -> Integer,
-        service_id -> Integer,
-        branch_index -> Integer,
-        chain -> Text,
-    }
-}
-
-diesel::table! {
     routes (id) {
         id -> Integer,
         stack -> Text,
@@ -151,7 +142,6 @@ diesel::joinable!(user_scopes -> users (user_id));
 diesel::joinable!(refresh_tokens -> users (user_id));
 diesel::joinable!(services -> stacks (stack));
 diesel::joinable!(service_triggers -> services (service_id));
-diesel::joinable!(service_dependencies -> services (service_id));
 diesel::joinable!(routes -> stacks (stack));
 diesel::allow_tables_to_appear_in_same_query!(
     certificates,
@@ -165,7 +155,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     stacks,
     services,
     service_triggers,
-    service_dependencies,
     routes,
     observations,
     observation_counts,

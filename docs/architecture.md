@@ -15,9 +15,9 @@ NullNet architecture is made of three components that coordinate over a gRPC con
 - **nullnet-server** — the brain, and the only piece that sees the whole picture. It holds a configurable topology of which services are allowed to talk to which, and it decides when to build each connection.
 - **nullnet-client** — runs on each machine. It announces the services currently active on the local machine, and it watches for any of those services trying to reach another. The first time it sees that happening, it briefly pauses the request, asks the server to build the path, and then lets the request continue once the path exists.
 
-Each time a service is requested — through the proxy or by another service — the server walks the whole chain that request will travel. <br>
-If service A needs B, and B in turn needs C, that one request opens every link along the way at the same time, so the full path is ready atomically. <br>
-Each link is isolated and only stays open while it is being used; once detected as idle via a configurable timeout, the server tears it down. Encrypted ingress groups have independent keys and policy state while standard and multiplexed groups share the same reusable VXLAN carrier implementation; dependency, backend-trigger, and egress links retain dedicated VXLAN interfaces.
+An external request opens one direct ingress edge from the proxy to its target service. <br>
+When a service sends traffic to a declared backend, the first packet opens that direct backend edge; the backend's own outgoing edges remain closed until it sends traffic itself. <br>
+Each link is isolated and only stays open while it is being used. Encrypted ingress groups have independent keys and policy state while standard and multiplexed groups share the same reusable VXLAN carrier implementation; backend and egress links retain dedicated VXLAN interfaces.
 
 The result: there is no broad "internal network" for an attacker to roam around inside if they break in somewhere.<br>
 The only paths that exist are the narrow, temporary ones carrying legitimate traffic as determined by the current network activity and defined topology. <br>

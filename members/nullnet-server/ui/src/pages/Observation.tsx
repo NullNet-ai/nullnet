@@ -111,7 +111,7 @@ function ObservationPage({ stack }: { stack: string }) {
     </div>
     <Modal open={confirmStart} onClose={() => { if (!busy) setConfirmStart(false); }} title="Start observation?">
       <p>Enable {current?.trigger_count} directed backend triggers to port-configured services in <strong>{stack}</strong>?</p>
-      <p>The saved configuration will be read-only until observation stops. Existing proxy dependencies stay unchanged.</p>
+      <p>The saved configuration will be read-only until observation stops.</p>
       {actionError && <div className="modal-err" role="alert">{actionError}</div>}
       <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
         <button className="save-btn" disabled={busy} onClick={() => void action('start')}>{busy ? 'Starting…' : 'Start observation'}</button>

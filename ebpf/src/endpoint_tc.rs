@@ -1,6 +1,7 @@
 //! Shared classifiers retain dedicated per-edge forwarding and encryption.
 use aya_ebpf::{
-    bindings::{TC_ACT_OK, TC_ACT_SHOT},
+    EbpfContext,
+    bindings::{__sk_buff, TC_ACT_OK, TC_ACT_SHOT},
     helpers::bpf_redirect,
     macros::{classifier, map},
     maps::HashMap,
@@ -21,9 +22,10 @@ pub fn nullnet_endpoint_ingress(ctx: TcContext) -> i32 {
 
 #[inline(always)]
 fn ingress(ctx: &TcContext) -> Option<i32> {
-    let index = unsafe { (*ctx.skb.skb).ifindex };
-    let config = unsafe { ENDPOINT_CONFIG.get(index) }?;
-    let mark = unsafe { (*ctx.skb.skb).mark };
+    let skb = ctx.as_ptr().cast::<__sk_buff>();
+    let index = unsafe { (*skb).ifindex };
+    let config = unsafe { ENDPOINT_CONFIG.get(&index) }?;
+    let mark = unsafe { (*skb).mark };
     let protocol = ctx.load::<[u8; 2]>(12).ok()?;
     let destination = match protocol {
         [8, 0] => ctx.load::<u32>(30).ok()?,
@@ -41,8 +43,8 @@ fn ingress(ctx: &TcContext) -> Option<i32> {
 
 #[classifier]
 pub fn nullnet_endpoint_egress(ctx: TcContext) -> i32 {
-    let index = unsafe { (*ctx.skb.skb).ifindex };
-    let Some(config) = (unsafe { ENDPOINT_CONFIG.get(index) }) else {
+    let index = unsafe { (*ctx.as_ptr().cast::<__sk_buff>()).ifindex };
+    let Some(config) = (unsafe { ENDPOINT_CONFIG.get(&index) }) else {
         return TC_ACT_SHOT;
     };
     if config.mark != 0 {

@@ -5,9 +5,7 @@ digraph G {
 
 	"A" [label=<A<BR/><FONT POINT-SIZE="9">2 active / 0 paused / 2 total</FONT>>] [style=solid, color=green];
 
-	"B" [label=<B<BR/><FONT POINT-SIZE="9">0 active / 0 paused / 1 total</FONT>>] [style=dashed, color=green];
-
 	"C" [label=<C<BR/><FONT POINT-SIZE="9">1 active / 0 paused / 1 total</FONT>>] [style=dashed, color=green];
+	"A" -> "C" [label="VXLAN 102 [0ms]"];
 	"A" -> "C" [label="VXLAN 103 [0ms]"];
-	"A" -> "C" [label="VXLAN 104 [0ms]"];
 }

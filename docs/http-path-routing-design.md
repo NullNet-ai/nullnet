@@ -285,8 +285,8 @@ passthrough.
   save-time check share it, same as today):
   - exactly one of `service`/`redirect_to` per route;
   - `redirect_status` ∈ {301,302,307,308} when present;
-  - `service` must name a declared service in the *same* stack (routes don't
-    reach across stacks, same scoping as `proxy_dependencies`);
+  - `service` must name a declared service in the *same* stack (routes and
+    backend references do not reach across stacks);
   - the referenced service must be `protocol = "http"`;
   - `strip_prefix` is rejected on a `redirect_to` route; `preserve_path`/
     `preserve_query` are rejected on a `service` route — each only makes

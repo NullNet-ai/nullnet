@@ -90,7 +90,7 @@ impl Filters {
             ],
             _lock: lock,
         };
-        filters.lease.set(0, 0, 0)?;
+        filters.lease.set(0, &0, 0)?;
         filters.seed()?;
         Ok(filters)
     }
@@ -107,7 +107,7 @@ impl Filters {
                 let index = fs::read_to_string(entry.path().join("ifindex"))?
                     .trim()
                     .parse::<u32>()?;
-                self.owned.insert(index, 1, 0)?;
+                self.owned.insert(&index, &1, 0)?;
             }
         }
         Ok(())
@@ -165,7 +165,7 @@ impl Filters {
                 }
             }
         }
-        self.lease.set(0, monotonic_ns()? + 3_000_000_000, 0)?;
+        self.lease.set(0, &(monotonic_ns()? + 3_000_000_000), 0)?;
         Ok(Status {
             available: errors.is_empty(),
             detail: if errors.is_empty() {
@@ -214,7 +214,7 @@ impl Filters {
         if len != 0 {
             return Err("existing socket filter preserved".into());
         }
-        self.sockets.insert(cookie, recipient, 0)?;
+        self.sockets.insert(&cookie, &recipient, 0)?;
         let program = &self.programs[usize::from(protocol == 0)];
         if let Err(error) = program.attach(&socket) {
             let _ = self.sockets.remove(&cookie);
@@ -226,7 +226,7 @@ impl Filters {
 
 impl Drop for Filters {
     fn drop(&mut self) {
-        let _ = self.lease.set(0, 0, 0);
+        let _ = self.lease.set(0, &0, 0);
     }
 }
 
@@ -326,7 +326,7 @@ pub(crate) async fn start() -> watch::Receiver<Status> {
         if std::env::var("NULLNET_DEVICE_EVENT_BYPASS").as_deref() == Ok("false") {
             let result = if Path::new(ROOT).join(MAPS[0]).exists() {
                 pinned_map(MAPS[0]).and_then(|map| {
-                    Array::<_, u64>::try_from(map)?.set(0, 0, 0)?;
+                    Array::<_, u64>::try_from(map)?.set(0, &0, 0)?;
                     Ok(())
                 })
             } else {
@@ -356,7 +356,7 @@ pub(crate) async fn start() -> watch::Receiver<Status> {
             let status = match filters.refresh() {
                 Ok(status) => status,
                 Err(error) => {
-                    let _ = filters.lease.set(0, 0, 0);
+                    let _ = filters.lease.set(0, &0, 0);
                     Status {
                         available: false,
                         detail: error.to_string(),

@@ -23,7 +23,6 @@ struct ServiceJson {
     name: String,
     registered: bool,
     replicas: Vec<ReplicaJson>,
-    proxy_dependencies: Vec<Vec<String>>,
     triggers: HashMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     timeout_secs: Option<u64>,
@@ -70,7 +69,6 @@ pub(super) async fn services_handler(
                 name: name.clone(),
                 registered,
                 replicas,
-                proxy_dependencies: info.proxy_deps().to_vec(),
                 triggers,
                 timeout_secs: info.timeout(),
                 max_networks: info.max_networks(),

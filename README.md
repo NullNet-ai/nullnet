@@ -16,9 +16,8 @@ The attack surface starts as the whole network and shrinks only as far as the ru
 
 Nullnet inverts that.<br>
 By default **nothing can talk to anything**.<br>
-When a service is actually requested — from the outside through the proxy, or by another service —
-the server walks the dependency chain that request will travel and opens every link along it at once,
-so the full path is ready atomically.<br>
+When a service is requested from the outside, Nullnet opens one ingress edge. When that service
+connects to a declared backend, the first packet opens the direct backend edge on demand.<br>
 Each link is a private Linux VXLAN tunnel between exactly two machines, encrypted,
 and alive only while traffic is flowing through it.
 
@@ -40,7 +39,7 @@ Three binaries coordinate over a gRPC control plane:
 
 ## What you get
 
-- **On-demand tunnels** — encrypted links built atomically across a whole dependency chain and
+- **On-demand tunnels** — direct encrypted ingress and backend links built only when requested and
   reclaimed once the connections they carry are gone. Encrypted ingress uses isolated client
   groups that can share a reusable VXLAN carrier without sharing keys.
 - **Default-deny host firewall** — an eBPF classifier on every node's uplink NIC, with one

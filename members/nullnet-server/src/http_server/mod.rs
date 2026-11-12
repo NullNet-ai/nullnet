@@ -12,7 +12,6 @@ use tokio::sync::{Notify, RwLock};
 
 mod auth;
 mod certificates;
-mod chains;
 mod config;
 mod events;
 mod events_stream;
@@ -111,7 +110,6 @@ pub async fn serve(
             "/api/sessions/{stack}/{id}",
             delete(sessions::teardown_handler),
         )
-        .route("/api/chains/{stack}", get(chains::chains_handler))
         .route("/api/certificates", get(certificates::list_handler))
         .route(
             "/api/certificates/request",

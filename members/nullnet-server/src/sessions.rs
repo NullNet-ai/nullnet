@@ -18,8 +18,8 @@
 //!   naming it and closes when the client reports its last connection to that
 //!   host gone. Edge teardown is only the backstop for whatever is still open.
 
-//! * **backend** — one row per trigger chain, from its initiator to its first
-//!   destination, closed when the chain expires or is torn down.
+//! * **backend** — one row per trigger-built edge, from its initiator to its
+//!   destination, closed when the edge expires or is torn down.
 
 mod persistence;
 
@@ -135,7 +135,7 @@ pub(crate) struct SessionRecordJson {
     /// `None` while the session is live.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) ended_at: Option<i64>,
-    /// Direction-specific fields: `client_net`/`server_net`/`chain_depth` for
+    /// Direction-specific fields: `client_net`/`server_net` for
     /// ingress, `node_ip`/`container`/`proxy_ip` for egress.
     pub(crate) detail: serde_json::Value,
 }
@@ -232,7 +232,6 @@ impl SessionStore {
         let detail = json!({
             "client_net": client_net,
             "server_net": server_net,
-            "chain_depth": 1,
             "proxy_ip": proxy_ip.to_string(),
             "setup_ms": setup_ms,
         })
@@ -250,7 +249,7 @@ impl SessionStore {
         )));
     }
 
-    /// Persist the trigger's first hop; the row belongs to this chain generation.
+    /// Persist the trigger-built edge; the row belongs to this session generation.
     pub(crate) async fn open_backend(
         &self,
         stack: &str,

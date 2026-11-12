@@ -215,9 +215,9 @@ backward-compatible stages.
   explicitly if the server's address isn't in its own `.env` or differs from what clients use.
 
 - service configuration is split per **stack** and lives in the server's SQLite database as
-  normalized rows (`stacks`/`services`/`service_triggers`/`service_dependencies`/`routes` — one
-  service's triggers/dependency branches are child rows of its own row, keyed by an autoincrement
-  id). Edit it through the admin UI's Config page (per-service widgets), or directly via
+  normalized rows (`stacks`/`services`/`service_triggers`/`routes` — one service's backend
+  triggers are child rows of its own row, keyed by an autoincrement id). Edit it through the admin
+  UI's Config page (per-service widgets), or directly via
   `GET`/`POST`/`DELETE /api/service-config/{stack}` (services, structured JSON) and
   `GET`/`POST /api/routes/{stack}` (routes) — both validate and apply live, no restart needed. The
   Config page's **Export**/**Import** buttons (`GET`/`POST /api/service-config/{stack}/export`/
@@ -239,8 +239,7 @@ backward-compatible stages.
   timeout = 0
   docker_container = "my-app_color"
   port = 3001
-  proxy_dependencies = [["fs.color.com"]]
-  backends = ["ts.color.com"]
+  backends = ["fs.color.com", "ts.color.com"]
 
   [[services]]                 # backend-only dep of color.com
   name = "fs.color.com"
@@ -281,9 +280,9 @@ backward-compatible stages.
   ```
 
 - a service is **hostable** when it declares a match key. `port` is required when `timeout` makes
-  the service proxy-reachable; otherwise it is optional. A portless service can participate in
-  proxy dependency chains and initiate backend/egress traffic, but a portless entry in `backends`
-  has no runtime trigger and cannot be reached that way. Clients hold no service file: each reports
+  the service proxy-reachable; otherwise it is optional. A portless service can initiate
+  backend/egress traffic, but a portless entry in `backends` has no runtime trigger and cannot be
+  reached that way. Clients hold no service file: each reports
   its raw local observations and the server matches them against these keys. A container/process
   may match several services across stacks; every match registers a replica:
   - `docker_container` — the Swarm service label (`com.docker.swarm.service.name`) or, standalone,
@@ -311,14 +310,11 @@ backward-compatible stages.
   assigned to the least-loaded live carrier, so both paths use the same dataplane and UDP 4791.
   Packet metadata and endpoint maps preserve per-client isolation. Same-host groups use the same
   isolation policy with direct eBPF redirection and no VXLAN hairpin.
-- `proxy_dependencies` is a list of independent dep chains walked when the service is reached via a
-  `Proxy` RPC from nullnet-proxy; each inner array is one linear branch and all branches are brought
-  up in parallel
 - `backends = ["peer-a", "peer-b"]` lists services this service may trigger. A peer with a nonzero
   `port` uses that port as its trigger; a declared portless peer remains saved but installs no
   trigger. One source cannot target different port-configured peers on the same port. A trigger
-  opens only the direct connection, without following the peer's dependencies.
-- service names must be globally unique across every stack, and dependency chains stay intra-stack.
+  opens only the direct connection; the peer's own backends open only when it sends traffic.
+- service names must be globally unique across every stack, and backend references stay intra-stack.
 - `protocol` selects how a proxy-reachable service is exposed: `http` (the default — routed by
   `Host` header on the shared 80/443 listeners) or `tcp`/`udp`, which each require `listen_port` —
   the external port nullnet-proxy binds directly and forwards raw traffic from. `listen_port` must
@@ -473,7 +469,7 @@ client's cleanup need a one-time restart (Swarm: `docker service update --force 
 Open **Observation** below Config and confirm the checkbox to enable all directed
 backend links to port-configured services within the selected stack. Portless services still act
 as sources, but are skipped as destinations; saved portless backend links are preserved because
-they cannot be observed. Activation lists any port conflicts. Proxy dependencies stay unchanged.
+they cannot be observed. Activation lists any port conflicts.
 The saved configuration is read-only until observation stops.
 
 The service-only matrix counts backend sessions since activation (including ones
@@ -483,7 +479,7 @@ details. Stop observation to restore the saved config and review added/unused
 backends. Applying updates only backend lists. Completed observations remain
 available; results cannot overwrite a configuration edited since activation.
 
-Dependency, backend-trigger, and egress VXLAN edges create dedicated interfaces on UDP 47890.
+Backend and egress VXLAN edges create dedicated interfaces on UDP 47890.
 Encrypted ingress uses VNI-filtered group carriers on UDP 4791; each carrier can host multiple
 independently keyed client groups. Both ports are separate from Docker Swarm's UDP 4789. Egress
 policy rules use priorities 1000–1015 and protocol 242; reserve these for Nullnet.
