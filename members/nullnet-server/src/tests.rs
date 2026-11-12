@@ -137,11 +137,33 @@ fn client_entry_holds(guard: &StackMap, service: &str, client: &Client) -> Optio
     }
 }
 
+fn client_entry_net_id(guard: &StackMap, service: &str, client: &Client) -> Option<u32> {
+    match stack_view(guard).get(service) {
+        Some(ServiceInfo::Registered(reg)) => reg.replicas().iter().find_map(|replica| {
+            replica
+                .clients()
+                .get(client)
+                .map(crate::services::clients::ClientInfo::net_id)
+        }),
+        _ => None,
+    }
+}
+
 fn setup_net_ids(log: &[NetMessage]) -> Vec<u32> {
     log.iter()
         .filter_map(|message| match &message.message {
             Some(net_message::Message::VxlanSetup(setup)) => Some(setup.vxlan_id),
             Some(net_message::Message::VlanSetup(setup)) => Some(setup.vlan_id),
+            _ => None,
+        })
+        .collect()
+}
+
+fn teardown_net_ids(log: &[NetMessage]) -> Vec<u32> {
+    log.iter()
+        .filter_map(|message| match &message.message {
+            Some(net_message::Message::VxlanTeardown(teardown)) => Some(teardown.vxlan_id),
+            Some(net_message::Message::VlanTeardown(teardown)) => Some(teardown.vlan_id),
             _ => None,
         })
         .collect()
@@ -263,6 +285,51 @@ async fn mass_expiry_allows_reads_between_client_teardowns() {
         unreachable!()
     };
     assert_eq!(reg.client_count(), 0);
+}
+
+#[tokio::test]
+async fn concurrent_requests_for_one_client_tear_down_cleanly() {
+    let server = std::sync::Arc::new(NullnetGrpcImpl::new_for_test(
+        load_fixture(PROXY_TIMEOUT).await,
+    ));
+    let service_ip = ip(1, 1, 1, 1);
+    let proxy = ip(5, 5, 5, 5);
+    register_services(&server, &HashMap::from([("A", service_ip)]), 8080).await;
+    server.orchestrator().register_fake_client(proxy).await;
+
+    let mut requests = tokio::task::JoinSet::new();
+    for _ in 0..6 {
+        let server = server.clone();
+        requests.spawn(async move {
+            server
+                .handle_proxy_request("A", proxy, "10.0.0.1")
+                .await
+                .expect("proxy request failed");
+            server.mark_connection_closed("A", proxy, "10.0.0.1").await;
+        });
+    }
+    while let Some(result) = requests.join_next().await {
+        result.unwrap();
+    }
+
+    assert_net_ids_in_use(&server, 1).await;
+    let client = Client::new("10.0.0.1".into(), Some(proxy));
+    assert_eq!(
+        client_entry_holds(&*server.services().read().await, "A", &client),
+        Some(1),
+        "racing requests acquired duplicate edge holds"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let mut guard = server.services().write().await;
+    apply_timeouts(
+        stack_view_mut(&mut guard),
+        server.orchestrator(),
+        TEST_STACK,
+    )
+    .await;
+    drop(guard);
+    assert_net_ids_in_use(&server, 0).await;
 }
 
 /// After A's timeout (1s), both proxy clients on A expire. B's proxy client
@@ -2100,6 +2167,113 @@ async fn trigger_atomic_backend_owner_removed_during_setup_unwinds() {
             .orchestrator()
             .holds_backend_session(&("A".into(), ip(1, 1, 1, 1), None, 5555))
             .await
+    );
+}
+
+#[tokio::test]
+async fn cancelled_backend_trigger_finishes_its_detached_setup() {
+    let server = std::sync::Arc::new(NullnetGrpcImpl::new_for_test(
+        load_fixture(BACKEND_LIVENESS).await,
+    ));
+    let source_ip = ip(1, 1, 1, 1);
+    let target_ip = ip(2, 2, 2, 2);
+    register_services(
+        &server,
+        &HashMap::from([("A", source_ip), ("B", target_ip)]),
+        8080,
+    )
+    .await;
+    let (target_log, gate) = server.orchestrator().register_gated_client(target_ip).await;
+
+    let task_server = server.clone();
+    let trigger = tokio::spawn(async move {
+        task_server
+            .handle_backend_trigger("A", 5555, source_ip, None)
+            .await
+    });
+    wait_for_log(&target_log, |log| !setup_net_ids(log).is_empty()).await;
+    trigger.abort();
+    let _ = trigger.await;
+    gate.add_permits(64);
+
+    let client = Client::new_service("A".into(), source_ip, None);
+    for _ in 0..400 {
+        if client_entry_net_id(&*server.services().read().await, "B", &client)
+            .is_some_and(|net_id| net_id != 0)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(
+        client_entry_net_id(&*server.services().read().await, "B", &client)
+            .is_some_and(|net_id| net_id != 0),
+        "cancelled trigger abandoned its pending reservation"
+    );
+    assert!(
+        server
+            .orchestrator()
+            .holds_backend_session(&("A".into(), source_ip, None, 5555))
+            .await,
+        "detached setup completed without recording its owner"
+    );
+
+    report_backend_idle_and_reap(&server, "A", source_ip, 5555).await;
+    assert_net_ids_in_use(&server, 0).await;
+}
+
+#[tokio::test]
+async fn backend_target_removed_mid_setup_unwinds_the_tunnel() {
+    let server = std::sync::Arc::new(NullnetGrpcImpl::new_for_test(
+        load_fixture(BACKEND_LIVENESS).await,
+    ));
+    let source_ip = ip(1, 1, 1, 1);
+    let target_ip = ip(2, 2, 2, 2);
+    let surviving_target_ip = ip(3, 3, 3, 3);
+    register_services(
+        &server,
+        &HashMap::from([("A", source_ip), ("B", target_ip)]),
+        8080,
+    )
+    .await;
+    register_services(&server, &HashMap::from([("B", surviving_target_ip)]), 8080).await;
+    let source_log = server
+        .orchestrator()
+        .register_recording_client(source_ip)
+        .await;
+    let (target_log, gate) = server.orchestrator().register_gated_client(target_ip).await;
+
+    let task_server = server.clone();
+    let build = tokio::spawn(async move {
+        task_server
+            .handle_backend_trigger("A", 5555, source_ip, None)
+            .await
+    });
+    wait_for_log(&target_log, |log| !setup_net_ids(log).is_empty()).await;
+    server.apply_services_list(target_ip, &[]).await.unwrap();
+    gate.add_permits(64);
+
+    assert!(build.await.unwrap().is_err());
+    wait_for_log(&target_log, |log| !teardown_net_ids(log).is_empty()).await;
+    let mut teardown_ids = teardown_net_ids(&target_log.lock().await);
+    teardown_ids.extend(teardown_net_ids(&source_log.lock().await));
+    assert!(
+        teardown_ids.iter().all(|net_id| *net_id != 0),
+        "pending edge dispatched a teardown for unallocated net id 0"
+    );
+    assert_net_ids_in_use(&server, 0).await;
+    let client = Client::new_service("A".into(), source_ip, None);
+    assert_eq!(
+        client_entry_net_id(&*server.services().read().await, "B", &client),
+        None,
+        "removed target left a server-side edge record"
+    );
+    assert!(
+        !server
+            .orchestrator()
+            .holds_backend_session(&("A".into(), source_ip, None, 5555))
+            .await,
+        "failed setup left a backend owner behind"
     );
 }
 
