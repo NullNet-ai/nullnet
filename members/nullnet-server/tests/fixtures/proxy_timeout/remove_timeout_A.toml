@@ -1,7 +1,9 @@
 [[services]]
 name = "A"
 timeout = 0
+port = 8001
 
 [[services]]
 name = "B"
 timeout = 5
+port = 8002

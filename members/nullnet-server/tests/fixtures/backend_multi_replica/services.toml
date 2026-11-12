@@ -1,16 +1,19 @@
 [[services]]
 name = "A"
 timeout = 0
+port = 8001
 backends = ["B"]
 
 [[services]]
 name = "D"
 timeout = 0
+port = 8004
 backends = ["B"]
 
 [[services]]
 name = "E"
 timeout = 0
+port = 8005
 backends = ["B"]
 
 [[services]]

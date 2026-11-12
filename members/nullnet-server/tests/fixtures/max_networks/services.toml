@@ -1,4 +1,5 @@
 [[services]]
 name = "A"
 timeout = 1
+port = 8001
 max_networks = 1
