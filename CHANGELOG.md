@@ -42,6 +42,7 @@ All Nullnet releases with the relative changes are documented in this file.
 ### Removed
 - Remove proxy dependency configuration and multi-hop ingress setup; service-to-service connectivity now uses direct `backends` exclusively([#228](https://github.com/NullNet-ai/nullnet/pull/228)).
 ### Fixed
+- Keep a replacement control channel and its node topology live when the superseded stream closes.
 - Prevent recycled overlay addresses from reusing pooled upstream TCP connections from an earlier edge generation ([#220](https://github.com/NullNet-ai/nullnet/pull/220)).
 - Limit group policy routing to active overlay peers so protected containers retain their existing private-network routes ([#217](https://github.com/NullNet-ai/nullnet/pull/217)).
 - Keep teardown control-channel backpressure outside topology locks ([#199](https://github.com/NullNet-ai/nullnet/pull/199))

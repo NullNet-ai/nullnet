@@ -1,7 +1,8 @@
 # Static audit next steps
 
-No fixes for the findings below have been implemented or end-to-end tested.
-Reproduce each failure before changing code, then follow the four PR gates in `AGENTS.md`.
+Finding 7 has a local fix in progress; the remaining findings have not been
+implemented or end-to-end tested. Reproduce each failure before changing code,
+then follow the four PR gates in `AGENTS.md`.
 
 ## 1. Docker discovery failures can withdraw every service
 
@@ -115,6 +116,23 @@ Relevant code:
 
 ## 7. A stale control-channel close can remove its replacement
 
+**In progress (2026-11-16).** The failure was reproduced before implementation:
+after replacing the sender stored for one client IP, the old close path removed
+the replacement. The local fix compares Tokio channel identity and applies the
+disconnect event and topology cleanup only when the closing sender is still
+current.
+
+The full CI workflow passes (gRPC 5 tests, server 265, proxy 39, client 120 with
+15 existing privileged ignores, plus UI tests and debug/release lint/build).
+A live TLS overlap on host 104 also passed in both directions: closing the old
+real client left the replacement stream receiving heartbeats, and closing the
+synthetic stream after the real client reconnected left that client active.
+Both configured stack graphs stayed byte-identical, and the client restart
+preserved container IDs plus Docker-owned `eth0` and default routes without
+restarting containers. The lab's configured audit services had zero registered
+replicas during this run, so the required complex-topology load and timing gate
+remains open before this finding is complete.
+
 `add_client` replaces the `clients` entry for an IP when a new control stream
 arrives. The task serving the old stream later handles its close by removing
 that IP unconditionally and applying node-disconnect changes. If old and new
@@ -214,7 +232,7 @@ Relevant code:
 
 ## Recommended order
 
-1. Make control-channel replacement and stale disconnect handling generation-safe.
+1. Finish complex-topology load verification for the control-channel fix.
 2. Prove and close partial XFRM installation cleanup.
 3. Docker discovery failure handling and declaration-worker lifecycle.
 4. Transactional/recoverable firewall map updates and capacity validation.
