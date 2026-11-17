@@ -117,6 +117,32 @@ fn ptr_at<T>(ctx: &TcContext, offset: usize) -> Result<*const T, ()> {
     Ok((start + offset) as *const T)
 }
 
+#[inline(always)]
+fn ipv4_header_len(ctx: &TcContext, header: *const Ipv4Hdr) -> Result<usize, ()> {
+    let header = unsafe { &*header };
+    let ihl = usize::from(header.ihl());
+    let total_len = usize::from(header.tot_len());
+    if header.version() != 4
+        || !(Ipv4Hdr::LEN..=60).contains(&ihl)
+        || total_len < ihl
+        || ctx.data() + EthHdr::LEN + ihl > ctx.data_end()
+    {
+        return Err(());
+    }
+    Ok(ihl)
+}
+
+#[inline(always)]
+fn is_fragment(header: *const Ipv4Hdr) -> bool {
+    let header = unsafe { &*header };
+    header.frag_offset() != 0 || header.frag_flags() & 1 != 0
+}
+
+#[inline(always)]
+fn has_transport_header(header: *const Ipv4Hdr, header_len: usize, len: usize) -> bool {
+    usize::from(unsafe { (*header).tot_len() }) >= header_len + len
+}
+
 #[inline]
 fn is_gateway() -> bool {
     unsafe { core::ptr::read_volatile(&EGRESS_GATEWAY) != 0 }
@@ -132,13 +158,20 @@ fn try_firewall(ctx: &TcContext, is_egress: bool) -> Result<i32, ()> {
         EtherType::Arp => Ok(TC_ACT_OK),
         EtherType::Ipv4 => {
             let ipv4_header: *const Ipv4Hdr = ptr_at(ctx, EthHdr::LEN)?;
+            let transport_offset = EthHdr::LEN + ipv4_header_len(ctx, ipv4_header)?;
             let src = u32::from_be_bytes(unsafe { (*ipv4_header).src_addr });
             let dst = u32::from_be_bytes(unsafe { (*ipv4_header).dst_addr });
 
             let (proto, src_port, dst_port) =
                 match unsafe { (*ipv4_header).proto() }.map_err(|_| ())? {
                     IpProto::Tcp => {
-                        let tcp: *const TcpHdr = ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+                        // TC sees fragments before reassembly; only the first has ports.
+                        if is_fragment(ipv4_header)
+                            || !has_transport_header(ipv4_header, transport_offset - EthHdr::LEN, TcpHdr::LEN)
+                        {
+                            return Ok(TC_ACT_SHOT);
+                        }
+                        let tcp: *const TcpHdr = ptr_at(ctx, transport_offset)?;
                         (
                             PROTO_TCP,
                             u16::from_be_bytes(unsafe { (*tcp).source }),
@@ -146,7 +179,13 @@ fn try_firewall(ctx: &TcContext, is_egress: bool) -> Result<i32, ()> {
                         )
                     }
                     IpProto::Udp => {
-                        let udp: *const UdpHdr = ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+                        // Reject the first fragment too so policy is deterministic.
+                        if is_fragment(ipv4_header)
+                            || !has_transport_header(ipv4_header, transport_offset - EthHdr::LEN, UdpHdr::LEN)
+                        {
+                            return Ok(TC_ACT_SHOT);
+                        }
+                        let udp: *const UdpHdr = ptr_at(ctx, transport_offset)?;
                         (
                             PROTO_UDP,
                             u16::from_be_bytes(unsafe { (*udp).src }),

@@ -3,7 +3,7 @@
 PR [#229](https://github.com/NullNet-ai/nullnet/pull/229) closes findings 1,
 6, and 7. Their remaining end-to-end gaps are recorded under **Closed by PR
 #229**. PR [#230](https://github.com/NullNet-ai/nullnet/pull/230) closes findings
-2 and 5; their remaining end-to-end gaps are recorded under **Closed by PR
+2, 4, and 5; their remaining end-to-end gaps are recorded under **Closed by PR
 #230**. Finding 8 was ruled out. The remaining findings have not been
 implemented or end-to-end tested. Reproduce each failure before changing code,
 then follow the four PR gates in `AGENTS.md`.
@@ -24,23 +24,6 @@ Relevant code:
 
 - `members/nullnet-client/src/commands/dnat.rs:8-25`
 - `docs/uniform-edge-liveness-plan.md` (existing conntrack discussion)
-
-## 4. The host eBPF firewall assumes a fixed IPv4 header
-
-The TC programs read TCP and UDP headers at `EthHdr::LEN + Ipv4Hdr::LEN` without
-checking IPv4 IHL or fragment offset. IPv4 options are interpreted as transport
-headers, while non-first fragments are evaluated using fragment payload bytes as
-ports. Valid traffic may be dropped, and policy decisions are made from invalid
-fields.
-
-Reproduce allowlisted and established TCP/UDP traffic with IPv4 options and with
-first/non-first fragments. Define an explicit fragment policy before changing
-the parser, and test both strict and egress-gateway roles.
-
-Relevant code:
-
-- `ebpf/src/main.rs:124-169`
-- `members/nullnet-client/src/nfqueue/parse.rs` (fragment-aware comparison)
 
 ## 9. Reported edge failure does not invalidate the active edge
 
@@ -109,10 +92,18 @@ Relevant code:
 1. Define recovery behavior and coverage for reported data-plane failures.
 2. Make connected teardown failures retryable without losing ownership.
 3. Host-wide conntrack cleanup scoping.
-4. eBPF IPv4 parsing and fragment policy.
 
 ## Closed by PR #230
 
+- **Finding 4:** On the deployed strict firewall, ordinary allowlisted TCP
+  connected while the same socket with valid IPv4 options timed out before its
+  SYN reached the wire. The classifier now locates TCP/UDP headers from the IPv4
+  IHL and rejects malformed lengths. TCP/UDP packets that reach TC already
+  fragmented fail closed; fragment reassembly is deliberately out of scope.
+  Both classifiers passed the kernel verifier, normal and option-bearing TCP
+  connected, normal and option-bearing UDP arrived, and ingress fragments were
+  discarded before reassembly. Strict/gateway complex-topology load and restart
+  verification was missing.
 - **Finding 2:** A standard Swarm task sent internet traffic from its hidden
   `docker_gwbridge` address, while Docker's container view returned its overlay
   address. Before the fix, NFQUEUE triggered an edge but the source rule did not
