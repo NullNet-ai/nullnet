@@ -2,32 +2,11 @@
 
 PR [#229](https://github.com/NullNet-ai/nullnet/pull/229) closes findings 1,
 6, and 7. Their remaining end-to-end gaps are recorded under **Closed by PR
-#229**. PR [#230](https://github.com/NullNet-ai/nullnet/pull/230) closes finding
-5; its remaining end-to-end gap is recorded under **Closed by PR #230**.
-Finding 8 was ruled out. The remaining findings have not been implemented or
-end-to-end tested. Reproduce each failure before changing code, then follow the
-four PR gates in `AGENTS.md`.
-
-## 2. Cross-host egress may steer the wrong container address
-
-The NFQUEUE trigger stores the exact source IP observed on the packet. Same-host
-egress uses that address, but cross-host egress discards it and calls
-`container_ipv4`, which selects the first address returned by
-`.NetworkSettings.Networks`. Swarm's `docker_gwbridge` attachment is absent from
-that container-level inspection view, and multi-network containers have no
-guarantee that the selected address is the packet source.
-
-Reproduce with a multi-network Swarm task whose external traffic originates from
-its gateway attachment. Compare the trigger source with the `ip rule` source and
-verify cross-host egress before changing the selection logic. Test teardown and
-restart recovery with the corrected source as well.
-
-Relevant code:
-
-- `members/nullnet-client/src/nfqueue/egress_listener.rs:220-256`
-- `members/nullnet-client/src/control_channel.rs:635-675`
-- `members/nullnet-client/src/commands/egress.rs:718-735`
-- `members/nullnet-client/src/nfqueue/cache.rs:181-206`
+#229**. PR [#230](https://github.com/NullNet-ai/nullnet/pull/230) closes findings
+2 and 5; their remaining end-to-end gaps are recorded under **Closed by PR
+#230**. Finding 8 was ruled out. The remaining findings have not been
+implemented or end-to-end tested. Reproduce each failure before changing code,
+then follow the four PR gates in `AGENTS.md`.
 
 ## 3. Client startup flushes the host-wide conntrack table
 
@@ -127,14 +106,21 @@ Relevant code:
 
 ## Recommended order
 
-1. Cross-host multi-network egress source selection.
-2. Define recovery behavior and coverage for reported data-plane failures.
-3. Make connected teardown failures retryable without losing ownership.
-4. Host-wide conntrack cleanup scoping.
-5. eBPF IPv4 parsing and fragment policy.
+1. Define recovery behavior and coverage for reported data-plane failures.
+2. Make connected teardown failures retryable without losing ownership.
+3. Host-wide conntrack cleanup scoping.
+4. eBPF IPv4 parsing and fragment policy.
 
 ## Closed by PR #230
 
+- **Finding 2:** A standard Swarm task sent internet traffic from its hidden
+  `docker_gwbridge` address, while Docker's container view returned its overlay
+  address. Before the fix, NFQUEUE triggered an edge but the source rule did not
+  match; Docker MASQUERADE carried the request directly. The client now reuses
+  NFQUEUE's exact source and removes the Docker subprocess. A targeted live
+  cross-host test routed three HTTP connections through the Nullnet overlay and
+  gateway, then removed all owned rules on teardown; complex-topology load and
+  restart verification was missing.
 - **Finding 5:** The real server/client path accepted 257 proxy ports, while the
   256-entry kernel map failed after removing the old policy. The replacement
   bitmap covers every ingress/egress TCP/UDP port and keeps userspace

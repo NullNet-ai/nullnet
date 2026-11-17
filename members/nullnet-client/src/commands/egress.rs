@@ -715,25 +715,6 @@ fn default_route_iface() -> Option<String> {
     None
 }
 
-/// Resolve a docker container's primary IPv4 (first non-empty network address).
-pub(crate) fn container_ipv4(container: &str) -> Option<Ipv4Addr> {
-    let out = Command::new("docker")
-        .args([
-            "inspect",
-            "-f",
-            "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}",
-            container,
-        ])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&out.stdout)
-        .split_whitespace()
-        .find_map(|tok| tok.parse::<Ipv4Addr>().ok())
-}
-
 #[cfg(test)]
 mod purge_tests {
     use super::{

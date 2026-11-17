@@ -20,11 +20,10 @@ const PENDING_TIMEOUT: Duration = Duration::from_secs(35);
 /// sentinel never collides with them in the shared `TriggersState`.
 pub const EGRESS_TRIGGER_PORT: u16 = 0;
 
-/// Per-(initiator_container, port) lifecycle. `container_ip` is the bridge IP
-/// the NFQUEUE listener observed when the trigger fired; it is carried through
-/// to `Active` so DNAT install/remove can match the right `-s` source. Legacy
-/// callers that don't know the container IP pass `Ipv4Addr::UNSPECIFIED`,
-/// which the dnat module treats as "no source filter".
+/// Per-(initiator_container, port) lifecycle. `container_ip` is the source IP
+/// NFQUEUE observed when the trigger fired; it is carried through to `Active`
+/// so steering and DNAT match the right source. Legacy callers that don't know
+/// it pass `Ipv4Addr::UNSPECIFIED`, which DNAT treats as "no source filter".
 pub enum Lifecycle {
     Pending {
         since: Instant,
