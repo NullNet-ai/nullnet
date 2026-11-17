@@ -1,26 +1,39 @@
 # Static audit next steps
 
-Finding 7 has a local fix in progress; the remaining findings have not been
+Finding 1 and the Docker-hang portion of finding 6 have a local fix in progress.
+Finding 7 is implemented and has passed CI plus targeted live verification, but
+its complex-topology load gate remains open. The other findings have not been
 implemented or end-to-end tested. Reproduce each failure before changing code,
 then follow the four PR gates in `AGENTS.md`.
 
 ## 1. Docker discovery failures can withdraw every service
 
-`members/nullnet-client/src/main.rs::get_running_docker_containers` does not
-check the exit status of `docker ps`. A spawn failure or non-zero exit becomes an
-empty container list. The client can then submit a valid-looking empty service
-report, and `services_list_impl` applies it and tears down egress edges whose
-containers now appear missing.
+**In progress (2026-11-16).** Both reachable failure modes were reproduced on
+host 104 before implementation. A fake `docker` process exiting non-zero became
+an empty inventory, while a fake process sleeping for 30 seconds left discovery
+blocked beyond an external two-second deadline.
 
-Reproduce by making `docker ps` fail temporarily while the client remains
-running. Confirm whether registered replicas and live egress edges are removed.
-The likely correction is to return an error, retain the last known inventory,
-bound the Docker subprocess with a timeout, and emit an operator-visible event.
+The local fix reuses the client's existing five-second bounded Docker runner,
+including spawn, exit-status, stderr, and timeout handling. A failed discovery
+now skips the report and preserves the previous server, firewall, and trigger
+state. It waits on the existing ten-second-or-Docker-event refresh cadence, so
+the successful path gains no retries, sleeps, or additional subprocesses. The
+existing service-list failure event reports the error. Focused Linux tests,
+formatting, and client linting pass on host 104 for spawn failure, non-zero exit
+with stderr, and timeout handling. Full CI and end-to-end verification remain
+open.
+
+Before the fix, `get_running_docker_containers` did not check the exit status of
+`docker ps`. A spawn failure or non-zero exit became an empty container list.
+The client could then submit a valid-looking empty service report, and
+`services_list_impl` would apply it and tear down egress edges whose containers
+appeared missing.
 
 Relevant code:
 
-- `members/nullnet-client/src/main.rs:385-425,509-523`
-- `members/nullnet-server/src/nullnet_grpc_impl.rs:1000-1019`
+- `members/nullnet-client/src/main.rs:400-562`
+- `members/nullnet-client/src/docker.rs`
+- `members/nullnet-server/src/nullnet_grpc_impl.rs:873-960`
 
 ## 2. Cross-host egress may steer the wrong container address
 
@@ -99,20 +112,27 @@ Relevant code:
 
 ## 6. Service declaration can stop while the client stays alive
 
-`declare_services` runs in a detached task. An error from `listeners::get_all`
-reaches `expect`, panicking only that task; the main future remains pending and
-the client process can look alive while service declarations, trigger ownership,
-and dynamic ingress-port refreshes are permanently stale. An indefinitely hung
-Docker subprocess can freeze the same task.
+**The listener-failure theory was ruled out (2026-11-16).** The client installs
+a global panic hook that exits the process, so the `declare_services` task's
+existing `expect` does not leave a stale-but-live client. Listener enumeration
+errors remain fatal and the process supervisor remains responsible for recovery;
+adding worker supervision or retries here would duplicate that lifecycle and
+risk keeping stale declarations active.
 
-Reproduce listener enumeration failure and a hung Docker command. Confirm the
-client process remains alive and stops refreshing declarations. The lifecycle
-must either restart the worker safely or terminate the client so its supervisor
-can recover it.
+The independently reproduced Docker hang is real and is addressed by finding 1:
+the shared Docker runner terminates discovery after five seconds, emits the
+existing operator-visible failure event, and resumes on the existing refresh
+cadence without sending a partial report.
+
+The original finding assumed that an error from `listeners::get_all` would panic
+only the detached declaration task. Source verification showed that assumption
+was incorrect because the process-wide panic hook calls `process::exit(1)`. No
+declaration-worker lifecycle change is needed. Only the independently reproduced
+Docker hang required implementation.
 
 Relevant code:
 
-- `members/nullnet-client/src/main.rs:270-281,385-506`
+- `members/nullnet-client/src/main.rs:270-290,393-530`
 
 ## 7. A stale control-channel close can remove its replacement
 
@@ -233,8 +253,8 @@ Relevant code:
 ## Recommended order
 
 1. Finish complex-topology load verification for the control-channel fix.
-2. Prove and close partial XFRM installation cleanup.
-3. Docker discovery failure handling and declaration-worker lifecycle.
+2. Finish Linux and end-to-end verification for bounded Docker discovery.
+3. Prove and close partial XFRM installation cleanup.
 4. Transactional/recoverable firewall map updates and capacity validation.
 5. Cross-host multi-network egress source selection.
 6. Define recovery behavior and coverage for reported data-plane failures.

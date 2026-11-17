@@ -49,6 +49,7 @@ mod conntrack;
 mod control_channel;
 mod crypto;
 mod device_events;
+mod docker;
 mod ebpf;
 mod edge_diagnostics;
 mod egress_policy;
@@ -399,15 +400,22 @@ async fn declare_services(
     let mut last_snapshot: Vec<String> = Vec::new();
     loop {
         // Report raw local observations; the server joins them against its
-        // per-stack config to decide what this node hosts. Running containers:
-        // logical (Swarm label / name) -> real container name(s).
-        let containers = get_running_docker_containers().await;
+        // per-stack config to decide what this node hosts.
+        let containers = match get_running_docker_containers().await {
+            Ok(containers) => containers,
+            Err(error) => {
+                report_services_list_failure(&grpc_server, error, last_snapshot.len() as u32);
+                wait_for_declaration_refresh(&docker_changed).await;
+                continue;
+            }
+        };
 
         // One Listener per distinct listening process, keyed by exe path.
+        // Enumeration errors remain fatal so the supervisor recovers the client.
         let mut paths: Vec<String> = listeners::get_all()
             .handle_err(location!())?
             .into_iter()
-            .map(|l| l.process.path)
+            .map(|listener| listener.process.path)
             .collect();
         paths.sort_unstable();
         paths.dedup();
@@ -432,21 +440,7 @@ async fn declare_services(
         // attached to the services the server matched us to.
         match grpc_server.services_list(report).await {
             Err(e) => {
-                eprintln!("services_list failed: {e}");
-                let grpc = grpc_server.clone();
-                let error_message = e.clone();
-                tokio::spawn(async move {
-                    let _ = grpc
-                        .report_event(AgentEvent {
-                            event: Some(AgentEventKind::ServicesListUpdateFailed(
-                                AgentServicesListUpdateFailed {
-                                    error_message,
-                                    num_services,
-                                },
-                            )),
-                        })
-                        .await;
-                });
+                report_services_list_failure(&grpc_server, e, num_services);
             }
             Ok(response) => {
                 let firewall_result = firewall_allow_ports.lock().unwrap().update_ingress(
@@ -507,27 +501,52 @@ async fn declare_services(
         // Wait up to 10 s before re-declaring, but cut the wait short on a
         // docker container start/die — that's what populates the ipset for
         // a freshly-started task before its app dials a trigger port.
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(10)) => {}
-            _ = docker_changed.notified() => {}
-        }
+        wait_for_declaration_refresh(&docker_changed).await;
+    }
+}
+
+fn report_services_list_failure(
+    grpc: &NullnetGrpcInterface,
+    error_message: String,
+    num_services: u32,
+) {
+    eprintln!("service declaration refresh failed: {error_message}");
+    let grpc = grpc.clone();
+    tokio::spawn(async move {
+        let _ = grpc
+            .report_event(AgentEvent {
+                event: Some(AgentEventKind::ServicesListUpdateFailed(
+                    AgentServicesListUpdateFailed {
+                        error_message,
+                        num_services,
+                    },
+                )),
+            })
+            .await;
+    });
+}
+
+async fn wait_for_declaration_refresh(docker_changed: &Notify) {
+    tokio::select! {
+        _ = tokio::time::sleep(Duration::from_secs(10)) => {}
+        _ = docker_changed.notified() => {}
     }
 }
 
 /// Report running and paused containers, using Swarm labels when present.
-async fn get_running_docker_containers() -> Vec<Container> {
-    let output = tokio::process::Command::new("docker")
-        .args([
+async fn get_running_docker_containers() -> Result<Vec<Container>, String> {
+    let output = docker::run(
+        &[
             "ps",
             "--format",
             "{{.Names}}\t{{.Label \"com.docker.swarm.service.name\"}}\t{{.State}}",
-        ])
-        .output()
-        .await;
-    let Ok(out) = output else {
-        return Vec::new();
-    };
-    parse_container_report(&String::from_utf8_lossy(&out.stdout))
+        ],
+        "docker ps for service discovery",
+    )
+    .await?;
+    Ok(parse_container_report(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
 }
 
 fn parse_container_report(output: &str) -> Vec<Container> {
