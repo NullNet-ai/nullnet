@@ -1,25 +1,10 @@
 # Static audit next steps
 
-No fixes for the findings below have been implemented or end-to-end tested.
-Reproduce each failure before changing code, then follow the four PR gates in `AGENTS.md`.
-
-## 1. Docker discovery failures can withdraw every service
-
-`members/nullnet-client/src/main.rs::get_running_docker_containers` does not
-check the exit status of `docker ps`. A spawn failure or non-zero exit becomes an
-empty container list. The client can then submit a valid-looking empty service
-report, and `services_list_impl` applies it and tears down egress edges whose
-containers now appear missing.
-
-Reproduce by making `docker ps` fail temporarily while the client remains
-running. Confirm whether registered replicas and live egress edges are removed.
-The likely correction is to return an error, retain the last known inventory,
-bound the Docker subprocess with a timeout, and emit an operator-visible event.
-
-Relevant code:
-
-- `members/nullnet-client/src/main.rs:385-425,509-523`
-- `members/nullnet-server/src/nullnet_grpc_impl.rs:1000-1019`
+PR [#229](https://github.com/NullNet-ai/nullnet/pull/229) closes findings 1,
+6, and 7. Their remaining end-to-end gaps are recorded under **Closed by PR
+#229**. The other findings have not been implemented or end-to-end tested.
+Reproduce each failure before changing code, then follow the four PR gates in
+`AGENTS.md`.
 
 ## 2. Cross-host egress may steer the wrong container address
 
@@ -95,41 +80,6 @@ Relevant code:
 - `members/nullnet-client/src/ebpf/mod.rs:82-135,202-255`
 - `ebpf/src/main.rs:57-72`
 - `members/nullnet-server/src/nullnet_grpc_impl.rs:169-187`
-
-## 6. Service declaration can stop while the client stays alive
-
-`declare_services` runs in a detached task. An error from `listeners::get_all`
-reaches `expect`, panicking only that task; the main future remains pending and
-the client process can look alive while service declarations, trigger ownership,
-and dynamic ingress-port refreshes are permanently stale. An indefinitely hung
-Docker subprocess can freeze the same task.
-
-Reproduce listener enumeration failure and a hung Docker command. Confirm the
-client process remains alive and stops refreshing declarations. The lifecycle
-must either restart the worker safely or terminate the client so its supervisor
-can recover it.
-
-Relevant code:
-
-- `members/nullnet-client/src/main.rs:270-281,385-506`
-
-## 7. A stale control-channel close can remove its replacement
-
-`add_client` replaces the `clients` entry for an IP when a new control stream
-arrives. The task serving the old stream later handles its close by removing
-that IP unconditionally and applying node-disconnect changes. If old and new
-streams overlap, the stale close can therefore remove the replacement channel,
-withdraw its replicas, and tear down its edges. The replacement stream remains
-open but is no longer addressable through `clients`.
-
-Reproduce with two control streams from one source IP: register the replacement
-before closing the original, then confirm whether the replacement remains in
-`clients` and its replicas and edges remain live. Disconnect handling should
-only mutate node state when the closing stream is still the current stream.
-
-Relevant code:
-
-- `members/nullnet-server/src/orchestrator.rs:203-274`
 
 ## 8. Partial XFRM installation can leave unowned kernel state
 
@@ -214,15 +164,24 @@ Relevant code:
 
 ## Recommended order
 
-1. Make control-channel replacement and stale disconnect handling generation-safe.
-2. Prove and close partial XFRM installation cleanup.
-3. Docker discovery failure handling and declaration-worker lifecycle.
-4. Transactional/recoverable firewall map updates and capacity validation.
-5. Cross-host multi-network egress source selection.
-6. Define recovery behavior and coverage for reported data-plane failures.
-7. Make connected teardown failures retryable without losing ownership.
-8. Host-wide conntrack cleanup scoping.
-9. eBPF IPv4 parsing and fragment policy.
+1. Prove and close partial XFRM installation cleanup.
+2. Transactional/recoverable firewall map updates and capacity validation.
+3. Cross-host multi-network egress source selection.
+4. Define recovery behavior and coverage for reported data-plane failures.
+5. Make connected teardown failures retryable without losing ownership.
+6. Host-wide conntrack cleanup scoping.
+7. eBPF IPv4 parsing and fragment policy.
+
+## Closed by PR #229
+
+- **Finding 1:** Docker discovery failures no longer withdraw services. Focused
+  Linux tests passed; full service-topology end-to-end verification was missing.
+- **Finding 6:** The Docker hang is bounded by finding 1, while the listener-task
+  theory was ruled out by the client's process-wide panic hook. The finding 1
+  end-to-end gap applies.
+- **Finding 7:** Stale control-channel closes no longer remove their replacement.
+  Full CI and targeted live overlap tests passed; complex-topology load
+  verification was missing.
 
 ## Ruled out during this audit
 

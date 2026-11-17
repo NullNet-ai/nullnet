@@ -212,6 +212,7 @@ impl Orchestrator {
             .write()
             .await
             .insert(client_ip, outbound.clone());
+        let closing_outbound = outbound.clone();
         self.policy_heartbeats(client_ip, outbound);
         if crate::routine_diagnostics() {
             self.events
@@ -230,30 +231,53 @@ impl Orchestrator {
                 }
             }
 
-            eprintln!("Control channel from '{client_ip}' closed");
             orchestrator
-                .events
-                .emit(Event::node_disconnected(client_ip.to_string()))
-                .await;
-            orchestrator
-                .handle_node_disconnect(client_ip, &services)
+                .handle_control_channel_close(client_ip, &closing_outbound, &services)
                 .await;
         });
 
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) async fn remove_client(&self, ip: &IpAddr) {
         self.clients.write().await.remove(ip);
     }
 
+    #[cfg(test)]
     pub(crate) async fn handle_node_disconnect(
         &self,
         client_ip: IpAddr,
         services: &Arc<RwLock<StackMap>>,
     ) {
         self.remove_client(&client_ip).await;
+        self.apply_node_disconnect(client_ip, services).await;
+    }
 
+    async fn handle_control_channel_close(
+        &self,
+        client_ip: IpAddr,
+        closing: &OutboundStream,
+        services: &Arc<RwLock<StackMap>>,
+    ) {
+        let mut clients = self.clients.write().await;
+        if !clients
+            .get(&client_ip)
+            .is_some_and(|current| current.same_channel(closing))
+        {
+            return;
+        }
+        clients.remove(&client_ip);
+        drop(clients);
+
+        eprintln!("Control channel from '{client_ip}' closed");
+        self.events
+            .emit(Event::node_disconnected(client_ip.to_string()))
+            .await;
+        self.apply_node_disconnect(client_ip, services).await;
+    }
+
+    async fn apply_node_disconnect(&self, client_ip: IpAddr, services: &Arc<RwLock<StackMap>>) {
         // A disconnected node may host replicas in multiple stacks; apply
         // the per-stack disconnect logic to each.
         let mut services_guard = services.write().await;
@@ -1505,6 +1529,64 @@ impl Orchestrator {
         });
 
         log
+    }
+}
+
+#[cfg(test)]
+mod control_channel_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stale_channel_close_does_not_remove_replacement() {
+        let orchestrator = Orchestrator::new();
+        let client_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let (old, _old_rx) = mpsc::channel(1);
+        orchestrator
+            .clients
+            .write()
+            .await
+            .insert(client_ip, old.clone());
+
+        let (replacement, _replacement_rx) = mpsc::channel(1);
+        orchestrator
+            .clients
+            .write()
+            .await
+            .insert(client_ip, replacement.clone());
+
+        let services = Arc::new(RwLock::new(StackMap::new()));
+        orchestrator
+            .handle_control_channel_close(client_ip, &old, &services)
+            .await;
+
+        assert!(
+            orchestrator
+                .clients
+                .read()
+                .await
+                .get(&client_ip)
+                .is_some_and(|current| current.same_channel(&replacement)),
+            "closing the old channel removed its replacement"
+        );
+    }
+
+    #[tokio::test]
+    async fn current_channel_close_removes_current_client() {
+        let orchestrator = Orchestrator::new();
+        let client_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let (current, _current_rx) = mpsc::channel(1);
+        orchestrator
+            .clients
+            .write()
+            .await
+            .insert(client_ip, current.clone());
+
+        let services = Arc::new(RwLock::new(StackMap::new()));
+        orchestrator
+            .handle_control_channel_close(client_ip, &current, &services)
+            .await;
+
+        assert!(!orchestrator.clients.read().await.contains_key(&client_ip));
     }
 }
 

@@ -1,12 +1,12 @@
 use crate::commands::endpoint_namespace::{
     EndpointNamespace, NeighbourReachability, NeighbourSignal,
 };
+use crate::docker::run as run_docker;
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{Mutex, Notify};
@@ -15,13 +15,6 @@ use tokio::sync::{Mutex, Notify};
 /// in `gateway_<id>` endpoint names on docker_gwbridge — that's the join
 /// key for resolving Swarm task sandboxes back to their owning container.
 const SANDBOX_PREFIX_LEN: usize = 12;
-
-/// Upper bound on how long any `docker` subprocess in this module is
-/// allowed to take. The `docker` CLI normally returns in well under 100 ms;
-/// 5 s is room for an unusually slow daemon plus headroom. If the daemon
-/// hangs entirely we'd rather log + bail than stall the events watcher,
-/// which would freeze the cache forever.
-const DOCKER_SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Container address ownership for NFQUEUE and conntrack reconciliation.
 /// Docker refreshes own bridge addresses; VXLAN setup/teardown owns the
@@ -468,33 +461,6 @@ async fn inspect_network_endpoints(net_id: &str) -> Result<Vec<(String, String)>
     Ok(parse_network_endpoints(&String::from_utf8_lossy(
         &out.stdout,
     )))
-}
-
-/// Run `docker` with the given args, bounded by `DOCKER_SUBPROCESS_TIMEOUT`
-/// and with `kill_on_drop` so the child is reaped if we abandon it. Any
-/// timeout / spawn / non-zero-exit case becomes `Err(String)` the caller can
-/// propagate. `label` is folded into error messages so the source of the
-/// failure is identifiable in logs.
-async fn run_docker(args: &[&str], label: &str) -> Result<std::process::Output, String> {
-    let mut cmd = tokio::process::Command::new("docker");
-    cmd.args(args).kill_on_drop(true);
-    let out = match tokio::time::timeout(DOCKER_SUBPROCESS_TIMEOUT, cmd.output()).await {
-        Ok(Ok(out)) => out,
-        Ok(Err(e)) => return Err(format!("{label}: {e}")),
-        Err(_) => {
-            return Err(format!(
-                "{label}: timed out after {DOCKER_SUBPROCESS_TIMEOUT:?}"
-            ));
-        }
-    };
-    if !out.status.success() {
-        return Err(format!(
-            "{label} exited {}: {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr)
-        ));
-    }
-    Ok(out)
 }
 
 fn parse_network_endpoints(s: &str) -> Vec<(String, String)> {
