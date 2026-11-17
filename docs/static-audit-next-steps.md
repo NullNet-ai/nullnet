@@ -1,31 +1,13 @@
 # Static audit next steps
 
 PR [#229](https://github.com/NullNet-ai/nullnet/pull/229) closes findings 1,
-6, and 7. Their remaining end-to-end gaps are recorded under **Closed by PR
-#229**. The other findings have not been implemented or end-to-end tested.
-Reproduce each failure before changing code, then follow the four PR gates in
-`AGENTS.md`.
-
-## 2. Cross-host egress may steer the wrong container address
-
-The NFQUEUE trigger stores the exact source IP observed on the packet. Same-host
-egress uses that address, but cross-host egress discards it and calls
-`container_ipv4`, which selects the first address returned by
-`.NetworkSettings.Networks`. Swarm's `docker_gwbridge` attachment is absent from
-that container-level inspection view, and multi-network containers have no
-guarantee that the selected address is the packet source.
-
-Reproduce with a multi-network Swarm task whose external traffic originates from
-its gateway attachment. Compare the trigger source with the `ip rule` source and
-verify cross-host egress before changing the selection logic. Test teardown and
-restart recovery with the corrected source as well.
-
-Relevant code:
-
-- `members/nullnet-client/src/nfqueue/egress_listener.rs:220-256`
-- `members/nullnet-client/src/control_channel.rs:635-675`
-- `members/nullnet-client/src/commands/egress.rs:718-735`
-- `members/nullnet-client/src/nfqueue/cache.rs:181-206`
+6, and the initial finding 7 stale-close case. PR
+[#230](https://github.com/NullNet-ai/nullnet/pull/230) closes findings 2, 4, and
+5, plus the remaining close-first race in finding 7. Their end-to-end gaps are
+recorded below. Finding 8 was ruled out. Finding 12 was reproduced end to end;
+the other remaining findings still require reproduction. None has been
+implemented. Verify the failure before changing code, then follow the four PR
+gates in `AGENTS.md`.
 
 ## 3. Client startup flushes the host-wide conntrack table
 
@@ -43,62 +25,6 @@ Relevant code:
 
 - `members/nullnet-client/src/commands/dnat.rs:8-25`
 - `docs/uniform-edge-liveness-plan.md` (existing conntrack discussion)
-
-## 4. The host eBPF firewall assumes a fixed IPv4 header
-
-The TC programs read TCP and UDP headers at `EthHdr::LEN + Ipv4Hdr::LEN` without
-checking IPv4 IHL or fragment offset. IPv4 options are interpreted as transport
-headers, while non-first fragments are evaluated using fragment payload bytes as
-ports. Valid traffic may be dropped, and policy decisions are made from invalid
-fields.
-
-Reproduce allowlisted and established TCP/UDP traffic with IPv4 options and with
-first/non-first fragments. Define an explicit fragment policy before changing
-the parser, and test both strict and egress-gateway roles.
-
-Relevant code:
-
-- `ebpf/src/main.rs:124-169`
-- `members/nullnet-client/src/nfqueue/parse.rs` (fragment-aware comparison)
-
-## 5. Firewall map updates can diverge from userspace state
-
-`FirewallPeers` ignores BPF-map insert and removal failures while still mutating
-`by_id` and refcounts. A failed insert can leave userspace believing a peer is
-allowed and prevent retries; a failed removal can leave a stale peer allowed.
-Ingress-port refreshes return errors, but mutate the map incrementally and can
-leave neither the old nor the desired rules installed. The `ALLOW_PORTS` map has
-256 entries, while the server does not validate that the aggregate configuration
-fits.
-
-Add fault-injection/unit coverage for insert and removal failures and a capacity
-test before modifying behavior. Updates should either commit coherently or leave
-a recoverable state, and operator-visible failures must remain reported.
-
-Relevant code:
-
-- `members/nullnet-client/src/ebpf/mod.rs:82-135,202-255`
-- `ebpf/src/main.rs:57-72`
-- `members/nullnet-server/src/nullnet_grpc_impl.rs:169-187`
-
-## 8. Partial XFRM installation can leave unowned kernel state
-
-XFRM setup submits inbound/outbound states and the outbound policy as a batch.
-If a later request fails after an earlier one succeeded, the error path removes
-the in-memory owner before the ordinary endpoint cleanup calls `remove`. The
-partial kernel objects are then no longer discoverable through `EDGES`, so a
-rollback teardown can acknowledge without deleting them. Reuse may subsequently
-hit stale state or policy created with an earlier key.
-
-Fault-inject failure on each request in the XFRM batch and inspect state and
-policy after setup rollback and net-id reuse. Cleanup must retain enough exact
-identity to remove every successfully applied object before ownership is
-dropped.
-
-Relevant code:
-
-- `members/nullnet-client/src/commands/native_xfrm.rs:404-524`
-- `members/nullnet-client/src/commands/vxlan.rs:364-371,649-682`
 
 ## 9. Reported edge failure does not invalidate the active edge
 
@@ -162,15 +88,70 @@ Relevant code:
 - `members/nullnet-client/src/triggers.rs:203-226`
 - `members/nullnet-server/src/orchestrator.rs:1230-1368`
 
+## 12. Docker routes can shadow active Nullnet peers
+
+Nullnet derives each standard network deterministically as a `/29` within
+`10.0.0.0/8`. A valid Docker deployment can independently assign the same
+subnet or peer address. This needs no injected route: the lab reproduced it by
+attaching a real container at `10.0.3.52` on Docker subnet `10.0.3.48/29`, which
+overlaps Nullnet network 102. The server reported the same-host dedicated
+backend edge established, but the connection timed out because Docker's
+local/connected route took precedence over the Nullnet path.
+
+A correction must cover both standard and shared policy paths. Only active
+Nullnet peer `/32`s should take precedence; unrelated Docker and other `10/8`
+traffic must retain its existing routing. It must not require Docker subnet
+exclusions or a different Nullnet CIDR, add per-packet work, or leak routing
+state after last-peer teardown or client restart. Compare cold and warm
+lifecycle performance as required for routing changes.
+
+Relevant code:
+
+- `members/nullnet-server/src/net.rs:204-227`
+- `members/nullnet-client/src/commands/vxlan.rs:418-443`
+- `members/nullnet-client/src/commands/endpoint_io.rs:421-447`
+- `members/nullnet-client/src/commands/policy.rs:101-145`
+
 ## Recommended order
 
-1. Prove and close partial XFRM installation cleanup.
-2. Transactional/recoverable firewall map updates and capacity validation.
-3. Cross-host multi-network egress source selection.
-4. Define recovery behavior and coverage for reported data-plane failures.
-5. Make connected teardown failures retryable without losing ownership.
-6. Host-wide conntrack cleanup scoping.
-7. eBPF IPv4 parsing and fragment policy.
+1. Prevent Docker routing from shadowing active Nullnet peers.
+2. Define recovery behavior and coverage for reported data-plane failures.
+3. Make connected teardown failures retryable without losing ownership.
+4. Host-wide conntrack cleanup scoping.
+
+## Closed by PR #230
+
+- **Finding 7 follow-up:** Static review reproduced the opposite reconnect
+  order left by PR #229: an old close could remove its channel, a replacement
+  could register, and then the old cleanup could erase the replacement's
+  declaration. Per-node lifecycle serialization now completes cleanup before
+  replacement registration, without blocking other nodes, and a weak identity
+  no longer retains the superseded stream. Both reconnect-order tests passed;
+  complex-topology restart verification was missing.
+- **Finding 4:** On the deployed strict firewall, ordinary allowlisted TCP
+  connected while the same socket with valid IPv4 options timed out before its
+  SYN reached the wire. The classifier now locates TCP/UDP headers from the IPv4
+  IHL and rejects malformed lengths. TCP/UDP packets that reach TC already
+  fragmented fail closed; fragment reassembly is deliberately out of scope.
+  Both classifiers passed the kernel verifier, normal and option-bearing TCP
+  connected, normal and option-bearing UDP arrived, and ingress fragments were
+  discarded before reassembly. Strict/gateway complex-topology load and restart
+  verification was missing.
+- **Finding 2:** A standard Swarm task sent internet traffic from its hidden
+  `docker_gwbridge` address, while Docker's container view returned its overlay
+  address. Before the fix, NFQUEUE triggered an edge but the source rule did not
+  match; Docker MASQUERADE carried the request directly. The client now reuses
+  NFQUEUE's exact source and removes the Docker subprocess. A targeted live
+  cross-host test routed three HTTP connections through the Nullnet overlay and
+  gateway, then removed all owned rules on teardown; complex-topology load and
+  restart verification was missing.
+- **Finding 5:** The real server/client path accepted 257 proxy ports, while the
+  256-entry kernel map failed after removing the old policy. The replacement
+  bitmap covers every ingress/egress TCP/UDP port and keeps userspace
+  synchronized after each successful word update. Linux build, lint, unit tests,
+  and an Aya kernel-loader replacement test passed; complex-topology end-to-end
+  verification was missing. The suspected `PEERS` failure path was not
+  reproduced plausibly and was left unchanged.
 
 ## Closed by PR #229
 
@@ -180,8 +161,9 @@ Relevant code:
   theory was ruled out by the client's process-wide panic hook. The finding 1
   end-to-end gap applies.
 - **Finding 7:** Stale control-channel closes no longer remove their replacement.
-  Full CI and targeted live overlap tests passed; complex-topology load
-  verification was missing.
+  PR #230 subsequently closed the opposite close-first cleanup race. Full CI
+  and targeted live overlap tests passed; complex-topology load verification
+  was missing.
 
 ## Ruled out during this audit
 
@@ -189,3 +171,10 @@ The host firewall does not explicitly allow UDP 4791, but this is intentional in
 the current design. Group carriers are selected only for encrypted cross-host
 ingress, so the physical NIC sees peer-scoped ESP. With encryption disabled,
 Nullnet uses dedicated VXLAN on UDP 47890 instead of group carriers.
+
+Partial native XFRM installation was not reproduced on a plausible current
+Nullnet path. Setup is serialized per owner, live network IDs are not reused
+until teardown is acknowledged, teardown failures keep IDs reserved, and client
+restart purges owned XFRM state before reconnecting. Current native-XFRM lab
+logs and prior high-volume encrypted runs showed clean teardown; the observed
+historical `EEXIST` failures came from an older experimental CLI runtime.

@@ -9,7 +9,7 @@ mod policy;
 use aya_ebpf::{
     bindings::{TC_ACT_OK, TC_ACT_SHOT},
     macros::{classifier, map},
-    maps::{HashMap, LruHashMap},
+    maps::{Array, HashMap, LruHashMap},
     programs::TcContext,
 };
 use core::mem;
@@ -54,17 +54,18 @@ const FORWARD_PORT: u16 = 9999;
 const PROTO_TCP: u8 = 6;
 const PROTO_UDP: u8 = 17;
 const PROTO_ESP: u8 = 50;
+const PORTS_PER_WORD: u32 = u64::BITS;
+const WORDS_PER_CLASS: u32 = (u16::MAX as u32 + 1) / PORTS_PER_WORD;
+const ALLOW_PORT_WORDS: u32 = 4 * WORDS_PER_CLASS;
 
 // Allowlist of peer underlay IPs (host-order `u32::from(Ipv4Addr)` keys).
 #[map]
 static PEERS: HashMap<u32, u8> = HashMap::with_max_entries(4096, 0);
 
-// Per-direction, per-proto destination-port allowlist. Key packs direction and
-// protocol alongside the port (see `allow_key`) so ingress/egress and TCP/UDP of
-// the same number are distinct. Populated by userspace from the four
-// {INGRESS,EGRESS}_ALLOW_{TCP,UDP}_PORTS env lists.
+// Complete per-direction, per-proto port bitmap. Each u64 covers 64 ports;
+// four classes cover ingress/egress TCP/UDP without a capacity limit.
 #[map]
-static ALLOW_PORTS: HashMap<u32, u8> = HashMap::with_max_entries(256, 0);
+static ALLOW_PORTS: Array<u64> = Array::with_max_entries(ALLOW_PORT_WORDS, 0);
 
 // Connection tracking: canonical 5-tuple -> presence. LRU so it self-bounds;
 // hot flows are refreshed on every packet (re-insert) and won't be evicted under
@@ -116,6 +117,32 @@ fn ptr_at<T>(ctx: &TcContext, offset: usize) -> Result<*const T, ()> {
     Ok((start + offset) as *const T)
 }
 
+#[inline(always)]
+fn ipv4_header_len(ctx: &TcContext, header: *const Ipv4Hdr) -> Result<usize, ()> {
+    let header = unsafe { &*header };
+    let ihl = usize::from(header.ihl());
+    let total_len = usize::from(header.tot_len());
+    if header.version() != 4
+        || !(Ipv4Hdr::LEN..=60).contains(&ihl)
+        || total_len < ihl
+        || ctx.data() + EthHdr::LEN + ihl > ctx.data_end()
+    {
+        return Err(());
+    }
+    Ok(ihl)
+}
+
+#[inline(always)]
+fn is_fragment(header: *const Ipv4Hdr) -> bool {
+    let header = unsafe { &*header };
+    header.frag_offset() != 0 || header.frag_flags() & 1 != 0
+}
+
+#[inline(always)]
+fn has_transport_header(header: *const Ipv4Hdr, header_len: usize, len: usize) -> bool {
+    usize::from(unsafe { (*header).tot_len() }) >= header_len + len
+}
+
 #[inline]
 fn is_gateway() -> bool {
     unsafe { core::ptr::read_volatile(&EGRESS_GATEWAY) != 0 }
@@ -131,13 +158,24 @@ fn try_firewall(ctx: &TcContext, is_egress: bool) -> Result<i32, ()> {
         EtherType::Arp => Ok(TC_ACT_OK),
         EtherType::Ipv4 => {
             let ipv4_header: *const Ipv4Hdr = ptr_at(ctx, EthHdr::LEN)?;
+            let transport_offset = EthHdr::LEN + ipv4_header_len(ctx, ipv4_header)?;
             let src = u32::from_be_bytes(unsafe { (*ipv4_header).src_addr });
             let dst = u32::from_be_bytes(unsafe { (*ipv4_header).dst_addr });
 
             let (proto, src_port, dst_port) =
                 match unsafe { (*ipv4_header).proto() }.map_err(|_| ())? {
                     IpProto::Tcp => {
-                        let tcp: *const TcpHdr = ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+                        // TC sees fragments before reassembly; only the first has ports.
+                        if is_fragment(ipv4_header)
+                            || !has_transport_header(
+                                ipv4_header,
+                                transport_offset - EthHdr::LEN,
+                                TcpHdr::LEN,
+                            )
+                        {
+                            return Ok(TC_ACT_SHOT);
+                        }
+                        let tcp: *const TcpHdr = ptr_at(ctx, transport_offset)?;
                         (
                             PROTO_TCP,
                             u16::from_be_bytes(unsafe { (*tcp).source }),
@@ -145,7 +183,17 @@ fn try_firewall(ctx: &TcContext, is_egress: bool) -> Result<i32, ()> {
                         )
                     }
                     IpProto::Udp => {
-                        let udp: *const UdpHdr = ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+                        // Reject the first fragment too so policy is deterministic.
+                        if is_fragment(ipv4_header)
+                            || !has_transport_header(
+                                ipv4_header,
+                                transport_offset - EthHdr::LEN,
+                                UdpHdr::LEN,
+                            )
+                        {
+                            return Ok(TC_ACT_SHOT);
+                        }
+                        let udp: *const UdpHdr = ptr_at(ctx, transport_offset)?;
                         (
                             PROTO_UDP,
                             u16::from_be_bytes(unsafe { (*udp).src }),
@@ -225,16 +273,29 @@ fn is_peer(ip: u32) -> bool {
     unsafe { PEERS.get(&ip) }.is_some()
 }
 
-// Is `port` allowed as a destination in this direction/proto? (ALLOW_PORTS key
-// layout must match userspace `allow_key` in members/nullnet-client/src/ebpf.)
+// The bitmap layout must match userspace `allow_word`.
 #[inline]
 fn is_port_allowed(is_egress: bool, proto: u8, port: u16) -> bool {
-    unsafe { ALLOW_PORTS.get(&allow_key(is_egress, proto, port)) }.is_some()
+    let Some((index, mask)) = allow_word(is_egress, proto, port) else {
+        return false;
+    };
+    match ALLOW_PORTS.get(index) {
+        Some(word) => *word & mask != 0,
+        None => false,
+    }
 }
 
 #[inline]
-fn allow_key(is_egress: bool, proto: u8, port: u16) -> u32 {
-    ((is_egress as u32) << 24) | ((proto as u32) << 16) | port as u32
+fn allow_word(is_egress: bool, proto: u8, port: u16) -> Option<(u32, u64)> {
+    let protocol_class = match proto {
+        PROTO_TCP => 0,
+        PROTO_UDP => 1,
+        _ => return None,
+    };
+    let class = u32::from(is_egress) * 2 + protocol_class;
+    let port = u32::from(port);
+    let index = class * WORDS_PER_CLASS + port / PORTS_PER_WORD;
+    Some((index, 1u64 << (port % PORTS_PER_WORD)))
 }
 
 // Order the two endpoints so both directions of a flow yield the same key.

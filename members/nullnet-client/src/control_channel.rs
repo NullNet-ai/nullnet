@@ -42,6 +42,11 @@ fn fire_event(grpc: &NullnetGrpcInterface, kind: AgentEventKind) {
     });
 }
 
+fn egress_source(triggers_state: &TriggersState, container: Option<&str>) -> Option<Ipv4Addr> {
+    let source = triggers_state.peek_container_ip(container?, crate::triggers::EGRESS_TRIGGER_PORT);
+    (!source.is_unspecified()).then_some(source)
+}
+
 /// Confirm a completed control operation. Teardown acknowledgements follow
 /// all kernel cleanup so the server can safely reuse the net id.
 async fn ack_control(
@@ -635,15 +640,7 @@ async fn handle_vxlan_setup(
             .and_then(|hm| hm.ip.parse::<Ipv4Addr>().ok());
         let snat_src = br_net.ip();
         let local_gateway = local_ip == remote_ip;
-        let container_ip = message.docker_container.as_deref().and_then(|container| {
-            if local_gateway {
-                let source = triggers_state
-                    .peek_container_ip(container, crate::triggers::EGRESS_TRIGGER_PORT);
-                (!source.is_unspecified()).then_some(source)
-            } else {
-                egress::container_ipv4(container)
-            }
-        });
+        let container_ip = egress_source(&triggers_state, message.docker_container.as_deref());
         match (proxy_gw, container_ip) {
             (Some(gw), Some(cip)) => {
                 // A local gateway routes directly with one NAT pass. Sending
@@ -1310,5 +1307,25 @@ mod failure_tests {
             acks.try_recv().is_err(),
             "failed kernel cleanup was acknowledged as completed"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::triggers::{EGRESS_TRIGGER_PORT, TriggerClaim};
+
+    #[test]
+    fn egress_uses_the_source_observed_by_nfqueue() {
+        let state = TriggersState::default();
+        let source = Ipv4Addr::new(172, 18, 0, 8);
+        assert!(matches!(
+            state.claim("swarm-task", EGRESS_TRIGGER_PORT, source),
+            TriggerClaim::Start(_)
+        ));
+
+        assert_eq!(egress_source(&state, Some("swarm-task")), Some(source));
+        assert_eq!(egress_source(&state, Some("missing-task")), None);
+        assert_eq!(egress_source(&state, None), None);
     }
 }

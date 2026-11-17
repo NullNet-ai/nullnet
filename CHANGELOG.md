@@ -42,6 +42,9 @@ All Nullnet releases with the relative changes are documented in this file.
 ### Removed
 - Remove proxy dependency configuration and multi-hop ingress setup; service-to-service connectivity now uses direct `backends` exclusively([#228](https://github.com/NullNet-ai/nullnet/pull/228)).
 ### Fixed
+- Parse variable-length IPv4 headers in the host firewall and fail closed for fragmented TCP/UDP traffic ([#230](https://github.com/NullNet-ai/nullnet/pull/230)).
+- Steer cross-host egress from the packet source observed by NFQUEUE instead of Docker's incomplete Swarm network view ([#230](https://github.com/NullNet-ai/nullnet/pull/230)).
+- Remove the 256-entry host firewall port limit with a complete ingress/egress TCP/UDP bitmap ([#230](https://github.com/NullNet-ai/nullnet/pull/230)).
 - Preserve the last valid service inventory when Docker discovery fails or times out ([#229](https://github.com/NullNet-ai/nullnet/pull/229)).
 - Keep a replacement control channel and its node topology live when the superseded stream closes ([#229](https://github.com/NullNet-ai/nullnet/pull/229)).
 - Prevent recycled overlay addresses from reusing pooled upstream TCP connections from an earlier edge generation ([#220](https://github.com/NullNet-ai/nullnet/pull/220)).

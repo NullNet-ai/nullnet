@@ -435,6 +435,8 @@ backward-compatible stages.
   > `NetworkType` response at startup, so there is a single point of decision. Make sure `22` is in the
   > server's `INGRESS_ALLOW_TCP_PORTS` before starting a client over SSH, or the session dies. The
   > gateway-vs-strict posture is likewise derived server-side from `PROXY_IP` — no per-client flag.
+  > IPv4 options are supported; TCP/UDP packets that reach the classifier already fragmented fail
+  > closed because the firewall does not reassemble fragments.
 
 - run the project as a daemon (from the repo root)
   ```
