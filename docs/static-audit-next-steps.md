@@ -1,10 +1,10 @@
 # Static audit next steps
 
 PR [#229](https://github.com/NullNet-ai/nullnet/pull/229) closes findings 1,
-6, and 7. Their remaining end-to-end gaps are recorded under **Closed by PR
-#229**. PR [#230](https://github.com/NullNet-ai/nullnet/pull/230) closes findings
-2, 4, and 5; their remaining end-to-end gaps are recorded under **Closed by PR
-#230**. Finding 8 was ruled out. The remaining findings have not been
+6, and the initial finding 7 stale-close case. PR
+[#230](https://github.com/NullNet-ai/nullnet/pull/230) closes findings 2, 4, and
+5, plus the remaining close-first race in finding 7. Their end-to-end gaps are
+recorded below. Finding 8 was ruled out. The remaining findings have not been
 implemented or end-to-end tested. Reproduce each failure before changing code,
 then follow the four PR gates in `AGENTS.md`.
 
@@ -95,6 +95,13 @@ Relevant code:
 
 ## Closed by PR #230
 
+- **Finding 7 follow-up:** Static review reproduced the opposite reconnect
+  order left by PR #229: an old close could remove its channel, a replacement
+  could register, and then the old cleanup could erase the replacement's
+  declaration. Per-node lifecycle serialization now completes cleanup before
+  replacement registration, without blocking other nodes, and a weak identity
+  no longer retains the superseded stream. Both reconnect-order tests passed;
+  complex-topology restart verification was missing.
 - **Finding 4:** On the deployed strict firewall, ordinary allowlisted TCP
   connected while the same socket with valid IPv4 options timed out before its
   SYN reached the wire. The classifier now locates TCP/UDP headers from the IPv4
@@ -128,8 +135,9 @@ Relevant code:
   theory was ruled out by the client's process-wide panic hook. The finding 1
   end-to-end gap applies.
 - **Finding 7:** Stale control-channel closes no longer remove their replacement.
-  Full CI and targeted live overlap tests passed; complex-topology load
-  verification was missing.
+  PR #230 subsequently closed the opposite close-first cleanup race. Full CI
+  and targeted live overlap tests passed; complex-topology load verification
+  was missing.
 
 ## Ruled out during this audit
 

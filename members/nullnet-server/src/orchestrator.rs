@@ -22,6 +22,7 @@ use tonic::{Request, Status, Streaming};
 use uuid::Uuid;
 
 type OutboundStream = mpsc::Sender<Result<NetMessage, Status>>;
+type WeakOutboundStream = mpsc::WeakSender<Result<NetMessage, Status>>;
 type XfrmTransportMap = HashMap<(IpAddr, IpAddr), (u32, [u8; 32])>;
 const SHARED_XFRM_ID_START: u32 = 0x10_0000;
 const POLICY_XFRM_ID_START: u32 = 0x20_0000;
@@ -142,6 +143,8 @@ pub(crate) struct EgressEdgeInfo {
 #[derive(Debug, Clone)]
 pub struct Orchestrator {
     clients: Arc<RwLock<HashMap<IpAddr, OutboundStream>>>,
+    /// Keeps replacement registration behind cleanup for the same node only.
+    client_lifecycles: Arc<Mutex<HashMap<IpAddr, Arc<Mutex<()>>>>>,
     /// Certificate stream counts keep overlapping reconnects on one IP visible.
     proxies: Arc<RwLock<HashMap<IpAddr, usize>>>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
@@ -176,6 +179,7 @@ impl Orchestrator {
         let events = EventStore::new();
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
+            client_lifecycles: Arc::new(Mutex::new(HashMap::new())),
             proxies: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
             net_id_pool: Arc::new(Mutex::new(NetIdPool::new())),
@@ -208,11 +212,8 @@ impl Orchestrator {
             .send(Ok(self.policy_heartbeat()))
             .await
             .handle_err(location!())?;
-        self.clients
-            .write()
-            .await
-            .insert(client_ip, outbound.clone());
-        let closing_outbound = outbound.clone();
+        self.replace_client(client_ip, outbound.clone()).await;
+        let closing_outbound = outbound.downgrade();
         self.policy_heartbeats(client_ip, outbound);
         if crate::routine_diagnostics() {
             self.events
@@ -244,6 +245,21 @@ impl Orchestrator {
         self.clients.write().await.remove(ip);
     }
 
+    async fn client_lifecycle(&self, client_ip: IpAddr) -> Arc<Mutex<()>> {
+        self.client_lifecycles
+            .lock()
+            .await
+            .entry(client_ip)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    async fn replace_client(&self, client_ip: IpAddr, outbound: OutboundStream) {
+        let lifecycle = self.client_lifecycle(client_ip).await;
+        let _guard = lifecycle.lock().await;
+        self.clients.write().await.insert(client_ip, outbound);
+    }
+
     #[cfg(test)]
     pub(crate) async fn handle_node_disconnect(
         &self,
@@ -257,14 +273,17 @@ impl Orchestrator {
     async fn handle_control_channel_close(
         &self,
         client_ip: IpAddr,
-        closing: &OutboundStream,
+        closing: &WeakOutboundStream,
         services: &Arc<RwLock<StackMap>>,
     ) {
+        let lifecycle = self.client_lifecycle(client_ip).await;
+        let lifecycle_guard = lifecycle.lock().await;
         let mut clients = self.clients.write().await;
-        if !clients
-            .get(&client_ip)
-            .is_some_and(|current| current.same_channel(closing))
-        {
+        if !clients.get(&client_ip).is_some_and(|current| {
+            closing
+                .upgrade()
+                .is_some_and(|closing| current.same_channel(&closing))
+        }) {
             return;
         }
         clients.remove(&client_ip);
@@ -275,6 +294,7 @@ impl Orchestrator {
             .emit(Event::node_disconnected(client_ip.to_string()))
             .await;
         self.apply_node_disconnect(client_ip, services).await;
+        drop(lifecycle_guard);
     }
 
     async fn apply_node_disconnect(&self, client_ip: IpAddr, services: &Arc<RwLock<StackMap>>) {
@@ -1556,7 +1576,7 @@ mod control_channel_tests {
 
         let services = Arc::new(RwLock::new(StackMap::new()));
         orchestrator
-            .handle_control_channel_close(client_ip, &old, &services)
+            .handle_control_channel_close(client_ip, &old.downgrade(), &services)
             .await;
 
         assert!(
@@ -1583,10 +1603,66 @@ mod control_channel_tests {
 
         let services = Arc::new(RwLock::new(StackMap::new()));
         orchestrator
-            .handle_control_channel_close(client_ip, &current, &services)
+            .handle_control_channel_close(client_ip, &current.downgrade(), &services)
             .await;
 
         assert!(!orchestrator.clients.read().await.contains_key(&client_ip));
+    }
+
+    #[tokio::test]
+    async fn close_started_before_replacement_serializes_cleanup() {
+        let orchestrator = Orchestrator::new();
+        let client_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let (old, _old_rx) = mpsc::channel(1);
+        orchestrator
+            .clients
+            .write()
+            .await
+            .insert(client_ip, old.clone());
+
+        let services = Arc::new(RwLock::new(StackMap::new()));
+        let services_guard = services.write().await;
+        let closing_orchestrator = orchestrator.clone();
+        let closing_services = services.clone();
+        let old_identity = old.downgrade();
+        let close = tokio::spawn(async move {
+            closing_orchestrator
+                .handle_control_channel_close(client_ip, &old_identity, &closing_services)
+                .await;
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while orchestrator.clients.read().await.contains_key(&client_ip) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("close did not remove the old channel");
+
+        let (replacement, _replacement_rx) = mpsc::channel(1);
+        let replacement_install = orchestrator.replace_client(client_ip, replacement.clone());
+        tokio::pin!(replacement_install);
+        tokio::select! {
+            biased;
+            () = &mut replacement_install => {
+                panic!("replacement installed before old cleanup completed");
+            }
+            () = tokio::task::yield_now() => {}
+        }
+        assert!(!orchestrator.clients.read().await.contains_key(&client_ip));
+
+        drop(services_guard);
+        close.await.unwrap();
+        replacement_install.await;
+
+        assert!(
+            orchestrator
+                .clients
+                .read()
+                .await
+                .get(&client_ip)
+                .is_some_and(|current| current.same_channel(&replacement))
+        );
     }
 }
 
