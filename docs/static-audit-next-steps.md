@@ -2,9 +2,11 @@
 
 PR [#229](https://github.com/NullNet-ai/nullnet/pull/229) closes findings 1,
 6, and 7. Their remaining end-to-end gaps are recorded under **Closed by PR
-#229**. The other findings have not been implemented or end-to-end tested.
-Reproduce each failure before changing code, then follow the four PR gates in
-`AGENTS.md`.
+#229**. PR [#230](https://github.com/NullNet-ai/nullnet/pull/230) closes finding
+5; its remaining end-to-end gap is recorded under **Closed by PR #230**.
+Finding 8 was ruled out. The remaining findings have not been implemented or
+end-to-end tested. Reproduce each failure before changing code, then follow the
+four PR gates in `AGENTS.md`.
 
 ## 2. Cross-host egress may steer the wrong container address
 
@@ -60,45 +62,6 @@ Relevant code:
 
 - `ebpf/src/main.rs:124-169`
 - `members/nullnet-client/src/nfqueue/parse.rs` (fragment-aware comparison)
-
-## 5. Firewall map updates can diverge from userspace state
-
-`FirewallPeers` ignores BPF-map insert and removal failures while still mutating
-`by_id` and refcounts. A failed insert can leave userspace believing a peer is
-allowed and prevent retries; a failed removal can leave a stale peer allowed.
-Ingress-port refreshes return errors, but mutate the map incrementally and can
-leave neither the old nor the desired rules installed. The `ALLOW_PORTS` map has
-256 entries, while the server does not validate that the aggregate configuration
-fits.
-
-Add fault-injection/unit coverage for insert and removal failures and a capacity
-test before modifying behavior. Updates should either commit coherently or leave
-a recoverable state, and operator-visible failures must remain reported.
-
-Relevant code:
-
-- `members/nullnet-client/src/ebpf/mod.rs:82-135,202-255`
-- `ebpf/src/main.rs:57-72`
-- `members/nullnet-server/src/nullnet_grpc_impl.rs:169-187`
-
-## 8. Partial XFRM installation can leave unowned kernel state
-
-XFRM setup submits inbound/outbound states and the outbound policy as a batch.
-If a later request fails after an earlier one succeeded, the error path removes
-the in-memory owner before the ordinary endpoint cleanup calls `remove`. The
-partial kernel objects are then no longer discoverable through `EDGES`, so a
-rollback teardown can acknowledge without deleting them. Reuse may subsequently
-hit stale state or policy created with an earlier key.
-
-Fault-inject failure on each request in the XFRM batch and inspect state and
-policy after setup rollback and net-id reuse. Cleanup must retain enough exact
-identity to remove every successfully applied object before ownership is
-dropped.
-
-Relevant code:
-
-- `members/nullnet-client/src/commands/native_xfrm.rs:404-524`
-- `members/nullnet-client/src/commands/vxlan.rs:364-371,649-682`
 
 ## 9. Reported edge failure does not invalidate the active edge
 
@@ -164,13 +127,21 @@ Relevant code:
 
 ## Recommended order
 
-1. Prove and close partial XFRM installation cleanup.
-2. Transactional/recoverable firewall map updates and capacity validation.
-3. Cross-host multi-network egress source selection.
-4. Define recovery behavior and coverage for reported data-plane failures.
-5. Make connected teardown failures retryable without losing ownership.
-6. Host-wide conntrack cleanup scoping.
-7. eBPF IPv4 parsing and fragment policy.
+1. Cross-host multi-network egress source selection.
+2. Define recovery behavior and coverage for reported data-plane failures.
+3. Make connected teardown failures retryable without losing ownership.
+4. Host-wide conntrack cleanup scoping.
+5. eBPF IPv4 parsing and fragment policy.
+
+## Closed by PR #230
+
+- **Finding 5:** The real server/client path accepted 257 proxy ports, while the
+  256-entry kernel map failed after removing the old policy. The replacement
+  bitmap covers every ingress/egress TCP/UDP port and keeps userspace
+  synchronized after each successful word update. Linux build, lint, unit tests,
+  and an Aya kernel-loader replacement test passed; complex-topology end-to-end
+  verification was missing. The suspected `PEERS` failure path was not
+  reproduced plausibly and was left unchanged.
 
 ## Closed by PR #229
 
@@ -189,3 +160,10 @@ The host firewall does not explicitly allow UDP 4791, but this is intentional in
 the current design. Group carriers are selected only for encrypted cross-host
 ingress, so the physical NIC sees peer-scoped ESP. With encryption disabled,
 Nullnet uses dedicated VXLAN on UDP 47890 instead of group carriers.
+
+Partial native XFRM installation was not reproduced on a plausible current
+Nullnet path. Setup is serialized per owner, live network IDs are not reused
+until teardown is acknowledged, teardown failures keep IDs reserved, and client
+restart purges owned XFRM state before reconnecting. Current native-XFRM lab
+logs and prior high-volume encrypted runs showed clean teardown; the observed
+historical `EEXIST` failures came from an older experimental CLI runtime.

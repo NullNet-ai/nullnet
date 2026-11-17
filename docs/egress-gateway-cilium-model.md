@@ -211,11 +211,11 @@ two-node: gateway + initiator). Two bugs were fixed during first bring-up:
   explicit allowlist. `ebpf/mod.rs` loads/attaches both programs and fills
   `ALLOW_PORTS`; `env.rs`/`main.rs` supply the config (see next bullet).
 - **Explicit allowlist — done (code), supersedes the "known gap" below.** Nothing
-  host-service is hardcoded: `ALLOW_PORTS` is keyed by `(dir<<24)|(proto<<16)|port`
-  and filled from four env lists `{INGRESS,EGRESS}_ALLOW_{TCP,UDP}_PORTS` (matched
-  on destination port). ICMP is always allowed (both directions — echo + PMTUD),
-  not gated. The old implicit gateway `80/443` and the single TCP-inbound
-  `INGRESS_ALLOW_PORTS` are gone — the gateway now lists `80,443` in
+  host-service is hardcoded: `ALLOW_PORTS` is a complete ingress/egress TCP/UDP
+  port bitmap filled from the four `{INGRESS,EGRESS}_ALLOW_{TCP,UDP}_PORTS` lists
+  (matched on destination port). ICMP is always allowed (both directions — echo
+  + PMTUD), not gated. The old implicit gateway `80/443` and the single
+  TCP-inbound `INGRESS_ALLOW_PORTS` are gone — the gateway now lists `80,443` in
   `INGRESS_ALLOW_TCP_PORTS`.
   Userspace params bundled into `ebpf::FirewallConfig`.
 - **Gateway forwarding — done (code).** `commands::egress` replaces

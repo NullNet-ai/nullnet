@@ -15,9 +15,9 @@
 //! ALLOW_PORTS.
 
 use aya::Ebpf;
-use aya::maps::{HashMap as AyaHashMap, MapData};
+use aya::maps::{Array as AyaArray, HashMap as AyaHashMap, MapData};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
@@ -27,6 +27,8 @@ const EGRESS_PROG: &str = "nullnet_fw_egress";
 
 const PROTO_TCP: u8 = 6;
 const PROTO_UDP: u8 = 17;
+const PORTS_PER_WORD: u32 = u64::BITS;
+const WORDS_PER_CLASS: u32 = (u16::MAX as u32 + 1) / PORTS_PER_WORD;
 
 /// Server-decided firewall policy delivered at startup. Ingress allowances
 /// are refreshed with service reports; control/data plane and CT returns
@@ -41,10 +43,33 @@ pub struct FirewallConfig {
     pub egress_udp: Vec<u16>,
 }
 
-/// Pack direction + protocol + port into the `ALLOW_PORTS` key. MUST match the
-/// eBPF-side `allow_key` in `ebpf/src/main.rs`.
-fn allow_key(is_egress: bool, proto: u8, port: u16) -> u32 {
-    ((is_egress as u32) << 24) | ((proto as u32) << 16) | port as u32
+/// Locate a port in `ALLOW_PORTS`. Must match eBPF-side `allow_word`.
+fn allow_word(is_egress: bool, proto: u8, port: u16) -> (u32, u64) {
+    let protocol_class = match proto {
+        PROTO_TCP => 0,
+        PROTO_UDP => 1,
+        _ => unreachable!("allowlist only supports TCP and UDP"),
+    };
+    let class = u32::from(is_egress) * 2 + protocol_class;
+    let port = u32::from(port);
+    let index = class * WORDS_PER_CLASS + port / PORTS_PER_WORD;
+    (index, 1u64 << (port % PORTS_PER_WORD))
+}
+
+fn insert_allow(words: &mut HashMap<u32, u64>, is_egress: bool, proto: u8, port: u16) {
+    let (index, mask) = allow_word(is_egress, proto, port);
+    *words.entry(index).or_default() |= mask;
+}
+
+fn ingress_words(tcp: &[u32], udp: &[u32]) -> Result<HashMap<u32, u64>, Error> {
+    let mut words = HashMap::new();
+    for (proto, ports) in [(PROTO_TCP, tcp), (PROTO_UDP, udp)] {
+        for &port in ports {
+            let port = u16::try_from(port).handle_err(location!())?;
+            insert_allow(&mut words, false, proto, port);
+        }
+    }
+    Ok(words)
 }
 
 /// Identifies the edge a peer allowlist entry belongs to, so a teardown (which
@@ -214,28 +239,28 @@ fn attach_classifier(
 
 /// Retained map handle for refreshing server-decided ingress allowances.
 pub struct FirewallAllowPorts {
-    map: AyaHashMap<MapData, u32, u8>,
-    ingress: HashSet<u32>,
+    map: AyaArray<MapData, u64>,
+    ingress: HashMap<u32, u64>,
 }
 
 impl FirewallAllowPorts {
     pub fn update_ingress(&mut self, tcp: &[u32], udp: &[u32]) -> Result<(), Error> {
-        let mut desired = HashSet::new();
-        for (proto, ports) in [(PROTO_TCP, tcp), (PROTO_UDP, udp)] {
-            for &port in ports {
-                let port = u16::try_from(port).handle_err(location!())?;
-                desired.insert(allow_key(false, proto, port));
+        let desired = ingress_words(tcp, udp)?;
+        let mut indexes: Vec<_> = self.ingress.keys().chain(desired.keys()).copied().collect();
+        indexes.sort_unstable();
+        indexes.dedup();
+
+        for index in indexes {
+            let current = self.ingress.get(&index).copied().unwrap_or_default();
+            let next = desired.get(&index).copied().unwrap_or_default();
+            if current == next {
+                continue;
             }
-        }
-        let removed: Vec<_> = self.ingress.difference(&desired).copied().collect();
-        for key in removed {
-            self.map.remove(&key).handle_err(location!())?;
-            self.ingress.remove(&key);
-        }
-        for key in desired {
-            if !self.ingress.contains(&key) {
-                self.map.insert(&key, &0u8, 0).handle_err(location!())?;
-                self.ingress.insert(key);
+            self.map.set(index, &next, 0).handle_err(location!())?;
+            if next == 0 {
+                self.ingress.remove(&index);
+            } else {
+                self.ingress.insert(index, next);
             }
         }
         Ok(())
@@ -243,7 +268,7 @@ impl FirewallAllowPorts {
 }
 
 fn populate_allow_ports(bpf: &mut Ebpf, cfg: &FirewallConfig) -> Result<FirewallAllowPorts, Error> {
-    let mut map: AyaHashMap<MapData, u32, u8> = bpf
+    let mut map: AyaArray<MapData, u64> = bpf
         .take_map("ALLOW_PORTS")
         .ok_or("ALLOW_PORTS map not found in bytecode")
         .handle_err(location!())?
@@ -255,17 +280,50 @@ fn populate_allow_ports(bpf: &mut Ebpf, cfg: &FirewallConfig) -> Result<Firewall
         (true, PROTO_TCP, &cfg.egress_tcp),
         (true, PROTO_UDP, &cfg.egress_udp),
     ];
-    let mut ingress = HashSet::new();
+    let mut words = HashMap::new();
+    let mut ingress = HashMap::new();
     for (is_egress, proto, ports) in sets {
         for &p in ports {
-            let key = allow_key(is_egress, proto, p);
-            map.insert(&key, &0u8, 0).handle_err(location!())?;
+            insert_allow(&mut words, is_egress, proto, p);
             if !is_egress {
-                ingress.insert(key);
+                insert_allow(&mut ingress, is_egress, proto, p);
             }
         }
     }
+    for (index, word) in words {
+        map.set(index, &word, 0).handle_err(location!())?;
+    }
     Ok(FirewallAllowPorts { map, ingress })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allow_words_cover_all_classes_and_boundaries() {
+        assert_eq!(allow_word(false, PROTO_TCP, 0), (0, 1));
+        assert_eq!(allow_word(false, PROTO_TCP, 63), (0, 1 << 63));
+        assert_eq!(allow_word(false, PROTO_TCP, 64), (1, 1));
+        assert_eq!(allow_word(false, PROTO_UDP, 0), (1024, 1));
+        assert_eq!(allow_word(true, PROTO_TCP, 0), (2048, 1));
+        assert_eq!(allow_word(true, PROTO_UDP, 0), (3072, 1));
+        assert_eq!(allow_word(true, PROTO_UDP, u16::MAX), (4095, 1 << 63));
+    }
+
+    #[test]
+    fn ingress_words_merge_ports_without_crossing_protocols() {
+        let words = ingress_words(&[1, 2, 63, 64, 2], &[1]).unwrap();
+        assert_eq!(words[&0], (1 << 1) | (1 << 2) | (1 << 63));
+        assert_eq!(words[&1], 1);
+        assert_eq!(words[&1024], 1 << 1);
+        assert_eq!(words.len(), 3);
+    }
+
+    #[test]
+    fn ingress_words_reject_invalid_grpc_ports() {
+        assert!(ingress_words(&[u16::MAX as u32 + 1], &[]).is_err());
+    }
 }
 
 fn raise_memlock_rlimit() {

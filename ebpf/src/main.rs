@@ -9,7 +9,7 @@ mod policy;
 use aya_ebpf::{
     bindings::{TC_ACT_OK, TC_ACT_SHOT},
     macros::{classifier, map},
-    maps::{HashMap, LruHashMap},
+    maps::{Array, HashMap, LruHashMap},
     programs::TcContext,
 };
 use core::mem;
@@ -54,17 +54,18 @@ const FORWARD_PORT: u16 = 9999;
 const PROTO_TCP: u8 = 6;
 const PROTO_UDP: u8 = 17;
 const PROTO_ESP: u8 = 50;
+const PORTS_PER_WORD: u32 = u64::BITS;
+const WORDS_PER_CLASS: u32 = (u16::MAX as u32 + 1) / PORTS_PER_WORD;
+const ALLOW_PORT_WORDS: u32 = 4 * WORDS_PER_CLASS;
 
 // Allowlist of peer underlay IPs (host-order `u32::from(Ipv4Addr)` keys).
 #[map]
 static PEERS: HashMap<u32, u8> = HashMap::with_max_entries(4096, 0);
 
-// Per-direction, per-proto destination-port allowlist. Key packs direction and
-// protocol alongside the port (see `allow_key`) so ingress/egress and TCP/UDP of
-// the same number are distinct. Populated by userspace from the four
-// {INGRESS,EGRESS}_ALLOW_{TCP,UDP}_PORTS env lists.
+// Complete per-direction, per-proto port bitmap. Each u64 covers 64 ports;
+// four classes cover ingress/egress TCP/UDP without a capacity limit.
 #[map]
-static ALLOW_PORTS: HashMap<u32, u8> = HashMap::with_max_entries(256, 0);
+static ALLOW_PORTS: Array<u64> = Array::with_max_entries(ALLOW_PORT_WORDS, 0);
 
 // Connection tracking: canonical 5-tuple -> presence. LRU so it self-bounds;
 // hot flows are refreshed on every packet (re-insert) and won't be evicted under
@@ -225,16 +226,29 @@ fn is_peer(ip: u32) -> bool {
     unsafe { PEERS.get(&ip) }.is_some()
 }
 
-// Is `port` allowed as a destination in this direction/proto? (ALLOW_PORTS key
-// layout must match userspace `allow_key` in members/nullnet-client/src/ebpf.)
+// The bitmap layout must match userspace `allow_word`.
 #[inline]
 fn is_port_allowed(is_egress: bool, proto: u8, port: u16) -> bool {
-    unsafe { ALLOW_PORTS.get(&allow_key(is_egress, proto, port)) }.is_some()
+    let Some((index, mask)) = allow_word(is_egress, proto, port) else {
+        return false;
+    };
+    match ALLOW_PORTS.get(index) {
+        Some(word) => *word & mask != 0,
+        None => false,
+    }
 }
 
 #[inline]
-fn allow_key(is_egress: bool, proto: u8, port: u16) -> u32 {
-    ((is_egress as u32) << 24) | ((proto as u32) << 16) | port as u32
+fn allow_word(is_egress: bool, proto: u8, port: u16) -> Option<(u32, u64)> {
+    let protocol_class = match proto {
+        PROTO_TCP => 0,
+        PROTO_UDP => 1,
+        _ => return None,
+    };
+    let class = u32::from(is_egress) * 2 + protocol_class;
+    let port = u32::from(port);
+    let index = class * WORDS_PER_CLASS + port / PORTS_PER_WORD;
+    Some((index, 1u64 << (port % PORTS_PER_WORD)))
 }
 
 // Order the two endpoints so both directions of a flow yield the same key.
