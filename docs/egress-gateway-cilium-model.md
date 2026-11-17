@@ -220,7 +220,7 @@ two-node: gateway + initiator). Two bugs were fixed during first bring-up:
   Userspace params bundled into `ebpf::FirewallConfig`.
 - **Gateway forwarding — done (code).** `commands::egress` replaces
   `install_intercept` (TPROXY) with `install_gateway_forward` (per-edge
-  `MASQUERADE` on `-s <br_net> -o <default-route NIC>` + FORWARD accepts);
+  `MASQUERADE` on `-s <br_net>` through the host-selected route + FORWARD accepts);
   `init()` enables `ip_forward`. `EgressState::Intercept` → `Gateway{br_net}`;
   control-channel setup/teardown updated. `nullnet-proxy/src/forward.rs` deleted,
   `forward::start` and the `socket2`/`libc` deps removed. Server unchanged.
