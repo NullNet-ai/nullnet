@@ -167,7 +167,11 @@ fn try_firewall(ctx: &TcContext, is_egress: bool) -> Result<i32, ()> {
                     IpProto::Tcp => {
                         // TC sees fragments before reassembly; only the first has ports.
                         if is_fragment(ipv4_header)
-                            || !has_transport_header(ipv4_header, transport_offset - EthHdr::LEN, TcpHdr::LEN)
+                            || !has_transport_header(
+                                ipv4_header,
+                                transport_offset - EthHdr::LEN,
+                                TcpHdr::LEN,
+                            )
                         {
                             return Ok(TC_ACT_SHOT);
                         }
@@ -181,7 +185,11 @@ fn try_firewall(ctx: &TcContext, is_egress: bool) -> Result<i32, ()> {
                     IpProto::Udp => {
                         // Reject the first fragment too so policy is deterministic.
                         if is_fragment(ipv4_header)
-                            || !has_transport_header(ipv4_header, transport_offset - EthHdr::LEN, UdpHdr::LEN)
+                            || !has_transport_header(
+                                ipv4_header,
+                                transport_offset - EthHdr::LEN,
+                                UdpHdr::LEN,
+                            )
                         {
                             return Ok(TC_ACT_SHOT);
                         }
