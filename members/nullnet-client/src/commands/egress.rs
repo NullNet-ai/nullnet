@@ -529,21 +529,18 @@ fn privileged_quiet(args: &[&str]) -> std::io::Result<std::process::ExitStatus> 
 }
 
 /// Gateway side: forward decapsulated external-bound packets arriving on
-/// `br_dev` (overlay subnet `br_net`) out the host's default-route NIC, SNAT'd
-/// to that NIC's address (MASQUERADE). netfilter conntrack de-SNATs the replies
-/// back over the tunnel. Replaces the old TPROXY-to-forward-proxy path.
+/// `br_dev` (overlay subnet `br_net`) through the route selected by the host,
+/// SNAT'd to that route's address (MASQUERADE). netfilter conntrack de-SNATs
+/// the replies back over the tunnel. Replaces the old TPROXY path.
 pub(crate) fn install_gateway_forward(br_dev: &str, br_net: &str) -> bool {
     if !remove_gateway_forward(br_dev, br_net) {
         return false;
     }
-    let Some(nic) = default_route_iface() else {
-        eprintln!("[egress] gateway forward: no default-route NIC found; not installed");
-        return false;
-    };
-    apply_forward_rules(&forward_rules(Some(br_dev), br_net, Some(&nic)), "-A")
+    apply_forward_rules(&forward_rules(Some(br_dev), br_net), "-A")
 }
 
-/// Discover the installed NIC rather than assuming the default route is unchanged.
+/// Discover the exact installed rules so cleanup also handles older builds
+/// whose gateway rules included a specific output interface.
 pub(crate) fn remove_gateway_forward(br_dev: &str, br_net: &str) -> bool {
     let Ok(network) = br_net.parse::<ipnetwork::Ipv4Network>() else {
         return false;
@@ -567,7 +564,7 @@ pub(crate) fn remove_gateway_forward(br_dev: &str, br_net: &str) -> bool {
 
 type ForwardRules = Vec<(&'static str, Vec<String>)>;
 
-fn forward_rules(device: Option<&str>, source: &str, nic: Option<&str>) -> ForwardRules {
+fn forward_rules(device: Option<&str>, source: &str) -> ForwardRules {
     let (out_flag, out_value, back_flag, back_value) = match device {
         Some(dev) => ("-i", dev, "-o", dev),
         None => ("-s", source, "-d", source),
@@ -575,11 +572,6 @@ fn forward_rules(device: Option<&str>, source: &str, nic: Option<&str>) -> Forwa
     let mut nat = vec!["POSTROUTING", "-s", source];
     let mut out = vec!["FORWARD", out_flag, out_value];
     let mut back = vec!["FORWARD"];
-    if let Some(nic) = nic {
-        nat.extend(["-o", nic]);
-        out.extend(["-o", nic]);
-        back.extend(["-i", nic]);
-    }
     back.extend([back_flag, back_value]);
     if device.is_none() {
         nat.extend(["-m", "set", "!", "--match-set", INTERNAL_SET, "dst"]);
@@ -635,7 +627,7 @@ pub(crate) fn install_local_forward(net_id: u32, container_ips: &[Ipv4Addr]) -> 
     }
     let mut rules: ForwardRules = container_ips
         .iter()
-        .flat_map(|ip| forward_rules(None, &ip.to_string(), None))
+        .flat_map(|ip| forward_rules(None, &ip.to_string()))
         .collect();
     for (_, rule) in &mut rules {
         rule.extend([
@@ -695,26 +687,6 @@ fn parse_local_forward_rules(output: &str, net_id: Option<u32>) -> Vec<Vec<Strin
         .collect()
 }
 
-/// The interface carrying the host's default route (where internet-bound,
-/// masqueraded egress leaves). Parsed from `ip route show default`.
-fn default_route_iface() -> Option<String> {
-    let out = Command::new("ip")
-        .args(["route", "show", "default"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let mut toks = stdout.split_whitespace();
-    while let Some(tok) = toks.next() {
-        if tok == "dev" {
-            return toks.next().map(str::to_string);
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod purge_tests {
     use super::{
@@ -722,22 +694,29 @@ mod purge_tests {
     };
 
     #[test]
-    fn cross_host_forwarding_rules_preserve_existing_scope() {
-        let rules = forward_rules(Some("br_101_s"), "10.0.3.40/29", Some("eth0"));
+    fn cross_host_forwarding_follows_the_host_route() {
+        let rules = forward_rules(Some("br_101_s"), "10.0.3.40/29");
         let actual: Vec<_> = rules
             .iter()
             .map(|(table, args)| (*table, args.join(" ")))
             .collect();
-        assert_eq!(actual, vec![
-            ("nat", "POSTROUTING -s 10.0.3.40/29 -o eth0 -j MASQUERADE".into()),
-            ("filter", "FORWARD -i br_101_s -o eth0 -j ACCEPT".into()),
-            ("filter", "FORWARD -i eth0 -o br_101_s -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT".into()),
-        ]);
+        assert_eq!(
+            actual,
+            vec![
+                ("nat", "POSTROUTING -s 10.0.3.40/29 -j MASQUERADE".into()),
+                ("filter", "FORWARD -i br_101_s -j ACCEPT".into()),
+                (
+                    "filter",
+                    "FORWARD -o br_101_s -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
+                        .into()
+                ),
+            ]
+        );
     }
 
     #[test]
     fn local_forwarding_excludes_internal_traffic_and_unsolicited_replies() {
-        let rules = forward_rules(None, "172.30.0.2", None);
+        let rules = forward_rules(None, "172.30.0.2");
         for (_, rule) in &rules[..2] {
             let text = rule.join(" ");
             assert!(text.contains("-s 172.30.0.2"));
