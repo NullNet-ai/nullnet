@@ -35,7 +35,6 @@ pub enum Lifecycle {
         vxlan_id: u32,
         overlay_ip: Ipv4Addr,
         container_ip: Ipv4Addr,
-        hairpin_ip: Option<Ipv4Addr>,
         notify: Arc<Notify>,
     },
 }
@@ -149,7 +148,6 @@ impl TriggersState {
                 vxlan_id,
                 overlay_ip,
                 container_ip,
-                hairpin_ip: None,
                 notify,
             },
         );
@@ -168,40 +166,6 @@ impl TriggersState {
             {
                 *ready = true;
                 notify.notify_waiters();
-                return true;
-            }
-        }
-        false
-    }
-
-    pub fn prepared_by_vxlan(&self, vxlan_id: u32) -> Option<(String, u16, Ipv4Addr, Ipv4Addr)> {
-        let by_key = self.by_key.lock().unwrap();
-        by_key
-            .iter()
-            .find_map(|((container, port), lifecycle)| match lifecycle {
-                Lifecycle::Installed {
-                    vxlan_id: id,
-                    overlay_ip,
-                    container_ip,
-                    ..
-                } if *id == vxlan_id => {
-                    Some((container.clone(), *port, *overlay_ip, *container_ip))
-                }
-                _ => None,
-            })
-    }
-
-    pub fn mark_hairpin(&self, vxlan_id: u32, hairpin_ip: Ipv4Addr) -> bool {
-        let mut by_key = self.by_key.lock().unwrap();
-        for lifecycle in by_key.values_mut() {
-            if let Lifecycle::Installed {
-                vxlan_id: id,
-                hairpin_ip: installed,
-                ..
-            } = lifecycle
-                && *id == vxlan_id
-            {
-                *installed = Some(hairpin_ip);
                 return true;
             }
         }
@@ -233,12 +197,9 @@ impl TriggersState {
     }
 
     /// Find the installed entry for `vxlan_id`, remove it, and return
-    /// `(container, port, overlay_ip, container_ip, hairpin_ip)` so the caller can tear
+    /// `(container, port, overlay_ip, container_ip)` so the caller can tear
     /// down DNAT with the matching `-s`.
-    pub fn remove_by_vxlan(
-        &self,
-        vxlan_id: u32,
-    ) -> Option<(String, u16, Ipv4Addr, Ipv4Addr, Option<Ipv4Addr>)> {
+    pub fn remove_by_vxlan(&self, vxlan_id: u32) -> Option<(String, u16, Ipv4Addr, Ipv4Addr)> {
         let mut by_key = self.by_key.lock().unwrap();
         let key = by_key.iter().find_map(|((c, p), lc)| match lc {
             Lifecycle::Installed { vxlan_id: v, .. } if *v == vxlan_id => Some((c.clone(), *p)),
@@ -252,9 +213,8 @@ impl TriggersState {
             Some(Lifecycle::Installed {
                 overlay_ip,
                 container_ip,
-                hairpin_ip,
                 ..
-            }) => Some((key.0, key.1, overlay_ip, container_ip, hairpin_ip)),
+            }) => Some((key.0, key.1, overlay_ip, container_ip)),
             Some(Lifecycle::Pending { .. }) | None => {
                 unreachable!("find_map matched Installed for {key:?}; lock held across remove")
             }
@@ -292,7 +252,7 @@ mod tests {
         state.forget_pending("c1", 80, &owner);
         assert_eq!(
             state.remove_by_vxlan(42),
-            Some(("c1".into(), 80, OVERLAY, IP, None))
+            Some(("c1".into(), 80, OVERLAY, IP))
         );
         assert!(!state.mark_ready(42));
         state.mark_prepared("c1", 80, 43, OVERLAY, IP);
@@ -447,10 +407,8 @@ mod tests {
         let state = TriggersState::default();
         let _ = state.mark_pending("c1", 80, IP);
         state.mark_active("c1", 80, 42, OVERLAY, IP);
-        let hairpin = Ipv4Addr::new(10, 42, 0, 5);
-        assert!(state.mark_hairpin(42, hairpin));
         let removed = state.remove_by_vxlan(42).expect("entry should exist");
-        assert_eq!(removed, ("c1".to_string(), 80, OVERLAY, IP, Some(hairpin)));
+        assert_eq!(removed, ("c1".to_string(), 80, OVERLAY, IP));
         assert!(matches!(state.state("c1", 80), TriggerState::Fresh));
     }
 

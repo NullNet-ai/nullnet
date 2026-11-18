@@ -5,5 +5,5 @@ pub struct EndpointConfig {
     pub gateway: u32,
     pub output: u32,
     pub mark: u32,
-    pub hairpin: u32,
+    pub padding: u32,
 }

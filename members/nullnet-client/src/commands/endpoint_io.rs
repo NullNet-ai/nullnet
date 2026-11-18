@@ -428,28 +428,6 @@ pub(super) fn peer_route(
     Ok(())
 }
 
-pub(super) fn gateway_route(
-    route: &mut NativeSocket,
-    destination: Ipv4Addr,
-    index: u32,
-    gateway: Ipv4Addr,
-    source: Ipv4Addr,
-) -> io::Result<()> {
-    let message = [
-        vec![2, 32, 0, 0, 254, 4, 0, 1, 0, 0, 0, 0],
-        attr(1, &destination.octets()),
-        attr(4, &index.to_ne_bytes()),
-        attr(5, &gateway.octets()),
-        attr(7, &source.octets()),
-    ]
-    .concat();
-    match route.request(24, CREATE, &message) {
-        Ok(_) => Ok(()),
-        Err(error) if error.raw_os_error() == Some(libc::EEXIST) => Ok(()),
-        Err(error) => Err(error),
-    }
-}
-
 fn remove_peer_route(
     route: &mut NativeSocket,
     destination: Ipv4Addr,

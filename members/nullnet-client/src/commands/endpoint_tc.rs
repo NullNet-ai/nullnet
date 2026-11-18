@@ -214,7 +214,7 @@ pub(super) async fn install(
                         gateway: u32::from_ne_bytes(ip.octets()),
                         output,
                         mark,
-                        hairpin: 0,
+                        padding: 0,
                     },
                     1,
                 )
@@ -222,21 +222,6 @@ pub(super) async fn install(
             ownership.indices.push(index);
         }
         Ok(Arc::new(ownership))
-    })
-    .await
-}
-
-pub(super) async fn set_hairpin(index: u32, hairpin: Ipv4Addr) -> io::Result<()> {
-    blocking(move || {
-        let mut map = STATE
-            .get()
-            .ok_or_else(|| io::Error::other("Endpoint classifier missing"))?
-            .map
-            .lock()
-            .unwrap();
-        let mut config = map.get(&index, 0).map_err(io::Error::other)?;
-        config.hairpin = u32::from_ne_bytes(hairpin.octets());
-        map.insert(&index, &config, 0).map_err(io::Error::other)
     })
     .await
 }
@@ -294,7 +279,6 @@ mod tests {
             );
         }
         let gateway: Ipv4Addr = "10.242.1.1".parse().unwrap();
-        let hairpin: Ipv4Addr = "10.242.1.5".parse().unwrap();
         let ownership = install(indices[0], Some(indices[1]), gateway, Some(42))
             .await
             .unwrap();
@@ -329,24 +313,6 @@ mod tests {
                 (0, 123)
             );
         }
-        set_hairpin(indices[1], hairpin).await.unwrap();
-        let mut hairpin_packet = [0u8; 60];
-        hairpin_packet[12..14].copy_from_slice(&[8, 0]);
-        hairpin_packet[30..34].copy_from_slice(&hairpin.octets());
-        assert_eq!(
-            run(
-                "nullnet_endpoint_ingress",
-                indices[0],
-                &hairpin_packet,
-                mark,
-            )
-            .0,
-            7
-        );
-        assert_eq!(
-            run("nullnet_endpoint_ingress", indices[1], &hairpin_packet, 0,).0,
-            0
-        );
         let packet = [0u8; 60];
         ownership.revoke().unwrap();
         for index in &indices {
@@ -364,7 +330,7 @@ mod tests {
                     gateway: u32::from_ne_bytes(gateway.octets()),
                     output,
                     mark: crypto,
-                    hairpin: 0,
+                    padding: 0,
                 },
                 1,
             )
@@ -395,7 +361,7 @@ mod tests {
             .header
             .index;
         assert!(
-            install(index, Some(u32::MAX - 1), gateway, Some(42),)
+            install(index, Some(u32::MAX - 1), gateway, Some(42))
                 .await
                 .is_err()
         );
