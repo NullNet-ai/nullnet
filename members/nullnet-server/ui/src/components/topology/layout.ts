@@ -67,7 +67,7 @@ export function layoutNodes(nodes: TopoNode[], edges: TopoEdge[]): { pos: Map<st
   const inc = new Map<string, Set<string>>();
   for (const n of serviceNodes) { out.set(n.id, new Set()); inc.set(n.id, new Set()); }
   for (const e of edges) {
-    if (svcSet.has(e.from) && svcSet.has(e.to)) {
+    if (e.from !== e.to && svcSet.has(e.from) && svcSet.has(e.to)) {
       out.get(e.from)!.add(e.to);
       inc.get(e.to)!.add(e.from);
     }
@@ -254,7 +254,17 @@ export function svgDims(pos: Map<string, Pos>): { w: number; h: number } {
 // (A→B and B→A both present, e.g. a two-node cycle) apart into two parallel
 // tracks. Without it, the midpoint-symmetric formula below puts both
 // directions' curves — and their labels — on the exact same line.
+const SELF_LOOP_INSET = 28;
+const SELF_LOOP_HEIGHT = 56;
+
 export function edgePath(from: Pos, to: Pos, offset = 0): string {
+  if (from.x === to.x && from.y === to.y) {
+    const x1 = from.x + NODE_W - SELF_LOOP_INSET;
+    const x2 = from.x + SELF_LOOP_INSET;
+    const y = from.y;
+    const cy = y - SELF_LOOP_HEIGHT;
+    return `M ${x1} ${y} C ${x1} ${cy}, ${x2} ${cy}, ${x2} ${y}`;
+  }
   const fromMidY = from.y + NODE_H / 2;
   const toMidY = to.y + NODE_H / 2;
   if (toMidY > fromMidY + NODE_H) {
@@ -282,6 +292,12 @@ export function edgePath(from: Pos, to: Pos, offset = 0): string {
 // its branching so a mutual pair's two labels land on their own offset curve
 // instead of both sitting at the un-offset geometric midpoint.
 export function edgeMidpoint(from: Pos, to: Pos, offset = 0): Pos {
+  if (from.x === to.x && from.y === to.y) {
+    return {
+      x: from.x + NODE_W / 2,
+      y: from.y - (SELF_LOOP_HEIGHT * 3) / 4,
+    };
+  }
   const fromMidY = from.y + NODE_H / 2;
   const toMidY = to.y + NODE_H / 2;
   if (toMidY > fromMidY + NODE_H || fromMidY > toMidY + NODE_H) {
@@ -331,6 +347,13 @@ export function edgeLabelPoints(
   dst: { x: number; y: number; anchor: TextAnchor };
   mid: { x: number; y: number };
 } {
+  if (from.x === to.x && from.y === to.y) {
+    return {
+      src: { x: from.x + fromSize.w - SELF_LOOP_INSET, y: from.y - 4, anchor: 'middle' },
+      dst: { x: from.x + SELF_LOOP_INSET, y: from.y - 4, anchor: 'middle' },
+      mid: { x: from.x + fromSize.w / 2, y: from.y - (SELF_LOOP_HEIGHT * 3) / 4 },
+    };
+  }
   const fromMidY = from.y + fromSize.h / 2;
   const toMidY = to.y + toSize.h / 2;
 

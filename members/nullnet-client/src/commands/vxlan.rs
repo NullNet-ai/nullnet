@@ -463,6 +463,55 @@ pub(crate) async fn ready(id: u32) -> Result<(), Error> {
     synchronize(endpoints).await
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Hairpin {
+    pub(crate) source: Ipv4Addr,
+}
+
+fn hairpin_ip(network: Ipv4Network) -> Ipv4Addr {
+    // Endpoint addresses use .1-.4; reserve .5 for same-replica replies.
+    Ipv4Addr::from(u32::from(network.network()) + 5)
+}
+
+pub(crate) async fn prepare_hairpin(id: u32) -> Result<Option<Hairpin>, Error> {
+    let (server, client) = {
+        let endpoints = ENDPOINTS.lock().unwrap();
+        let server = endpoints.get(&format!("ns_{id}_s")).cloned();
+        let client = endpoints.get(&format!("ns_{id}_c")).cloned();
+        (server, client)
+    };
+    let (Some(server), Some(client)) = (server, client) else {
+        return Ok(None);
+    };
+    let (Some(server_ns), Some(client_ns)) = (&server.namespace, &client.namespace) else {
+        return Ok(None);
+    };
+    if !Arc::ptr_eq(server_ns, client_ns) {
+        return Ok(None);
+    }
+    let source = hairpin_ip(server.params.ns_net);
+    let gateway = server.gateway;
+    super::native_netlink::blocking(move || {
+        let (_, target) = &mut *server.io.lock().unwrap();
+        endpoint_io::gateway_route(
+            &mut target
+                .as_mut()
+                .expect("container endpoint has target I/O")
+                .route,
+            source,
+            server.inner.expect("container endpoint has an inner link"),
+            server.params.br_net.ip(),
+            server.params.ns_net.ip(),
+        )
+    })
+    .await
+    .handle_err(location!())?;
+    super::endpoint_tc::set_hairpin(gateway, source)
+        .await
+        .handle_err(location!())?;
+    Ok(Some(Hairpin { source }))
+}
+
 pub(crate) async fn diagnostic_snapshot(
     rtnetlink: &RtNetLinkHandle,
     id: u32,
@@ -822,6 +871,168 @@ fn decode_key(hex: &str) -> Result<[u8; 32], Error> {
 #[cfg(test)]
 mod endpoint_packet_tests {
     use super::*;
+
+    async fn ip(args: &[&str]) {
+        assert!(
+            Command::new("ip")
+                .args(args)
+                .status()
+                .await
+                .unwrap()
+                .success()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires root and an isolated root network namespace"]
+    async fn same_replica_backend_round_trip() {
+        let handle = RtNetLinkHandle::new().unwrap();
+        let cache = BridgeIpCache::new();
+        super::super::install_overlay_forwarding().unwrap();
+        super::super::dnat::init();
+        for (case, (encrypted, observed)) in [(false, false), (true, false), (true, true)]
+            .into_iter()
+            .enumerate()
+        {
+            let id = 1_959_110 + case as u32;
+            let container = format!("ns_self_replica_{case}");
+            let namespace = super::super::endpoint_namespace::create(&container)
+                .await
+                .unwrap();
+            cache.test_namespace(container.clone(), namespace);
+            let subnet = 10 + case as u8;
+            let mut endpoints = Vec::new();
+            for (side, endpoint, gateway) in [("s", 1, 2), ("c", 3, 4)] {
+                let params = VxlanSetupParams {
+                    vxlan_id: id,
+                    xfrm_transport_id: id,
+                    ns_name: format!("ns_{id}_{side}"),
+                    ns_net: Ipv4Network::new(Ipv4Addr::new(10, 250, subnet, endpoint), 29).unwrap(),
+                    br_name: format!("br_{id}_{side}"),
+                    br_net: Ipv4Network::new(Ipv4Addr::new(10, 250, subnet, gateway), 29).unwrap(),
+                    local_ip: Ipv4Addr::new(192, 0, 2, 1),
+                    remote_ip: Ipv4Addr::new(192, 0, 2, 1),
+                    key_hex: "42".repeat(32),
+                    dstport: 4790,
+                    encrypted,
+                    docker_container: Some(container.clone()),
+                };
+                setup(&handle, &params, &cache).await.unwrap();
+                endpoints.push(params);
+            }
+            ready(id).await.unwrap();
+            let hairpin = prepare_hairpin(id).await.unwrap().unwrap();
+            let root_link = format!("nn-self{case}");
+            let docker_subnet = 250 + case as u8;
+            let gateway = Ipv4Addr::new(172, 31, docker_subnet, 1);
+            let container_ip = Ipv4Addr::new(172, 31, docker_subnet, 2);
+            let destination = Ipv4Addr::new(198, 18, 0, 1 + case as u8);
+            let port = 18_080 + case as u16;
+            let rule_source = if observed {
+                Ipv4Addr::UNSPECIFIED
+            } else {
+                container_ip
+            };
+            ip(&[
+                "link", "add", &root_link, "type", "veth", "peer", "name", "eth0", "netns",
+                &container,
+            ])
+            .await;
+            ip(&["addr", "add", &format!("{gateway}/24"), "dev", &root_link]).await;
+            ip(&["link", "set", &root_link, "up"]).await;
+            ip(&[
+                "-n",
+                &container,
+                "addr",
+                "add",
+                &format!("{container_ip}/24"),
+                "dev",
+                "eth0",
+            ])
+            .await;
+            ip(&["-n", &container, "link", "set", "eth0", "up"]).await;
+            ip(&[
+                "-n",
+                &container,
+                "route",
+                "add",
+                &format!("{destination}/32"),
+                "via",
+                &gateway.to_string(),
+            ])
+            .await;
+            assert!(super::super::dnat::install(
+                port,
+                endpoints[0].ns_net.ip(),
+                rule_source,
+            ));
+            assert!(super::super::dnat::install_hairpin(
+                port,
+                endpoints[0].ns_net.ip(),
+                rule_source,
+                hairpin.source,
+            ));
+            let server_code = format!(
+                "import socket\ns=socket.socket()\ns.bind(('{}',{}))\ns.listen(1)\nc,_=s.accept()\nc.recv(4096)\nc.sendall(b'HTTP/1.0 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok')",
+                endpoints[0].ns_net.ip(),
+                port
+            );
+            let mut server = Command::new("ip")
+                .args(["netns", "exec", &container, "python3", "-c", &server_code])
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let client_code = format!(
+                "import socket\ns=socket.create_connection(('{}',{}),3)\ns.sendall(b'GET / HTTP/1.0\\r\\n\\r\\n')\nassert s.recv(4096).endswith(b'ok')",
+                destination, port
+            );
+            let output = command_output(Command::new("ip").args([
+                "netns",
+                "exec",
+                &container,
+                "python3",
+                "-c",
+                &client_code,
+            ]))
+            .await
+            .unwrap();
+            let _ = server.kill().await;
+            let _ = server.wait().await;
+            assert!(super::super::dnat::remove_hairpin(
+                port,
+                endpoints[0].ns_net.ip(),
+                rule_source,
+                hairpin.source,
+            ));
+            assert!(super::super::dnat::remove(
+                port,
+                endpoints[0].ns_net.ip(),
+                rule_source,
+            ));
+            ip(&["link", "del", &root_link]).await;
+            for endpoint in endpoints.into_iter().rev() {
+                teardown(
+                    &handle,
+                    &VxlanTeardownParams {
+                        vxlan_id: id,
+                        ns_name: endpoint.ns_name,
+                    },
+                    &cache,
+                )
+                .await
+                .unwrap();
+            }
+            super::super::endpoint_namespace::remove(&container)
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "same-replica request failed for encrypted={encrypted}, observed={observed}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
 
     #[tokio::test]
     #[ignore = "requires root and an isolated root network namespace"]

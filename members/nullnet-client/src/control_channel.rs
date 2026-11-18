@@ -239,6 +239,50 @@ pub(crate) async fn control_channel(
                         );
                         return;
                     }
+                    if !policy
+                        && let Some((_, port, overlay_ip, container_ip)) =
+                            triggers_state.prepared_by_vxlan(ready.net_id)
+                        && port != crate::triggers::EGRESS_TRIGGER_PORT
+                    {
+                        let hairpin =
+                            match crate::commands::vxlan::prepare_hairpin(ready.net_id).await {
+                                Ok(hairpin) => hairpin,
+                                Err(error) => {
+                                    eprintln!(
+                                        "Hairpin readiness for {} failed: {error:?}",
+                                        ready.net_id
+                                    );
+                                    fire_event(
+                                        &server,
+                                        AgentEventKind::VxlanSetupFailed(AgentVxlanSetupFailed {
+                                            vxlan_id: ready.net_id,
+                                            ns_name: format!("ns_{}_s", ready.net_id),
+                                            error_code: -1,
+                                        }),
+                                    );
+                                    return;
+                                }
+                            };
+                        if let Some(hairpin) = hairpin {
+                            let installed = dnat::install_hairpin(
+                                port,
+                                overlay_ip,
+                                container_ip,
+                                hairpin.source,
+                            );
+                            triggers_state.mark_hairpin(ready.net_id, hairpin.source);
+                            if !installed {
+                                fire_event(
+                                    &server,
+                                    AgentEventKind::DnatInstallFailed(AgentDnatInstallFailed {
+                                        port: u32::from(port),
+                                        overlay_ip: overlay_ip.to_string(),
+                                    }),
+                                );
+                                return;
+                            }
+                        }
+                    }
                     let grpc = server.clone();
                     let published = tokio::task::spawn_blocking(move || {
                         let mut published = true;
@@ -905,7 +949,7 @@ async fn handle_vxlan_teardown(
     // it. Only real backend DNAT ports (>0) go through `dnat::remove`; otherwise
     // we'd fire a bogus `iptables -D --dport 0` and a false removal-failed event.
     if !message.group
-        && let Some((container, port, overlay_ip, container_ip)) =
+        && let Some((container, port, overlay_ip, container_ip, hairpin_ip)) =
             triggers_state.remove_by_vxlan(message.vxlan_id)
         && port != crate::triggers::EGRESS_TRIGGER_PORT
     {
@@ -915,7 +959,11 @@ async fn handle_vxlan_teardown(
         // holds the refcount next. Must precede `dnat::remove`, which is what
         // issues the flush.
         sets.suppress_trigger(&container, port, FLUSH_SUPPRESSION);
-        if !dnat::remove(port, overlay_ip, container_ip) {
+        let hairpin_removed = hairpin_ip.is_none_or(|hairpin_ip| {
+            dnat::remove_hairpin(port, overlay_ip, container_ip, hairpin_ip)
+        });
+        let dnat_removed = dnat::remove(port, overlay_ip, container_ip);
+        if !hairpin_removed || !dnat_removed {
             local_cleanup_ok = false;
             fire_event(
                 &grpc,

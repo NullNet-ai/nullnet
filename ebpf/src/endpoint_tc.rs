@@ -35,7 +35,10 @@ fn ingress(ctx: &TcContext) -> Option<i32> {
     if config.mark != 0 && mark != config.mark {
         return Some(TC_ACT_SHOT);
     }
-    if destination == config.gateway || config.output == 0 {
+    if destination == config.gateway
+        || (config.hairpin != 0 && destination == config.hairpin)
+        || config.output == 0
+    {
         return Some(TC_ACT_OK);
     }
     Some(unsafe { bpf_redirect(config.output, 0) } as i32)

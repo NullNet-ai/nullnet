@@ -104,7 +104,6 @@ fn suggested(mut services: Vec<ServiceToml>, counts: &[ObservedEdge]) -> Vec<Ser
                 .iter()
                 .filter(|edge| {
                     edge.source == service.name
-                        && edge.destination != service.name
                         && names.contains(&edge.destination)
                         && observable.contains(&edge.destination)
                         && edge.count > 0
@@ -166,15 +165,11 @@ pub(super) async fn list_handler(
     require_scope(&ctx, Scope::SessionsRead)?;
     let _guard = state.config_lock.lock().await;
     let mut services = saved_services(&state, &stack).await?;
-    let trigger_count = services
-        .iter()
-        .map(|source| {
-            services
-                .iter()
-                .filter(|peer| peer.name != source.name && peer.port.is_some())
-                .count()
-        })
-        .sum();
+    let trigger_count = services.len()
+        * services
+            .iter()
+            .filter(|service| service.port.is_some())
+            .count();
     let conflicts = observation_backends(&mut services)
         .err()
         .unwrap_or_default();
@@ -352,6 +347,27 @@ port = 8080
         assert_eq!(next[0].backends, ["portless", "observed"]);
     }
 
+    #[test]
+    fn suggestions_include_observed_self_backends() {
+        let services = stack_services(
+            r#"
+[[services]]
+name = "solo"
+port = 8080
+"#,
+        )
+        .unwrap();
+        let next = suggested(
+            services,
+            &[ObservedEdge {
+                source: "solo".into(),
+                destination: "solo".into(),
+                count: 1,
+            }],
+        );
+        assert_eq!(next[0].backends, ["solo"]);
+    }
+
     async fn state() -> AppState {
         let path =
             std::env::temp_dir().join(format!("nullnet-observation-{}.db", uuid::Uuid::new_v4()));
@@ -409,14 +425,14 @@ port = 8003
                 .values()
                 .map(|s| s.triggers().len())
                 .sum::<usize>(),
-            6
+            9
         );
         assert_eq!(
             ServicesToml::export_toml(&state.db, "mesh").await.unwrap(),
             baseline
         );
         let (restart, _, _) = ServicesToml::load(&state.db).await.unwrap();
-        assert_eq!(restart["mesh"]["web"].triggers().len(), 2);
+        assert_eq!(restart["mesh"]["web"].triggers().len(), 3);
         assert_eq!(
             require_inactive(&state, "mesh").await.unwrap_err().status(),
             StatusCode::CONFLICT
@@ -530,6 +546,120 @@ port = 8003
         assert_eq!(
             state.services.read().await["mesh"]["web"].triggers()[&8003],
             "new"
+        );
+    }
+
+    #[tokio::test]
+    async fn single_service_observation_discovers_and_applies_self_backend() {
+        let state = state().await;
+        let services = stack_services(
+            r#"
+[[services]]
+name = "solo"
+docker_container = "solo"
+port = 8080
+"#,
+        )
+        .unwrap();
+        state
+            .db
+            .stacks()
+            .put_services("single", &services_to_inserts(&services))
+            .await
+            .unwrap();
+        let geo = SessionGeo::default();
+        state
+            .db
+            .sessions()
+            .open("backend", "single", "solo", 1, "solo", &geo, false, "{}", 1)
+            .await
+            .unwrap();
+
+        let Json(list) = list_handler(admin(), Path("single".into()), State(state.clone()))
+            .await
+            .unwrap();
+        assert_eq!(list.trigger_count, 1);
+        assert!(list.conflicts.is_empty());
+
+        let Json(started) = start_handler(admin(), Path("single".into()), State(state.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            started.counts,
+            vec![ObservedEdge {
+                source: "solo".into(),
+                destination: "solo".into(),
+                count: 1,
+            }]
+        );
+        assert_eq!(
+            state.services.read().await["single"]["solo"].triggers()[&8080],
+            "solo"
+        );
+
+        state
+            .db
+            .sessions()
+            .open(
+                "backend",
+                "single",
+                "solo",
+                2,
+                "solo",
+                &geo,
+                false,
+                "{}",
+                started.started_at,
+            )
+            .await
+            .unwrap();
+        let sessions = state
+            .db
+            .sessions()
+            .query(
+                "single",
+                Some("backend"),
+                Some("solo"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert!(
+            sessions
+                .iter()
+                .all(|session| session.direction == "backend" && session.peer_ip == "solo")
+        );
+        assert_eq!(state.db.sessions().count_active("single").await.unwrap(), 2);
+        let Json(stopped) = stop_handler(
+            admin(),
+            Path(("single".into(), started.id)),
+            State(state.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stopped.counts[0].count, 2);
+        assert_eq!(stopped.added.len(), 1);
+        assert_eq!(stopped.added[0].source, "solo");
+        assert_eq!(stopped.added[0].destination, "solo");
+        assert!(stopped.removed.is_empty());
+
+        let Json(applied) = apply_handler(
+            admin(),
+            Path(("single".into(), started.id)),
+            State(state.clone()),
+        )
+        .await
+        .unwrap();
+        assert!(applied.applied);
+        assert_eq!(
+            saved_services(&state, "single").await.unwrap()[0].backends,
+            ["solo"]
         );
     }
 
