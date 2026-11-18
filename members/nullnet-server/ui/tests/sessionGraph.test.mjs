@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { sessionGraph } from '../src/components/topology/sessionGraph.ts';
+import { buildTopoGraph } from '../src/components/topology/layout.ts';
 const live = {
   nodes: ['api', 'idle'].map(id => ({ id, registered: false, entry_point: false, replica_count: 0, active_replica_count: 0, paused_replica_count: 0 })),
   proxies: [],
@@ -19,4 +20,17 @@ test('historical sessions add removed services without dropping idle current ser
   assert.deepEqual(graph.nodes.map(n => n.id), ['api', 'idle', 'removed']);
   assert.equal(graph.edges.length, 1);
   assert.equal(graph.edges[0].to, 'removed');
+});
+
+test('a self-backend session remains a selectable self-edge', () => {
+  const session = { id: 7, service: 'api', peer_ip: 'api', direction: 'backend', net_id: 3, detail: {} };
+  const graph = sessionGraph(live, [session], true);
+  assert.equal(graph.edges[0].from, 'api');
+  assert.equal(graph.edges[0].to, 'api');
+  assert.equal(graph.edges[0].session, session);
+
+  const edge = buildTopoGraph(graph).edges[0];
+  assert.equal(edge.from, 'api');
+  assert.equal(edge.to, 'api');
+  assert.deepEqual(edge.originalIndices, [0]);
 });

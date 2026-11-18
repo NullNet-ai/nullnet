@@ -223,7 +223,7 @@ export default function TopologyGraphSvg({
             // A mutual pair (both A→B and B→A present, e.g. a two-node cycle)
             // has a midpoint-symmetric geometry — without an offset, both
             // directions draw the exact same curve and label position.
-            const isMutual = !e.isEgress && currentEdgeKeys.has(`${e.to}\0${e.from}`);
+            const isMutual = e.from !== e.to && !e.isEgress && currentEdgeKeys.has(`${e.to}\0${e.from}`);
             const mutualSign = isMutual ? (e.from < e.to ? -1 : 1) : 0;
             // A layer-skipping egress edge gets the same reserved waypoint
             // lane as any other long edge, so it no longer has to bow across

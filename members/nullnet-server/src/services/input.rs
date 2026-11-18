@@ -1042,14 +1042,10 @@ pub(crate) struct ServiceToml {
 /// Expand backend triggers without changing other saved configuration.
 pub(crate) fn observation_backends(services: &mut [ServiceToml]) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
-    if services.len() < 2 {
-        errors.push("Observation requires at least two declared services".to_string());
-    }
     for source in services.iter() {
         let mut ports = HashMap::new();
         for peer in services
             .iter()
-            .filter(|peer| peer.name != source.name)
             .filter_map(|peer| peer.port.map(|port| (peer, port)))
         {
             if let Some(previous) = ports.insert(peer.1, &peer.0.name) {
@@ -1069,11 +1065,7 @@ pub(crate) fn observation_backends(services: &mut [ServiceToml]) -> Result<(), V
         .map(|s| s.name.clone())
         .collect();
     for service in services {
-        service.backends = names
-            .iter()
-            .filter(|name| **name != service.name)
-            .cloned()
-            .collect();
+        service.backends.clone_from(&names);
     }
     Ok(())
 }
@@ -1239,7 +1231,7 @@ timeout = 0
     }
 
     #[test]
-    fn observation_skips_portless_destinations_but_keeps_them_as_sources() {
+    fn observation_includes_self_and_skips_portless_destinations() {
         let mut services = stack_services(
             r#"
 [[services]]
@@ -1258,7 +1250,21 @@ port = 8080
 
         assert_eq!(services[0].backends, ["target"]);
         assert_eq!(services[1].backends, ["target"]);
-        assert!(services[2].backends.is_empty());
+        assert_eq!(services[2].backends, ["target"]);
+    }
+
+    #[test]
+    fn observation_supports_a_single_self_backend() {
+        let mut services = stack_services(
+            r#"
+[[services]]
+name = "solo"
+port = 8080
+"#,
+        )
+        .unwrap();
+        observation_backends(&mut services).unwrap();
+        assert_eq!(services[0].backends, ["solo"]);
     }
 
     #[test]

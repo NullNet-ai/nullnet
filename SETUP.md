@@ -312,8 +312,9 @@ backward-compatible stages.
   isolation policy with direct eBPF redirection and no VXLAN hairpin.
 - `backends = ["peer-a", "peer-b"]` lists services this service may trigger. A peer with a nonzero
   `port` uses that port as its trigger; a declared portless peer remains saved but installs no
-  trigger. One source cannot target different port-configured peers on the same port. A trigger
-  opens only the direct connection; the peer's own backends open only when it sends traffic.
+  trigger. A service may include itself; same-replica traffic remains a normal backend session.
+  One source cannot target different port-configured peers on the same port. A trigger opens only
+  the direct connection; the peer's own backends open only when it sends traffic.
 - service names must be globally unique across every stack, and backend references stay intra-stack.
 - `protocol` selects how a proxy-reachable service is exposed: `http` (the default — routed by
   `Host` header on the shared 80/443 listeners) or `tcp`/`udp`, which each require `listen_port` —

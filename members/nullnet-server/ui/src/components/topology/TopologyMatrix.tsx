@@ -102,9 +102,8 @@ export default function TopologyMatrix({
 
       {/* Every (row, col) position is hoverable — not just the ones with an
           edge — so pointing anywhere in the grid tells you which row/column
-          it belongs to. Diagonal cells stay content-free (no self-edges). */}
+          it belongs to. */}
       {order.map((rowNode, i) => order.map((colNode, j) => {
-        if (i === j) return null;
         const key = `${rowNode.id}\0${colNode.id}`;
         const e = edgeByPair.get(key);
         const isSel = selectedEdgeKey === key;
