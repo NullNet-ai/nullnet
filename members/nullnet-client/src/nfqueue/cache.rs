@@ -562,14 +562,24 @@ pub fn spawn_events_watcher(cache: BridgeIpCache, docker_changed: Arc<Notify>) {
     });
 }
 
-fn refresh_event(line: &str) -> bool {
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RefreshEvent {
+    Container,
+    Network,
+}
+
+fn refresh_event(line: &str) -> Option<RefreshEvent> {
     let mut fields = line.split_whitespace();
     let kind = fields.next().unwrap_or_default();
     let action = fields.next().unwrap_or_default();
     match kind {
-        "container" => matches!(action, "start" | "die" | "rename" | "destroy"),
-        "network" => matches!(action, "create" | "connect" | "disconnect" | "destroy"),
-        _ => false,
+        "container" if matches!(action, "start" | "die" | "rename" | "destroy") => {
+            Some(RefreshEvent::Container)
+        }
+        "network" if matches!(action, "create" | "connect" | "disconnect" | "destroy") => {
+            Some(RefreshEvent::Network)
+        }
+        _ => None,
     }
 }
 
@@ -644,11 +654,13 @@ async fn run_events_loop(cache: &BridgeIpCache, docker_changed: &Notify) -> Resu
         .await
         .map_err(|e| format!("read docker events: {e}"))?
     {
-        if !refresh_event(&line) {
+        let Some(event) = refresh_event(&line) else {
             continue;
+        };
+        if event == RefreshEvent::Container {
+            cache.watching.store(false, Ordering::Release);
+            cache.namespaces.write().unwrap().clear();
         }
-        cache.watching.store(false, Ordering::Release);
-        cache.namespaces.write().unwrap().clear();
         routine_log!("[nfqueue/cache] docker event: {line} — refreshing");
         cache.refresh_watched().await;
         // Cache now reflects the new task; kick the declare-services
@@ -675,11 +687,11 @@ mod tests {
 
     #[test]
     fn docker_refresh_events_cover_routes_without_duplicate_create_refreshes() {
-        assert!(refresh_event("network create"));
-        assert!(refresh_event("network connect"));
-        assert!(refresh_event("container start"));
-        assert!(!refresh_event("container create"));
-        assert!(!refresh_event("container exec_start"));
+        assert!(refresh_event("network create") == Some(RefreshEvent::Network));
+        assert!(refresh_event("network connect") == Some(RefreshEvent::Network));
+        assert!(refresh_event("container start") == Some(RefreshEvent::Container));
+        assert!(refresh_event("container create").is_none());
+        assert!(refresh_event("container exec_start").is_none());
     }
 
     #[test]
