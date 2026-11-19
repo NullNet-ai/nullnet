@@ -274,12 +274,16 @@ message MsgId {
 message ServiceReport {
   repeated Container containers = 1;
   repeated Listener listeners = 2;
+  // Existing IPv4 prefixes in the host namespace that overlap Nullnet's
+  // address pool. The server excludes intersecting NET IDs.
+  repeated string conflicting_cidrs = 3;
 }
 
 message Container {
   string match_key = 1;  // matched against a service's docker_container (Swarm label / container name)
   string real_name = 2;  // actual container name; stored as the replica identity
   bool paused = 3;
+  repeated string conflicting_cidrs = 4;
 }
 
 message Listener {

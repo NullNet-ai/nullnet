@@ -18,6 +18,7 @@ mod netlink;
 pub(crate) mod nfqueue;
 mod ovs;
 pub(crate) mod policy;
+pub(crate) mod route_conflicts;
 pub(crate) mod vxlan;
 mod vxlan_cleanup;
 pub(crate) mod vxlan_environment;
@@ -97,6 +98,12 @@ pub(crate) async fn remove_vlan(rtnetlink_handle: &RtNetLinkHandle, vlan_id: u16
 
 pub(crate) async fn find_ethernet_ip(rtnetlink_handle: &RtNetLinkHandle) -> Option<Ipv4Addr> {
     netlink::find_ethernet_ip(&rtnetlink_handle.handle).await
+}
+
+pub(crate) async fn conflicting_cidrs(
+    rtnetlink_handle: &RtNetLinkHandle,
+) -> Result<Vec<String>, String> {
+    route_conflicts::collect(&rtnetlink_handle.handle).await
 }
 
 /// Returns the name of the interface carrying `ip`, so the eBPF firewall can

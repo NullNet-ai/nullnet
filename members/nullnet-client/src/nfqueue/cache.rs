@@ -23,6 +23,7 @@ const SANDBOX_PREFIX_LEN: usize = 12;
 pub struct BridgeIpCache {
     inner: Arc<RwLock<AddressOwners>>,
     namespaces: Arc<RwLock<HashMap<String, Arc<EndpointNamespace>>>>,
+    conflicts: Arc<RwLock<HashMap<String, Vec<String>>>>,
     diagnostics: Option<Sender<NeighbourSignal>>,
     refresh_lock: Arc<Mutex<()>>,
     watching: Arc<AtomicBool>,
@@ -121,6 +122,20 @@ impl BridgeIpCache {
         self.refresh_unlocked().await;
         self.cached_namespace(container)
             .ok_or_else(|| format!("No live namespace for container {container}"))
+    }
+
+    pub(crate) async fn conflicting_cidrs(&self, container: &str) -> Result<Vec<String>, String> {
+        let identifier = container.strip_prefix('/').unwrap_or(container);
+        if let Some(conflicts) = self.conflicts.read().unwrap().get(identifier) {
+            return Ok(conflicts.clone());
+        }
+        let namespace = self.namespace(identifier).await?;
+        let conflicts = crate::commands::route_conflicts::collect(&namespace.handle).await?;
+        self.conflicts
+            .write()
+            .unwrap()
+            .insert(identifier.to_string(), conflicts.clone());
+        Ok(conflicts)
     }
 
     fn cached_namespace(&self, container: &str) -> Option<Arc<EndpointNamespace>> {
@@ -272,8 +287,9 @@ impl BridgeIpCache {
 
     async fn refresh_unlocked(&self) {
         match query_docker(self.diagnostics.clone()).await {
-            Ok((map, namespaces)) => {
+            Ok((map, namespaces, conflicts)) => {
                 *self.namespaces.write().unwrap() = namespaces;
+                *self.conflicts.write().unwrap() = conflicts;
                 #[cfg(debug_assertions)]
                 let size = map.len();
                 self.replace(map);
@@ -282,6 +298,7 @@ impl BridgeIpCache {
             }
             Err(e) => {
                 self.namespaces.write().unwrap().clear();
+                self.conflicts.write().unwrap().clear();
                 eprintln!("[nfqueue/cache] refresh failed: {e}");
             }
         }
@@ -332,12 +349,13 @@ struct ContainerIndex {
 type Discovery = (
     HashMap<Ipv4Addr, String>,
     HashMap<String, Arc<EndpointNamespace>>,
+    HashMap<String, Vec<String>>,
 );
 
 async fn query_docker(diagnostics: Option<Sender<NeighbourSignal>>) -> Result<Discovery, String> {
     let ids = list_container_ids().await?;
     if ids.is_empty() {
-        return Ok((HashMap::new(), HashMap::new()));
+        return Ok((HashMap::new(), HashMap::new(), HashMap::new()));
     }
     let index = inspect_container_index(&ids).await?;
 
@@ -352,6 +370,18 @@ async fn query_docker(diagnostics: Option<Sender<NeighbourSignal>>) -> Result<Di
                 namespaces.insert(id.clone(), namespace);
             }
             Err(error) => eprintln!("[nfqueue/cache] namespace {name}: {error}"),
+        }
+    }
+    let mut conflicts = HashMap::with_capacity(index.identities.len());
+    for (name, _, _, _) in &index.identities {
+        let Some(namespace) = namespaces.get(name) else {
+            continue;
+        };
+        match crate::commands::route_conflicts::collect(&namespace.handle).await {
+            Ok(snapshot) => {
+                conflicts.insert(name.clone(), snapshot);
+            }
+            Err(error) => eprintln!("[nfqueue/cache] route snapshot {name}: {error}"),
         }
     }
     let network_ids = list_network_ids().await?;
@@ -376,7 +406,7 @@ async fn query_docker(diagnostics: Option<Sender<NeighbourSignal>>) -> Result<Di
         }
     }
 
-    Ok((map, namespaces))
+    Ok((map, namespaces, conflicts))
 }
 
 async fn list_container_ids() -> Result<Vec<String>, String> {
@@ -506,7 +536,7 @@ fn strip_cidr_to_ipv4(ip_with_mask: &str) -> Option<Ipv4Addr> {
 }
 
 /// Spawn the long-running `docker events` watcher. Triggers a refresh after
-/// every container start/die and pokes `docker_changed` so the
+/// container and network attachment changes and pokes `docker_changed` so the
 /// declare-services loop in `main` re-runs immediately. If docker isn't
 /// installed or the subprocess can't be spawned, the task logs and exits —
 /// listener falls back to the initial cache snapshot. Restarts the
@@ -537,6 +567,8 @@ async fn run_events_loop(cache: &BridgeIpCache, docker_changed: &Notify) -> Resu
             "--filter",
             "type=container",
             "--filter",
+            "type=network",
+            "--filter",
             "event=start",
             "--filter",
             "event=die",
@@ -544,6 +576,10 @@ async fn run_events_loop(cache: &BridgeIpCache, docker_changed: &Notify) -> Resu
             "event=rename",
             "--filter",
             "event=destroy",
+            "--filter",
+            "event=connect",
+            "--filter",
+            "event=disconnect",
             // `.Action` (start/die) is the modern field; the legacy
             // `.Status` was removed in newer daemons (template eval errors
             // "can't evaluate field Status in type *events.Message").
@@ -589,8 +625,8 @@ async fn run_events_loop(cache: &BridgeIpCache, docker_changed: &Notify) -> Resu
         .await
         .map_err(|e| format!("read docker events: {e}"))?
     {
-        // We don't parse the line — any container start/die warrants a
-        // full refresh. Cheap enough: a few processes per event.
+        // We don't parse the line — every selected lifecycle/attachment event
+        // warrants one full refresh.
         cache.watching.store(false, Ordering::Release);
         cache.namespaces.write().unwrap().clear();
         routine_log!("[nfqueue/cache] docker event: {line} — refreshing");

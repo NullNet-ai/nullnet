@@ -2,6 +2,7 @@
 use futures::{StreamExt, TryStreamExt};
 use rtnetlink::packet_route::link::{InfoKind, LinkAttribute, LinkInfo, LinkMessage};
 use rtnetlink::{Handle, LinkUnspec};
+use std::collections::HashSet;
 const ALIAS: &str = "nullnet:vxlan-bridge:v1";
 const GROUP: u32 = 0x4e60_0001;
 fn name(link: &LinkMessage) -> Option<&str> {
@@ -79,6 +80,22 @@ fn classifier_holder(link: &LinkMessage) -> bool {
             LinkAttribute::LinkInfo(info) if info.iter().any(|i|
                 matches!(i, LinkInfo::Kind(InfoKind::Dummy))))
         })
+}
+
+pub(super) fn owned_indices(links: &[LinkMessage]) -> HashSet<u32> {
+    links
+        .iter()
+        .filter(|link| {
+            owned(link)
+                || owned_transport(link, links)
+                || classifier_holder(link)
+                || link.attributes.iter().any(|attribute| {
+                    matches!(attribute, LinkAttribute::Group(group)
+                        if *group == super::policy::types::GROUP)
+                })
+        })
+        .map(|link| link.header.index)
+        .collect()
 }
 
 pub(super) async fn recover(handle: &Handle) -> Result<(), String> {

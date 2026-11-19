@@ -13,7 +13,8 @@ macro_rules! routine_log {
 
 use crate::cli::Args;
 use crate::commands::{
-    RtNetLinkHandle, cleanup_network, find_ethernet_interface, find_ethernet_ip, setup_br0,
+    RtNetLinkHandle, cleanup_network, conflicting_cidrs, find_ethernet_interface, find_ethernet_ip,
+    setup_br0,
 };
 use crate::control_channel::control_channel;
 use crate::env::{CONTROL_SERVICE_ADDR, CONTROL_SERVICE_CA_CERT, CONTROL_SERVICE_PORT};
@@ -225,6 +226,8 @@ async fn main() -> Result<(), Error> {
     let liveness_cc = liveness.clone();
     let policy_verdicts = Arc::new(egress_policy::PolicyVerdicts::default());
     let bridge_cache_cc = bridge_cache.clone();
+    let bridge_cache_declaration = bridge_cache.clone();
+    let rtnetlink_declaration = rtnetlink_handle.clone();
     let policy_verdicts_cc = policy_verdicts.clone();
 
     // listen on the gRPC control channel
@@ -281,9 +284,16 @@ async fn main() -> Result<(), Error> {
     // declare services + push the port→trigger-owners map to the NFQUEUE
     // listener on each refresh.
     tokio::spawn(async move {
-        declare_services(grpc_server, config_tx, docker_changed, firewall_allow_ports)
-            .await
-            .expect("Failed to declare services");
+        declare_services(
+            grpc_server,
+            config_tx,
+            docker_changed,
+            firewall_allow_ports,
+            bridge_cache_declaration,
+            rtnetlink_declaration,
+        )
+        .await
+        .expect("Failed to declare services");
     });
 
     // all work runs in the spawned tasks above; keep the process alive.
@@ -396,16 +406,51 @@ async fn declare_services(
     config_tx: UnboundedSender<TriggerMap>,
     docker_changed: Arc<Notify>,
     firewall_allow_ports: Arc<std::sync::Mutex<ebpf::FirewallAllowPorts>>,
+    bridge_cache: nfqueue::BridgeIpCache,
+    rtnetlink: RtNetLinkHandle,
 ) -> Result<(), Error> {
     let mut last_snapshot: Vec<String> = Vec::new();
+    let mut cached_root_conflicts: Option<Vec<String>> = None;
     loop {
         // Report raw local observations; the server joins them against its
         // per-stack config to decide what this node hosts.
-        let containers = match get_running_docker_containers().await {
+        let mut containers = match get_running_docker_containers().await {
             Ok(containers) => containers,
             Err(error) => {
                 report_services_list_failure(&grpc_server, error, last_snapshot.len() as u32);
-                wait_for_declaration_refresh(&docker_changed).await;
+                if wait_for_declaration_refresh(&docker_changed).await {
+                    cached_root_conflicts = None;
+                }
+                continue;
+            }
+        };
+        let mut conflict_error = None;
+        for container in &mut containers {
+            match bridge_cache.conflicting_cidrs(&container.real_name).await {
+                Ok(conflicts) => container.conflicting_cidrs = conflicts,
+                Err(error) => {
+                    conflict_error = Some(error);
+                    break;
+                }
+            }
+        }
+        let root_conflicts = match conflict_error {
+            Some(error) => Err(error),
+            None => match &cached_root_conflicts {
+                Some(conflicts) => Ok(conflicts.clone()),
+                None => conflicting_cidrs(&rtnetlink).await,
+            },
+        };
+        let conflicting_cidrs = match root_conflicts {
+            Ok(conflicts) => {
+                cached_root_conflicts = Some(conflicts.clone());
+                conflicts
+            }
+            Err(error) => {
+                report_services_list_failure(&grpc_server, error, containers.len() as u32);
+                if wait_for_declaration_refresh(&docker_changed).await {
+                    cached_root_conflicts = None;
+                }
                 continue;
             }
         };
@@ -422,6 +467,7 @@ async fn declare_services(
         let report = ServiceReport {
             containers,
             listeners: paths.into_iter().map(|path| Listener { path }).collect(),
+            conflicting_cidrs,
         };
 
         routine_log!("Reporting to gRPC server: {report:?}");
@@ -501,7 +547,9 @@ async fn declare_services(
         // Wait up to 10 s before re-declaring, but cut the wait short on a
         // docker container start/die — that's what populates the ipset for
         // a freshly-started task before its app dials a trigger port.
-        wait_for_declaration_refresh(&docker_changed).await;
+        if wait_for_declaration_refresh(&docker_changed).await {
+            cached_root_conflicts = None;
+        }
     }
 }
 
@@ -526,10 +574,10 @@ fn report_services_list_failure(
     });
 }
 
-async fn wait_for_declaration_refresh(docker_changed: &Notify) {
+async fn wait_for_declaration_refresh(docker_changed: &Notify) -> bool {
     tokio::select! {
-        _ = tokio::time::sleep(Duration::from_secs(10)) => {}
-        _ = docker_changed.notified() => {}
+        _ = tokio::time::sleep(Duration::from_secs(10)) => false,
+        _ = docker_changed.notified() => true,
     }
 }
 
@@ -564,6 +612,7 @@ fn parse_container_report(output: &str) -> Vec<Container> {
                 match_key: if label.is_empty() { real_name } else { label }.to_string(),
                 real_name: real_name.to_string(),
                 paused: state == "paused",
+                conflicting_cidrs: Vec::new(),
             })
         })
         .collect()
