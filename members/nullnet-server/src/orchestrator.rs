@@ -29,8 +29,8 @@ const POLICY_XFRM_ID_START: u32 = 0x20_0000;
 
 #[derive(Debug, Default)]
 struct NodeRouteConflicts {
-    root: Arc<ConflictSet>,
-    containers: HashMap<String, Arc<ConflictSet>>,
+    root: ConflictSet,
+    containers: HashMap<String, ConflictSet>,
 }
 
 fn endpoint_route_conflicts<'a>(
@@ -45,9 +45,8 @@ fn endpoint_route_conflicts<'a>(
         Some(container) => node
             .containers
             .get(container)
-            .map(Arc::as_ref)
             .ok_or(NetIdAllocationError::ConflictDataUnavailable),
-        None => Ok(node.root.as_ref()),
+        None => Ok(&node.root),
     }
 }
 
@@ -1242,12 +1241,12 @@ impl Orchestrator {
         let mut container_sets = HashMap::with_capacity(containers.len());
         for (container, cidrs) in containers {
             let conflicts = root.union(&ConflictSet::from_cidrs(cidrs)?);
-            container_sets.insert(container.clone(), Arc::new(conflicts));
+            container_sets.insert(container.clone(), conflicts);
         }
         self.route_conflicts.write().unwrap().insert(
             node,
             NodeRouteConflicts {
-                root: Arc::new(root),
+                root,
                 containers: container_sets,
             },
         );
