@@ -82,6 +82,13 @@ fn classifier_holder(link: &LinkMessage) -> bool {
         })
 }
 
+fn marked_endpoint(link: &LinkMessage) -> bool {
+    link.attributes.iter().any(|attribute| {
+        matches!(attribute, LinkAttribute::Group(group)
+            if *group & 0xffc0_0000 == 0x4e00_0000 || *group == 0x4e40_0000)
+    })
+}
+
 pub(super) fn owned_indices(links: &[LinkMessage]) -> HashSet<u32> {
     links
         .iter()
@@ -89,6 +96,7 @@ pub(super) fn owned_indices(links: &[LinkMessage]) -> HashSet<u32> {
             owned(link)
                 || owned_transport(link, links)
                 || classifier_holder(link)
+                || marked_endpoint(link)
                 || link.attributes.iter().any(|attribute| {
                     matches!(attribute, LinkAttribute::Group(group)
                         if *group == super::policy::types::GROUP)
@@ -138,6 +146,16 @@ pub(super) async fn recover(handle: &Handle) -> Result<(), String> {
 mod tests {
     use super::*;
     use rtnetlink::{LinkBridge, LinkVeth, LinkVxlan};
+
+    #[test]
+    fn conflict_snapshot_recognizes_group_marked_inner_endpoint() {
+        let link = LinkUnspec::new_with_index(77)
+            .name("ns_101_c-in")
+            .link_group(0x4e00_0000 | (101 << 1) | 1)
+            .build();
+
+        assert!(owned_indices(&[link]).contains(&77));
+    }
 
     #[tokio::test]
     #[ignore = "requires root and an isolated root network namespace"]

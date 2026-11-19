@@ -5,7 +5,7 @@ use crate::docker::run as run_docker;
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::sync::mpsc::Sender;
@@ -26,6 +26,7 @@ pub struct BridgeIpCache {
     conflicts: Arc<RwLock<HashMap<String, Vec<String>>>>,
     diagnostics: Option<Sender<NeighbourSignal>>,
     refresh_lock: Arc<Mutex<()>>,
+    conflict_revision: Arc<AtomicU64>,
     watching: Arc<AtomicBool>,
 }
 
@@ -126,16 +127,25 @@ impl BridgeIpCache {
 
     pub(crate) async fn conflicting_cidrs(&self, container: &str) -> Result<Vec<String>, String> {
         let identifier = container.strip_prefix('/').unwrap_or(container);
-        if let Some(conflicts) = self.conflicts.read().unwrap().get(identifier) {
+        if self.watching.load(Ordering::Acquire)
+            && let Some(conflicts) = self.conflicts.read().unwrap().get(identifier)
+        {
             return Ok(conflicts.clone());
         }
         let namespace = self.namespace(identifier).await?;
+        if let Some(conflicts) = self.conflicts.read().unwrap().get(identifier) {
+            return Ok(conflicts.clone());
+        }
         let conflicts = crate::commands::route_conflicts::collect(&namespace.handle).await?;
         self.conflicts
             .write()
             .unwrap()
             .insert(identifier.to_string(), conflicts.clone());
         Ok(conflicts)
+    }
+
+    pub(crate) fn conflict_revision(&self) -> u64 {
+        self.conflict_revision.load(Ordering::Acquire)
     }
 
     fn cached_namespace(&self, container: &str) -> Option<Arc<EndpointNamespace>> {
@@ -277,12 +287,10 @@ impl BridgeIpCache {
         self.inner.write().unwrap().docker = map;
     }
 
-    /// One-shot refresh: rebuild the map from the current Docker state.
-    /// Atomic swap; readers either see the old map or the new map, never a
-    /// half-built one.
-    pub async fn refresh(&self) {
+    async fn refresh_watched(&self) {
         let _refresh = self.refresh_lock.lock().await;
         self.refresh_unlocked().await;
+        self.watching.store(true, Ordering::Release);
     }
 
     async fn refresh_unlocked(&self) {
@@ -302,6 +310,7 @@ impl BridgeIpCache {
                 eprintln!("[nfqueue/cache] refresh failed: {e}");
             }
         }
+        self.conflict_revision.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -553,6 +562,17 @@ pub fn spawn_events_watcher(cache: BridgeIpCache, docker_changed: Arc<Notify>) {
     });
 }
 
+fn refresh_event(line: &str) -> bool {
+    let mut fields = line.split_whitespace();
+    let kind = fields.next().unwrap_or_default();
+    let action = fields.next().unwrap_or_default();
+    match kind {
+        "container" => matches!(action, "start" | "die" | "rename" | "destroy"),
+        "network" => matches!(action, "create" | "connect" | "disconnect" | "destroy"),
+        _ => false,
+    }
+}
+
 async fn run_events_loop(cache: &BridgeIpCache, docker_changed: &Notify) -> Result<(), String> {
     let since = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -571,6 +591,8 @@ async fn run_events_loop(cache: &BridgeIpCache, docker_changed: &Notify) -> Resu
             "--filter",
             "event=start",
             "--filter",
+            "event=create",
+            "--filter",
             "event=die",
             "--filter",
             "event=rename",
@@ -580,11 +602,8 @@ async fn run_events_loop(cache: &BridgeIpCache, docker_changed: &Notify) -> Resu
             "event=connect",
             "--filter",
             "event=disconnect",
-            // `.Action` (start/die) is the modern field; the legacy
-            // `.Status` was removed in newer daemons (template eval errors
-            // "can't evaluate field Status in type *events.Message").
             "--format",
-            "{{.Action}}",
+            "{{.Type}} {{.Action}}",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -617,21 +636,21 @@ async fn run_events_loop(cache: &BridgeIpCache, docker_changed: &Notify) -> Resu
         }
     }
     let _watching = Watching(cache.watching.clone());
-    cache.refresh().await;
-    cache.watching.store(true, Ordering::Release);
+    cache.refresh_watched().await;
+    docker_changed.notify_one();
     let mut lines = BufReader::new(stdout).lines();
     while let Some(line) = lines
         .next_line()
         .await
         .map_err(|e| format!("read docker events: {e}"))?
     {
-        // We don't parse the line — every selected lifecycle/attachment event
-        // warrants one full refresh.
+        if !refresh_event(&line) {
+            continue;
+        }
         cache.watching.store(false, Ordering::Release);
         cache.namespaces.write().unwrap().clear();
         routine_log!("[nfqueue/cache] docker event: {line} — refreshing");
-        cache.refresh().await;
-        cache.watching.store(true, Ordering::Release);
+        cache.refresh_watched().await;
         // Cache now reflects the new task; kick the declare-services
         // loop so the ipset catches up before the new task dials.
         docker_changed.notify_one();
@@ -653,6 +672,15 @@ async fn run_events_loop(cache: &BridgeIpCache, docker_changed: &Notify) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn docker_refresh_events_cover_routes_without_duplicate_create_refreshes() {
+        assert!(refresh_event("network create"));
+        assert!(refresh_event("network connect"));
+        assert!(refresh_event("container start"));
+        assert!(!refresh_event("container create"));
+        assert!(!refresh_event("container exec_start"));
+    }
 
     #[test]
     fn docker_refresh_preserves_overlay_liveness_addresses() {

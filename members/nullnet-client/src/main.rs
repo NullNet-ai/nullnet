@@ -410,7 +410,7 @@ async fn declare_services(
     rtnetlink: RtNetLinkHandle,
 ) -> Result<(), Error> {
     let mut last_snapshot: Vec<String> = Vec::new();
-    let mut cached_root_conflicts: Option<Vec<String>> = None;
+    let mut cached_root_conflicts: Option<(u64, Vec<String>)> = None;
     loop {
         // Report raw local observations; the server joins them against its
         // per-stack config to decide what this node hosts.
@@ -429,32 +429,34 @@ async fn declare_services(
             match bridge_cache.conflicting_cidrs(&container.real_name).await {
                 Ok(conflicts) => container.conflicting_cidrs = conflicts,
                 Err(error) => {
-                    conflict_error = Some(error);
-                    break;
+                    conflict_error.get_or_insert(error);
+                    container.conflicting_cidrs = vec!["10.0.0.0/8".to_string()];
                 }
             }
         }
-        let root_conflicts = match conflict_error {
-            Some(error) => Err(error),
-            None => match &cached_root_conflicts {
-                Some(conflicts) => Ok(conflicts.clone()),
-                None => conflicting_cidrs(&rtnetlink).await,
-            },
+        if let Some(error) = conflict_error {
+            report_services_list_failure(
+                &grpc_server,
+                format!("route-conflict snapshot failed closed: {error}"),
+                containers.len() as u32,
+            );
+        }
+        let conflict_revision = bridge_cache.conflict_revision();
+        let root_conflicts = match &cached_root_conflicts {
+            Some((revision, conflicts)) if *revision == conflict_revision => Ok(conflicts.clone()),
+            None | Some(_) => conflicting_cidrs(&rtnetlink).await,
         };
         let conflicting_cidrs = match root_conflicts {
             Ok(conflicts) => {
-                cached_root_conflicts = Some(conflicts.clone());
+                cached_root_conflicts = Some((conflict_revision, conflicts.clone()));
                 conflicts
             }
             Err(error) => {
                 report_services_list_failure(&grpc_server, error, containers.len() as u32);
-                if wait_for_declaration_refresh(&docker_changed).await {
-                    cached_root_conflicts = None;
-                }
-                continue;
+                cached_root_conflicts = None;
+                vec!["10.0.0.0/8".to_string()]
             }
         };
-
         // One Listener per distinct listening process, keyed by exe path.
         // Enumeration errors remain fatal so the supervisor recovers the client.
         let mut paths: Vec<String> = listeners::get_all()
@@ -464,6 +466,10 @@ async fn declare_services(
             .collect();
         paths.sort_unstable();
         paths.dedup();
+        if bridge_cache.conflict_revision() != conflict_revision {
+            cached_root_conflicts = None;
+            continue;
+        }
         let report = ServiceReport {
             containers,
             listeners: paths.into_iter().map(|path| Listener { path }).collect(),
