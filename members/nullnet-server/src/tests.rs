@@ -1068,6 +1068,12 @@ async fn backend_service_unregistered_setup() -> NullnetGrpcImpl {
         .orchestrator()
         .register_fake_client(ip(1, 1, 1, 1))
         .await;
+    server
+        .orchestrator()
+        .register_fake_container(ip(1, 1, 1, 1), "a1");
+    server
+        .orchestrator()
+        .register_fake_container(ip(1, 1, 1, 1), "a2");
 
     let proxy1 = ip(5, 5, 5, 5);
     server.orchestrator().register_fake_client(proxy1).await;
@@ -1208,6 +1214,12 @@ async fn backend_disambiguation_setup() -> NullnetGrpcImpl {
         .orchestrator()
         .register_fake_client(ip(1, 1, 1, 1))
         .await;
+    server
+        .orchestrator()
+        .register_fake_container(ip(1, 1, 1, 1), "a1");
+    server
+        .orchestrator()
+        .register_fake_container(ip(1, 1, 1, 1), "a2");
 
     server
 }
@@ -1328,6 +1340,12 @@ async fn backend_node_disconnected_setup() -> NullnetGrpcImpl {
         .orchestrator()
         .register_fake_client(ip(1, 1, 1, 1))
         .await;
+    server
+        .orchestrator()
+        .register_fake_container(ip(1, 1, 1, 1), "a1");
+    server
+        .orchestrator()
+        .register_fake_container(ip(1, 1, 1, 1), "a2");
 
     let proxy1 = ip(5, 5, 5, 5);
     server.orchestrator().register_fake_client(proxy1).await;
@@ -1483,6 +1501,12 @@ async fn backend_multi_replica_setup() -> NullnetGrpcImpl {
         .orchestrator()
         .register_fake_client(ip(2, 2, 2, 2))
         .await;
+    server
+        .orchestrator()
+        .register_fake_container(ip(2, 2, 2, 2), "b1");
+    server
+        .orchestrator()
+        .register_fake_container(ip(2, 2, 2, 2), "b2");
     server
         .orchestrator()
         .register_fake_client(ip(4, 4, 4, 4))

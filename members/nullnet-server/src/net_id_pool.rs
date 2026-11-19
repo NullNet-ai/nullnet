@@ -1,77 +1,218 @@
 use aes_gcm::aead::Generate;
-use std::collections::{HashSet, VecDeque};
+use ipnetwork::Ipv4Network;
 use std::sync::LazyLock;
 
 use crate::env::NET_TYPE;
 use nullnet_grpc_lib::nullnet_grpc::Net;
 
 /// Minimum allocatable NET ID (same for both VLAN and VXLAN).
-const MIN_NET_ID: u32 = 101;
+pub(crate) const MIN_NET_ID: u32 = 101;
 
 /// Maximum allocatable NET ID, depends on `NET_TYPE`:
 /// - VLAN: 4094 (802.1Q is 12-bit; 0 and 4095 are reserved)
 /// - VXLAN: 2,097,151 (subnet mapping uses /29 blocks in 10.0.0.0/8)
-static MAX_NET_ID: LazyLock<u32> = LazyLock::new(|| match *NET_TYPE {
+pub(crate) static MAX_NET_ID: LazyLock<u32> = LazyLock::new(|| match *NET_TYPE {
     Net::Vlan => 4094,
     Net::Vxlan => 2_097_151,
 });
 
-/// Pool for VLAN/VXLAN network IDs.
-///
-/// Reuses freed IDs oldest-first (FIFO) before allocating new ones. FIFO is
-/// deliberate: every kernel-side name an edge owns — `br_<id>_*`, `veth-<id>-*`,
-/// `macsec-<id>-*`, the derived MACs, `SPI <id>+1000`, the flock path — derives
-/// from the ID alone, so generation N and N+1 are indistinguishable to the
-/// kernel. Handing an ID straight back out is what lets a late teardown for
-/// generation N delete generation N+1's edge. Popping the *oldest* freed ID
-/// maximizes the gap between free and reuse; the previous lowest-first
-/// `BTreeSet` did the opposite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NetIdAllocationError {
+    Exhausted,
+    RouteConflicts,
+    ConflictDataUnavailable,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ConflictSet {
+    ranges: Vec<(u32, u32)>,
+}
+
+impl ConflictSet {
+    fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
+    }
+
+    pub(crate) fn from_cidrs(cidrs: &[String]) -> Result<Self, String> {
+        let block_size = match *NET_TYPE {
+            Net::Vlan => 4,
+            Net::Vxlan => 8,
+        };
+        let base = u32::from(std::net::Ipv4Addr::new(10, 0, 0, 0));
+        let pool_start = base + MIN_NET_ID * block_size;
+        let pool_end = base + *MAX_NET_ID * block_size + block_size - 1;
+        let mut ranges = Vec::new();
+        for cidr in cidrs {
+            let network: Ipv4Network = cidr
+                .parse()
+                .map_err(|error| format!("invalid conflicting CIDR '{cidr}': {error}"))?;
+            // Routes broader than 10/8 are default-like connectivity that the
+            // overlay necessarily overrides. An explicit 10/8 is a real conflict.
+            if network.prefix() < 8 {
+                continue;
+            }
+            let start = u32::from(network.network()).max(pool_start);
+            let end = u32::from(network.broadcast()).min(pool_end);
+            if start > end {
+                continue;
+            }
+            ranges.push(((start - base) / block_size, (end - base) / block_size));
+        }
+        Ok(Self::from_ranges(ranges))
+    }
+
+    fn from_ranges(mut ranges: Vec<(u32, u32)>) -> Self {
+        ranges.sort_unstable();
+        let mut merged: Vec<(u32, u32)> = Vec::with_capacity(ranges.len());
+        for (start, end) in ranges {
+            if let Some((_, previous_end)) = merged.last_mut()
+                && start <= previous_end.saturating_add(1)
+            {
+                *previous_end = (*previous_end).max(end);
+            } else {
+                merged.push((start, end));
+            }
+        }
+        Self { ranges: merged }
+    }
+
+    pub(crate) fn union(&self, other: &Self) -> Self {
+        Self::from_ranges(self.ranges.iter().chain(&other.ranges).copied().collect())
+    }
+
+    fn covering_end(&self, id: u32) -> Option<u32> {
+        let index = self.ranges.partition_point(|(start, _)| *start <= id);
+        index
+            .checked_sub(1)
+            .and_then(|index| self.ranges.get(index))
+            .filter(|(_, end)| id <= *end)
+            .map(|(_, end)| *end)
+    }
+}
+
+/// Availability bitmap with a rotating cursor. A freed ID is not considered
+/// again until the cursor reaches it, widening the gap between generations.
 #[derive(Debug)]
 pub(crate) struct NetIdPool {
-    /// The next fresh ID to allocate (when no freed IDs are available).
-    next_fresh: u32,
-    /// IDs that were freed and can be reused, oldest first.
-    freed: VecDeque<u32>,
-    /// Membership index for `freed`. A `VecDeque` cannot dedupe on its own, and
-    /// a double `free` of the same ID would otherwise queue it twice and hand
-    /// it to two live edges at once — a corruption the old `BTreeSet` made
-    /// impossible for free. Keeps that invariant at O(1).
-    freed_set: HashSet<u32>,
+    available: Vec<u64>,
+    cursor: u32,
+    in_use: u32,
 }
 
 impl NetIdPool {
     pub(crate) fn new() -> Self {
+        let mut available = vec![u64::MAX; (*MAX_NET_ID as usize / 64) + 1];
+        for id in 0..MIN_NET_ID {
+            available[id as usize / 64] &= !(1 << (id % 64));
+        }
+        let trailing = (*MAX_NET_ID as usize + 1) % 64;
+        if trailing != 0 {
+            *available.last_mut().unwrap() &= (1u64 << trailing) - 1;
+        }
         Self {
-            next_fresh: MIN_NET_ID,
-            freed: VecDeque::new(),
-            freed_set: HashSet::new(),
+            available,
+            cursor: MIN_NET_ID,
+            in_use: 0,
         }
     }
 
-    /// Allocate a network ID, reusing the longest-freed one if any are
-    /// available. Returns `None` if the pool is exhausted.
+    #[cfg(test)]
     pub(crate) fn allocate(&mut self) -> Option<u32> {
-        if let Some(id) = self.freed.pop_front() {
-            self.freed_set.remove(&id);
-            return Some(id);
-        }
+        self.allocate_avoiding(&[])
+    }
 
-        // Otherwise allocate a fresh ID
-        if self.next_fresh <= *MAX_NET_ID {
-            let id = self.next_fresh;
-            self.next_fresh += 1;
-            Some(id)
+    pub(crate) fn allocate_avoiding(&mut self, conflicts: &[&ConflictSet]) -> Option<u32> {
+        let cursor = self.cursor;
+        let id = if conflicts.iter().all(|conflicts| conflicts.is_empty()) {
+            self.next_available(cursor, *MAX_NET_ID).or_else(|| {
+                (cursor > MIN_NET_ID)
+                    .then(|| self.next_available(MIN_NET_ID, cursor - 1))
+                    .flatten()
+            })
         } else {
-            None
+            self.find_eligible(cursor, *MAX_NET_ID, conflicts)
+                .or_else(|| {
+                    (cursor > MIN_NET_ID)
+                        .then(|| self.find_eligible(MIN_NET_ID, cursor - 1, conflicts))
+                        .flatten()
+                })
+        }?;
+        self.available[id as usize / 64] &= !(1 << (id % 64));
+        self.in_use += 1;
+        self.cursor = if id == *MAX_NET_ID {
+            MIN_NET_ID
+        } else {
+            id + 1
+        };
+        Some(id)
+    }
+
+    fn find_eligible(&self, mut id: u32, end: u32, conflicts: &[&ConflictSet]) -> Option<u32> {
+        while id <= end {
+            loop {
+                let blocked_end = conflicts
+                    .iter()
+                    .filter_map(|set| set.covering_end(id))
+                    .max();
+                let Some(blocked_end) = blocked_end else {
+                    break;
+                };
+                if blocked_end >= end {
+                    return None;
+                }
+                id = blocked_end + 1;
+            }
+            let candidate = self.next_available(id, end)?;
+            if conflicts
+                .iter()
+                .all(|set| set.covering_end(candidate).is_none())
+            {
+                return Some(candidate);
+            }
+            id = candidate.checked_add(1)?;
+        }
+        None
+    }
+
+    fn next_available(&self, start: u32, end: u32) -> Option<u32> {
+        let mut word_index = start as usize / 64;
+        let end_word = end as usize / 64;
+        let mut word = self.available[word_index] & (u64::MAX << (start % 64));
+        loop {
+            if word_index == end_word {
+                let last_bit = end % 64;
+                let mask = if last_bit == 63 {
+                    u64::MAX
+                } else {
+                    (1u64 << (last_bit + 1)) - 1
+                };
+                word &= mask;
+            }
+            if word != 0 {
+                return Some(word_index as u32 * 64 + word.trailing_zeros());
+            }
+            if word_index == end_word {
+                return None;
+            }
+            word_index += 1;
+            word = self.available[word_index];
         }
     }
 
-    /// Return a network ID to the pool for reuse. Freeing an ID that is already
-    /// queued is a no-op.
     pub(crate) fn free(&mut self, id: u32) {
-        if id >= MIN_NET_ID && id <= *MAX_NET_ID && self.freed_set.insert(id) {
-            self.freed.push_back(id);
+        if id < MIN_NET_ID || id > *MAX_NET_ID {
+            return;
         }
+        let word = &mut self.available[id as usize / 64];
+        let mask = 1 << (id % 64);
+        if *word & mask == 0 {
+            *word |= mask;
+            self.in_use -= 1;
+        }
+    }
+
+    pub(crate) fn has_available(&self) -> bool {
+        self.in_use < *MAX_NET_ID - MIN_NET_ID + 1
     }
 }
 
@@ -89,7 +230,7 @@ pub(crate) fn generate_key() -> [u8; 32] {
 impl NetIdPool {
     /// Number of IDs currently in use (allocated but not freed).
     pub(crate) fn in_use(&self) -> u32 {
-        (self.next_fresh - MIN_NET_ID) - self.freed.len() as u32
+        self.in_use
     }
 }
 
@@ -105,43 +246,26 @@ mod tests {
         assert_eq!(pool.allocate(), Some(103));
     }
 
-    /// Reuse is oldest-freed-first, so the ID that has been out of service
-    /// longest comes back first — the widest possible gap between an edge being
-    /// torn down and its ID naming a different edge.
     #[test]
-    fn test_reuse_freed_net_ids_oldest_first() {
+    fn freed_ids_wait_for_the_cursor_to_wrap() {
         let mut pool = NetIdPool::new();
         let id1 = pool.allocate().unwrap();
         let id2 = pool.allocate().unwrap();
-        let id3 = pool.allocate().unwrap();
-
-        pool.free(id2); // 102 freed first
-        pool.free(id1); // 101 freed second
-
-        // FIFO: 102 comes back before 101, even though 101 is numerically lower
-        assert_eq!(pool.allocate(), Some(102));
-        assert_eq!(pool.allocate(), Some(101));
-        // Then continue with fresh IDs
-        assert_eq!(pool.allocate(), Some(104));
-
-        pool.free(id3); // free 103
+        pool.free(id1);
+        pool.free(id2);
         assert_eq!(pool.allocate(), Some(103));
+
+        pool.cursor = id1;
+        assert_eq!(pool.allocate(), Some(id1));
+        assert_eq!(pool.allocate(), Some(id2));
     }
 
-    /// A just-freed ID must go to the back of the queue, never straight back
-    /// out — that immediate handback is the reuse race this ordering exists to
-    /// widen.
     #[test]
     fn test_freed_id_is_not_immediately_reallocated() {
         let mut pool = NetIdPool::new();
         let a = pool.allocate().unwrap();
-        let b = pool.allocate().unwrap();
         pool.free(a);
-        pool.free(b);
-
-        // `a` was freed first, so it is handed out first; `b` waits behind it.
-        assert_eq!(pool.allocate(), Some(a));
-        assert_eq!(pool.allocate(), Some(b));
+        assert_eq!(pool.allocate(), Some(a + 1));
     }
 
     /// Freeing the same ID twice must not queue it twice — otherwise two live
@@ -154,16 +278,17 @@ mod tests {
         pool.free(id);
         pool.free(id);
 
+        pool.cursor = id;
         assert_eq!(pool.allocate(), Some(id));
-        // Next allocation must be a fresh ID, not `id` a second time.
         assert_eq!(pool.allocate(), Some(102));
-        assert!(pool.freed.is_empty());
     }
 
     #[test]
     fn test_net_ids_exhaustion() {
         let mut pool = NetIdPool::new();
-        pool.next_fresh = *MAX_NET_ID;
+        pool.available.fill(0);
+        pool.available[*MAX_NET_ID as usize / 64] |= 1 << (*MAX_NET_ID % 64);
+        pool.cursor = *MAX_NET_ID;
 
         assert_eq!(pool.allocate(), Some(*MAX_NET_ID));
         assert_eq!(pool.allocate(), None);
@@ -180,7 +305,35 @@ mod tests {
         pool.free(0);
         pool.free(100); // below MIN_NET_ID
         pool.free(*MAX_NET_ID + 1); // above MAX_NET_ID
-        assert!(pool.freed.is_empty());
+        assert_eq!(pool.in_use(), 0);
+    }
+
+    #[test]
+    fn conflict_ranges_skip_every_intersecting_block() {
+        let mut pool = NetIdPool::new();
+        pool.cursor = 223;
+        let conflicts = ConflictSet::from_ranges(vec![(224, 255)]);
+
+        assert_eq!(pool.allocate_avoiding(&[&conflicts]), Some(223));
+        assert_eq!(pool.allocate_avoiding(&[&conflicts]), Some(256));
+    }
+
+    #[test]
+    fn endpoint_conflicts_are_combined_without_allocating_a_union() {
+        let mut pool = NetIdPool::new();
+        let first = ConflictSet::from_ranges(vec![(101, 102)]);
+        let second = ConflictSet::from_ranges(vec![(103, 105)]);
+
+        assert_eq!(pool.allocate_avoiding(&[&first, &second]), Some(106));
+    }
+
+    #[test]
+    fn cidr_is_converted_to_all_intersecting_vxlan_ids() {
+        if *NET_TYPE != Net::Vxlan {
+            return;
+        }
+        let conflicts = ConflictSet::from_cidrs(&["10.0.7.0/24".into()]).unwrap();
+        assert_eq!(conflicts.ranges, vec![(224, 255)]);
     }
 
     #[test]

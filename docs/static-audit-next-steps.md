@@ -3,11 +3,12 @@
 PR [#229](https://github.com/NullNet-ai/nullnet/pull/229) closes findings 1,
 6, and the initial finding 7 stale-close case. PR
 [#230](https://github.com/NullNet-ai/nullnet/pull/230) closes findings 2, 4, and
-5, plus the remaining close-first race in finding 7. Their end-to-end gaps are
-recorded below. Finding 8 was ruled out. Finding 12 was reproduced end to end;
-the other remaining findings still require reproduction. None has been
-implemented. Verify the failure before changing code, then follow the four PR
-gates in `AGENTS.md`.
+5, plus the remaining close-first race in finding 7. PR
+[#233](https://github.com/NullNet-ai/nullnet/pull/233) closes finding 12. Their
+end-to-end evidence and any remaining gaps are recorded below. Finding 8 was
+ruled out. The other remaining findings still require reproduction and have not
+been implemented. Verify the failure before changing code, then follow the four
+PR gates in `AGENTS.md`.
 
 ## 3. Client startup flushes the host-wide conntrack table
 
@@ -88,36 +89,29 @@ Relevant code:
 - `members/nullnet-client/src/triggers.rs:203-226`
 - `members/nullnet-server/src/orchestrator.rs:1230-1368`
 
-## 12. Docker routes can shadow active Nullnet peers
-
-Nullnet derives each standard network deterministically as a `/29` within
-`10.0.0.0/8`. A valid Docker deployment can independently assign the same
-subnet or peer address. This needs no injected route: the lab reproduced it by
-attaching a real container at `10.0.3.52` on Docker subnet `10.0.3.48/29`, which
-overlaps Nullnet network 102. The server reported the same-host dedicated
-backend edge established, but the connection timed out because Docker's
-local/connected route took precedence over the Nullnet path.
-
-A correction must cover both standard and shared policy paths. Only active
-Nullnet peer `/32`s should take precedence; unrelated Docker and other `10/8`
-traffic must retain its existing routing. It must not require Docker subnet
-exclusions or a different Nullnet CIDR, add per-packet work, or leak routing
-state after last-peer teardown or client restart. Compare cold and warm
-lifecycle performance as required for routing changes.
-
-Relevant code:
-
-- `members/nullnet-server/src/net.rs:204-227`
-- `members/nullnet-client/src/commands/vxlan.rs:418-443`
-- `members/nullnet-client/src/commands/endpoint_io.rs:421-447`
-- `members/nullnet-client/src/commands/policy.rs:101-145`
-
 ## Recommended order
 
-1. Prevent Docker routing from shadowing active Nullnet peers.
-2. Define recovery behavior and coverage for reported data-plane failures.
-3. Make connected teardown failures retryable without losing ownership.
-4. Host-wide conntrack cleanup scoping.
+1. Define recovery behavior and coverage for reported data-plane failures.
+2. Make connected teardown failures retryable without losing ownership.
+3. Host-wide conntrack cleanup scoping.
+
+## Closed by PR #233
+
+- **Finding 12:** A real container at `10.0.3.52` on Docker subnet
+  `10.0.3.48/29` reproduced a collision with Nullnet network 102: setup
+  completed, but Docker's local/connected route captured the peer traffic. The
+  client now reports overlapping host and container prefixes in the existing
+  service report, failing closed if a snapshot cannot be read. The server maps
+  those prefixes to incompatible network-ID ranges and skips them while
+  allocating for both endpoints. This adds no packet-path work, routing-priority
+  changes, or extra client setup/teardown operations. On the two-host complex
+  topology, `/24` conflicts skipped IDs 101–159, a live `/25` Docker network
+  skipped IDs 176–191, same- and cross-host traffic remained successful, and
+  restart cleanup retained the application containers. Sustained warm load
+  completed 153,218 requests at 5,105.79 requests/s with zero errors; the
+  targeted cold run completed 11/11 distinct clients. The 278 server, 130
+  client, 5 gRPC, 39 proxy, and 14 UI tests passed, along with production lint,
+  release-build, and eBPF checks.
 
 ## Closed by PR #230
 

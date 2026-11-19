@@ -7,7 +7,7 @@ use crate::events::Event;
 #[cfg(debug_assertions)]
 use crate::graphviz::generate_graphviz;
 use crate::net::EgressRole;
-use crate::net_id_pool::generate_key;
+use crate::net_id_pool::{NetIdAllocationError, generate_key};
 use crate::orchestrator::{BackendKey, Orchestrator};
 use crate::services::changes::{apply_changes, detect_services_list_changes};
 use crate::services::clients::{Client, ClientInfo};
@@ -888,6 +888,20 @@ impl NullnetGrpcImpl {
             report.containers.len(),
             report.listeners.len()
         );
+
+        let container_conflicts: Vec<_> = report
+            .containers
+            .iter()
+            .map(|container| {
+                (
+                    container.real_name.clone(),
+                    container.conflicting_cidrs.clone(),
+                )
+            })
+            .collect();
+        self.orchestrator
+            .replace_route_conflicts(sender_ip, &report.conflicting_cidrs, &container_conflicts)
+            .handle_err(location!())?;
 
         // Join the sender's raw observations against the config match index. A
         // container/listener may match several services across stacks; every
@@ -1825,6 +1839,15 @@ impl NullnetGrpcImpl {
         sender_ip: IpAddr,
         service_list_by_stack: &ReportedServicesByStack,
     ) -> Result<(), Error> {
+        let containers: Vec<_> = service_list_by_stack
+            .values()
+            .flatten()
+            .filter_map(|(_, _, container)| container.clone())
+            .map(|container| (container, Vec::new()))
+            .collect();
+        self.orchestrator
+            .replace_route_conflicts(sender_ip, &[], &containers)
+            .handle_err(location!())?;
         self.apply_services_report(sender_ip, service_list_by_stack, &HashSet::new())
             .await
     }
@@ -2306,22 +2329,48 @@ async fn setup_edge(
         return EdgeOutcome::Failed;
     }
 
-    let Some(net_id) = orchestrator.allocate_net_id().await else {
-        eprintln!("NET ID pool exhausted");
-        orchestrator
-            .events
-            .emit(Event::net_id_pool_exhausted(
-                server_name.clone(),
-                client_ethernet.to_string(),
-            ))
-            .await;
-        // remove placeholder
-        if let Some(stack_map) = services.write().await.get_mut(stack)
-            && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
-        {
-            reg.remove_pending_client_if(&client, &reservation);
+    let net_id = match orchestrator.allocate_compatible_net_id(
+        client_ethernet,
+        client_docker.as_deref(),
+        server_ethernet,
+        server_docker.as_deref(),
+    ) {
+        Ok(net_id) => net_id,
+        Err(error) => {
+            match error {
+                NetIdAllocationError::Exhausted => {
+                    eprintln!("NET ID pool exhausted");
+                    orchestrator
+                        .events
+                        .emit(Event::net_id_pool_exhausted(
+                            server_name.clone(),
+                            client_ethernet.to_string(),
+                        ))
+                        .await;
+                }
+                NetIdAllocationError::RouteConflicts => {
+                    eprintln!("No NET ID is compatible with endpoint routes");
+                    orchestrator
+                        .events
+                        .emit(Event::net_id_route_conflicts(
+                            server_name.clone(),
+                            client_ethernet.to_string(),
+                            server_ethernet.to_string(),
+                        ))
+                        .await;
+                }
+                NetIdAllocationError::ConflictDataUnavailable => {
+                    eprintln!("Endpoint route conflict data is unavailable");
+                }
+            }
+            // remove placeholder
+            if let Some(stack_map) = services.write().await.get_mut(stack)
+                && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(&server_name)
+            {
+                reg.remove_pending_client_if(&client, &reservation);
+            }
+            return EdgeOutcome::Failed;
         }
-        return EdgeOutcome::Failed;
     };
 
     if client.is_proxy().is_some() && crate::routine_diagnostics() {
@@ -3283,8 +3332,10 @@ port = 80
                 match_key: "restarted_c".into(),
                 real_name: "restarted_c".into(),
                 paused: true,
+                conflicting_cidrs: vec![],
             }],
             listeners: vec![],
+            conflicting_cidrs: vec![],
         });
         request.extensions_mut().insert(TcpConnectInfo {
             local_addr: None,
@@ -3340,6 +3391,7 @@ port = 22
                 listeners: vec![Listener {
                     path: "/usr/sbin/sshd".into(),
                 }],
+                conflicting_cidrs: vec![],
             });
             request.extensions_mut().insert(TcpConnectInfo {
                 local_addr: None,

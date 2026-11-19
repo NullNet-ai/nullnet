@@ -260,6 +260,10 @@ pub struct ServiceReport {
     pub containers: ::prost::alloc::vec::Vec<Container>,
     #[prost(message, repeated, tag = "2")]
     pub listeners: ::prost::alloc::vec::Vec<Listener>,
+    /// Existing IPv4 prefixes in the host namespace that overlap Nullnet's
+    /// address pool. The server excludes intersecting NET IDs.
+    #[prost(string, repeated, tag = "3")]
+    pub conflicting_cidrs: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -272,6 +276,8 @@ pub struct Container {
     pub real_name: ::prost::alloc::string::String,
     #[prost(bool, tag = "3")]
     pub paused: bool,
+    #[prost(string, repeated, tag = "4")]
+    pub conflicting_cidrs: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

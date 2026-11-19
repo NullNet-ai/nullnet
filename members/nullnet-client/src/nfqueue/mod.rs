@@ -76,13 +76,7 @@ pub fn spawn_listener(
     // declare-services loop in `main` can immediately re-declare and
     // re-populate the ipset — closing the window where a fresh task
     // might fire a SYN before its trigger port is being watched.
-    {
-        let bridge_cache = cache.clone();
-        tokio::spawn(async move {
-            bridge_cache.refresh().await;
-            cache::spawn_events_watcher(bridge_cache, docker_changed);
-        });
-    }
+    cache::spawn_events_watcher(cache.clone(), docker_changed);
 
     // Config consumer: each services-list refresh produces a port → owners
     // map. We diff the ports vs the previous set, push the diff to the ipset

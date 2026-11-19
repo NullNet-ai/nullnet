@@ -241,6 +241,12 @@ pub(crate) enum Event {
         client_ip: String,
         timestamp: u64,
     },
+    NetIdRouteConflicts {
+        service: String,
+        first_ip: String,
+        second_ip: String,
+        timestamp: u64,
+    },
     IngressSetupFailed {
         service: String,
         client_ip: String,
@@ -579,6 +585,7 @@ impl Event {
             Self::IngressCongestionControlChanged { .. } => "ingress_congestion_control_changed",
             Self::IngressCongestionRecoveryStarted { .. } => "ingress_congestion_recovery_started",
             Self::NetIdPoolExhausted { .. } => "net_id_pool_exhausted",
+            Self::NetIdRouteConflicts { .. } => "net_id_route_conflicts",
             Self::IngressSetupFailed { .. } => "ingress_setup_failed",
             Self::BackendTriggerSetupBailed { .. } => "backend_trigger_setup_bailed",
             Self::FileWatchFailed { .. } => "file_watch_failed",
@@ -708,6 +715,7 @@ impl Event {
             | Self::ConntrackFlushFailed { .. }
             | Self::CertificateCredentialsStoreFailed { .. }
             | Self::NetIdPoolExhausted { .. }
+            | Self::NetIdRouteConflicts { .. }
             | Self::FileWatchFailed { .. }
             | Self::BackendTriggerSetupTimedOut { .. }
             | Self::EgressSteerSetupTimedOut { .. }
@@ -987,6 +995,19 @@ impl Event {
         Self::NetIdPoolExhausted {
             service,
             client_ip,
+            timestamp: now_secs(),
+        }
+    }
+
+    pub(crate) fn net_id_route_conflicts(
+        service: String,
+        first_ip: String,
+        second_ip: String,
+    ) -> Self {
+        Self::NetIdRouteConflicts {
+            service,
+            first_ip,
+            second_ip,
             timestamp: now_secs(),
         }
     }
