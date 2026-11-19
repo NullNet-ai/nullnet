@@ -79,6 +79,8 @@ function eventDetail(e: EventJson): string {
     case 'net_id_pool_exhausted':
     case 'ingress_setup_failed':
       return `${e.service} · ${e.client_ip}`;
+    case 'net_id_route_conflicts':
+      return `${e.service} · ${e.first_ip} ↔ ${e.second_ip} · no compatible network ID`;
     case 'backend_trigger_setup_bailed':
       return `${e.service} · port ${e.port}`;
     case 'file_watch_failed':

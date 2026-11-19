@@ -220,6 +220,7 @@ export type EventJson =
   | WithSeverity & { type: 'ingress_congestion_control_changed'; node_ip: string; active: boolean }
   | WithSeverity & { type: 'ingress_congestion_recovery_started'; node_ip: string }
   | WithSeverity & { type: 'net_id_pool_exhausted'; service: string; client_ip: string }
+  | WithSeverity & { type: 'net_id_route_conflicts'; service: string; first_ip: string; second_ip: string }
   | WithSeverity & { type: 'ingress_setup_failed'; service: string; client_ip: string }
   | WithSeverity & { type: 'backend_trigger_setup_bailed'; service: string; port: number }
   | WithSeverity & { type: 'file_watch_failed'; target: string; error_message: string }

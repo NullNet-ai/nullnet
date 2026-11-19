@@ -68,6 +68,7 @@ export const EVENT_KIND_GROUPS = defineEventKindGroups([
       'egress_reservation_reclaimed',
       'ingress_owner_lost',
       'net_id_pool_exhausted',
+      'net_id_route_conflicts',
       'net_teardown_unconfirmed',
       'setup_ack',
       'setup_started',
