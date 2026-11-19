@@ -33,6 +33,24 @@ struct NodeRouteConflicts {
     containers: HashMap<String, Arc<ConflictSet>>,
 }
 
+fn endpoint_route_conflicts<'a>(
+    registry: &'a HashMap<IpAddr, NodeRouteConflicts>,
+    ip: IpAddr,
+    container: Option<&str>,
+) -> Result<&'a ConflictSet, NetIdAllocationError> {
+    let node = registry
+        .get(&ip)
+        .ok_or(NetIdAllocationError::ConflictDataUnavailable)?;
+    match container {
+        Some(container) => node
+            .containers
+            .get(container)
+            .map(Arc::as_ref)
+            .ok_or(NetIdAllocationError::ConflictDataUnavailable),
+        None => Ok(node.root.as_ref()),
+    }
+}
+
 /// Initiator replica identity keying an egress edge: (node IP, docker container).
 /// One edge per initiator replica multiplexes all of its external destinations.
 type EgressKey = (IpAddr, Option<String>);
@@ -154,9 +172,8 @@ pub struct Orchestrator {
     /// Certificate stream counts keep overlapping reconnects on one IP visible.
     proxies: Arc<RwLock<HashMap<IpAddr, usize>>>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
-    net_id_pool: Arc<Mutex<NetIdPool>>,
+    net_id_pool: Arc<StdMutex<NetIdPool>>,
     route_conflicts: Arc<StdRwLock<HashMap<IpAddr, NodeRouteConflicts>>>,
-    empty_route_conflicts: Arc<ConflictSet>,
     /// Live egress edges, keyed by initiator replica. Separate from the service
     /// StackMap because the proxy end is infrastructure, not a registered service.
     ///
@@ -190,9 +207,8 @@ impl Orchestrator {
             client_lifecycles: Arc::new(Mutex::new(HashMap::new())),
             proxies: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
-            net_id_pool: Arc::new(Mutex::new(NetIdPool::new())),
+            net_id_pool: Arc::new(StdMutex::new(NetIdPool::new())),
             route_conflicts: Arc::new(StdRwLock::new(HashMap::new())),
-            empty_route_conflicts: Arc::new(ConflictSet::default()),
             egress_edges: Arc::new(RwLock::new(HashMap::new())),
             backend_sessions: Arc::new(RwLock::new(HashMap::new())),
             geo: GeoCache::from_env(),
@@ -398,10 +414,12 @@ impl Orchestrator {
                 .await;
         }
 
-        let net_id = match self
-            .allocate_compatible_net_id(initiator_ip, initiator_docker.as_deref(), proxy_ip, None)
-            .await
-        {
+        let net_id = match self.allocate_compatible_net_id(
+            initiator_ip,
+            initiator_docker.as_deref(),
+            proxy_ip,
+            None,
+        ) {
             Ok(net_id) => net_id,
             Err(error) => {
                 self.remove_egress_edges(|k, e| k == &key && e.generation == generation)
@@ -425,6 +443,10 @@ impl Orchestrator {
                             ))
                             .await;
                         return Err("No NET ID is compatible with endpoint routes")
+                            .handle_err(location!());
+                    }
+                    NetIdAllocationError::ConflictDataUnavailable => {
+                        return Err("Endpoint route conflict data is unavailable")
                             .handle_err(location!());
                     }
                 }
@@ -1207,7 +1229,7 @@ impl Orchestrator {
 
     #[cfg(test)]
     pub(crate) async fn allocate_net_id(&self) -> Option<u32> {
-        self.net_id_pool.lock().await.allocate()
+        self.net_id_pool.lock().unwrap().allocate()
     }
 
     pub(crate) fn replace_route_conflicts(
@@ -1232,33 +1254,18 @@ impl Orchestrator {
         Ok(())
     }
 
-    pub(crate) async fn allocate_compatible_net_id(
+    pub(crate) fn allocate_compatible_net_id(
         &self,
         first_ip: IpAddr,
         first_container: Option<&str>,
         second_ip: IpAddr,
         second_container: Option<&str>,
     ) -> Result<u32, NetIdAllocationError> {
-        let (first, second) = {
-            let registry = self.route_conflicts.read().unwrap();
-            let find = |ip, container: Option<&str>| {
-                registry
-                    .get(&ip)
-                    .map(|node| {
-                        container
-                            .and_then(|container| node.containers.get(container))
-                            .unwrap_or(&node.root)
-                            .clone()
-                    })
-                    .unwrap_or_else(|| self.empty_route_conflicts.clone())
-            };
-            (
-                find(first_ip, first_container),
-                find(second_ip, second_container),
-            )
-        };
-        let mut pool = self.net_id_pool.lock().await;
-        if let Some(net_id) = pool.allocate_avoiding(&[&first, &second]) {
+        let registry = self.route_conflicts.read().unwrap();
+        let first = endpoint_route_conflicts(&registry, first_ip, first_container)?;
+        let second = endpoint_route_conflicts(&registry, second_ip, second_container)?;
+        let mut pool = self.net_id_pool.lock().unwrap();
+        if let Some(net_id) = pool.allocate_avoiding(&[first, second]) {
             return Ok(net_id);
         }
         Err(if pool.has_available() {
@@ -1338,7 +1345,7 @@ impl Orchestrator {
     /// endpoint (e.g. a follow-up allocation failed). No teardown messages
     /// are sent — nothing was ever set up on either client.
     pub(crate) async fn free_net_id(&self, net_id: u32) {
-        self.net_id_pool.lock().await.free(net_id);
+        self.net_id_pool.lock().unwrap().free(net_id);
     }
 
     pub(crate) async fn connected_node_ips(&self) -> Vec<IpAddr> {
@@ -1513,11 +1520,23 @@ impl Orchestrator {
 #[cfg(test)]
 impl Orchestrator {
     pub(crate) async fn net_ids_in_use(&self) -> u32 {
-        self.net_id_pool.lock().await.in_use()
+        self.net_id_pool.lock().unwrap().in_use()
     }
 
     pub(crate) async fn register_fake_client(&self, ip: IpAddr) {
+        self.register_fake_route_node(ip);
         self.register_recording_client(ip).await;
+    }
+
+    fn register_fake_route_node(&self, ip: IpAddr) {
+        self.route_conflicts.write().unwrap().entry(ip).or_default();
+    }
+
+    pub(crate) fn register_fake_container(&self, ip: IpAddr, container: &str) {
+        let mut registry = self.route_conflicts.write().unwrap();
+        let node = registry.entry(ip).or_default();
+        node.containers
+            .insert(container.to_string(), node.root.clone());
     }
 
     /// Wait until every in-flight teardown has returned its net id to the pool.
@@ -1537,6 +1556,7 @@ impl Orchestrator {
     /// a node that is wedged rather than gone. Distinct from simply not being
     /// registered, which means nothing is sent at all.
     pub(crate) async fn register_silent_client(&self, ip: IpAddr) {
+        self.register_fake_route_node(ip);
         let (tx, mut rx) = mpsc::channel::<Result<NetMessage, Status>>(64);
         self.clients.write().await.insert(ip, tx);
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -1552,6 +1572,7 @@ impl Orchestrator {
     ) -> (Arc<Mutex<Vec<NetMessage>>>, Arc<tokio::sync::Semaphore>) {
         use nullnet_grpc_lib::nullnet_grpc::net_message;
 
+        self.register_fake_route_node(ip);
         let log = Arc::new(Mutex::new(Vec::new()));
         let gate = Arc::new(tokio::sync::Semaphore::new(0));
         let (tx, mut rx) = mpsc::channel::<Result<NetMessage, Status>>(64);
@@ -1605,6 +1626,7 @@ impl Orchestrator {
     ) -> Arc<Mutex<Vec<NetMessage>>> {
         use nullnet_grpc_lib::nullnet_grpc::net_message;
 
+        self.register_fake_route_node(ip);
         let log = Arc::new(Mutex::new(Vec::new()));
         let (tx, mut rx) = mpsc::channel::<Result<NetMessage, Status>>(64);
         self.clients.write().await.insert(ip, tx);
@@ -1668,6 +1690,12 @@ mod route_conflict_tests {
         format!("{}/{prefix}", Ipv4Addr::from(address))
     }
 
+    fn report_empty(orchestrator: &Orchestrator, node: IpAddr) {
+        orchestrator
+            .replace_route_conflicts(node, &[], &[])
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn root_and_container_routes_are_both_excluded() {
         let orchestrator = Orchestrator::new();
@@ -1676,11 +1704,10 @@ mod route_conflict_tests {
         orchestrator
             .replace_route_conflicts(ip(1), &root, &[("app".to_string(), container)])
             .unwrap();
+        report_empty(&orchestrator, ip(2));
 
         assert_eq!(
-            orchestrator
-                .allocate_compatible_net_id(ip(1), Some("app"), ip(2), None)
-                .await,
+            orchestrator.allocate_compatible_net_id(ip(1), Some("app"), ip(2), None),
             Ok(MIN_NET_ID + 2)
         );
     }
@@ -1688,14 +1715,13 @@ mod route_conflict_tests {
     #[tokio::test]
     async fn conflicts_on_either_endpoint_are_excluded() {
         let orchestrator = Orchestrator::new();
+        report_empty(&orchestrator, ip(1));
         orchestrator
             .replace_route_conflicts(ip(2), &[net_id_cidr(MIN_NET_ID)], &[])
             .unwrap();
 
         assert_eq!(
-            orchestrator
-                .allocate_compatible_net_id(ip(1), None, ip(2), None)
-                .await,
+            orchestrator.allocate_compatible_net_id(ip(1), None, ip(2), None),
             Ok(MIN_NET_ID + 1)
         );
     }
@@ -1706,11 +1732,10 @@ mod route_conflict_tests {
         orchestrator
             .replace_route_conflicts(ip(1), &["10.0.0.0/8".to_string()], &[])
             .unwrap();
+        report_empty(&orchestrator, ip(2));
 
         assert_eq!(
-            orchestrator
-                .allocate_compatible_net_id(ip(1), None, ip(2), None)
-                .await,
+            orchestrator.allocate_compatible_net_id(ip(1), None, ip(2), None),
             Err(NetIdAllocationError::RouteConflicts)
         );
         assert_eq!(orchestrator.net_ids_in_use().await, 0);
@@ -1719,13 +1744,14 @@ mod route_conflict_tests {
     #[tokio::test]
     async fn concurrent_allocations_remain_unique() {
         let orchestrator = Orchestrator::new();
+        report_empty(&orchestrator, ip(1));
+        report_empty(&orchestrator, ip(2));
         let mut tasks = Vec::new();
         for _ in 0..256 {
             let orchestrator = orchestrator.clone();
             tasks.push(tokio::spawn(async move {
                 orchestrator
                     .allocate_compatible_net_id(ip(1), None, ip(2), None)
-                    .await
                     .unwrap()
             }));
         }
@@ -1734,6 +1760,31 @@ mod route_conflict_tests {
             assert!(ids.insert(task.await.unwrap()));
         }
         assert_eq!(ids.len(), 256);
+    }
+
+    #[tokio::test]
+    async fn missing_node_conflicts_fail_closed() {
+        let orchestrator = Orchestrator::new();
+        report_empty(&orchestrator, ip(1));
+
+        assert_eq!(
+            orchestrator.allocate_compatible_net_id(ip(1), None, ip(2), None),
+            Err(NetIdAllocationError::ConflictDataUnavailable)
+        );
+        assert_eq!(orchestrator.net_ids_in_use().await, 0);
+    }
+
+    #[tokio::test]
+    async fn missing_container_conflicts_fail_closed() {
+        let orchestrator = Orchestrator::new();
+        report_empty(&orchestrator, ip(1));
+        report_empty(&orchestrator, ip(2));
+
+        assert_eq!(
+            orchestrator.allocate_compatible_net_id(ip(1), Some("missing"), ip(2), None),
+            Err(NetIdAllocationError::ConflictDataUnavailable)
+        );
+        assert_eq!(orchestrator.net_ids_in_use().await, 0);
     }
 }
 
@@ -2009,6 +2060,7 @@ mod egress_liveness_tests {
         let proxy = ip(10, 0, 0, 9);
         let key = (initiator, Some("c1".to_string()));
         orch.register_fake_client(initiator).await;
+        orch.register_fake_container(initiator, "c1");
         let (log, gate) = orch.register_gated_client(proxy).await;
         let builder = orch.clone();
         let build = tokio::spawn(async move {
@@ -2046,6 +2098,7 @@ mod egress_liveness_tests {
         let proxy = ip(10, 0, 0, 9);
         let key = (initiator, Some("c1".to_string()));
         orch.register_fake_client(initiator).await;
+        orch.register_fake_container(initiator, "c1");
         let (log, gate) = orch.register_gated_client(proxy).await;
         let builder = orch.clone();
         let build = tokio::spawn(async move {

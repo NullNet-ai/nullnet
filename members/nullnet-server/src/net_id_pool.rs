@@ -20,6 +20,7 @@ pub(crate) static MAX_NET_ID: LazyLock<u32> = LazyLock::new(|| match *NET_TYPE {
 pub(crate) enum NetIdAllocationError {
     Exhausted,
     RouteConflicts,
+    ConflictDataUnavailable,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

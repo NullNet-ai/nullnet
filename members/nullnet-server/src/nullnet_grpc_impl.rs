@@ -1839,6 +1839,15 @@ impl NullnetGrpcImpl {
         sender_ip: IpAddr,
         service_list_by_stack: &ReportedServicesByStack,
     ) -> Result<(), Error> {
+        let containers: Vec<_> = service_list_by_stack
+            .values()
+            .flatten()
+            .filter_map(|(_, _, container)| container.clone())
+            .map(|container| (container, Vec::new()))
+            .collect();
+        self.orchestrator
+            .replace_route_conflicts(sender_ip, &[], &containers)
+            .handle_err(location!())?;
         self.apply_services_report(sender_ip, service_list_by_stack, &HashSet::new())
             .await
     }
@@ -2320,15 +2329,12 @@ async fn setup_edge(
         return EdgeOutcome::Failed;
     }
 
-    let net_id = match orchestrator
-        .allocate_compatible_net_id(
-            client_ethernet,
-            client_docker.as_deref(),
-            server_ethernet,
-            server_docker.as_deref(),
-        )
-        .await
-    {
+    let net_id = match orchestrator.allocate_compatible_net_id(
+        client_ethernet,
+        client_docker.as_deref(),
+        server_ethernet,
+        server_docker.as_deref(),
+    ) {
         Ok(net_id) => net_id,
         Err(error) => {
             match error {
@@ -2352,6 +2358,9 @@ async fn setup_edge(
                             server_ethernet.to_string(),
                         ))
                         .await;
+                }
+                NetIdAllocationError::ConflictDataUnavailable => {
+                    eprintln!("Endpoint route conflict data is unavailable");
                 }
             }
             // remove placeholder
