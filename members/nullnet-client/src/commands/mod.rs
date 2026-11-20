@@ -156,7 +156,7 @@ impl RtNetLinkHandle {
 pub(crate) async fn cleanup_network(
     rtnetlink_handle: &RtNetLinkHandle,
 ) -> Result<Option<String>, Error> {
-    dnat::init();
+    dnat::init().handle_err(location!())?;
     nfqueue::init();
     egress::init();
     install_overlay_forwarding().handle_err(location!())?;

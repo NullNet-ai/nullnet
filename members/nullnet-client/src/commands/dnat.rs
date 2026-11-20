@@ -1,28 +1,105 @@
-use std::net::Ipv4Addr;
+use std::io;
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::process::Command;
 
 const CHAIN: &str = "NULLNET_DNAT";
+const RETURN_RULE: &str = "-A NULLNET_DNAT -j RETURN";
 const HOOK_CHAIN: &str = "PREROUTING";
 const PROTOS: [&str; 2] = ["tcp", "udp"];
 
-/// Resets the private DNAT chain and conntrack so a fresh process start
-/// inherits no stale state from a previous run. Idempotent.
-pub(crate) fn init() {
-    // create our chain (no-op if it already exists)
+/// Retire translations from the previous process before accepting new traffic.
+pub(crate) fn init() -> io::Result<()> {
     let _ = privileged_quiet(&["iptables", "-t", "nat", "-N", CHAIN]);
-    // flush any rules left over from a previous run
-    let _ = privileged(&["iptables", "-t", "nat", "-F", CHAIN]);
-    // hook the chain from PREROUTING (idempotent via -C check). The OUTPUT
-    // hook is gone with the NFQUEUE migration — initiators are always
-    // containers entering the host stack via PREROUTING.
-    let already = privileged_quiet(&["iptables", "-t", "nat", "-C", HOOK_CHAIN, "-j", CHAIN])
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !already {
-        let _ = privileged(&["iptables", "-t", "nat", "-A", HOOK_CHAIN, "-j", CHAIN]);
+    let rules = iptables(&["-S", CHAIN])?;
+    let mut stale = Vec::new();
+    for line in rules.lines() {
+        match line {
+            "-N NULLNET_DNAT" | RETURN_RULE => continue,
+            _ => stale.push(stale_translation(line).ok_or_else(|| {
+                io::Error::other(format!("unrecognized rule in {CHAIN}: {line}"))
+            })?),
+        }
     }
-    // drop any conntrack flows that may have been NAT'd through stale rules
-    let _ = privileged(&["conntrack", "-F"]);
+    if !stale.is_empty() {
+        // Stop creating translations, but retain the rules for retry after a crash.
+        if rules.lines().nth(1) != Some(RETURN_RULE) {
+            iptables(&["-I", CHAIN, "1", "-j", "RETURN"])?;
+        }
+        for args in stale {
+            let output = Command::new(&args[0])
+                .args(&args[1..])
+                .env("LC_ALL", "C")
+                .output()?;
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !output.status.success()
+                && !(output.status.code() == Some(1)
+                    && stderr
+                        .trim_end()
+                        .ends_with(": 0 flow entries have been deleted."))
+            {
+                return Err(io::Error::other(format!("conntrack {args:?}: {stderr}")));
+            }
+        }
+    }
+    iptables(&["-F", CHAIN])?;
+    if !privileged_quiet(&["iptables", "-t", "nat", "-C", HOOK_CHAIN, "-j", CHAIN])?.success() {
+        iptables(&["-A", HOOK_CHAIN, "-j", CHAIN])?;
+    }
+    Ok(())
+}
+
+fn iptables(args: &[&str]) -> io::Result<String> {
+    let output = Command::new("iptables")
+        .args(["-w", "-t", "nat"])
+        .args(args)
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "iptables {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+// iptables -S prints the canonical form of the rules installed by run_iptables.
+fn stale_translation(line: &str) -> Option<Vec<String>> {
+    let fields: Vec<_> = line.split_ascii_whitespace().collect();
+    let ["-A", CHAIN, rest @ ..] = fields.as_slice() else {
+        return None;
+    };
+    let (source, rest) = match rest {
+        ["-s", ip, rest @ ..] => (ip.strip_suffix("/32").unwrap_or(ip).parse().ok()?, rest),
+        rest => (Ipv4Addr::UNSPECIFIED, rest),
+    };
+    let [
+        "-p",
+        proto,
+        "-m",
+        module,
+        "--dport",
+        port,
+        "-j",
+        "DNAT",
+        "--to-destination",
+        target,
+    ] = rest
+    else {
+        return None;
+    };
+    if !PROTOS.contains(proto) || proto != module {
+        return None;
+    }
+    let target: SocketAddrV4 = target.parse().ok()?;
+    let mut args = flush_conntrack_args(proto, port.parse().ok()?, source);
+    args.extend([
+        "--dst-nat".into(),
+        "--reply-src".into(),
+        target.ip().to_string(),
+        "--reply-port-src".into(),
+        target.port().to_string(),
+    ]);
+    Some(args)
 }
 
 /// Install a DNAT for `port → overlay_ip:port`. When `container_ip` is a
@@ -141,8 +218,49 @@ fn flush_conntrack_args(proto: &str, port: u16, container_ip: Ipv4Addr) -> Vec<S
 
 #[cfg(test)]
 mod tests {
-    use super::flush_conntrack_args;
+    use super::{flush_conntrack_args, stale_translation};
     use std::net::Ipv4Addr;
+
+    #[test]
+    fn startup_selects_only_the_old_translation() {
+        let rule = "-A NULLNET_DNAT -s 192.0.2.3/32 -p tcp -m tcp --dport 80 -j DNAT --to-destination 10.0.3.41:80";
+        assert_eq!(
+            stale_translation(rule).unwrap(),
+            [
+                "conntrack",
+                "-D",
+                "-p",
+                "tcp",
+                "-s",
+                "192.0.2.3",
+                "--dport",
+                "80",
+                "--dst-nat",
+                "--reply-src",
+                "10.0.3.41",
+                "--reply-port-src",
+                "80"
+            ]
+        );
+        let legacy = rule.replace(" -s 192.0.2.3/32", "").replace("tcp", "udp");
+        assert_eq!(
+            stale_translation(&legacy).unwrap(),
+            [
+                "conntrack",
+                "-D",
+                "-p",
+                "udp",
+                "--dport",
+                "80",
+                "--dst-nat",
+                "--reply-src",
+                "10.0.3.41",
+                "--reply-port-src",
+                "80"
+            ]
+        );
+        assert!(stale_translation(&rule.replace("/32", "/24")).is_none());
+    }
 
     /// The flush has to select exactly what the DNAT rule selects — same proto,
     /// same source, same dport — or it either strands flows the rule now

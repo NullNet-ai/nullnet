@@ -6,26 +6,9 @@ PR [#229](https://github.com/NullNet-ai/nullnet/pull/229) closes findings 1,
 5, plus the remaining close-first race in finding 7. PR
 [#233](https://github.com/NullNet-ai/nullnet/pull/233) closes finding 12. Their
 end-to-end evidence and any remaining gaps are recorded below. Finding 8 was
-ruled out. The other remaining findings still require reproduction and have not
-been implemented. Verify the failure before changing code, then follow the four
-PR gates in `AGENTS.md`.
-
-## 3. Client startup flushes the host-wide conntrack table
-
-`dnat::init` executes `conntrack -F`, affecting Docker and unrelated host flows
-in addition to Nullnet-owned DNAT state. This is broader than the otherwise
-source/port-scoped runtime conntrack cleanup.
-
-Reproduce with established unrelated TCP, UDP, published-port, and NAT flows
-while restarting only the Nullnet client. Record connection survival and
-conntrack state. A correction must derive precise selectors from the stale
-Nullnet DNAT rules before flushing the owned chain; it must not leave stale DNAT
-flows behind.
-
-Relevant code:
-
-- `members/nullnet-client/src/commands/dnat.rs:8-25`
-- `docs/uniform-edge-liveness-plan.md` (existing conntrack discussion)
+ruled out. Finding 3 is closed on `fix/scope-startup-conntrack`. Findings 9–11
+remain open. Verify the failure before changing code, then follow the four PR
+gates in `AGENTS.md`.
 
 ## 9. Reported edge failure does not invalidate the active edge
 
@@ -93,7 +76,29 @@ Relevant code:
 
 1. Define recovery behavior and coverage for reported data-plane failures.
 2. Make connected teardown failures retryable without losing ownership.
-3. Host-wide conntrack cleanup scoping.
+
+## Closed finding 3 — scoped startup conntrack cleanup
+
+Previously, client startup emptied the conntrack table. An unrelated established
+TCP session continued working after its DNAT rule changed destination, then
+timed out when startup erased its original binding.
+
+Startup now blocks new translations in `NULLNET_DNAT` while it deletes entries
+matching the recorded protocol, original port and optional source, DNAT status,
+and translated address and port. A cleanup failure preserves the rules for the
+next startup and reports the error in the client journal.
+
+On both lab hosts, seven test flows became five: stale TCP and UDP translations
+were removed, and all five controls continued exchanging data. This also passed
+after an interrupted cleanup and a second startup. Across client restarts, a
+Docker-published HTTPS connection on each host retained its socket and conntrack
+ID for 243 and 231 requests. Application container IDs and PIDs were preserved.
+
+The 12-service same- and cross-host test completed 12 cold and 600 warm requests
+with zero errors on each build. The warm batches took 132 ms before and 122 ms
+after. The graph went from zero to 12 edges and drained in 30.61 s before and
+30.62 s after. Linux CI passed, including 131 client, 278 server, 39 proxy,
+5 gRPC and 14 UI tests.
 
 ## Closed by PR #233
 
