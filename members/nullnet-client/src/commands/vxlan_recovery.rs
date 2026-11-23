@@ -1,16 +1,11 @@
 //! Remove old owned resources before a new client incarnation registers.
+use super::netlink::link_name;
 use futures::{StreamExt, TryStreamExt};
 use rtnetlink::packet_route::link::{InfoKind, LinkAttribute, LinkInfo, LinkMessage};
 use rtnetlink::{Handle, LinkUnspec};
 use std::collections::HashSet;
 const ALIAS: &str = "nullnet:vxlan-bridge:v1";
 const GROUP: u32 = 0x4e60_0001;
-fn name(link: &LinkMessage) -> Option<&str> {
-    link.attributes.iter().find_map(|a| match a {
-        LinkAttribute::IfName(name) => Some(name.as_str()),
-        _ => None,
-    })
-}
 
 pub(super) fn owned(link: &LinkMessage) -> bool {
     let bridge = link.attributes.iter().any(|a| {
@@ -21,7 +16,7 @@ pub(super) fn owned(link: &LinkMessage) -> bool {
         matches!(a, LinkAttribute::IfAlias(alias) if alias == ALIAS)
             || matches!(a, LinkAttribute::Group(group) if *group == GROUP)
     }) && bridge
-        || name(link)
+        || link_name(link)
             .and_then(|name| name.strip_prefix("br_"))
             .is_some_and(|suffix| {
                 if !super::owned_endpoint_suffix(suffix) {
@@ -37,7 +32,7 @@ pub(super) fn owned(link: &LinkMessage) -> bool {
 }
 
 fn owned_transport(link: &LinkMessage, links: &[LinkMessage]) -> bool {
-    let Some(name) = name(link).filter(|name| super::owned_vxlan_link(name)) else {
+    let Some(name) = link_name(link).filter(|name| super::owned_vxlan_link(name)) else {
         return false;
     };
     let kind = link.attributes.iter().find_map(|a| match a {
@@ -70,7 +65,7 @@ fn owned_transport(link: &LinkMessage, links: &[LinkMessage]) -> bool {
 }
 
 fn classifier_holder(link: &LinkMessage) -> bool {
-    name(link).is_some_and(super::endpoint_tc::holder_name)
+    link_name(link).is_some_and(super::endpoint_tc::holder_name)
         && link.attributes.iter().any(|a| {
             matches!(a,
             LinkAttribute::Group(group) if *group == super::endpoint_tc::HOLDER_GROUP)
@@ -249,7 +244,9 @@ mod tests {
             "nn-tc-0",
         ] {
             assert!(
-                !remaining.iter().any(|link| super::name(link) == Some(name)),
+                !remaining
+                    .iter()
+                    .any(|link| super::link_name(link) == Some(name)),
                 "owned interface remained: {name}"
             );
         }
@@ -261,7 +258,11 @@ mod tests {
             "nn-tc-foreign",
             "nn-tc-1",
         ] {
-            assert!(remaining.iter().any(|link| super::name(link) == Some(name)));
+            assert!(
+                remaining
+                    .iter()
+                    .any(|link| super::link_name(link) == Some(name))
+            );
         }
     }
 }

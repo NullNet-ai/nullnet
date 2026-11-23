@@ -282,6 +282,13 @@ mod ownership_tests {
     }
 }
 
+pub(super) fn link_name(link: &LinkMessage) -> Option<&str> {
+    link.attributes.iter().find_map(|a| match a {
+        LinkAttribute::IfName(name) => Some(name.as_str()),
+        _ => None,
+    })
+}
+
 pub(super) async fn add_link_echo(
     handle: &Handle,
     link: LinkMessage,
@@ -291,13 +298,7 @@ pub(super) async fn add_link_echo(
         NetlinkPayload,
     };
     use rtnetlink::packet_route::RouteNetlinkMessage;
-    let name = link
-        .attributes
-        .iter()
-        .find_map(|attribute| match attribute {
-            LinkAttribute::IfName(name) => Some(name.clone()),
-            _ => None,
-        });
+    let name = link_name(&link).map(str::to_owned);
     let mut request = NetlinkMessage::from(RouteNetlinkMessage::NewLink(link));
     request.header.flags = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_ECHO;
     let mut replies = handle.clone().request(request)?;

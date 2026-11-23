@@ -108,7 +108,7 @@ pub(crate) async fn conflicting_cidrs(
 
 /// Keep the existing uplink, including logical uplinks, and cover standalone Ethernet NICs.
 pub(crate) async fn firewall_interfaces(handle: &RtNetLinkHandle) -> Result<Vec<String>, Error> {
-    use network_interface::{NetworkInterface, NetworkInterfaceConfig};
+    use futures::TryStreamExt;
 
     let uplink = netlink::default_route_oif(&handle.handle)
         .await
@@ -116,16 +116,20 @@ pub(crate) async fn firewall_interfaces(handle: &RtNetLinkHandle) -> Result<Vec<
         .handle_err(location!())?;
     let mut interfaces = Vec::new();
     let mut found_uplink = false;
-    for iface in NetworkInterface::show().handle_err(location!())? {
-        if iface.index == uplink {
+    let mut links = handle.handle.link().get().execute();
+    while let Some(link) = links.try_next().await.handle_err(location!())? {
+        let name = netlink::link_name(&link)
+            .ok_or("missing interface name in link dump")
+            .handle_err(location!())?;
+        if link.header.index == uplink {
             found_uplink = true;
         } else {
-            let path = std::path::Path::new("/sys/class/net").join(&iface.name);
+            let path = std::path::Path::new("/sys/class/net").join(name);
             if !standalone_ethernet(&path).handle_err(location!())? {
                 continue;
             }
         }
-        interfaces.push(iface.name);
+        interfaces.push(name.to_owned());
     }
     if !found_uplink {
         return Err("default-route interface disappeared").handle_err(location!());
@@ -649,4 +653,39 @@ async fn vlan_cleanup_network(rtnetlink_handle: &RtNetLinkHandle) {
 
     // delete existing bridge if any
     OvsCommand::DeleteBridge.execute();
+}
+
+#[cfg(test)]
+mod firewall_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires root and an isolated network namespace"]
+    async fn labeled_ipv4_address_selects_default_link_once() {
+        for args in [
+            &["link", "add", "uplink", "type", "dummy"][..],
+            &["link", "set", "uplink", "up"],
+            &["addr", "add", "192.0.2.1/24", "dev", "uplink"],
+            &[
+                "addr",
+                "add",
+                "192.0.2.2/24",
+                "dev",
+                "uplink",
+                "label",
+                "uplink:1",
+            ],
+            &["route", "add", "default", "dev", "uplink"],
+        ] {
+            assert!(
+                std::process::Command::new("ip")
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let handle = RtNetLinkHandle::new().unwrap();
+        assert_eq!(firewall_interfaces(&handle).await.unwrap(), ["uplink"]);
+    }
 }
