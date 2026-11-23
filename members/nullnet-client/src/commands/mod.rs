@@ -106,22 +106,48 @@ pub(crate) async fn conflicting_cidrs(
     route_conflicts::collect(&rtnetlink_handle.handle).await
 }
 
-/// Returns the name of the interface carrying `ip`, so the eBPF firewall can
-/// attach to the same NIC the forward socket binds to.
-pub(crate) fn find_ethernet_interface(ip: Ipv4Addr) -> Option<String> {
+/// Keep the existing uplink, including logical uplinks, and cover standalone Ethernet NICs.
+pub(crate) async fn firewall_interfaces(handle: &RtNetLinkHandle) -> Result<Vec<String>, Error> {
     use network_interface::{NetworkInterface, NetworkInterfaceConfig};
-    use std::net::IpAddr;
 
-    NetworkInterface::show()
-        .ok()?
-        .into_iter()
-        .find_map(|iface| {
-            iface
-                .addr
-                .iter()
-                .any(|addr| matches!(addr.ip(), IpAddr::V4(v4) if v4 == ip))
-                .then_some(iface.name)
-        })
+    let uplink = netlink::default_route_oif(&handle.handle)
+        .await
+        .ok_or("could not find the IPv4 default-route interface")
+        .handle_err(location!())?;
+    let mut interfaces = Vec::new();
+    let mut found_uplink = false;
+    for iface in NetworkInterface::show().handle_err(location!())? {
+        if iface.index == uplink {
+            found_uplink = true;
+        } else {
+            let path = std::path::Path::new("/sys/class/net").join(&iface.name);
+            if !standalone_ethernet(&path).handle_err(location!())? {
+                continue;
+            }
+        }
+        interfaces.push(iface.name);
+    }
+    if !found_uplink {
+        return Err("default-route interface disappeared").handle_err(location!());
+    }
+    interfaces.sort_unstable();
+    Ok(interfaces)
+}
+
+fn standalone_ethernet(path: &std::path::Path) -> std::io::Result<bool> {
+    // Linux reports ARPHRD_ETHER as 1 in sysfs.
+    if !path.join("device").try_exists()?
+        || std::fs::read_to_string(path.join("type"))?.trim() != "1"
+    {
+        return Ok(false);
+    }
+    // Leave VLAN trunks and bridge/bond ports to their upper interface.
+    for entry in std::fs::read_dir(path)? {
+        if entry?.file_name().as_encoded_bytes().starts_with(b"upper_") {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 #[derive(Clone)]

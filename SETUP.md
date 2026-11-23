@@ -428,8 +428,9 @@ backward-compatible stages.
   `members/nullnet-<component>` working directory; either way, startup fails if the file is missing
   or isn't a valid cert.
 
-  > **⚠️ The client attaches a default-deny eBPF firewall to the uplink NIC on startup.** It permits
-  > only the nullnet control plane (gRPC to the server), data plane (VXLAN to peers), established
+  > **⚠️ The client attaches a default-deny eBPF firewall at startup to the IPv4 default-route interface
+  > and every standalone device-backed Ethernet NIC.** All attachments share the same allowlists and flow state.
+  > Restart the client to pick up newly added interfaces. The firewall permits only the nullnet control plane (gRPC to the server), data plane (VXLAN to peers), established
   > returns, ICMP (always, both directions — echo + PMTUD), and the port allowlist. That allowlist is
   > **no longer set here** — it is decided globally on `nullnet-server` (the four
   > `{INGRESS,EGRESS}_ALLOW_{TCP,UDP}_PORTS` variables) and delivered to the client in its

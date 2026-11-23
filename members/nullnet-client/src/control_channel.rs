@@ -1236,7 +1236,7 @@ mod failure_tests {
         .await
         .unwrap();
         let firewall = crate::ebpf::enable(
-            "nnreview0",
+            &["nnreview0".into()],
             &crate::ebpf::FirewallConfig {
                 server_ip: crate::env::CONTROL_SERVICE_ADDR.parse().unwrap(),
                 control_port: *crate::env::CONTROL_SERVICE_PORT,

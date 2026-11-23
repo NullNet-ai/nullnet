@@ -152,7 +152,7 @@ pub(super) async fn find_ethernet_ip(handle: &Handle) -> Option<Ipv4Addr> {
 }
 
 /// Output-interface index of the lowest-metric IPv4 default route (main table).
-async fn default_route_oif(handle: &Handle) -> Option<u32> {
+pub(super) async fn default_route_oif(handle: &Handle) -> Option<u32> {
     let route_msg = RouteMessageBuilder::<Ipv4Addr>::new().build();
     let mut routes = handle.route().get(route_msg).execute();
     let mut best: Option<(u32, u32)> = None; // (oif, metric)
