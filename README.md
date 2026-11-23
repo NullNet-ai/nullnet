@@ -42,8 +42,8 @@ Three binaries coordinate over a gRPC control plane:
 - **On-demand tunnels** — direct encrypted ingress and backend links built only when requested and
   reclaimed once the connections they carry are gone. Encrypted ingress uses isolated client
   groups that can share a reusable VXLAN carrier without sharing keys.
-- **Default-deny host firewall** — an eBPF classifier on every node's uplink NIC, with one
-  global allowlist decided server-side so there's a single point of configuration.
+- **Default-deny host firewall** — one server-defined policy on each node's IPv4 default-route interface
+  and standalone device-backed Ethernet NICs.
 - **Ingress that knows what it's serving** — Let's Encrypt certificates with automatic
   renewal, `Host`+path routing, redirects, and raw tcp/udp listeners opened live from config.
 - **Geo policy in both directions** — restrict which countries a service may reach, and

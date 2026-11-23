@@ -13,8 +13,7 @@ macro_rules! routine_log {
 
 use crate::cli::Args;
 use crate::commands::{
-    RtNetLinkHandle, cleanup_network, conflicting_cidrs, find_ethernet_interface, find_ethernet_ip,
-    setup_br0,
+    RtNetLinkHandle, cleanup_network, conflicting_cidrs, firewall_interfaces, setup_br0,
 };
 use crate::control_channel::control_channel;
 use crate::env::{CONTROL_SERVICE_ADDR, CONTROL_SERVICE_CA_CERT, CONTROL_SERVICE_PORT};
@@ -328,13 +327,7 @@ async fn setup_ebpf_firewall(
         .handle_err(location!());
     }
 
-    let eth_ip = find_ethernet_ip(rtnetlink_handle)
-        .await
-        .ok_or("could not find the local ethernet IP")
-        .handle_err(location!())?;
-    let iface = find_ethernet_interface(eth_ip)
-        .ok_or("could not find the ethernet interface name")
-        .handle_err(location!())?;
+    let interfaces = firewall_interfaces(rtnetlink_handle).await?;
 
     // Firewall policy is decided globally by the server and delivered in the
     // NetworkType response (fetched before this runs). Ports arrive as u16-in-u32;
@@ -356,7 +349,7 @@ async fn setup_ebpf_firewall(
     };
     if cfg.egress_gateway {
         routine_log!(
-            "Attaching eBPF firewall to {iface} in EGRESS-GATEWAY mode (stateful boundary: \
+            "Attaching eBPF firewall to {interfaces:?} in EGRESS-GATEWAY mode (stateful boundary: \
              outbound allowed + tracked; inbound = established + allowlist \
              tcp{:?} udp{:?}; ICMP always allowed)",
             cfg.ingress_tcp,
@@ -364,7 +357,7 @@ async fn setup_ebpf_firewall(
         );
     } else {
         routine_log!(
-            "Attaching eBPF firewall to {iface} (stateful strict; control plane \
+            "Attaching eBPF firewall to {interfaces:?} (stateful strict; control plane \
              {server_ip}:{}; allow in tcp{:?} udp{:?}, out tcp{:?} udp{:?}; ICMP always allowed)",
             cfg.control_port,
             cfg.ingress_tcp,
@@ -373,7 +366,7 @@ async fn setup_ebpf_firewall(
             cfg.egress_udp
         );
     }
-    ebpf::enable(&iface, &cfg)
+    ebpf::enable(&interfaces, &cfg)
 }
 
 /// Resolve `CONTROL_SERVICE_ADDR:CONTROL_SERVICE_PORT` to its first IPv4.

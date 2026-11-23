@@ -1,8 +1,8 @@
 //! Host-NIC eBPF default-deny firewall (stateful).
 //!
 //! Loads the `nullnet_fw_ingress` / `nullnet_fw_egress` TC classifiers and
-//! attaches them to the ingress and egress hooks of the host's primary
-//! interface. Structural allow is nullnet control-plane (gRPC) + data-plane
+//! attaches them to the ingress and egress hooks of the selected host
+//! interfaces. Structural allow is nullnet control-plane (gRPC) + data-plane
 //! (VXLAN/forward to known peers) + ARP; a CT map then permits established
 //! returns. ICMP is always allowed (both directions). Everything else is an
 //! server-decided allow: explicit port lists plus TCP/UDP proxy listen ports
@@ -18,7 +18,7 @@ use aya::Ebpf;
 use aya::maps::{Array as AyaArray, HashMap as AyaHashMap, MapData};
 use nullnet_liberror::{Error, ErrorHandler, Location, location};
 use std::collections::HashMap;
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
@@ -161,7 +161,7 @@ impl FirewallPeers {
     }
 }
 
-pub fn enable(iface: &str, cfg: &FirewallConfig) -> Result<Firewall, Error> {
+pub fn enable(interfaces: &[String], cfg: &FirewallConfig) -> Result<Firewall, Error> {
     use aya::EbpfLoader;
     use aya::programs::{TcAttachType, tc};
 
@@ -183,26 +183,33 @@ pub fn enable(iface: &str, cfg: &FirewallConfig) -> Result<Firewall, Error> {
         )))
         .handle_err(location!())?;
 
-    let iface = CString::new(iface).handle_err(location!())?;
-
-    // clsact carries both the ingress and egress TC hooks; idempotent.
-    let _ = tc::qdisc_add_clsact(iface.as_c_str());
-
-    // Direction-specific programs sharing the PEERS/ALLOW_PORTS/CT maps: the
-    // ingress classifier enforces inbound, the egress one outbound.
-    attach_classifier(
-        &mut bpf,
-        INGRESS_PROG,
-        iface.as_c_str(),
-        TcAttachType::Ingress,
-    )?;
-    attach_classifier(
-        &mut bpf,
-        EGRESS_PROG,
-        iface.as_c_str(),
-        TcAttachType::Egress,
-    )?;
     let allow_ports = populate_allow_ports(&mut bpf, cfg)?;
+    let interfaces = interfaces
+        .iter()
+        .map(|name| CString::new(name.as_str()))
+        .collect::<Result<Vec<_>, _>>()
+        .handle_err(location!())?;
+    for iface in &interfaces {
+        let _ = tc::qdisc_add_clsact(iface.as_c_str());
+    }
+    for (name, hook) in [
+        (INGRESS_PROG, TcAttachType::Ingress),
+        (EGRESS_PROG, TcAttachType::Egress),
+    ] {
+        let program: &mut aya::programs::SchedClassifier = bpf
+            .program_mut(name)
+            .ok_or("firewall program not found in bytecode")
+            .handle_err(location!())?
+            .try_into()
+            .handle_err(location!())?;
+        program.load().handle_err(location!())?;
+        for iface in &interfaces {
+            program
+                .attach(iface.as_c_str(), hook)
+                .map_err(|error| format!("attaching {name} to {iface:?}: {error}"))
+                .handle_err(location!())?;
+        }
+    }
 
     let peers_map: AyaHashMap<MapData, u32, u8> = bpf
         .take_map("PEERS")
@@ -216,25 +223,6 @@ pub fn enable(iface: &str, cfg: &FirewallConfig) -> Result<Firewall, Error> {
         allow_ports: Arc::new(Mutex::new(allow_ports)),
         peers: Arc::new(FirewallPeers::new(peers_map)),
     })
-}
-
-/// Load one classifier program and attach it to the given TC hook on `iface`.
-fn attach_classifier(
-    bpf: &mut Ebpf,
-    name: &str,
-    iface: &CStr,
-    hook: aya::programs::TcAttachType,
-) -> Result<(), Error> {
-    use aya::programs::SchedClassifier;
-    let program: &mut SchedClassifier = bpf
-        .program_mut(name)
-        .ok_or("firewall program not found in bytecode")
-        .handle_err(location!())?
-        .try_into()
-        .handle_err(location!())?;
-    program.load().handle_err(location!())?;
-    program.attach(iface, hook).handle_err(location!())?;
-    Ok(())
 }
 
 /// Retained map handle for refreshing server-decided ingress allowances.

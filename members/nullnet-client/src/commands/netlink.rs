@@ -152,7 +152,7 @@ pub(super) async fn find_ethernet_ip(handle: &Handle) -> Option<Ipv4Addr> {
 }
 
 /// Output-interface index of the lowest-metric IPv4 default route (main table).
-async fn default_route_oif(handle: &Handle) -> Option<u32> {
+pub(super) async fn default_route_oif(handle: &Handle) -> Option<u32> {
     let route_msg = RouteMessageBuilder::<Ipv4Addr>::new().build();
     let mut routes = handle.route().get(route_msg).execute();
     let mut best: Option<(u32, u32)> = None; // (oif, metric)
@@ -282,6 +282,13 @@ mod ownership_tests {
     }
 }
 
+pub(super) fn link_name(link: &LinkMessage) -> Option<&str> {
+    link.attributes.iter().find_map(|a| match a {
+        LinkAttribute::IfName(name) => Some(name.as_str()),
+        _ => None,
+    })
+}
+
 pub(super) async fn add_link_echo(
     handle: &Handle,
     link: LinkMessage,
@@ -291,13 +298,7 @@ pub(super) async fn add_link_echo(
         NetlinkPayload,
     };
     use rtnetlink::packet_route::RouteNetlinkMessage;
-    let name = link
-        .attributes
-        .iter()
-        .find_map(|attribute| match attribute {
-            LinkAttribute::IfName(name) => Some(name.clone()),
-            _ => None,
-        });
+    let name = link_name(&link).map(str::to_owned);
     let mut request = NetlinkMessage::from(RouteNetlinkMessage::NewLink(link));
     request.header.flags = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_ECHO;
     let mut replies = handle.clone().request(request)?;

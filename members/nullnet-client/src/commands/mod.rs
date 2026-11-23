@@ -106,22 +106,52 @@ pub(crate) async fn conflicting_cidrs(
     route_conflicts::collect(&rtnetlink_handle.handle).await
 }
 
-/// Returns the name of the interface carrying `ip`, so the eBPF firewall can
-/// attach to the same NIC the forward socket binds to.
-pub(crate) fn find_ethernet_interface(ip: Ipv4Addr) -> Option<String> {
-    use network_interface::{NetworkInterface, NetworkInterfaceConfig};
-    use std::net::IpAddr;
+/// Keep the existing uplink, including logical uplinks, and cover standalone Ethernet NICs.
+pub(crate) async fn firewall_interfaces(handle: &RtNetLinkHandle) -> Result<Vec<String>, Error> {
+    use futures::TryStreamExt;
 
-    NetworkInterface::show()
-        .ok()?
-        .into_iter()
-        .find_map(|iface| {
-            iface
-                .addr
-                .iter()
-                .any(|addr| matches!(addr.ip(), IpAddr::V4(v4) if v4 == ip))
-                .then_some(iface.name)
-        })
+    let uplink = netlink::default_route_oif(&handle.handle)
+        .await
+        .ok_or("could not find the IPv4 default-route interface")
+        .handle_err(location!())?;
+    let mut interfaces = Vec::new();
+    let mut found_uplink = false;
+    let mut links = handle.handle.link().get().execute();
+    while let Some(link) = links.try_next().await.handle_err(location!())? {
+        let name = netlink::link_name(&link)
+            .ok_or("missing interface name in link dump")
+            .handle_err(location!())?;
+        if link.header.index == uplink {
+            found_uplink = true;
+        } else {
+            let path = std::path::Path::new("/sys/class/net").join(name);
+            if !standalone_ethernet(&path).handle_err(location!())? {
+                continue;
+            }
+        }
+        interfaces.push(name.to_owned());
+    }
+    if !found_uplink {
+        return Err("default-route interface disappeared").handle_err(location!());
+    }
+    interfaces.sort_unstable();
+    Ok(interfaces)
+}
+
+fn standalone_ethernet(path: &std::path::Path) -> std::io::Result<bool> {
+    // Linux reports ARPHRD_ETHER as 1 in sysfs.
+    if !path.join("device").try_exists()?
+        || std::fs::read_to_string(path.join("type"))?.trim() != "1"
+    {
+        return Ok(false);
+    }
+    // Leave VLAN trunks and bridge/bond ports to their upper interface.
+    for entry in std::fs::read_dir(path)? {
+        if entry?.file_name().as_encoded_bytes().starts_with(b"upper_") {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 #[derive(Clone)]
@@ -623,4 +653,39 @@ async fn vlan_cleanup_network(rtnetlink_handle: &RtNetLinkHandle) {
 
     // delete existing bridge if any
     OvsCommand::DeleteBridge.execute();
+}
+
+#[cfg(test)]
+mod firewall_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires root and an isolated network namespace"]
+    async fn labeled_ipv4_address_selects_default_link_once() {
+        for args in [
+            &["link", "add", "uplink", "type", "dummy"][..],
+            &["link", "set", "uplink", "up"],
+            &["addr", "add", "192.0.2.1/24", "dev", "uplink"],
+            &[
+                "addr",
+                "add",
+                "192.0.2.2/24",
+                "dev",
+                "uplink",
+                "label",
+                "uplink:1",
+            ],
+            &["route", "add", "default", "dev", "uplink"],
+        ] {
+            assert!(
+                std::process::Command::new("ip")
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let handle = RtNetLinkHandle::new().unwrap();
+        assert_eq!(firewall_interfaces(&handle).await.unwrap(), ["uplink"]);
+    }
 }
