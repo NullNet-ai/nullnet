@@ -45,7 +45,7 @@ diesel_migrations = { workspace = true, features = ["sqlite"] }
 # not used in code: enables statically-linked SQLite for diesel
 libsqlite3-sys = { workspace = true, features = ["bundled"] }
 # auth: JWT + password hashing + TOTP MFA
-jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "12", default-features = false, features = ["aws_lc_rs"] }
 argon2 = "0.6"
 totp-rs = { version = "6", features = ["gen_secret", "otpauth"] }
 sha2 = "0.11"
