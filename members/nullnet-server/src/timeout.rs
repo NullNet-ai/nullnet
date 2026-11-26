@@ -112,7 +112,7 @@ fn client_timed_out(services: &HashMap<String, ServiceInfo>, name: &str, client:
     let Some(ServiceInfo::Registered(reg)) = services.get(name) else {
         return false;
     };
-    let Some(timeout) = services[name].timeout().filter(|timeout| *timeout != 0) else {
+    let Some(timeout) = services[name].timeout() else {
         return false;
     };
     reg.proxy_client_expired(client, Duration::from_secs(timeout))
@@ -175,9 +175,6 @@ fn collect_timed_out_clients(services: &HashMap<String, ServiceInfo>) -> Vec<Ser
         let Some(timeout) = si.timeout() else {
             continue;
         };
-        if timeout == 0 {
-            continue;
-        }
         let ServiceInfo::Registered(reg) = si else {
             continue;
         };
@@ -224,7 +221,54 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn sticky_reconnect_pins_edge_before_queued_orphan_cleanup() {
+        let server = crate::tests::proxy_timeout_setup().await;
+        let proxy = "5.5.5.5".parse().unwrap();
+        let client = Client::new("10.0.0.1".into(), Some(proxy));
+        let old = Arc::new(());
+        let original = server
+            .handle_proxy_request("A", proxy, client.name(), &Arc::downgrade(&old))
+            .await
+            .unwrap();
+        drop(old);
+
+        let guard = server.services().read().await;
+        let candidate = ServiceChange::ProxyClientTimedOut {
+            name: "A".into(),
+            client: client.clone(),
+        };
+        assert!(client_timed_out(&guard["default"], "A", &client));
+        let live = Arc::new(());
+        let owner = Arc::downgrade(&live);
+        let mut reconnect =
+            Box::pin(server.handle_proxy_request("A", proxy, client.name(), &owner));
+        let mut cleanup = Box::pin(async {
+            let mut services = server.services().write().await;
+            apply_timeout_candidate(
+                candidate,
+                services.get_mut("default").unwrap(),
+                server.orchestrator(),
+                "default",
+            )
+            .await;
+        });
+        // Queue both writers in order without relying on sleeps or scheduler timing.
+        assert!(futures::poll!(&mut reconnect).is_pending());
+        assert!(futures::poll!(&mut cleanup).is_pending());
+        drop(guard);
+        let (result, ()) = tokio::join!(reconnect, cleanup);
+        assert_eq!(result.unwrap(), original);
+        let services = server.services().read().await;
+        let ServiceInfo::Registered(reg) = &services["default"]["A"] else {
+            unreachable!()
+        };
+        assert_eq!(reg.client_info(&client).unwrap().open_connections(), 1);
+    }
+
+    #[tokio::test]
     async fn stale_expiry_candidates_preserve_renewed_connections_and_grace() {
+        let stream = std::sync::Arc::new(());
+        let owner = std::sync::Arc::downgrade(&stream);
         let server = crate::tests::proxy_timeout_setup().await;
         tokio::time::sleep(Duration::from_millis(1100)).await;
         let candidates = collect_timed_out_clients(&server.services().read().await["default"]);
@@ -232,14 +276,16 @@ mod tests {
         let proxy1 = "5.5.5.5".parse().unwrap();
         let proxy2 = "6.6.6.6".parse().unwrap();
         server
-            .handle_proxy_request("A", proxy1, "10.0.0.1")
+            .handle_proxy_request("A", proxy1, "10.0.0.1", &owner)
             .await
             .unwrap();
         server
-            .handle_proxy_request("A", proxy2, "10.0.0.2")
+            .handle_proxy_request("A", proxy2, "10.0.0.2", &owner)
             .await
             .unwrap();
-        server.mark_connection_closed("A", proxy2, "10.0.0.2").await;
+        server
+            .mark_connection_closed("A", proxy2, "10.0.0.2", &owner)
+            .await;
         let mut guard = server.services().write().await;
         let services = guard.get_mut("default").unwrap();
         for candidate in candidates {

@@ -528,6 +528,17 @@ async fn attachment_pair(
     }
 }
 
+// Release the cached namespace descriptor and netlink socket once its Docker
+// task exits. Active edges hold their own reference through retirement.
+pub(crate) fn prune_exited_attachments(live: &HashSet<(u64, u64)>) {
+    ATTACHMENTS.lock().unwrap().retain(|key, cell| {
+        live.contains(key)
+            || cell
+                .get()
+                .is_none_or(|a| !matches!(a.namespace.exited(), Ok(true)))
+    });
+}
+
 async fn attachment(
     handle: &Handle,
     cache: &BridgeIpCache,

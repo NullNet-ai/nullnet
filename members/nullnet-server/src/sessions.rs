@@ -398,6 +398,7 @@ impl SessionStore {
         container: Option<&str>,
         proxy_ip: &str,
         setup_ms: u128,
+        generation: Uuid,
         last_seen: i64,
         blocked: bool,
         active: bool,
@@ -408,6 +409,7 @@ impl SessionStore {
             "container": container,
             "proxy_ip": proxy_ip,
             "setup_ms": setup_ms,
+            "edge_generation": generation.to_string(),
         })
         .to_string();
         self.submit(SessionMutation::Egress {

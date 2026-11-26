@@ -4,6 +4,7 @@ use crate::commands::endpoint_namespace::{
 use crate::docker::run as run_docker;
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
+use std::os::unix::fs::MetadataExt;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -296,6 +297,12 @@ impl BridgeIpCache {
     async fn refresh_unlocked(&self) {
         match query_docker(self.diagnostics.clone()).await {
             Ok((map, namespaces, conflicts)) => {
+                let live = namespaces
+                    .values()
+                    .filter_map(|ns| ns.file.metadata().ok())
+                    .map(|m| (m.dev(), m.ino()))
+                    .collect();
+                crate::commands::policy::prune_exited_attachments(&live);
                 *self.namespaces.write().unwrap() = namespaces;
                 *self.conflicts.write().unwrap() = conflicts;
                 #[cfg(debug_assertions)]

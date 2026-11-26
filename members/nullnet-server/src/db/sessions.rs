@@ -200,35 +200,6 @@ impl SessionRepository {
             .handle_err(location!())
     }
 
-    /// Fold a repeat "closed" report into the destination's most recent ended
-    /// row on this edge, rather than leaving one row per report behind.
-    ///
-    /// What a denied destination looks like: its packets are dropped, so they
-    /// never open a connection and every flush reports it closed. Same folding
-    /// as [`Self::record_blocked_ingress`], for the same reason. Returns 0 when
-    /// the destination has no ended row yet, which is the caller's signal to
-    /// write one. Real new activity arrives as *active* and never comes here,
-    /// so it still opens a row of its own.
-    #[cfg(test)]
-    pub(crate) async fn extend_ended_egress_dst(
-        &self,
-        net_id: u32,
-        peer_ip: &str,
-        blocked: bool,
-        timestamp: i64,
-    ) -> Result<usize, Error> {
-        let peer_ip = peer_ip.to_owned();
-        self.conn
-            .lock()
-            .await
-            .spawn_blocking(move |conn| {
-                super::session_mutations::SessionTransaction { conn }
-                    .extend_ended_egress_dst(net_id, &peer_ip, blocked, timestamp)
-            })
-            .await
-            .handle_err(location!())
-    }
-
     /// Close the open row for one egress destination on the edge holding
     /// `net_id`. The usual way an egress row ends: the client reports the
     /// initiator's last connection to that host gone.

@@ -208,6 +208,7 @@ pub(crate) async fn cleanup_network(
     endpoint_tc::initialize().await.handle_err(location!())?;
     purge_stale_xfrm();
     crate::host_mappings::purge_stale_mappings();
+    egress::purge_gateway_forwards().handle_err(location!())?;
     egress::purge_stale_steers();
     Ok(mss_error)
 }

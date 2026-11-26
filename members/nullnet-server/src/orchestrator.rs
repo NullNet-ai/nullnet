@@ -168,8 +168,8 @@ pub struct Orchestrator {
     clients: Arc<RwLock<HashMap<IpAddr, OutboundStream>>>,
     /// Keeps replacement registration behind cleanup for the same node only.
     client_lifecycles: Arc<Mutex<HashMap<IpAddr, Arc<Mutex<()>>>>>,
-    /// Certificate stream counts keep overlapping reconnects on one IP visible.
-    proxies: Arc<RwLock<HashMap<IpAddr, usize>>>,
+    /// Live certificate streams own the ingress connection counts on their gRPC transport.
+    proxies: Arc<RwLock<HashMap<std::net::SocketAddr, std::sync::Weak<()>>>>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
     net_id_pool: Arc<StdMutex<NetIdPool>>,
     route_conflicts: Arc<StdRwLock<HashMap<IpAddr, NodeRouteConflicts>>>,
@@ -650,11 +650,12 @@ impl Orchestrator {
                     edge.net_id,
                     edge.proxy_ip,
                     edge.setup_ms,
+                    edge.generation,
                 )
             })
         };
 
-        let Some((stack, service, net_id, proxy_ip, setup_ms)) = persist else {
+        let Some((stack, service, net_id, proxy_ip, setup_ms, generation)) = persist else {
             return;
         };
         self.sessions
@@ -667,6 +668,7 @@ impl Orchestrator {
                 key.1.as_deref(),
                 &proxy_ip.to_string(),
                 setup_ms,
+                generation,
                 last_seen as i64,
                 blocked,
                 active,
@@ -695,10 +697,11 @@ impl Orchestrator {
                 edge.net_id,
                 edge.proxy_ip,
                 edge.setup_ms,
+                edge.generation,
                 dests,
             )
         };
-        let (stack, service, net_id, proxy_ip, setup_ms, dests) = pending;
+        let (stack, service, net_id, proxy_ip, setup_ms, generation, dests) = pending;
         for (dst_ip, stat) in dests {
             self.sessions
                 .record_egress_destination(
@@ -710,6 +713,7 @@ impl Orchestrator {
                     key.1.as_deref(),
                     &proxy_ip.to_string(),
                     setup_ms,
+                    generation,
                     stat.last_seen as i64,
                     stat.blocked,
                     stat.active,
@@ -1351,22 +1355,42 @@ impl Orchestrator {
         self.clients.read().await.keys().copied().collect()
     }
 
-    pub(crate) async fn proxy_connected(&self, ip: IpAddr) {
-        *self.proxies.write().await.entry(ip).or_default() += 1;
+    pub(crate) async fn proxy_connected(&self, peer: std::net::SocketAddr) -> Arc<()> {
+        let mut proxies = self.proxies.write().await;
+        let entry = proxies.entry(peer).or_default();
+        let owner = entry.upgrade().unwrap_or_default();
+        *entry = Arc::downgrade(&owner);
+        owner
     }
 
-    pub(crate) async fn proxy_disconnected(&self, ip: IpAddr) {
+    pub(crate) async fn proxy_owner(
+        &self,
+        peer: std::net::SocketAddr,
+    ) -> Option<std::sync::Weak<()>> {
+        self.proxies.read().await.get(&peer).cloned()
+    }
+
+    pub(crate) async fn proxy_disconnected(&self, peer: std::net::SocketAddr, owner: Arc<()>) {
         let mut proxies = self.proxies.write().await;
-        let count = proxies.get_mut(&ip).expect("registered proxy stream");
-        *count -= 1;
-        if *count == 0 {
-            proxies.remove(&ip);
+        drop(owner);
+        if proxies
+            .get(&peer)
+            .is_some_and(|entry| entry.strong_count() == 0)
+        {
+            proxies.remove(&peer);
         }
     }
 
     pub(crate) async fn connected_proxy_ips(&self) -> Vec<IpAddr> {
-        let mut ips: Vec<_> = self.proxies.read().await.keys().copied().collect();
+        let mut ips: Vec<_> = self
+            .proxies
+            .read()
+            .await
+            .keys()
+            .map(|peer| peer.ip())
+            .collect();
         ips.sort_unstable();
+        ips.dedup();
         ips
     }
 
@@ -2740,6 +2764,30 @@ mod session_history_tests {
             .unwrap();
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].started_at, 120);
+    }
+
+    #[tokio::test]
+    async fn a_short_flow_on_a_reused_egress_network_has_its_own_history() {
+        let (orch, db) = orch_with_db().await;
+        let key = (ip(10, 0, 0, 1), Some("c1".to_string()));
+        let dst = Ipv4Addr::new(5, 5, 5, 5);
+        for seen in [100, 200] {
+            insert_edge(&orch, key.clone(), 11, Duration::ZERO).await;
+            orch.record_egress_destination(key.0, key.1.clone(), dst, 1, seen, false, false)
+                .await;
+            orch.sessions.flush().await;
+        }
+        let rows = db
+            .sessions()
+            .query("prod", None, None, None, None, None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|r| (r.started_at, r.ended_at))
+                .collect::<Vec<_>>(),
+            [(200, Some(200)), (100, Some(100))]
+        );
     }
 
     /// Repeat reports of the same destination update one row; distinct

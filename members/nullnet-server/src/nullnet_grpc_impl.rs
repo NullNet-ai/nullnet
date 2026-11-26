@@ -483,11 +483,17 @@ impl NullnetGrpcImpl {
         &self,
         request: Request<ProxyRequest>,
     ) -> Result<Response<Upstream>, ProxyFailure> {
-        let proxy_ip = request
+        let peer = request
             .remote_addr()
             .ok_or("Could not get remote address for proxy request")
-            .handle_err(location!())?
-            .ip();
+            .handle_err(location!())?;
+        let proxy_ip = peer.ip();
+        let owner = self
+            .orchestrator
+            .proxy_owner(peer)
+            .await
+            .ok_or("Proxy has no live certificate stream")
+            .handle_err(location!())?;
 
         let req = request.into_inner();
         if req.routing_arrivals > 0 {
@@ -514,7 +520,7 @@ impl NullnetGrpcImpl {
         }
 
         let upstream = self
-            .handle_proxy_request(&service_name, proxy_ip, &client_ip.to_string())
+            .handle_proxy_request(&service_name, proxy_ip, &client_ip.to_string(), &owner)
             .await?;
         Ok(Response::new(upstream))
     }
@@ -535,6 +541,7 @@ impl NullnetGrpcImpl {
         service_name: &str,
         proxy_ip: IpAddr,
         client_ip: &str,
+        owner: &std::sync::Weak<()>,
     ) -> Result<Upstream, Error> {
         let key: ProxyKey = (service_name.to_string(), client_ip.to_string(), proxy_ip);
         let entry = {
@@ -547,18 +554,8 @@ impl NullnetGrpcImpl {
         let guard = entry.lock().await;
 
         let result = self
-            .proxy_request_locked(service_name, proxy_ip, client_ip)
+            .proxy_request_locked(service_name, proxy_ip, client_ip, owner)
             .await;
-
-        // +1 here, not inside `proxy_request_locked`: that function has three
-        // distinct success paths (sticky reuse, max_networks reuse, fresh
-        // edge) and this is the single point every one of them passes through.
-        // Pairs with `ProxyConnectionClosed`, which the proxy guarantees to send
-        // on every exit path once this call has returned Ok.
-        if result.is_ok() {
-            self.mark_connection_open(service_name, proxy_ip, client_ip)
-                .await;
-        }
 
         drop(guard);
         // Drop the map entry once nobody else holds it. Taken under the map
@@ -605,44 +602,54 @@ impl NullnetGrpcImpl {
         service_name: &str,
         proxy_ip: IpAddr,
         client_ip: &str,
+        owner: &std::sync::Weak<()>,
     ) -> Result<Upstream, Error> {
         routine_log!("Received proxy request for '{service_name}'");
 
         let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
-        let stack = {
-            let guard = self.services.read().await;
-            find_service_stack(&guard, service_name)
+        let (stack, max_networks, mut dedicated_count) = {
+            let mut services = self.services.write().await;
+            let stack = find_service_stack(&services, service_name)
                 .ok_or("Service not found in any stack")
                 .handle_err(location!())?
-                .to_string()
-        };
-        let (existing, max_networks, mut dedicated_count) = {
-            let guard = self.services.read().await;
-            let service_info = &guard[&stack][service_name];
-            if service_info.timeout().is_none() {
+                .to_string();
+            let service = services
+                .get_mut(&stack)
+                .and_then(|map| map.get_mut(service_name))
+                .ok_or("Service not found")
+                .handle_err(location!())?;
+            if service.timeout().is_none() {
                 Err("Service is not a configured entry point").handle_err(location!())?;
             }
-            let ServiceInfo::Registered(reg) = service_info else {
+            let ServiceInfo::Registered(reg) = service else {
                 Err("Service is not registered").handle_err(location!())?
             };
+            // Pin before releasing the lock used by ingress timeout cleanup.
+            if let Some(upstream) = reg.is_client_setup(&proxy_client) {
+                reg.open_connection(&proxy_client, owner);
+                return Ok(upstream);
+            }
             (
-                reg.is_client_setup(&proxy_client),
+                stack,
                 reg.max_networks(),
                 reg.dedicated_proxy_networks_count(),
             )
         };
 
-        // Sticky session: reuse the network this client is already on.
-        if let Some(upstream) = existing {
-            routine_log!("'{client_ip}' ---> '{service_name}' is already set up");
-            let mut services_mut = self.services.write().await;
-            if let Some(stack_map) = services_mut.get_mut(&stack)
-                && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(service_name)
+        // A cold setup can await history or event delivery. Count the connection
+        // only when its upstream is still current and ready to return.
+        let pin_upstream = async |expected: Upstream| {
+            let mut services = self.services.write().await;
+            if let Some(ServiceInfo::Registered(reg)) = services
+                .get_mut(&stack)
+                .and_then(|map| map.get_mut(service_name))
+                && reg.is_client_setup(&proxy_client).as_ref() == Some(&expected)
             {
-                reg.set_latest_now(&proxy_client);
+                reg.open_connection(&proxy_client, owner);
+                return Ok(expected);
             }
-            return Ok(upstream);
-        }
+            Err("Proxy edge disappeared after setup").handle_err(location!())
+        };
 
         let policy_eligible = *NET_TYPE == Net::Vxlan && *ENCRYPTION_ENABLED;
         // Non-VXLAN configurations retain the existing bounded reuse behavior.
@@ -719,7 +726,7 @@ impl NullnetGrpcImpl {
                 ))
                 .await;
 
-            return Ok(upstream);
+            return pin_upstream(upstream).await;
         }
 
         // One retry. An ingress edge unwound because its client entry was torn
@@ -819,7 +826,7 @@ impl NullnetGrpcImpl {
                                 .await;
                         }
                     }
-                    return Ok(response.into_inner());
+                    return pin_upstream(response.into_inner()).await;
                 }
                 Ok(None) if attempt == 0 => {
                     if policy_eligible {
@@ -1095,20 +1102,13 @@ impl NullnetGrpcImpl {
         }
     }
 
-    /// Resolve the proxy client entry and apply `f` to its service.
-    ///
-    /// The counter key is `(service_name, client_ip, proxy_ip)` — the same
-    /// `ProxyKey` `handle_proxy_request` serializes on, so open and close can
-    /// never land on different entries.
-    async fn with_proxy_client<F>(
+    pub(crate) async fn mark_connection_closed(
         &self,
         service_name: &str,
         proxy_ip: IpAddr,
         client_ip: &str,
-        f: F,
-    ) where
-        F: FnOnce(&mut RegisteredServiceInfo, &Client),
-    {
+        owner: &std::sync::Weak<()>,
+    ) {
         let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
         let mut guard = self.services.write().await;
         let Some(stack) = find_service_stack(&guard, service_name).map(str::to_string) else {
@@ -1117,48 +1117,30 @@ impl NullnetGrpcImpl {
         if let Some(stack_map) = guard.get_mut(&stack)
             && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(service_name)
         {
-            f(reg, &proxy_client);
+            reg.close_connection(&proxy_client, owner);
         }
-    }
-
-    pub(crate) async fn mark_connection_open(
-        &self,
-        service_name: &str,
-        proxy_ip: IpAddr,
-        client_ip: &str,
-    ) {
-        self.with_proxy_client(service_name, proxy_ip, client_ip, |reg, client| {
-            reg.open_connection(client);
-        })
-        .await;
-    }
-
-    pub(crate) async fn mark_connection_closed(
-        &self,
-        service_name: &str,
-        proxy_ip: IpAddr,
-        client_ip: &str,
-    ) {
-        self.with_proxy_client(service_name, proxy_ip, client_ip, |reg, client| {
-            reg.close_connection(client);
-        })
-        .await;
     }
 
     async fn proxy_connection_closed_impl(
         &self,
         request: Request<ProxyConnectionEnd>,
     ) -> Result<Response<Empty>, Error> {
-        let proxy_ip = request
+        let peer = request
             .remote_addr()
             .ok_or("Could not get remote address for proxy connection close")
-            .handle_err(location!())?
-            .ip();
+            .handle_err(location!())?;
         let req = request.into_inner();
         let client_ip: IpAddr = req.client_ip.parse().handle_err(location!())?;
 
-        self.mark_connection_closed(&req.service_name, proxy_ip, &client_ip.to_string())
+        if let Some(owner) = self.orchestrator.proxy_owner(peer).await {
+            self.mark_connection_closed(
+                &req.service_name,
+                peer.ip(),
+                &client_ip.to_string(),
+                &owner,
+            )
             .await;
+        }
 
         Ok(Response::new(Empty {}))
     }
@@ -2819,12 +2801,13 @@ impl NullnetGrpc for NullnetGrpcImpl {
         let (tx, rx) = mpsc::channel(4);
         // Every proxy opens this stream once at startup and exits when it drops,
         // so its lifetime is the proxy's — the node events' counterpart.
-        let proxy_ip = req
+        let peer = req
             .remote_addr()
-            .ok_or_else(|| Status::invalid_argument("Missing proxy remote address"))?
-            .ip();
+            .ok_or_else(|| Status::invalid_argument("Missing proxy remote address"))?;
+        let proxy_ip = peer.ip();
         let orchestrator = self.orchestrator.clone();
-        orchestrator.proxy_connected(proxy_ip).await;
+        let owner = orchestrator.proxy_connected(peer).await;
+        let config_changed = self.config_changed.clone();
         tokio::spawn(async move {
             if crate::routine_diagnostics() {
                 orchestrator
@@ -2850,7 +2833,8 @@ impl NullnetGrpc for NullnetGrpcImpl {
                     }
                 }
             }
-            orchestrator.proxy_disconnected(proxy_ip).await;
+            orchestrator.proxy_disconnected(peer, owner).await;
+            config_changed.notify_one();
             orchestrator
                 .events
                 .emit(Event::proxy_disconnected(proxy_ip.to_string()))
@@ -3075,6 +3059,66 @@ mod proxy_presence_tests {
             events.try_recv(),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)
         ));
+    }
+
+    #[tokio::test]
+    async fn proxy_watch_disconnect_releases_only_that_process_ingress() {
+        fn rpc<T>(peer: std::net::SocketAddr, message: T) -> Request<T> {
+            let mut request = Request::new(message);
+            request.extensions_mut().insert(TcpConnectInfo {
+                local_addr: None,
+                remote_addr: Some(peer),
+            });
+            request
+        }
+
+        let mut server = crate::tests::proxy_timeout_setup().await;
+        let (_certs_tx, certs) = watch::channel(CertBundle::default());
+        server.certs = certs;
+        let mut events = server.orchestrator.events.subscribe();
+        let mut streams = Vec::new();
+        let proxy = "5.5.5.5".parse().unwrap();
+        let client = Client::new("10.0.0.1".into(), Some(proxy));
+        for port in [51001, 51002] {
+            let peer = std::net::SocketAddr::new(proxy, port);
+            let mut watch = server
+                .watch_certificates(rpc(peer, Empty {}))
+                .await
+                .unwrap()
+                .into_inner();
+            watch.next().await.unwrap().unwrap();
+            server
+                .proxy(rpc(
+                    peer,
+                    ProxyRequest {
+                        client_ip: "10.0.0.1".into(),
+                        service_name: "A".into(),
+                        ..Default::default()
+                    },
+                ))
+                .await
+                .unwrap();
+            streams.push(watch);
+        }
+        for expected in [1, 0] {
+            drop(streams.pop().unwrap());
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !matches!(
+                    events.recv().await.unwrap(),
+                    Event::ProxyDisconnected { .. }
+                ) {}
+            })
+            .await
+            .unwrap();
+            let services = server.services.read().await;
+            let ServiceInfo::Registered(service) = &services["default"]["A"] else {
+                panic!()
+            };
+            assert_eq!(
+                service.client_info(&client).unwrap().open_connections(),
+                expected
+            );
+        }
     }
 
     #[tokio::test]
