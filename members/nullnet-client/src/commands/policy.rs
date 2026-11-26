@@ -528,15 +528,51 @@ async fn attachment_pair(
     }
 }
 
-// Release the cached namespace descriptor and netlink socket once its Docker
-// task exits. Active edges hold their own reference through retirement.
-pub(crate) fn prune_exited_attachments(live: &HashSet<(u64, u64)>) {
-    ATTACHMENTS.lock().unwrap().retain(|key, cell| {
-        live.contains(key)
-            || cell
-                .get()
-                .is_none_or(|a| !matches!(a.namespace.exited(), Ok(true)))
-    });
+// A namespace can outlive its Docker task. Retire the veth through the
+// namespace that owns its inner peer before releasing the cached handle.
+pub(crate) async fn prune_exited_attachments(live: &HashSet<AttachmentKey>) {
+    let retired: Vec<_> = ATTACHMENTS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(key, cell)| {
+            let attachment = cell.get()?;
+            (!live.contains(key) && matches!(attachment.namespace.exited(), Ok(true)))
+                .then(|| (*key, cell.clone(), attachment.clone()))
+        })
+        .collect();
+    for (key, cell, attachment) in retired {
+        let mut routes = attachment.routes.lock().await;
+        match attachment
+            .namespace
+            .handle
+            .link()
+            .del(attachment.inner)
+            .execute()
+            .await
+        {
+            Ok(()) => {}
+            Err(rtnetlink::Error::NetlinkError(e))
+                if e.code.map(std::num::NonZeroI32::get) == Some(-libc::ENODEV) => {}
+            Err(error) => {
+                eprintln!(
+                    "Could not retire policy veth {} in namespace {}: {error}",
+                    attachment.inner, key.1
+                );
+                continue;
+            }
+        }
+        // Link removal also removes its routes. Late edge teardown still
+        // clears its map entries and may safely release its route reference.
+        routes.clear();
+        let mut attachments = ATTACHMENTS.lock().unwrap();
+        if attachments
+            .get(&key)
+            .is_some_and(|current| Arc::ptr_eq(current, &cell))
+        {
+            attachments.remove(&key);
+        }
+    }
 }
 
 async fn attachment(

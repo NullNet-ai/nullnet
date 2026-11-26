@@ -302,7 +302,7 @@ impl BridgeIpCache {
                     .filter_map(|ns| ns.file.metadata().ok())
                     .map(|m| (m.dev(), m.ino()))
                     .collect();
-                crate::commands::policy::prune_exited_attachments(&live);
+                crate::commands::policy::prune_exited_attachments(&live).await;
                 *self.namespaces.write().unwrap() = namespaces;
                 *self.conflicts.write().unwrap() = conflicts;
                 #[cfg(debug_assertions)]
