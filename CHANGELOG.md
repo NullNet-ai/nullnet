@@ -43,6 +43,7 @@ All Nullnet releases with the relative changes are documented in this file.
 ### Removed
 - Remove proxy dependency configuration and multi-hop ingress setup; service-to-service connectivity now uses direct `backends` exclusively([#228](https://github.com/NullNet-ai/nullnet/pull/228)).
 ### Fixed
+- Remove stale routed egress gateway forwarding and masquerade rules during client restart recovery ([#238](https://github.com/NullNet-ai/nullnet/pull/238)).
 - Avoid assigning overlay network IDs whose address blocks overlap routes reported by either endpoint ([#233](https://github.com/NullNet-ai/nullnet/pull/233)).
 - Support same-replica self-backends through the existing mesh transport, including observation, backend sessions, matrix details, and layered topology loops ([#232](https://github.com/NullNet-ai/nullnet/pull/232)).
 - Parse variable-length IPv4 headers in the host firewall and fail closed for fragmented TCP/UDP traffic ([#230](https://github.com/NullNet-ai/nullnet/pull/230)).

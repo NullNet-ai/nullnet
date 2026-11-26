@@ -536,27 +536,105 @@ pub(crate) fn install_gateway_forward(br_dev: &str, br_net: &str) -> bool {
     if !remove_gateway_forward(br_dev, br_net) {
         return false;
     }
-    apply_forward_rules(&forward_rules(Some(br_dev), br_net), "-A")
+    // Install the bridge rules first so recovery can identify the subnet-only NAT rule.
+    let mut rules = forward_rules(Some(br_dev), br_net);
+    rules.rotate_left(1);
+    apply_forward_rules(&rules, "-A")
 }
 
-/// Discover the exact installed rules so cleanup also handles older builds
-/// whose gateway rules included a specific output interface.
+fn gateway_bridge<'a>(parts: &[&'a str]) -> Option<&'a str> {
+    let bridge = match parts {
+        ["-A", "FORWARD", "-i", br, "-j", "ACCEPT"]
+        | ["-A", "FORWARD", "-i", br, "-o", _, "-j", "ACCEPT"] => br,
+        [
+            "-A",
+            "FORWARD",
+            "-o",
+            br,
+            "-m",
+            "conntrack",
+            "--ctstate",
+            state,
+            "-j",
+            "ACCEPT",
+        ]
+        | [
+            "-A",
+            "FORWARD",
+            "-i",
+            _,
+            "-o",
+            br,
+            "-m",
+            "conntrack",
+            "--ctstate",
+            state,
+            "-j",
+            "ACCEPT",
+        ] if matches!(*state, "RELATED,ESTABLISHED" | "ESTABLISHED,RELATED") => br,
+        _ => return None,
+    };
+    let suffix = bridge.strip_prefix("br_")?;
+    (suffix.ends_with("_s") && super::owned_endpoint_suffix(suffix)).then_some(*bridge)
+}
+
+fn gateway_subnet<'a>(parts: &[&'a str]) -> Option<&'a str> {
+    match parts {
+        ["-A", "POSTROUTING", "-s", subnet, "-j", "MASQUERADE"]
+        | [
+            "-A",
+            "POSTROUTING",
+            "-s",
+            subnet,
+            "-o",
+            _,
+            "-j",
+            "MASQUERADE",
+        ] => Some(subnet),
+        _ => None,
+    }
+}
+
+pub(crate) fn purge_gateway_forwards() -> Result<(), &'static str> {
+    let output = privileged_output(&["iptables", "-t", "filter", "-S", "FORWARD"])
+        .ok_or("could not inspect routed gateway forwarding rules")?;
+    let bridges: std::collections::HashSet<_> = output
+        .lines()
+        .filter_map(|line| gateway_bridge(&line.split_whitespace().collect::<Vec<_>>()))
+        .collect();
+    if bridges.is_empty() {
+        return Ok(());
+    }
+    let subnets: std::collections::HashSet<_> = bridges
+        .iter()
+        .map(|bridge| {
+            // gateway_bridge verified the canonical br_<id>_s name and the 21-bit ID.
+            let id = bridge[3..bridge.len() - 2].parse::<u32>().unwrap();
+            format!("{}/29", Ipv4Addr::from(0x0a00_0000 + id * 8))
+        })
+        .collect();
+    remove_gateway_rules(|br| bridges.contains(br), |net| subnets.contains(net))
+        .then_some(())
+        .ok_or("could not remove routed gateway forwarding rules")
+}
+
 pub(crate) fn remove_gateway_forward(br_dev: &str, br_net: &str) -> bool {
     let Ok(network) = br_net.parse::<ipnetwork::Ipv4Network>() else {
         return false;
     };
     let subnet = format!("{}/{}", network.network(), network.prefix());
+    remove_gateway_rules(|br| br == br_dev, |net| net == subnet)
+}
+
+fn remove_gateway_rules(bridge: impl Fn(&str) -> bool, subnet: impl Fn(&str) -> bool) -> bool {
     remove_forward_rules(|output| {
         output
             .lines()
             .filter_map(|line| {
                 let parts: Vec<_> = line.split_whitespace().collect();
-                let owns = parts.windows(2).any(|p| {
-                    (p[0] == "-s" && p[1] == subnet)
-                        || (matches!(p[0], "-i" | "-o") && p[1] == br_dev)
-                });
-                (parts.first() == Some(&"-A") && owns)
-                    .then(|| parts.into_iter().skip(1).map(String::from).collect())
+                (gateway_bridge(&parts).is_some_and(&bridge)
+                    || gateway_subnet(&parts).is_some_and(&subnet))
+                .then(|| parts.into_iter().skip(1).map(String::from).collect())
             })
             .collect()
     })
@@ -599,11 +677,14 @@ fn apply_forward_rules(rules: &ForwardRules, operation: &str) -> bool {
     for (table, rule) in rules {
         let mut args = vec!["iptables", "-t", table, operation];
         args.extend(rule.iter().map(String::as_str));
-        ok &= if operation == "-D" {
+        ok = if operation == "-D" {
             remove_iptables_rule(&args)
         } else {
             privileged_ok("gateway forwarding rule", &args)
         };
+        if !ok {
+            break;
+        }
     }
     ok
 }
@@ -654,13 +735,15 @@ fn remove_forward_rules(select: impl Fn(&str) -> Vec<Vec<String>>) -> bool {
     for (table, chain) in [("nat", "POSTROUTING"), ("filter", "FORWARD")] {
         let Some(output) = privileged_output(&["iptables", "-t", table, "-S", chain]) else {
             eprintln!("[egress] could not inspect {table}/{chain} for gateway cleanup");
-            ok = false;
-            continue;
+            return false;
         };
         for rule in select(&output) {
             let mut args = vec!["iptables", "-t", table, "-D"];
             args.extend(rule.iter().map(String::as_str));
             ok &= privileged_ok("gateway cleanup", &args);
+        }
+        if !ok {
+            break;
         }
     }
     ok
@@ -692,6 +775,42 @@ mod purge_tests {
     use super::{
         forward_rules, parse_local_forward_rules, parse_overlay_snat_rules, parse_steer_net_ids,
     };
+
+    #[test]
+    fn gateway_recovery_matches_only_routed_gateway_rules() {
+        for (line, expected) in [
+            ("-A FORWARD -i br_701_s -j ACCEPT", Some("br_701_s")),
+            (
+                "-A FORWARD -i eth0 -o br_129_s -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+                Some("br_129_s"),
+            ),
+            ("-A FORWARD -i br_701_c -j ACCEPT", None),
+            ("-A FORWARD -i br_0701_s -j ACCEPT", None),
+            ("-A FORWARD -i docker0 -j ACCEPT", None),
+            ("-A FORWARD -i br_701_s -p tcp -j ACCEPT", None),
+        ] {
+            assert_eq!(
+                super::gateway_bridge(&line.split_whitespace().collect::<Vec<_>>()),
+                expected
+            );
+        }
+        for (line, expected) in [
+            (
+                "-A POSTROUTING -s 10.0.4.8/29 -j MASQUERADE",
+                Some("10.0.4.8/29"),
+            ),
+            (
+                "-A POSTROUTING -s 10.0.4.8/29 -o eth0 -j MASQUERADE",
+                Some("10.0.4.8/29"),
+            ),
+            ("-A POSTROUTING -s 10.0.4.8/29 -p tcp -j MASQUERADE", None),
+        ] {
+            assert_eq!(
+                super::gateway_subnet(&line.split_whitespace().collect::<Vec<_>>()),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn cross_host_forwarding_follows_the_host_route() {
