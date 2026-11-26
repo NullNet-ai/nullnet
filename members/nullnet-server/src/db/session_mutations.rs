@@ -197,6 +197,7 @@ impl SessionTransaction<'_> {
         &mut self,
         net_id: u32,
         peer_ip: &str,
+        detail: &str,
         blocked: bool,
         timestamp: i64,
     ) -> Result<usize, diesel::result::Error> {
@@ -205,6 +206,8 @@ impl SessionTransaction<'_> {
             .filter(sessions::direction.eq("egress"))
             .filter(sessions::net_id.eq(net_id as i32))
             .filter(sessions::peer_ip.eq(peer_ip.to_owned()))
+            // Network IDs are reusable. The immutable detail includes the edge generation.
+            .filter(sessions::detail.eq(detail.to_owned()))
             .filter(sessions::ended_at.is_not_null())
             .order(sessions::id.desc())
             .select(sessions::id)
@@ -342,6 +345,7 @@ impl SessionTransaction<'_> {
                     || self.extend_ended_egress_dst(
                         row.net_id as u32,
                         &row.peer_ip,
+                        &row.detail,
                         row.blocked,
                         row.last_seen,
                     )? == 0
