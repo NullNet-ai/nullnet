@@ -549,7 +549,8 @@ async fn main() -> Result<(), nullnet_liberror::Error> {
     {
         let server = nullnet_proxy.server.clone();
         let store = cert_store.clone();
-        tokio::spawn(async move { watch_certificates(server, store).await });
+        let stream = server.watch_certificates().await.handle_err(location!())?;
+        tokio::spawn(async move { watch_certificates(server, store, stream).await });
     }
 
     // subscribe to HTTP route-table updates (initial set + every subsequent change)
@@ -670,36 +671,37 @@ fn resolve_redirect_target(
 /// proxy's cert store on every push (initial set + each change). The stream is
 /// also our server-liveness signal: when it drops (server down) we exit so the
 /// supervisor restarts us with a clean env.
-async fn watch_certificates(server: NullnetGrpcInterface, store: Arc<ArcSwap<CertStore>>) {
-    match server.watch_certificates().await {
-        Ok(mut stream) => loop {
-            match stream.message().await {
-                Ok(Some(bundle)) => {
-                    let (new_store, failures) = CertStore::from_bundle(&bundle);
-                    routine_log!(
-                        "Loaded {} TLS certificate(s) from control service",
-                        new_store.len()
-                    );
-                    store.store(Arc::new(new_store));
-                    for (domain, reason) in failures {
-                        eprintln!("Skipping TLS certificate for '{domain}': {reason}");
-                        let _ = server
-                            .report_event(AgentEvent {
-                                event: Some(AgentEventKind::TlsCertificateInvalid(
-                                    AgentTlsCertificateInvalid { domain, reason },
-                                )),
-                            })
-                            .await;
-                    }
-                }
-                Ok(None) => break,
-                Err(e) => {
-                    eprintln!("Certificate watch stream error: {e}");
-                    break;
+async fn watch_certificates(
+    server: NullnetGrpcInterface,
+    store: Arc<ArcSwap<CertStore>>,
+    mut stream: nullnet_grpc_lib::Streaming<nullnet_grpc_lib::nullnet_grpc::CertBundle>,
+) {
+    loop {
+        match stream.message().await {
+            Ok(Some(bundle)) => {
+                let (new_store, failures) = CertStore::from_bundle(&bundle);
+                routine_log!(
+                    "Loaded {} TLS certificate(s) from control service",
+                    new_store.len()
+                );
+                store.store(Arc::new(new_store));
+                for (domain, reason) in failures {
+                    eprintln!("Skipping TLS certificate for '{domain}': {reason}");
+                    let _ = server
+                        .report_event(AgentEvent {
+                            event: Some(AgentEventKind::TlsCertificateInvalid(
+                                AgentTlsCertificateInvalid { domain, reason },
+                            )),
+                        })
+                        .await;
                 }
             }
-        },
-        Err(e) => eprintln!("Failed to open certificate watch stream: {e}"),
+            Ok(None) => break,
+            Err(e) => {
+                eprintln!("Certificate watch stream error: {e}");
+                break;
+            }
+        }
     }
     // Stream to the control service dropped (server down). Exit for restart.
     eprintln!("Certificate watch stream to server closed; exiting for restart");

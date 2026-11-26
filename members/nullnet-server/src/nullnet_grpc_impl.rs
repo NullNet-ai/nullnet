@@ -483,11 +483,17 @@ impl NullnetGrpcImpl {
         &self,
         request: Request<ProxyRequest>,
     ) -> Result<Response<Upstream>, ProxyFailure> {
-        let proxy_ip = request
+        let peer = request
             .remote_addr()
             .ok_or("Could not get remote address for proxy request")
-            .handle_err(location!())?
-            .ip();
+            .handle_err(location!())?;
+        let proxy_ip = peer.ip();
+        let owner = self
+            .orchestrator
+            .proxy_owner(peer)
+            .await
+            .ok_or("Proxy has no live certificate stream")
+            .handle_err(location!())?;
 
         let req = request.into_inner();
         if req.routing_arrivals > 0 {
@@ -514,7 +520,7 @@ impl NullnetGrpcImpl {
         }
 
         let upstream = self
-            .handle_proxy_request(&service_name, proxy_ip, &client_ip.to_string())
+            .handle_proxy_request(&service_name, proxy_ip, &client_ip.to_string(), &owner)
             .await?;
         Ok(Response::new(upstream))
     }
@@ -535,6 +541,7 @@ impl NullnetGrpcImpl {
         service_name: &str,
         proxy_ip: IpAddr,
         client_ip: &str,
+        owner: &std::sync::Weak<()>,
     ) -> Result<Upstream, Error> {
         let key: ProxyKey = (service_name.to_string(), client_ip.to_string(), proxy_ip);
         let entry = {
@@ -556,7 +563,7 @@ impl NullnetGrpcImpl {
         // Pairs with `ProxyConnectionClosed`, which the proxy guarantees to send
         // on every exit path once this call has returned Ok.
         if result.is_ok() {
-            self.mark_connection_open(service_name, proxy_ip, client_ip)
+            self.mark_connection_open(service_name, proxy_ip, client_ip, owner)
                 .await;
         }
 
@@ -1126,9 +1133,10 @@ impl NullnetGrpcImpl {
         service_name: &str,
         proxy_ip: IpAddr,
         client_ip: &str,
+        owner: &std::sync::Weak<()>,
     ) {
         self.with_proxy_client(service_name, proxy_ip, client_ip, |reg, client| {
-            reg.open_connection(client);
+            reg.open_connection(client, owner);
         })
         .await;
     }
@@ -1138,9 +1146,10 @@ impl NullnetGrpcImpl {
         service_name: &str,
         proxy_ip: IpAddr,
         client_ip: &str,
+        owner: &std::sync::Weak<()>,
     ) {
         self.with_proxy_client(service_name, proxy_ip, client_ip, |reg, client| {
-            reg.close_connection(client);
+            reg.close_connection(client, owner);
         })
         .await;
     }
@@ -1149,16 +1158,22 @@ impl NullnetGrpcImpl {
         &self,
         request: Request<ProxyConnectionEnd>,
     ) -> Result<Response<Empty>, Error> {
-        let proxy_ip = request
+        let peer = request
             .remote_addr()
             .ok_or("Could not get remote address for proxy connection close")
-            .handle_err(location!())?
-            .ip();
+            .handle_err(location!())?;
         let req = request.into_inner();
         let client_ip: IpAddr = req.client_ip.parse().handle_err(location!())?;
 
-        self.mark_connection_closed(&req.service_name, proxy_ip, &client_ip.to_string())
+        if let Some(owner) = self.orchestrator.proxy_owner(peer).await {
+            self.mark_connection_closed(
+                &req.service_name,
+                peer.ip(),
+                &client_ip.to_string(),
+                &owner,
+            )
             .await;
+        }
 
         Ok(Response::new(Empty {}))
     }
@@ -2819,12 +2834,13 @@ impl NullnetGrpc for NullnetGrpcImpl {
         let (tx, rx) = mpsc::channel(4);
         // Every proxy opens this stream once at startup and exits when it drops,
         // so its lifetime is the proxy's — the node events' counterpart.
-        let proxy_ip = req
+        let peer = req
             .remote_addr()
-            .ok_or_else(|| Status::invalid_argument("Missing proxy remote address"))?
-            .ip();
+            .ok_or_else(|| Status::invalid_argument("Missing proxy remote address"))?;
+        let proxy_ip = peer.ip();
         let orchestrator = self.orchestrator.clone();
-        orchestrator.proxy_connected(proxy_ip).await;
+        let owner = orchestrator.proxy_connected(peer).await;
+        let config_changed = self.config_changed.clone();
         tokio::spawn(async move {
             if crate::routine_diagnostics() {
                 orchestrator
@@ -2850,7 +2866,8 @@ impl NullnetGrpc for NullnetGrpcImpl {
                     }
                 }
             }
-            orchestrator.proxy_disconnected(proxy_ip).await;
+            orchestrator.proxy_disconnected(peer, owner).await;
+            config_changed.notify_one();
             orchestrator
                 .events
                 .emit(Event::proxy_disconnected(proxy_ip.to_string()))
@@ -3075,6 +3092,66 @@ mod proxy_presence_tests {
             events.try_recv(),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)
         ));
+    }
+
+    #[tokio::test]
+    async fn proxy_watch_disconnect_releases_only_that_process_ingress() {
+        fn rpc<T>(peer: std::net::SocketAddr, message: T) -> Request<T> {
+            let mut request = Request::new(message);
+            request.extensions_mut().insert(TcpConnectInfo {
+                local_addr: None,
+                remote_addr: Some(peer),
+            });
+            request
+        }
+
+        let mut server = crate::tests::proxy_timeout_setup().await;
+        let (_certs_tx, certs) = watch::channel(CertBundle::default());
+        server.certs = certs;
+        let mut events = server.orchestrator.events.subscribe();
+        let mut streams = Vec::new();
+        let proxy = "5.5.5.5".parse().unwrap();
+        let client = Client::new("10.0.0.1".into(), Some(proxy));
+        for port in [51001, 51002] {
+            let peer = std::net::SocketAddr::new(proxy, port);
+            let mut watch = server
+                .watch_certificates(rpc(peer, Empty {}))
+                .await
+                .unwrap()
+                .into_inner();
+            watch.next().await.unwrap().unwrap();
+            server
+                .proxy(rpc(
+                    peer,
+                    ProxyRequest {
+                        client_ip: "10.0.0.1".into(),
+                        service_name: "A".into(),
+                        ..Default::default()
+                    },
+                ))
+                .await
+                .unwrap();
+            streams.push(watch);
+        }
+        for expected in [1, 0] {
+            drop(streams.pop().unwrap());
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !matches!(
+                    events.recv().await.unwrap(),
+                    Event::ProxyDisconnected { .. }
+                ) {}
+            })
+            .await
+            .unwrap();
+            let services = server.services.read().await;
+            let ServiceInfo::Registered(service) = &services["default"]["A"] else {
+                panic!()
+            };
+            assert_eq!(
+                service.client_info(&client).unwrap().open_connections(),
+                expected
+            );
+        }
     }
 
     #[tokio::test]

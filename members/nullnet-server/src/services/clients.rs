@@ -21,7 +21,9 @@ impl Clients {
         let waiters = match self.clients.get(&client) {
             Some(existing) => {
                 client_info.set_holds(existing.active_holds());
-                client_info.set_open_connections(existing.open_connections());
+                client_info
+                    .open_connections
+                    .clone_from(&existing.open_connections);
                 existing.pending.clone()
             }
             None => None,
@@ -186,7 +188,7 @@ pub(crate) struct ClientInfo {
     /// Front connections currently open through the proxy for this client.
     /// The idle grace only starts once this reaches zero, so an edge is never
     /// reaped under a live connection (long download, WebSocket, UDP session).
-    open_connections: usize,
+    open_connections: Vec<(std::sync::Weak<()>, usize)>,
     latest: Instant,
     created_at: SystemTime,
     docker_container: Option<String>,
@@ -257,7 +259,7 @@ impl ClientInfo {
             pool_generation,
             time_ms,
             active_holds: 0,
-            open_connections: 0,
+            open_connections: Vec::new(),
             latest: Instant::now(),
             created_at: SystemTime::now(),
             docker_container,
@@ -279,7 +281,7 @@ impl ClientInfo {
             pool_generation: 0,
             time_ms: 0,
             active_holds: 1,
-            open_connections: 0,
+            open_connections: Vec::new(),
             latest: Instant::now(),
             created_at: SystemTime::now(),
             docker_container: None,
@@ -354,28 +356,51 @@ impl ClientInfo {
         self.active_holds = num_holds;
     }
 
-    pub(super) fn set_open_connections(&mut self, num: usize) {
-        self.open_connections = num;
-    }
-
     pub(crate) fn active_holds(&self) -> usize {
         self.active_holds
     }
 
-    pub(super) fn open_connection(&mut self) {
-        self.open_connections += 1;
+    // A proxy cannot send closes after it exits. Only its live control stream pins the edge.
+    pub(super) fn open_connection(&mut self, owner: &std::sync::Weak<()>) {
+        self.open_connections
+            .retain(|(stream, _)| stream.strong_count() != 0);
+        if let Some((_, count)) = self
+            .open_connections
+            .iter_mut()
+            .find(|(stream, _)| stream.ptr_eq(owner))
+        {
+            *count += 1;
+        } else {
+            self.open_connections.push((owner.clone(), 1));
+        }
         self.set_latest_now();
     }
 
-    /// Saturating: a close that outlives its open (client entry rebuilt under
-    /// it) must not underflow into a huge count that pins the edge forever.
-    pub(super) fn close_connection(&mut self) {
-        self.open_connections = self.open_connections.saturating_sub(1);
-        self.set_latest_now();
+    pub(super) fn close_connection(&mut self, owner: &std::sync::Weak<()>) {
+        if let Some(index) = self
+            .open_connections
+            .iter()
+            .position(|(stream, _)| stream.ptr_eq(owner))
+        {
+            self.open_connections[index].1 -= 1;
+            if self.open_connections[index].1 == 0 {
+                self.open_connections.swap_remove(index);
+            }
+            // A clean close on a live stream starts a fresh grace period.
+            if owner.strong_count() != 0 {
+                self.open_connections
+                    .retain(|(stream, _)| stream.strong_count() != 0);
+            }
+            self.set_latest_now();
+        }
     }
 
     pub(crate) fn open_connections(&self) -> usize {
         self.open_connections
+            .iter()
+            .filter(|(stream, _)| stream.strong_count() != 0)
+            .map(|(_, count)| count)
+            .sum()
     }
 
     pub(super) fn latest(&self) -> Instant {
@@ -385,7 +410,8 @@ impl ClientInfo {
     pub(super) fn idle_expired(&self, now: Instant, timeout: std::time::Duration) -> bool {
         !self.is_pending()
             && self.open_connections() == 0
-            && now.duration_since(self.latest()) >= timeout
+            && (!self.open_connections.is_empty()
+                || (!timeout.is_zero() && now.duration_since(self.latest()) >= timeout))
     }
 
     pub(crate) fn created_at(&self) -> SystemTime {
@@ -470,5 +496,44 @@ mod tests {
         assert!(!clients.group_carriers(proxy).unwrap().contains_key(&7));
         clients.remove_client(&third).unwrap();
         assert!(clients.group_carriers(proxy).is_none());
+    }
+}
+
+#[cfg(test)]
+mod proxy_stream_tests {
+    use super::*;
+
+    #[test]
+    fn last_live_close_preserves_idle_grace_after_another_proxy_disconnects() {
+        let ip = Ipv4Addr::LOCALHOST;
+        let mut client = ClientInfo::new(ip.into(), ip, ip, 7, 0, None);
+        let old = Arc::new(());
+        let live = Arc::new(());
+        client.open_connection(&Arc::downgrade(&old));
+        client.open_connection(&Arc::downgrade(&live));
+        drop(old);
+        client.close_connection(&Arc::downgrade(&live));
+        assert!(!client.idle_expired(Instant::now(), std::time::Duration::from_secs(60)));
+        assert!(!client.idle_expired(Instant::now(), std::time::Duration::ZERO));
+    }
+
+    #[test]
+    fn disconnected_stream_releases_only_its_own_open_connections() {
+        let ip = Ipv4Addr::LOCALHOST;
+        let mut client = ClientInfo::new(ip.into(), ip, ip, 7, 0, None);
+        let first = Arc::new(());
+        let second = Arc::new(());
+        let old = Arc::downgrade(&first);
+        let live = Arc::downgrade(&second);
+        client.open_connection(&old);
+        client.open_connection(&live);
+        drop(first);
+        assert!(!client.idle_expired(Instant::now(), std::time::Duration::ZERO));
+        assert_eq!(client.open_connections(), 1);
+        client.close_connection(&old);
+        assert_eq!(client.open_connections(), 1);
+        drop(second);
+        assert_eq!(client.open_connections(), 0);
+        assert!(client.idle_expired(Instant::now(), std::time::Duration::ZERO));
     }
 }

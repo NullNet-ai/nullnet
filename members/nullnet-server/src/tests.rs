@@ -179,12 +179,14 @@ async fn setup_proxy_edge(
     proxy_ip: IpAddr,
     client_ip: &str,
 ) {
+    let stream = std::sync::Arc::new(());
+    let owner = std::sync::Arc::downgrade(&stream);
     server
-        .handle_proxy_request(service_name, proxy_ip, client_ip)
+        .handle_proxy_request(service_name, proxy_ip, client_ip, &owner)
         .await
         .expect("proxy request failed");
     server
-        .mark_connection_closed(service_name, proxy_ip, client_ip)
+        .mark_connection_closed(service_name, proxy_ip, client_ip, &owner)
         .await;
 }
 
@@ -301,11 +303,15 @@ async fn concurrent_requests_for_one_client_tear_down_cleanly() {
     for _ in 0..6 {
         let server = server.clone();
         requests.spawn(async move {
+            let stream = std::sync::Arc::new(());
+            let owner = std::sync::Arc::downgrade(&stream);
             server
-                .handle_proxy_request("A", proxy, "10.0.0.1")
+                .handle_proxy_request("A", proxy, "10.0.0.1", &owner)
                 .await
                 .expect("proxy request failed");
-            server.mark_connection_closed("A", proxy, "10.0.0.1").await;
+            server
+                .mark_connection_closed("A", proxy, "10.0.0.1", &owner)
+                .await;
         });
     }
     while let Some(result) = requests.join_next().await {
@@ -370,12 +376,14 @@ async fn proxy_timeout_A() {
 /// download or a live WebSocket was torn down mid-transfer with no self-heal.
 #[tokio::test]
 async fn open_connection_pins_client_past_timeout() {
+    let stream = std::sync::Arc::new(());
+    let owner = std::sync::Arc::downgrade(&stream);
     let server = proxy_timeout_setup().await;
     let proxy1 = ip(5, 5, 5, 5);
 
     // A fresh request that does NOT close: one connection still open.
     server
-        .handle_proxy_request("A", proxy1, "10.0.0.1")
+        .handle_proxy_request("A", proxy1, "10.0.0.1", &owner)
         .await
         .expect("proxy request failed");
 
@@ -393,7 +401,9 @@ async fn open_connection_pins_client_past_timeout() {
 
     // Close it, and the same idle period now reaps: the timeout is a grace
     // window measured from the last close, not a hard cap on the session.
-    server.mark_connection_closed("A", proxy1, "10.0.0.1").await;
+    server
+        .mark_connection_closed("A", proxy1, "10.0.0.1", &owner)
+        .await;
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let mut guard = server.services().write().await;
     apply_timeouts(stack_view_mut(&mut guard), server.orchestrator(), "default").await;
@@ -410,12 +420,18 @@ async fn open_connection_pins_client_past_timeout() {
 /// to `usize::MAX` would pin the edge forever.
 #[tokio::test]
 async fn unmatched_close_does_not_underflow() {
+    let stream = std::sync::Arc::new(());
+    let owner = std::sync::Arc::downgrade(&stream);
     let server = proxy_timeout_setup().await;
     let proxy1 = ip(5, 5, 5, 5);
 
     // setup_proxy_edge already closed once; close twice more.
-    server.mark_connection_closed("A", proxy1, "10.0.0.1").await;
-    server.mark_connection_closed("A", proxy1, "10.0.0.1").await;
+    server
+        .mark_connection_closed("A", proxy1, "10.0.0.1", &owner)
+        .await;
+    server
+        .mark_connection_closed("A", proxy1, "10.0.0.1", &owner)
+        .await;
 
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let mut guard = server.services().write().await;
@@ -1837,6 +1853,8 @@ async fn backend_services_follow_pause_checkbox() {
 
 #[tokio::test]
 async fn proxy_request_resumes_suspended_replica() {
+    let stream = std::sync::Arc::new(());
+    let owner = std::sync::Arc::downgrade(&stream);
     let server = suspend_test_server();
     let svc_ip = ip(1, 1, 1, 1);
     let proxy_ip = ip(5, 5, 5, 5);
@@ -1860,7 +1878,7 @@ async fn proxy_request_resumes_suspended_replica() {
 
     // a proxy request resumes it before returning the upstream
     server
-        .handle_proxy_request("svc", proxy_ip, "10.0.0.1")
+        .handle_proxy_request("svc", proxy_ip, "10.0.0.1", &owner)
         .await
         .expect("proxy request failed");
 

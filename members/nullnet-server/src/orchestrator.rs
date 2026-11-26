@@ -168,8 +168,8 @@ pub struct Orchestrator {
     clients: Arc<RwLock<HashMap<IpAddr, OutboundStream>>>,
     /// Keeps replacement registration behind cleanup for the same node only.
     client_lifecycles: Arc<Mutex<HashMap<IpAddr, Arc<Mutex<()>>>>>,
-    /// Certificate stream counts keep overlapping reconnects on one IP visible.
-    proxies: Arc<RwLock<HashMap<IpAddr, usize>>>,
+    /// Live certificate streams own the ingress connection counts on their gRPC transport.
+    proxies: Arc<RwLock<HashMap<std::net::SocketAddr, std::sync::Weak<()>>>>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
     net_id_pool: Arc<StdMutex<NetIdPool>>,
     route_conflicts: Arc<StdRwLock<HashMap<IpAddr, NodeRouteConflicts>>>,
@@ -1351,22 +1351,42 @@ impl Orchestrator {
         self.clients.read().await.keys().copied().collect()
     }
 
-    pub(crate) async fn proxy_connected(&self, ip: IpAddr) {
-        *self.proxies.write().await.entry(ip).or_default() += 1;
+    pub(crate) async fn proxy_connected(&self, peer: std::net::SocketAddr) -> Arc<()> {
+        let mut proxies = self.proxies.write().await;
+        let entry = proxies.entry(peer).or_default();
+        let owner = entry.upgrade().unwrap_or_default();
+        *entry = Arc::downgrade(&owner);
+        owner
     }
 
-    pub(crate) async fn proxy_disconnected(&self, ip: IpAddr) {
+    pub(crate) async fn proxy_owner(
+        &self,
+        peer: std::net::SocketAddr,
+    ) -> Option<std::sync::Weak<()>> {
+        self.proxies.read().await.get(&peer).cloned()
+    }
+
+    pub(crate) async fn proxy_disconnected(&self, peer: std::net::SocketAddr, owner: Arc<()>) {
         let mut proxies = self.proxies.write().await;
-        let count = proxies.get_mut(&ip).expect("registered proxy stream");
-        *count -= 1;
-        if *count == 0 {
-            proxies.remove(&ip);
+        drop(owner);
+        if proxies
+            .get(&peer)
+            .is_some_and(|entry| entry.strong_count() == 0)
+        {
+            proxies.remove(&peer);
         }
     }
 
     pub(crate) async fn connected_proxy_ips(&self) -> Vec<IpAddr> {
-        let mut ips: Vec<_> = self.proxies.read().await.keys().copied().collect();
+        let mut ips: Vec<_> = self
+            .proxies
+            .read()
+            .await
+            .keys()
+            .map(|peer| peer.ip())
+            .collect();
         ips.sort_unstable();
+        ips.dedup();
         ips
     }
 

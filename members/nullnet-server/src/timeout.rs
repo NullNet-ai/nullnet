@@ -112,7 +112,7 @@ fn client_timed_out(services: &HashMap<String, ServiceInfo>, name: &str, client:
     let Some(ServiceInfo::Registered(reg)) = services.get(name) else {
         return false;
     };
-    let Some(timeout) = services[name].timeout().filter(|timeout| *timeout != 0) else {
+    let Some(timeout) = services[name].timeout() else {
         return false;
     };
     reg.proxy_client_expired(client, Duration::from_secs(timeout))
@@ -175,9 +175,6 @@ fn collect_timed_out_clients(services: &HashMap<String, ServiceInfo>) -> Vec<Ser
         let Some(timeout) = si.timeout() else {
             continue;
         };
-        if timeout == 0 {
-            continue;
-        }
         let ServiceInfo::Registered(reg) = si else {
             continue;
         };
@@ -225,6 +222,8 @@ mod tests {
 
     #[tokio::test]
     async fn stale_expiry_candidates_preserve_renewed_connections_and_grace() {
+        let stream = std::sync::Arc::new(());
+        let owner = std::sync::Arc::downgrade(&stream);
         let server = crate::tests::proxy_timeout_setup().await;
         tokio::time::sleep(Duration::from_millis(1100)).await;
         let candidates = collect_timed_out_clients(&server.services().read().await["default"]);
@@ -232,14 +231,16 @@ mod tests {
         let proxy1 = "5.5.5.5".parse().unwrap();
         let proxy2 = "6.6.6.6".parse().unwrap();
         server
-            .handle_proxy_request("A", proxy1, "10.0.0.1")
+            .handle_proxy_request("A", proxy1, "10.0.0.1", &owner)
             .await
             .unwrap();
         server
-            .handle_proxy_request("A", proxy2, "10.0.0.2")
+            .handle_proxy_request("A", proxy2, "10.0.0.2", &owner)
             .await
             .unwrap();
-        server.mark_connection_closed("A", proxy2, "10.0.0.2").await;
+        server
+            .mark_connection_closed("A", proxy2, "10.0.0.2", &owner)
+            .await;
         let mut guard = server.services().write().await;
         let services = guard.get_mut("default").unwrap();
         for candidate in candidates {
