@@ -93,7 +93,7 @@ impl EndpointNamespace {
         Self::open(File::open("/proc/self/ns/net")?, None, None).await
     }
 
-    pub(crate) fn validate(&self) -> io::Result<()> {
+    pub(crate) fn exited(&self) -> io::Result<bool> {
         if let Some(process) = &self.process {
             let mut poll = libc::pollfd {
                 fd: process.as_raw_fd(),
@@ -104,11 +104,16 @@ impl EndpointNamespace {
             if result < 0 {
                 return Err(io::Error::last_os_error());
             }
-            if result > 0 {
-                return Err(io::Error::other(
-                    "Container generation exited; refresh discovery",
-                ));
-            }
+            return Ok(result > 0);
+        }
+        Ok(false)
+    }
+
+    pub(crate) fn validate(&self) -> io::Result<()> {
+        if self.exited()? {
+            return Err(io::Error::other(
+                "Container generation exited; refresh discovery",
+            ));
         }
         Ok(())
     }
