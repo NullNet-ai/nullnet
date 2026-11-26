@@ -105,6 +105,12 @@ struct LoadSample {
     pending: u32,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PressureSignal {
+    ProxyWait,
+    Setup,
+}
+
 struct Pressure {
     window_started: Instant,
     start: LoadSample,
@@ -112,8 +118,7 @@ struct Pressure {
     latency_sum: u128,
     latency_samples: u64,
     previous_latency_mean: Option<u64>,
-    stalled_is_growing: bool,
-    carry_boundary_latency: bool,
+    signal: PressureSignal,
     congested_windows: u8,
     sequence: u64,
     trend: Trend,
@@ -126,8 +131,7 @@ impl Pressure {
         now: Instant,
         sample: LoadSample,
         latency_us: Option<u64>,
-        stalled_is_growing: bool,
-        carry_boundary_latency: bool,
+        signal: PressureSignal,
     ) -> Self {
         Self {
             window_started: now,
@@ -136,8 +140,7 @@ impl Pressure {
             latency_sum: latency_us.map_or(0, u128::from),
             latency_samples: u64::from(latency_us.is_some()),
             previous_latency_mean: None,
-            stalled_is_growing,
-            carry_boundary_latency,
+            signal,
             congested_windows: 0,
             sequence: 0,
             trend: Trend::Neutral,
@@ -148,17 +151,10 @@ impl Pressure {
 
     fn reset(&mut self, now: Instant, sample: LoadSample, latency_us: Option<u64>) {
         let sequence = self.sequence.saturating_add(1);
-        let stalled_is_growing = self.stalled_is_growing;
-        let carry_boundary_latency = self.carry_boundary_latency;
+        let signal = self.signal;
         let history =
             std::mem::replace(&mut self.history, VecDeque::with_capacity(PRESSURE_HISTORY));
-        *self = Self::new(
-            now,
-            sample,
-            latency_us,
-            stalled_is_growing,
-            carry_boundary_latency,
-        );
+        *self = Self::new(now, sample, latency_us, signal);
         self.sequence = sequence;
         self.history = history;
     }
@@ -194,13 +190,17 @@ impl Pressure {
         let latency_not_rising = self.previous_latency_mean.is_none_or(|previous| {
             latency_mean <= previous.saturating_add(previous / 10).saturating_add(100)
         });
-        let stalled = self.stalled_is_growing && arrivals > completions && completions == 0;
+        let stalled =
+            self.signal == PressureSignal::Setup && arrivals > completions && completions == 0;
         let growing = arrivals > completions
             && self.last.pending > self.start.pending
             && (latency_rising || stalled);
         let healthy = arrivals <= completions
             && self.last.pending <= self.start.pending
-            && latency_not_rising;
+            && (latency_not_rising
+                || (self.signal == PressureSignal::Setup
+                    && self.last.pending == 0
+                    && completions > 0));
 
         let display_trend = if growing {
             PressureTrend::Growing
@@ -242,12 +242,13 @@ impl Pressure {
         self.window_started = now;
         self.start = sample;
         self.last = sample;
-        self.latency_sum = if self.carry_boundary_latency {
+        self.latency_sum = if self.signal == PressureSignal::ProxyWait {
             latency_us.map_or(0, u128::from)
         } else {
             0
         };
-        self.latency_samples = u64::from(self.carry_boundary_latency && latency_us.is_some());
+        self.latency_samples =
+            u64::from((self.signal == PressureSignal::ProxyWait) && latency_us.is_some());
     }
 
     fn view(&self) -> PressureView {
@@ -304,8 +305,7 @@ impl SetupPressure {
                     pending: 0,
                 },
                 None,
-                true,
-                false,
+                PressureSignal::Setup,
             ),
             arrivals: 0,
             completions: 0,
@@ -323,6 +323,11 @@ impl SetupPressure {
     }
 
     fn started(&mut self, now: Instant) {
+        // A request after an idle interval belongs to the new window.
+        if self.pending == 0 && now.duration_since(self.pressure.window_started) >= PRESSURE_WINDOW
+        {
+            self.pressure.observe(now, self.sample(), None);
+        }
         self.arrivals = self.arrivals.saturating_add(1);
         self.pending = self.pending.saturating_add(1);
         self.pressure.observe(now, self.sample(), None);
@@ -333,6 +338,9 @@ impl SetupPressure {
         self.pending = self.pending.saturating_sub(1);
         let latency_us = u64::try_from(latency.as_micros()).unwrap_or(u64::MAX);
         self.pressure.observe(now, self.sample(), Some(latency_us));
+        if self.pending == 0 {
+            self.pressure.congested_windows = 0;
+        }
     }
 }
 
@@ -611,7 +619,9 @@ impl CongestionController {
             .proxies
             .entry(proxy)
             .and_modify(|pressure| pressure.observe(now, load, Some(sample.wait_us)))
-            .or_insert_with(|| Pressure::new(now, load, Some(sample.wait_us), false, true));
+            .or_insert_with(|| {
+                Pressure::new(now, load, Some(sample.wait_us), PressureSignal::ProxyWait)
+            });
     }
 
     pub(crate) fn setup_attempt(self: &std::sync::Arc<Self>, host: IpAddr) -> SetupAttempt {
@@ -896,8 +906,7 @@ mod tests {
                 pending: first.waiters,
             },
             Some(first.wait_us),
-            false,
-            true,
+            PressureSignal::ProxyWait,
         );
         for second in 1..=65 {
             let next = sample(second * 10, second * 10, 0, 100);
@@ -1090,6 +1099,54 @@ mod tests {
     }
 
     #[test]
+    fn a_proxy_with_rising_wait_latency_needs_more_than_zero_sampled_waiters_to_recover() {
+        let start = Instant::now();
+        let mut proxy = Pressure::new(
+            start,
+            LoadSample {
+                epoch: 0,
+                arrivals: 0,
+                completions: 0,
+                pending: 0,
+            },
+            None,
+            PressureSignal::ProxyWait,
+        );
+        for step in 1..=2 {
+            proxy.observe(
+                start + Duration::from_secs(step),
+                LoadSample {
+                    epoch: 0,
+                    arrivals: step,
+                    completions: step,
+                    pending: 0,
+                },
+                Some(step * 10_000),
+            );
+        }
+        assert_eq!(proxy.view().trend, Trend::Neutral);
+    }
+
+    #[test]
+    fn intermittent_batches_that_drain_do_not_build_setup_pressure() {
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let mut setup = SetupPressure::new(start);
+        setup.started(start);
+        setup.completed(at(10), Duration::from_millis(10));
+        setup.started(at(1000));
+        assert_eq!(setup.pressure.history.back().unwrap().pending, 0);
+        setup.completed(at(1030), Duration::from_millis(30));
+        setup.started(at(1999));
+        setup.started(at(2000));
+        assert_ne!(setup.pressure.view().trend, Trend::Congested);
+        setup.completed(at(2020), Duration::from_millis(21));
+        setup.completed(at(2040), Duration::from_millis(40));
+        setup.started(at(3100));
+        assert_eq!(setup.pressure.view().trend, Trend::Healthy);
+    }
+
+    #[test]
     fn setup_latency_must_worsen_while_completions_continue() {
         let start = Instant::now();
         let mut pressure = Pressure::new(
@@ -1101,8 +1158,7 @@ mod tests {
                 pending: 0,
             },
             None,
-            true,
-            false,
+            PressureSignal::Setup,
         );
         let load = |arrivals, completions, pending| LoadSample {
             epoch: 0,
