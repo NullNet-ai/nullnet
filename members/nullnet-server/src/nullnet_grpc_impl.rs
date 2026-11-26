@@ -554,18 +554,8 @@ impl NullnetGrpcImpl {
         let guard = entry.lock().await;
 
         let result = self
-            .proxy_request_locked(service_name, proxy_ip, client_ip)
+            .proxy_request_locked(service_name, proxy_ip, client_ip, owner)
             .await;
-
-        // +1 here, not inside `proxy_request_locked`: that function has three
-        // distinct success paths (sticky reuse, max_networks reuse, fresh
-        // edge) and this is the single point every one of them passes through.
-        // Pairs with `ProxyConnectionClosed`, which the proxy guarantees to send
-        // on every exit path once this call has returned Ok.
-        if result.is_ok() {
-            self.mark_connection_open(service_name, proxy_ip, client_ip, owner)
-                .await;
-        }
 
         drop(guard);
         // Drop the map entry once nobody else holds it. Taken under the map
@@ -612,44 +602,54 @@ impl NullnetGrpcImpl {
         service_name: &str,
         proxy_ip: IpAddr,
         client_ip: &str,
+        owner: &std::sync::Weak<()>,
     ) -> Result<Upstream, Error> {
         routine_log!("Received proxy request for '{service_name}'");
 
         let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
-        let stack = {
-            let guard = self.services.read().await;
-            find_service_stack(&guard, service_name)
+        let (stack, max_networks, mut dedicated_count) = {
+            let mut services = self.services.write().await;
+            let stack = find_service_stack(&services, service_name)
                 .ok_or("Service not found in any stack")
                 .handle_err(location!())?
-                .to_string()
-        };
-        let (existing, max_networks, mut dedicated_count) = {
-            let guard = self.services.read().await;
-            let service_info = &guard[&stack][service_name];
-            if service_info.timeout().is_none() {
+                .to_string();
+            let service = services
+                .get_mut(&stack)
+                .and_then(|map| map.get_mut(service_name))
+                .ok_or("Service not found")
+                .handle_err(location!())?;
+            if service.timeout().is_none() {
                 Err("Service is not a configured entry point").handle_err(location!())?;
             }
-            let ServiceInfo::Registered(reg) = service_info else {
+            let ServiceInfo::Registered(reg) = service else {
                 Err("Service is not registered").handle_err(location!())?
             };
+            // Pin before releasing the lock used by ingress timeout cleanup.
+            if let Some(upstream) = reg.is_client_setup(&proxy_client) {
+                reg.open_connection(&proxy_client, owner);
+                return Ok(upstream);
+            }
             (
-                reg.is_client_setup(&proxy_client),
+                stack,
                 reg.max_networks(),
                 reg.dedicated_proxy_networks_count(),
             )
         };
 
-        // Sticky session: reuse the network this client is already on.
-        if let Some(upstream) = existing {
-            routine_log!("'{client_ip}' ---> '{service_name}' is already set up");
-            let mut services_mut = self.services.write().await;
-            if let Some(stack_map) = services_mut.get_mut(&stack)
-                && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(service_name)
+        // A cold setup can await history or event delivery. Count the connection
+        // only when its upstream is still current and ready to return.
+        let pin_upstream = async |expected: Upstream| {
+            let mut services = self.services.write().await;
+            if let Some(ServiceInfo::Registered(reg)) = services
+                .get_mut(&stack)
+                .and_then(|map| map.get_mut(service_name))
+                && reg.is_client_setup(&proxy_client).as_ref() == Some(&expected)
             {
-                reg.set_latest_now(&proxy_client);
+                reg.open_connection(&proxy_client, owner);
+                return Ok(expected);
             }
-            return Ok(upstream);
-        }
+            Err("Proxy edge disappeared after setup").handle_err(location!())
+        };
 
         let policy_eligible = *NET_TYPE == Net::Vxlan && *ENCRYPTION_ENABLED;
         // Non-VXLAN configurations retain the existing bounded reuse behavior.
@@ -726,7 +726,7 @@ impl NullnetGrpcImpl {
                 ))
                 .await;
 
-            return Ok(upstream);
+            return pin_upstream(upstream).await;
         }
 
         // One retry. An ingress edge unwound because its client entry was torn
@@ -826,7 +826,7 @@ impl NullnetGrpcImpl {
                                 .await;
                         }
                     }
-                    return Ok(response.into_inner());
+                    return pin_upstream(response.into_inner()).await;
                 }
                 Ok(None) if attempt == 0 => {
                     if policy_eligible {
@@ -1102,20 +1102,13 @@ impl NullnetGrpcImpl {
         }
     }
 
-    /// Resolve the proxy client entry and apply `f` to its service.
-    ///
-    /// The counter key is `(service_name, client_ip, proxy_ip)` — the same
-    /// `ProxyKey` `handle_proxy_request` serializes on, so open and close can
-    /// never land on different entries.
-    async fn with_proxy_client<F>(
+    pub(crate) async fn mark_connection_closed(
         &self,
         service_name: &str,
         proxy_ip: IpAddr,
         client_ip: &str,
-        f: F,
-    ) where
-        F: FnOnce(&mut RegisteredServiceInfo, &Client),
-    {
+        owner: &std::sync::Weak<()>,
+    ) {
         let proxy_client = Client::new(client_ip.to_string(), Some(proxy_ip));
         let mut guard = self.services.write().await;
         let Some(stack) = find_service_stack(&guard, service_name).map(str::to_string) else {
@@ -1124,34 +1117,8 @@ impl NullnetGrpcImpl {
         if let Some(stack_map) = guard.get_mut(&stack)
             && let Some(ServiceInfo::Registered(reg)) = stack_map.get_mut(service_name)
         {
-            f(reg, &proxy_client);
+            reg.close_connection(&proxy_client, owner);
         }
-    }
-
-    pub(crate) async fn mark_connection_open(
-        &self,
-        service_name: &str,
-        proxy_ip: IpAddr,
-        client_ip: &str,
-        owner: &std::sync::Weak<()>,
-    ) {
-        self.with_proxy_client(service_name, proxy_ip, client_ip, |reg, client| {
-            reg.open_connection(client, owner);
-        })
-        .await;
-    }
-
-    pub(crate) async fn mark_connection_closed(
-        &self,
-        service_name: &str,
-        proxy_ip: IpAddr,
-        client_ip: &str,
-        owner: &std::sync::Weak<()>,
-    ) {
-        self.with_proxy_client(service_name, proxy_ip, client_ip, |reg, client| {
-            reg.close_connection(client, owner);
-        })
-        .await;
     }
 
     async fn proxy_connection_closed_impl(

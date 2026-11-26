@@ -490,18 +490,6 @@ impl RegisteredServiceInfo {
         }
     }
 
-    pub(crate) fn set_latest_now(&mut self, client: &Client) {
-        for replica in &mut self.replicas {
-            if let Some(client_info) = replica.clients.clients_mut().get_mut(client) {
-                client_info.set_latest_now();
-                return;
-            }
-        }
-    }
-
-    /// Record a front connection opening for a proxy client. Searches across
-    /// replicas like `set_latest_now` — a client is sticky to one replica, so at
-    /// most one entry matches.
     pub(crate) fn open_connection(&mut self, client: &Client, owner: &std::sync::Weak<()>) {
         for replica in &mut self.replicas {
             if let Some(client_info) = replica.clients.clients_mut().get_mut(client) {

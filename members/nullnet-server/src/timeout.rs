@@ -221,6 +221,51 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn sticky_reconnect_pins_edge_before_queued_orphan_cleanup() {
+        let server = crate::tests::proxy_timeout_setup().await;
+        let proxy = "5.5.5.5".parse().unwrap();
+        let client = Client::new("10.0.0.1".into(), Some(proxy));
+        let old = Arc::new(());
+        let original = server
+            .handle_proxy_request("A", proxy, client.name(), &Arc::downgrade(&old))
+            .await
+            .unwrap();
+        drop(old);
+
+        let guard = server.services().read().await;
+        let candidate = ServiceChange::ProxyClientTimedOut {
+            name: "A".into(),
+            client: client.clone(),
+        };
+        assert!(client_timed_out(&guard["default"], "A", &client));
+        let live = Arc::new(());
+        let owner = Arc::downgrade(&live);
+        let mut reconnect =
+            Box::pin(server.handle_proxy_request("A", proxy, client.name(), &owner));
+        let mut cleanup = Box::pin(async {
+            let mut services = server.services().write().await;
+            apply_timeout_candidate(
+                candidate,
+                services.get_mut("default").unwrap(),
+                server.orchestrator(),
+                "default",
+            )
+            .await;
+        });
+        // Queue both writers in order without relying on sleeps or scheduler timing.
+        assert!(futures::poll!(&mut reconnect).is_pending());
+        assert!(futures::poll!(&mut cleanup).is_pending());
+        drop(guard);
+        let (result, ()) = tokio::join!(reconnect, cleanup);
+        assert_eq!(result.unwrap(), original);
+        let services = server.services().read().await;
+        let ServiceInfo::Registered(reg) = &services["default"]["A"] else {
+            unreachable!()
+        };
+        assert_eq!(reg.client_info(&client).unwrap().open_connections(), 1);
+    }
+
+    #[tokio::test]
     async fn stale_expiry_candidates_preserve_renewed_connections_and_grace() {
         let stream = std::sync::Arc::new(());
         let owner = std::sync::Arc::downgrade(&stream);
