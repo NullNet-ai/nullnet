@@ -43,7 +43,7 @@ All Nullnet releases with the relative changes are documented in this file.
 ### Removed
 - Remove proxy dependency configuration and multi-hop ingress setup; service-to-service connectivity now uses direct `backends` exclusively([#228](https://github.com/NullNet-ai/nullnet/pull/228)).
 ### Fixed
-- Remove the retired task’s policy veth when Docker replaces a container whose network namespace outlives the task.
+- Remove the policy veth after a Docker task exits and its network namespace has no remaining running containers ([#239](https://github.com/NullNet-ai/nullnet/pull/239)).
 - Release ingress connections held by a stopped proxy so its networks can expire after restart ([#238](https://github.com/NullNet-ai/nullnet/pull/238)).
 - Keep separate session history when a short egress connection uses a recycled network ID ([#238](https://github.com/NullNet-ai/nullnet/pull/238)).
 - Release cached network namespaces for retired Docker tasks ([#238](https://github.com/NullNet-ai/nullnet/pull/238)).

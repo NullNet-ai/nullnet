@@ -528,20 +528,36 @@ async fn attachment_pair(
     }
 }
 
-// A namespace can outlive its Docker task. Retire the veth through the
-// namespace that owns its inner peer before releasing the cached handle.
-pub(crate) async fn prune_exited_attachments(live: &HashSet<AttachmentKey>) {
-    let retired: Vec<_> = ATTACHMENTS
+pub(crate) struct ExitedAttachment {
+    key: AttachmentKey,
+    attachment: Arc<Attachment>,
+}
+
+// Snapshot exited owners before Docker lists the containers that might still
+// share their namespaces. Keep each exact attachment alive through cleanup.
+pub(crate) fn exited_attachments() -> Vec<ExitedAttachment> {
+    ATTACHMENTS
         .lock()
         .unwrap()
         .iter()
         .filter_map(|(key, cell)| {
             let attachment = cell.get()?;
-            (!live.contains(key) && matches!(attachment.namespace.exited(), Ok(true)))
-                .then(|| (*key, cell.clone(), attachment.clone()))
+            matches!(attachment.namespace.exited(), Ok(true)).then(|| ExitedAttachment {
+                key: *key,
+                attachment: attachment.clone(),
+            })
         })
-        .collect();
-    for (key, cell, attachment) in retired {
+        .collect()
+}
+
+pub(crate) async fn prune_exited_attachments(
+    retired: Vec<ExitedAttachment>,
+    live: &HashSet<AttachmentKey>,
+) {
+    for ExitedAttachment { key, attachment } in retired {
+        if live.contains(&key) {
+            continue;
+        }
         let mut routes = attachment.routes.lock().await;
         match attachment
             .namespace
@@ -568,7 +584,8 @@ pub(crate) async fn prune_exited_attachments(live: &HashSet<AttachmentKey>) {
         let mut attachments = ATTACHMENTS.lock().unwrap();
         if attachments
             .get(&key)
-            .is_some_and(|current| Arc::ptr_eq(current, &cell))
+            .and_then(|cell| cell.get())
+            .is_some_and(|current| Arc::ptr_eq(current, &attachment))
         {
             attachments.remove(&key);
         }
