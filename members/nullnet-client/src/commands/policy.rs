@@ -528,15 +528,68 @@ async fn attachment_pair(
     }
 }
 
-// Release the cached namespace descriptor and netlink socket once its Docker
-// task exits. Active edges hold their own reference through retirement.
-pub(crate) fn prune_exited_attachments(live: &HashSet<(u64, u64)>) {
-    ATTACHMENTS.lock().unwrap().retain(|key, cell| {
-        live.contains(key)
-            || cell
-                .get()
-                .is_none_or(|a| !matches!(a.namespace.exited(), Ok(true)))
-    });
+pub(crate) struct ExitedAttachment {
+    key: AttachmentKey,
+    attachment: Arc<Attachment>,
+}
+
+// Snapshot exited owners before Docker lists the containers that might still
+// share their namespaces. Keep each exact attachment alive through cleanup.
+pub(crate) fn exited_attachments() -> Vec<ExitedAttachment> {
+    ATTACHMENTS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(key, cell)| {
+            let attachment = cell.get()?;
+            matches!(attachment.namespace.exited(), Ok(true)).then(|| ExitedAttachment {
+                key: *key,
+                attachment: attachment.clone(),
+            })
+        })
+        .collect()
+}
+
+pub(crate) async fn prune_exited_attachments(
+    retired: Vec<ExitedAttachment>,
+    live: &HashSet<AttachmentKey>,
+) {
+    for ExitedAttachment { key, attachment } in retired {
+        if live.contains(&key) {
+            continue;
+        }
+        let mut routes = attachment.routes.lock().await;
+        match attachment
+            .namespace
+            .handle
+            .link()
+            .del(attachment.inner)
+            .execute()
+            .await
+        {
+            Ok(()) => {}
+            Err(rtnetlink::Error::NetlinkError(e))
+                if e.code.map(std::num::NonZeroI32::get) == Some(-libc::ENODEV) => {}
+            Err(error) => {
+                eprintln!(
+                    "Could not retire policy veth {} in namespace {}: {error}",
+                    attachment.inner, key.1
+                );
+                continue;
+            }
+        }
+        // Link removal also removes its routes. Late edge teardown still
+        // clears its map entries and may safely release its route reference.
+        routes.clear();
+        let mut attachments = ATTACHMENTS.lock().unwrap();
+        if attachments
+            .get(&key)
+            .and_then(|cell| cell.get())
+            .is_some_and(|current| Arc::ptr_eq(current, &attachment))
+        {
+            attachments.remove(&key);
+        }
+    }
 }
 
 async fn attachment(

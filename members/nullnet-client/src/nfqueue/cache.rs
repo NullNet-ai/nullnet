@@ -297,12 +297,6 @@ impl BridgeIpCache {
     async fn refresh_unlocked(&self) {
         match query_docker(self.diagnostics.clone()).await {
             Ok((map, namespaces, conflicts)) => {
-                let live = namespaces
-                    .values()
-                    .filter_map(|ns| ns.file.metadata().ok())
-                    .map(|m| (m.dev(), m.ino()))
-                    .collect();
-                crate::commands::policy::prune_exited_attachments(&live);
                 *self.namespaces.write().unwrap() = namespaces;
                 *self.conflicts.write().unwrap() = conflicts;
                 #[cfg(debug_assertions)]
@@ -369,14 +363,19 @@ type Discovery = (
 );
 
 async fn query_docker(diagnostics: Option<Sender<NeighbourSignal>>) -> Result<Discovery, String> {
+    let retired = crate::commands::policy::exited_attachments();
     let ids = list_container_ids().await?;
     if ids.is_empty() {
+        crate::commands::policy::prune_exited_attachments(retired, &HashSet::new()).await;
         return Ok((HashMap::new(), HashMap::new(), HashMap::new()));
     }
     let index = inspect_container_index(&ids).await?;
 
     let mut namespaces = HashMap::new();
     for (name, id, pid, sandbox) in &index.identities {
+        if sandbox.is_empty() {
+            continue;
+        }
         let observer = diagnostics
             .as_ref()
             .map(|sender| (name.clone(), sender.clone()));
@@ -422,7 +421,28 @@ async fn query_docker(diagnostics: Option<Sender<NeighbourSignal>>) -> Result<Di
         }
     }
 
+    if !retired.is_empty()
+        && let Some(live) = live_namespace_keys(&index, ids.len())
+    {
+        crate::commands::policy::prune_exited_attachments(retired, &live).await;
+    }
     Ok((map, namespaces, conflicts))
+}
+
+// A container sharing another container's namespace has no Docker sandbox
+// path of its own. Its running process still protects that namespace.
+fn live_namespace_keys(index: &ContainerIndex, expected: usize) -> Option<HashSet<(u64, u64)>> {
+    if index.identities.len() != expected {
+        return None;
+    }
+    index
+        .identities
+        .iter()
+        .map(|(_, _, pid, _)| {
+            let ns = std::fs::metadata(format!("/proc/{pid}/ns/net")).ok()?;
+            Some((ns.dev(), ns.ino()))
+        })
+        .collect()
 }
 
 async fn list_container_ids() -> Result<Vec<String>, String> {
@@ -464,7 +484,7 @@ fn parse_container_index(s: &str) -> ContainerIndex {
         if let (Some(id), Some(pid), Some(path)) = (fields.next(), fields.next(), fields.next())
             && let Ok(pid) = pid.parse::<u32>()
             && pid > 0
-            && !path.is_empty()
+            && !id.is_empty()
         {
             identities.push((name.clone(), id.into(), pid, path.into()));
         }
@@ -887,6 +907,20 @@ mod tests {
             identities: Vec::new(),
             sandbox12_to_name: s,
         }
+    }
+
+    #[test]
+    fn surviving_container_without_sandbox_protects_its_namespace() {
+        let pid = std::process::id();
+        let index = parse_container_index(&format!("/sidecar||id|{pid}|"));
+        let ns = std::fs::metadata("/proc/self/ns/net").unwrap();
+        assert_eq!(
+            live_namespace_keys(&index, 1),
+            Some(HashSet::from([(ns.dev(), ns.ino())]))
+        );
+        assert_eq!(live_namespace_keys(&index, 2), None);
+        let vanished = parse_container_index("/sidecar||id|4294967295|");
+        assert_eq!(live_namespace_keys(&vanished, 1), None);
     }
 
     #[test]
