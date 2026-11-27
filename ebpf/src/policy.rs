@@ -119,9 +119,10 @@ fn outgoing(ctx: &TcContext) -> Result<i32, i64> {
     translate(ctx, 26, rule.local, len, proto)?;
 
     if rule.underlay_local == rule.underlay_remote {
-        translate(ctx, 30, APP_IP, len, proto)?;
-        ctx.store(0, &rule.mac, 0)?;
-        return Ok(unsafe { bpf_redirect(rule.output, 0) } as i32);
+        let id = rule.vni.to_be_bytes();
+        let side = if rule.local > rule.peer { 1u8 } else { 2u8 };
+        ctx.store(0, &[2u8, side, id[0], id[1], id[2], id[3]], 0)?;
+        return Ok(unsafe { bpf_redirect(rule.transport, 0) } as i32);
     }
 
     let mut tunnel: bpf_tunnel_key = unsafe { zeroed() };
@@ -153,23 +154,33 @@ fn incoming(ctx: &TcContext) -> Result<i32, i64> {
     let (len, proto) = header(ctx)?;
     let local = u32::from_be(ctx.load::<u32>(30)?);
     let rule = unsafe { POLICY_IN.get(&local) }.copied().ok_or(-1)?;
-    let mut tunnel: bpf_tunnel_key = unsafe { zeroed() };
-    let mut option = 0u32;
-    let skb = ctx.as_ptr().cast::<__sk_buff>();
-    if unsafe { (*skb).mark } != rule.mark
-        || u32::from_be(ctx.load::<u32>(26)?) != rule.peer
-        || unsafe {
-            bpf_skb_get_tunnel_key(skb, &mut tunnel, size_of::<bpf_tunnel_key>() as u32, 0)
-        } != 0
-        || unsafe { bpf_skb_get_tunnel_opt(skb, (&mut option as *mut u32).cast(), 4) } != 4
-    {
+    if u32::from_be(ctx.load::<u32>(26)?) != rule.peer {
         return Err(-1);
     }
-    if unsafe { tunnel.__bindgen_anon_1.remote_ipv4 } != rule.underlay_remote
-        || tunnel.tunnel_id != rule.vni
-        || u64::from(option & 0xffff) != rule.generation >> 24
-    {
-        return Err(-1);
+    if rule.underlay_local == rule.underlay_remote {
+        if rule.enabled == 0
+            || unsafe { (*ctx.as_ptr().cast::<__sk_buff>()).ifindex } != rule.transport
+        {
+            return Err(-1);
+        }
+    } else {
+        let mut tunnel: bpf_tunnel_key = unsafe { zeroed() };
+        let mut option = 0u32;
+        let skb = ctx.as_ptr().cast::<__sk_buff>();
+        if unsafe { (*skb).mark } != rule.mark
+            || unsafe {
+                bpf_skb_get_tunnel_key(skb, &mut tunnel, size_of::<bpf_tunnel_key>() as u32, 0)
+            } != 0
+            || unsafe { bpf_skb_get_tunnel_opt(skb, (&mut option as *mut u32).cast(), 4) } != 4
+        {
+            return Err(-1);
+        }
+        if unsafe { tunnel.__bindgen_anon_1.remote_ipv4 } != rule.underlay_remote
+            || tunnel.tunnel_id != rule.vni
+            || u64::from(option & 0xffff) != rule.generation >> 24
+        {
+            return Err(-1);
+        }
     }
     flow(ctx, &rule, rule.output, len, proto, true)?;
     translate(ctx, 30, APP_IP, len, proto)?;

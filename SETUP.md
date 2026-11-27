@@ -305,11 +305,11 @@ backward-compatible stages.
   host-scoped controller first pauses dedicated setups, then additively admits one more probe per
   healthy window; renewed congestion immediately returns the rate to zero. Stable queues do not
   activate it, and only sustained successful probes under traffic remove the limit (idle time does
-  not count as recovery). Every client IP gets its own group, generation, encryption key, and
-  marked IPsec associations. A standard group seeds a VNI-filtered carrier; multiplexed groups are
-  assigned to the least-loaded live carrier, so both paths use the same dataplane and UDP 4791.
-  Packet metadata and endpoint maps preserve per-client isolation. Same-host groups use the same
-  isolation policy with direct eBPF redirection and no VXLAN hairpin.
+  not count as recovery). Every client IP gets its own group, generation, and encryption key.
+  Across hosts each group has marked IPsec associations. A standard group creates a VNI-filtered
+  VXLAN carrier on UDP 4791. Multiplexed groups use the least-loaded live carrier. On one host,
+  each group encrypts traffic with MACsec over a shared veth pair. The receiving policy accepts
+  decrypted packets only on that group's MACsec interface.
 - `backends = ["peer-a", "peer-b"]` lists services this service may trigger. A peer with a nonzero
   `port` uses that port as its trigger; a declared portless peer remains saved but installs no
   trigger. A service may include itself; same-replica traffic remains a normal backend session.

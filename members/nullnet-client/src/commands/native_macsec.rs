@@ -25,10 +25,23 @@ pub(super) async fn prepare(
     peer_mac: Vec<u8>,
     group: u32,
 ) -> io::Result<u32> {
+    prepare_endpoint(name, parent, None, peer_mac, group).await
+}
+
+pub(super) async fn prepare_endpoint(
+    name: String,
+    parent: u32,
+    address: Option<Vec<u8>>,
+    peer_mac: Vec<u8>,
+    group: u32,
+) -> io::Result<u32> {
     blocking(move || {
         let mut route = NativeSocket::new(libc::NETLINK_ROUTE as _)?;
         let mut body = vec![0; 16];
         body.extend(attr(3, format!("{name}\0").as_bytes()));
+        if let Some(address) = address {
+            body.extend(attr(1, &address));
+        }
         body.extend(attr(5, &parent.to_ne_bytes()));
         body.extend(attr(27, &group.to_ne_bytes()));
         let settings = [
@@ -56,34 +69,41 @@ pub(super) async fn prepare(
                 .try_into()
                 .unwrap(),
         );
-        let mut generic = NativeSocket::new(libc::NETLINK_GENERIC as _)?;
-        let family = match FAMILY.get() {
-            Some(family) => *family,
-            None => {
-                let reply = generic.generic(16, 3, 2, &attr(2, b"macsec\0"))?;
-                let family = attrs(&reply)?
-                    .into_iter()
-                    .find(|(kind, _)| *kind == 1)
-                    .and_then(|(_, data)| <[u8; 2]>::try_from(data).ok())
-                    .map(u16::from_ne_bytes)
-                    .ok_or_else(|| io::Error::other("MACsec family missing"))?;
-                let _ = FAMILY.set(family);
-                family
-            }
-        };
-        let base = attr(1, &index.to_ne_bytes());
-        let mut sci = peer_mac;
-        sci.extend_from_slice(&1u16.to_be_bytes());
-        generic.generic(
-            family,
-            1,
-            1,
-            &[
-                base.clone(),
-                attr(2 | NESTED, &[attr(1, &sci), attr(2, &[1])].concat()),
-            ]
-            .concat(),
-        )?;
+        let setup = (|| -> io::Result<()> {
+            let mut generic = NativeSocket::new(libc::NETLINK_GENERIC as _)?;
+            let family = match FAMILY.get() {
+                Some(family) => *family,
+                None => {
+                    let reply = generic.generic(16, 3, 2, &attr(2, b"macsec\0"))?;
+                    let family = attrs(&reply)?
+                        .into_iter()
+                        .find(|(kind, _)| *kind == 1)
+                        .and_then(|(_, data)| <[u8; 2]>::try_from(data).ok())
+                        .map(u16::from_ne_bytes)
+                        .ok_or_else(|| io::Error::other("MACsec family missing"))?;
+                    let _ = FAMILY.set(family);
+                    family
+                }
+            };
+            let base = attr(1, &index.to_ne_bytes());
+            let mut sci = peer_mac;
+            sci.extend_from_slice(&1u16.to_be_bytes());
+            generic.generic(
+                family,
+                1,
+                1,
+                &[
+                    base.clone(),
+                    attr(2 | NESTED, &[attr(1, &sci), attr(2, &[1])].concat()),
+                ]
+                .concat(),
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = setup {
+            route.request(17, REQUEST, &super::endpoint_io::info(index, false))?;
+            return Err(error);
+        }
         Ok(index)
     })
     .await

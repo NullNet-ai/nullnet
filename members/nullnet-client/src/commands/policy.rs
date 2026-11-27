@@ -7,7 +7,7 @@ use aya::{
     maps::{Array, HashMap as BpfMap, MapData},
     programs::{
         SchedClassifier, TcAttach, TcAttachType,
-        tc::{self, NlOptions},
+        tc::{self, NlOptions, SchedClassifierLink, SchedClassifierLinkId},
     },
 };
 use futures::TryStreamExt;
@@ -64,6 +64,7 @@ struct Engine {
     bpf: Mutex<Ebpf>,
     maps: Mutex<Maps>,
     carriers: Mutex<HashMap<u64, Arc<Carrier>>>,
+    local_carrier: OnceCell<[u32; 2]>,
     peers: AsyncMutex<HashMap<u32, Arc<OnceCell<()>>>>,
     edges: Mutex<HashMap<String, GroupEdge>>,
 }
@@ -82,8 +83,8 @@ struct Attachment {
     mac: [u8; 6],
     routes: AsyncMutex<HashMap<u32, usize>>,
 }
-#[derive(Clone)]
 struct GroupEdge {
+    _macsec_filter: Option<SchedClassifierLink>,
     key: OutKey,
     rule: Rule,
     attachment: Arc<Attachment>,
@@ -207,6 +208,7 @@ async fn engine() -> Result<Arc<Engine>, String> {
             bpf: Mutex::new(bpf),
             maps: Mutex::new(maps),
             carriers: Mutex::new(HashMap::new()),
+            local_carrier: OnceCell::new(),
             peers: AsyncMutex::new(HashMap::new()),
             edges: Mutex::new(HashMap::new()),
         }))
@@ -218,7 +220,7 @@ async fn engine() -> Result<Arc<Engine>, String> {
 }
 
 impl Engine {
-    fn attach(&self, name: &str, program: &str) -> Result<(), String> {
+    fn attach(&self, name: &str, program: &str) -> Result<SchedClassifierLinkId, String> {
         let name = CString::new(name).map_err(error)?;
         tc::qdisc_add_clsact(name.as_c_str()).map_err(error)?;
         let mut bpf = self.bpf.lock().unwrap();
@@ -236,9 +238,104 @@ impl Engine {
                     options: NlOptions::default(),
                 },
             )
-            .map_err(error)?;
-        Ok(())
+            .map_err(error)
     }
+
+    // All local groups share this transport pair. Each group installs separate
+    // MACsec devices with its own SCI, key and packet number on each side.
+    async fn local_endpoint(
+        &self,
+        handle: &Handle,
+        id: u32,
+        client: bool,
+        key: &[u8],
+    ) -> Result<(u32, SchedClassifierLink), String> {
+        let key: [u8; 32] = key.try_into().map_err(|_| "Invalid MACsec group key")?;
+        let parents = self
+            .local_carrier
+            .get_or_try_init(|| async {
+                let (s, c) = ("nnp_wire_s", "nnp_wire_c");
+                let peer = LinkUnspec::new_with_name(c)
+                    .mtu(1200)
+                    .link_group(GROUP)
+                    .build();
+                let index = add_link_echo(
+                    handle,
+                    LinkVeth::new(s, c)
+                        .mtu(1200)
+                        .link_group(GROUP)
+                        .set_info_data(InfoData::Veth(InfoVeth::Peer(peer)))
+                        .build(),
+                )
+                .await
+                .map_err(error)?
+                .header
+                .index;
+                let setup = async {
+                    let other = get_link_by_name(handle, c)
+                        .await
+                        .map_err(|e| e.to_str().to_owned())?
+                        .header
+                        .index;
+                    for i in [index, other] {
+                        handle
+                            .link()
+                            .set(LinkUnspec::new_with_index(i).up().build())
+                            .execute()
+                            .await
+                            .map_err(error)?;
+                    }
+                    Ok::<_, String>([index, other])
+                }
+                .await;
+                if setup.is_err() {
+                    native_vxlan::remove_link(index).await.map_err(error)?;
+                }
+                setup
+            })
+            .await?;
+        let side = if client { "c" } else { "s" };
+        let own = super::vxlan::veth_mac(id, if client { 2 } else { 1 });
+        let peer = super::vxlan::veth_mac(id, if client { 1 } else { 2 });
+        let name = format!("macsec-{id}{side}");
+        let index = super::native_macsec::prepare_endpoint(
+            name.clone(),
+            parents[usize::from(client)],
+            Some(own),
+            peer.clone(),
+            GROUP,
+        )
+        .await
+        .map_err(error)?;
+        let setup = async {
+            super::native_macsec::associations(index, peer, key)
+                .await
+                .map_err(error)?;
+            let id = self.attach(&name, "nullnet_policy_in")?;
+            let filter = {
+                let mut bpf = self.bpf.lock().unwrap();
+                let program: &mut SchedClassifier = bpf
+                    .program_mut("nullnet_policy_in")
+                    .unwrap()
+                    .try_into()
+                    .map_err(error)?;
+                program.take_link(id).map_err(error)?
+            };
+            handle
+                .link()
+                .set(LinkUnspec::new_with_index(index).up().build())
+                .execute()
+                .await
+                .map_err(error)?;
+            Ok((index, filter))
+        }
+        .await;
+        if setup.is_err() {
+            native_vxlan::remove_link(index).await.map_err(error)?;
+        }
+        setup
+    }
+
     async fn carrier(&self, handle: &Handle, id: u64, vni: u32) -> Result<u32, String> {
         let carrier = self
             .carriers
@@ -781,8 +878,22 @@ pub(crate) async fn setup(
     let peer_ip = block + if client { 1 } else { 3 } + u32::from(!transport.peer_container);
     output.acquire_route(peer_ip).await?;
     let local_transport = local == remote;
-    let vxlan = if local_transport {
-        0
+    let (vxlan, macsec_filter) = if local_transport {
+        match engine
+            .local_endpoint(
+                &rtnetlink.handle,
+                message.vxlan_id,
+                client,
+                &transport.encryption_key,
+            )
+            .await
+        {
+            Ok((index, filter)) => (index, Some(filter)),
+            Err(e) => {
+                output.release_route(peer_ip).await?;
+                return Err(e);
+            }
+        }
     } else {
         let vxlan = match engine
             .carrier(&rtnetlink.handle, transport.carrier_id, message.vxlan_id)
@@ -809,7 +920,7 @@ pub(crate) async fn setup(
             cleanup.extend(output.release_route(peer_ip).await.err());
             return Err(cleanup_error(peer_error, cleanup));
         }
-        vxlan
+        (vxlan, None)
     };
     let key = OutKey {
         interface: output.outer,
@@ -833,6 +944,7 @@ pub(crate) async fn setup(
             match root_delivery(&rtnetlink.handle, &output.namespace).await {
                 Ok(value) => Some(value),
                 Err(value) => {
+                    native_vxlan::remove_link(vxlan).await.map_err(error)?;
                     let cleanup = output
                         .release_route(peer_ip)
                         .await
@@ -849,70 +961,30 @@ pub(crate) async fn setup(
         let mut edges = engine.edges.lock().unwrap();
         let mut maps = engine.maps.lock().unwrap();
         (|| -> Result<(), String> {
+            let mut rule = rule;
             if local_transport {
-                let peer_name = if client {
-                    format!("ns_{}_s", message.vxlan_id)
-                } else {
-                    format!("ns_{}_c", message.vxlan_id)
-                };
-                if let Some(peer) = edges.get_mut(&peer_name) {
-                    let target = delivery.as_ref().unwrap_or(&output);
-                    peer.rule.output = target.outer;
-                    peer.rule.mac = target.mac;
-                    maps.outgoing
-                        .insert(&peer.key, &peer.rule, 0)
-                        .map_err(error)?;
-                    let mut local_rule = rule;
-                    let target = delivery.as_ref().unwrap_or(&peer.attachment);
-                    local_rule.output = target.outer;
-                    local_rule.mac = target.mac;
-                    maps.outgoing.insert(&key, &local_rule, 0).map_err(error)?;
-                    edges.insert(
-                        message.ns_name.clone(),
-                        GroupEdge {
-                            key,
-                            rule: local_rule,
-                            attachment: output.clone(),
-                            local: true,
-                            transport_id: transport.id,
-                            carrier_id: transport.carrier_id,
-                            vni: message.vxlan_id,
-                        },
-                    );
-                } else {
-                    maps.outgoing.insert(&key, &rule, 0).map_err(error)?;
-                    edges.insert(
-                        message.ns_name.clone(),
-                        GroupEdge {
-                            key,
-                            rule,
-                            attachment: output.clone(),
-                            local: true,
-                            transport_id: transport.id,
-                            carrier_id: transport.carrier_id,
-                            vni: message.vxlan_id,
-                        },
-                    );
-                }
-            } else {
-                maps.outgoing.insert(&key, &rule, 0).map_err(error)?;
-                if let Err(map_error) = maps.incoming.insert(&local_ip, &rule, 0) {
-                    let _ = maps.outgoing.remove(&key);
-                    return Err(error(map_error));
-                }
-                edges.insert(
-                    message.ns_name.clone(),
-                    GroupEdge {
-                        key,
-                        rule,
-                        attachment: output.clone(),
-                        local: false,
-                        transport_id: transport.id,
-                        carrier_id: transport.carrier_id,
-                        vni: message.vxlan_id,
-                    },
-                );
+                let target = delivery.as_ref().unwrap_or(&output);
+                rule.output = target.outer;
+                rule.mac = target.mac;
             }
+            maps.outgoing.insert(&key, &rule, 0).map_err(error)?;
+            if let Err(map_error) = maps.incoming.insert(&local_ip, &rule, 0) {
+                let _ = maps.outgoing.remove(&key);
+                return Err(error(map_error));
+            }
+            edges.insert(
+                message.ns_name.clone(),
+                GroupEdge {
+                    _macsec_filter: macsec_filter,
+                    key,
+                    rule,
+                    attachment: output.clone(),
+                    local: local_transport,
+                    transport_id: transport.id,
+                    carrier_id: transport.carrier_id,
+                    vni: message.vxlan_id,
+                },
+            );
             Ok(())
         })()
     };
@@ -935,6 +1007,9 @@ pub(crate) async fn setup(
                 cleanup.push(value);
             }
             return Err(cleanup_error(map_error, cleanup));
+        }
+        if let Err(e) = native_vxlan::remove_link(vxlan).await {
+            cleanup.push(error(e));
         }
         return Err(cleanup_error(map_error, cleanup));
     }
@@ -1025,16 +1100,23 @@ pub(crate) async fn ready(id: u32) -> Result<bool, String> {
     let mut found = false;
     let mut edges = engine.edges.lock().unwrap();
     let mut maps = engine.maps.lock().unwrap();
+    let both =
+        edges.contains_key(&format!("ns_{id}_s")) && edges.contains_key(&format!("ns_{id}_c"));
     for name in [format!("ns_{id}_s"), format!("ns_{id}_c")] {
         let Some(edge) = edges.get_mut(&name) else {
             continue;
         };
-        if edge.output_ready() {
+        if edge.output_ready() && (!edge.local || both) {
             edge.rule.enabled = 1;
         }
         maps.outgoing
             .insert(&edge.key, &edge.rule, 0)
             .map_err(error)?;
+        if edge.local {
+            maps.incoming
+                .insert(&edge.rule.local, &edge.rule, 0)
+                .map_err(error)?;
+        }
         found = true;
     }
     Ok(found)
@@ -1078,9 +1160,7 @@ pub(crate) async fn retire(name: &str, cache: &BridgeIpCache) -> Result<bool, St
                 continue;
             };
             let mut results = vec![maps.outgoing.remove(&edge.key)];
-            if !edge.local {
-                results.push(maps.incoming.remove(&edge.rule.local));
-            }
+            results.push(maps.incoming.remove(&edge.rule.local));
             for result in results {
                 if let Err(error) = result
                     && !matches!(&error, aya::maps::MapError::SyscallError(e) if e.io_error.raw_os_error() == Some(libc::ENOENT))
@@ -1097,6 +1177,11 @@ pub(crate) async fn retire(name: &str, cache: &BridgeIpCache) -> Result<bool, St
         cleanup_errors.push(value);
     }
     for (_, edge) in &removed {
+        if edge.local
+            && let Err(e) = native_vxlan::remove_link(edge.rule.transport).await
+        {
+            cleanup_errors.push(error(e));
+        }
         if let Err(value) = edge.attachment.release_route(edge.key.peer).await {
             cleanup_errors.push(value);
         }
@@ -1234,12 +1319,12 @@ mod tests {
             local_ip: "192.0.2.1".into(),
             remote_ip: "192.0.2.1".into(),
             docker_container: Some(container.into()),
-            encryption_key: vec![7; 32],
+            encryption_key: net_id.to_be_bytes().repeat(8),
             dstport: u32::from(GROUP_PORT),
             encrypted: true,
             group_transport: Some(GroupTransport {
                 id: transport_id,
-                encryption_key: vec![7; 32],
+                encryption_key: net_id.to_be_bytes().repeat(8),
                 peer_container: true,
                 generation,
                 carrier_id: generation,
@@ -1540,12 +1625,32 @@ mod tests {
             route_device("nnpc1", server_ip(701)).await.as_deref(),
             Some(APP_NAME)
         );
+        let mut endpoints = Vec::new();
+        for name in ["macsec-701c", "macsec-701s", "macsec-702c", "macsec-702s"] {
+            endpoints.push(
+                get_link_by_name(&handle.handle, name)
+                    .await
+                    .unwrap()
+                    .header
+                    .index,
+            );
+        }
+        let before = super::super::native_macsec::snapshots(endpoints.clone())
+            .await
+            .unwrap();
         assert!(ping("nnpc1", server_ip(701)).await);
         assert!(ping("nnpc2", server_ip(702)).await);
         assert!(!ping("nnpc1", server_ip(702)).await);
         let tcp = tcp_listener(Some("nnps2"), 24702).await;
         assert!(tcp_echo(Some("nnpc2"), server_ip(702), 24702).await);
         finish_tcp_listener(tcp).await;
+        let after = super::super::native_macsec::snapshots(endpoints.clone())
+            .await
+            .unwrap();
+        for index in endpoints {
+            assert!(after[&index].tx_encrypted > before[&index].tx_encrypted);
+            assert!(after[&index].rx_ok > before[&index].rx_ok);
+        }
 
         let client_701 = Ipv4Addr::from(u32::from(server_ip(701)) + 2);
         assert_eq!(cache.get(server_ip(701)).as_deref(), Some("nnps1"));
@@ -1558,6 +1663,18 @@ mod tests {
             route_device("nnpc1", server_ip(701)).await.as_deref(),
             Some("normal0")
         );
+        heartbeat(&[1; 16], &cache).await.unwrap();
+        // Reuse this slot with a new group key on only one side. MACsec
+        // must reject the traffic even though the policy and route are ready.
+        let client = same_host_message(701, "c", "nnpc1", 0x20_02bd, 13);
+        let mut server = same_host_message(701, "s", "nnps1", 0x20_02bd, 13);
+        server.group_transport.as_mut().unwrap().encryption_key[0] ^= 1;
+        setup(&client, &handle, &cache).await.unwrap();
+        setup(&server, &handle, &cache).await.unwrap();
+        assert!(ready(701).await.unwrap());
+        assert!(!ping("nnpc1", server_ip(701)).await);
+        assert!(ping("nnpc2", server_ip(702)).await);
+        assert!(retire("ns_701_s", &cache).await.unwrap());
         let client_702 = Ipv4Addr::from(u32::from(server_ip(702)) + 2);
         heartbeat(&[2; 16], &cache).await.unwrap();
         assert!(cache.get(server_ip(702)).is_none());
@@ -1671,6 +1788,7 @@ mod tests {
         engine.edges.lock().unwrap().insert(
             "ns_192_c".into(),
             GroupEdge {
+                _macsec_filter: None,
                 key,
                 rule,
                 attachment: first,

@@ -14,6 +14,7 @@ All Nullnet releases with the relative changes are documented in this file.
 - Per-service egress/ingress traffic filters: arbitrary AND/OR/group combinations of Country, Organization, Src IP (ingress), and Dst IP (egress) conditions, evaluated via `rpn-predicate-interpreter` — replaces the country-only egress/ingress policy ([#171](https://github.com/NullNet-ai/nullnet/pull/171) — fixes [#143](https://github.com/NullNet-ai/nullnet/issues/143))
 - Persist ingress and egress sessions to SQLite and show the full history on the Sessions page, filterable by status, service, direction, and policy verdict, with its own retention window ([#170](https://github.com/NullNet-ai/nullnet/pull/170) — fixes [#156](https://github.com/NullNet-ai/nullnet/issues/156))
 ### Changed
+- Encrypt same-host ingress with a separate MACsec key per client group, including multiplexed groups.
 - Apply the shared host firewall to all standalone device-backed Ethernet interfaces on multi-homed nodes at startup ([#235](https://github.com/NullNet-ai/nullnet/pull/235)).
 - Allow non-proxy-reachable services to omit their backend port, including portless observation sources ([#227](https://github.com/NullNet-ai/nullnet/pull/227)).
 - Use independently keyed client groups for all encrypted ingress and balance multiplexed groups across reusable standard VXLAN carriers ([#216](https://github.com/NullNet-ai/nullnet/pull/216)).
