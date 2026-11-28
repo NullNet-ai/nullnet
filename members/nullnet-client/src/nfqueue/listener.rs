@@ -79,7 +79,7 @@ pub fn watched_ports(owners: &TriggerOwners, container: &str) -> Vec<u16> {
 /// port watched for one service catches every container on the node. Resolving
 /// the owner by container is what keeps a co-located container's traffic from
 /// being attributed to — and rejected by — someone else's trigger.
-fn owner_for<'a>(map: &'a TriggerMap, container: &str, port: u16) -> Option<&'a str> {
+pub(super) fn owner_for<'a>(map: &'a TriggerMap, container: &str, port: u16) -> Option<&'a str> {
     let owners = map.get(&port)?;
     owners
         .iter()

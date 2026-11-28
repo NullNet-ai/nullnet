@@ -29,7 +29,7 @@ const INTERNAL_SET: &str = "nullnet_internal_dsts";
 
 /// Destination ranges that are NOT external internet. Kept in the ipset and
 /// also emitted as per-edge `ip rule ... lookup main` bypasses on the initiator.
-const INTERNAL_RANGES: [&str; 9] = [
+pub(crate) const INTERNAL_RANGES: [&str; 9] = [
     "0.0.0.0/8",
     "10.0.0.0/8",
     "100.64.0.0/10",

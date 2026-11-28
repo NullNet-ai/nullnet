@@ -979,6 +979,14 @@ impl NullnetGrpcImpl {
         let (ingress_allow_tcp_ports, ingress_allow_udp_ports) =
             ingress_allow_ports(&guard, Some(sender_ip) == *PROXY_IP);
         Ok(Response::new(ServicesListResponse {
+            local_encrypted_egress_containers: if Some(sender_ip) == *PROXY_IP
+                && *ENCRYPTION_ENABLED
+                && *NET_TYPE == Net::Vxlan
+            {
+                live_containers.into_iter().collect()
+            } else {
+                Vec::new()
+            },
             service_triggers,
             ingress_allow_tcp_ports,
             ingress_allow_udp_ports,

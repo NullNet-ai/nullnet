@@ -298,7 +298,7 @@ pub(crate) async fn control_channel(
                 tokio::spawn(async move {
                     eprintln!("[egress-policy] policy changed on server; re-verdicting flows");
                     verdicts.clear();
-                    flush_container_conntrack(&grpc, cache.ips(), &sets, &cache).await;
+                    flush_container_conntrack(&grpc, cache.policy_ips(), &sets, &cache).await;
                 });
             }
             None => {}
@@ -586,11 +586,9 @@ async fn handle_vxlan_setup(
         key_hex: hex_encode(&encryption_key),
         dstport,
         encrypted: message.encrypted,
-        // Egress-steer edges keep their tunnel endpoint in the host root
-        // namespace so the initiator container's *forwarded* external traffic
-        // can be policy-routed into the bridge. Other edges attach the
-        // endpoint to the container as before.
-        docker_container: if egress_steer {
+        // A colocated encrypted gateway receives the original task packet over MACsec.
+        // Other egress routes are selected when the Docker packet reaches the host.
+        docker_container: if egress_steer && !(message.encrypted && local_ip == remote_ip) {
             None
         } else {
             message.docker_container.clone()
@@ -643,9 +641,23 @@ async fn handle_vxlan_setup(
         let container_ip = egress_source(&triggers_state, message.docker_container.as_deref());
         match (proxy_gw, container_ip) {
             (Some(gw), Some(cip)) => {
-                // A local gateway routes directly with one NAT pass. Sending
-                // it through two root-namespace bridges breaks ARP and return NAT.
-                let installed = if local_gateway {
+                let encrypted_local = local_gateway && message.encrypted;
+                let installed = if encrypted_local {
+                    let container = message
+                        .docker_container
+                        .as_deref()
+                        .ok_or("Missing egress task")
+                        .handle_err(location!())?;
+                    let ns = bridge_cache
+                        .namespace(container)
+                        .await
+                        .handle_err(location!())?;
+                    bridge_cache.expect_encrypted_egress(container, &ns_name, ns_net.ip());
+                    crate::nfqueue::task_egress::route(&ns, &format!("{ns_name}-in"), gw)
+                        .await
+                        .inspect_err(|e| eprintln!("Task egress route: {e}"))
+                        .is_ok()
+                } else if local_gateway {
                     let mut sources: Vec<_> = bridge_cache
                         .ips()
                         .into_iter()
@@ -660,9 +672,9 @@ async fn handle_vxlan_setup(
                 } else {
                     egress::install_steer(vxlan_id, &br_name, gw, snat_src, cip)
                 };
-                if local_gateway {
+                if local_gateway && !encrypted_local {
                     egress_state.record(vxlan_id, EgressRecord::Local);
-                } else {
+                } else if !local_gateway {
                     egress_state.record(
                         vxlan_id,
                         EgressRecord::Steer {
@@ -716,7 +728,7 @@ async fn handle_vxlan_setup(
                 return Err("egress steering has no gateway or source").handle_err(location!());
             }
         }
-    } else if egress_intercept && local_ip != remote_ip {
+    } else if egress_intercept && (local_ip != remote_ip || message.encrypted) {
         egress_state.record(
             vxlan_id,
             EgressRecord::Gateway {

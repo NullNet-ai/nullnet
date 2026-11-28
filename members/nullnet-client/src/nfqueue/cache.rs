@@ -33,6 +33,7 @@ pub struct BridgeIpCache {
 
 #[derive(Default)]
 struct AddressOwners {
+    encrypted_egress: HashMap<String, (String, Ipv4Addr)>,
     docker: HashMap<Ipv4Addr, String>,
     overlays: HashMap<Ipv4Addr, OverlayOwner>,
     diagnostic_peers: HashMap<String, HashMap<Ipv4Addr, DiagnosticOwner>>,
@@ -170,6 +171,21 @@ impl BridgeIpCache {
         Some(namespace)
     }
 
+    pub(crate) fn live_docker_namespaces(&self) -> Vec<(String, Arc<EndpointNamespace>)> {
+        let containers: std::collections::HashSet<_> = self
+            .inner
+            .read()
+            .unwrap()
+            .docker
+            .values()
+            .cloned()
+            .collect();
+        containers
+            .into_iter()
+            .filter_map(|name| self.cached_namespace(&name).map(|ns| (name, ns)))
+            .collect()
+    }
+
     pub fn get(&self, ip: Ipv4Addr) -> Option<String> {
         let owners = self.inner.read().unwrap();
         owners
@@ -181,6 +197,31 @@ impl BridgeIpCache {
     }
 
     /// Docker-managed addresses retain the policy-reload conntrack flush scope.
+    pub(crate) fn expect_encrypted_egress(&self, container: &str, namespace: &str, ip: Ipv4Addr) {
+        self.inner
+            .write()
+            .unwrap()
+            .encrypted_egress
+            .insert(container.to_string(), (namespace.into(), ip));
+    }
+    pub(crate) fn allows_egress_source(&self, container: &str, source: Ipv4Addr) -> bool {
+        self.inner
+            .read()
+            .unwrap()
+            .encrypted_egress
+            .get(container)
+            .is_none_or(|(_, ip)| *ip == source)
+    }
+    pub(crate) fn policy_ips(&self) -> Vec<Ipv4Addr> {
+        let owners = self.inner.read().unwrap();
+        owners
+            .docker
+            .keys()
+            .copied()
+            .chain(owners.encrypted_egress.values().map(|(_, ip)| *ip))
+            .collect()
+    }
+
     pub fn ips(&self) -> Vec<Ipv4Addr> {
         self.inner.read().unwrap().docker.keys().copied().collect()
     }
@@ -247,6 +288,7 @@ impl BridgeIpCache {
 
     pub(crate) fn remove_overlay(&self, namespace: &str) {
         let mut owners = self.inner.write().unwrap();
+        owners.encrypted_egress.retain(|_, (ns, _)| ns != namespace);
         owners
             .overlays
             .retain(|_, owner| owner.namespace != namespace);

@@ -105,7 +105,7 @@ fn now_secs() -> u64 {
 
 /// State shared by every egress per-packet handler. Cloned freely across tasks.
 #[derive(Clone)]
-struct EgressCtx {
+pub(super) struct EgressCtx {
     grpc: NullnetGrpcInterface,
     cache: BridgeIpCache,
     triggers_state: Arc<TriggersState>,
@@ -129,7 +129,7 @@ pub fn spawn_egress_recv_thread(
     verdicts: Arc<PolicyVerdicts>,
     open_flows: EgressOpenFlows,
     pending: PendingDsts,
-) {
+) -> super::task_egress::TaskQueues {
     spawn_flush_task(grpc.clone(), pending.clone());
     let ctx = EgressCtx {
         grpc,
@@ -142,6 +142,7 @@ pub fn spawn_egress_recv_thread(
         verdicts,
         open_flows,
     };
+    let queues = super::task_egress::TaskQueues::new(ctx.clone());
     let grpc = ctx.grpc.clone();
     spawn_queue_loop(
         &grpc,
@@ -153,6 +154,7 @@ pub fn spawn_egress_recv_thread(
             handle_packet(msg, ctx, verdict_tx)
         },
     );
+    queues
 }
 
 async fn handle_packet(mut msg: Message, ctx: EgressCtx, verdict_tx: Sender<Message>) {
@@ -221,12 +223,7 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Decision {
     let Some(flow) = flow else {
         return Decision::untracked(Verdict::Accept);
     };
-    let Flow {
-        src_ip,
-        dst_ip,
-        dst_port,
-        ..
-    } = flow;
+    let Flow { src_ip, dst_ip, .. } = flow;
     // Only brokered initiators are held; anything we can't map to a registered
     // container (host process, unmapped source) passes through unaltered.
     let Some(container) = ctx.cache.get(src_ip) else {
@@ -245,17 +242,40 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Decision {
     }
 
     // From here the flow belongs to `container`; `track` is set iff we accept.
-    let tracked = |verdict: Verdict| Decision {
+    let verdict = ensure_edge(ctx, &container, flow).await;
+    if !ctx.cache.allows_egress_source(&container, src_ip) {
+        return Decision::untracked(Verdict::Drop);
+    }
+    Decision {
+        track: matches!(verdict, Verdict::Accept).then_some(container),
         verdict,
-        track: matches!(verdict, Verdict::Accept).then(|| container.clone()),
-    };
+    }
+}
 
+pub(super) async fn task_verdict(ctx: &EgressCtx, container: &str, flow: Flow) -> Verdict {
+    let Ok(_permit) = ctx.semaphore.acquire().await else {
+        return Verdict::Drop;
+    };
+    if !policy_allows(ctx, container, flow.dst_ip).await {
+        record_destination(ctx, container, flow.dst_ip, true);
+        return Verdict::Drop;
+    }
+    ensure_edge(ctx, container, flow).await
+}
+
+async fn ensure_edge(ctx: &EgressCtx, container: &str, flow: Flow) -> Verdict {
+    let Flow {
+        src_ip,
+        dst_ip,
+        dst_port,
+        ..
+    } = flow;
     match ctx
         .triggers_state
-        .claim(&container, EGRESS_TRIGGER_PORT, src_ip)
+        .claim(container, EGRESS_TRIGGER_PORT, src_ip)
     {
-        TriggerClaim::Active => tracked(Verdict::Accept),
-        TriggerClaim::Pending(notify) => tracked(wait_for_steer(ctx, &container, notify).await),
+        TriggerClaim::Active => Verdict::Accept,
+        TriggerClaim::Pending(notify) => wait_for_steer(ctx, container, notify).await,
         TriggerClaim::Start(notify) => {
             // Register the waiter BEFORE the gRPC round-trip: the server can
             // dispatch the egress `NetReady` (→ `mark_ready`) faster than its
@@ -265,17 +285,17 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Decision {
             tokio::pin!(notified);
             if notified.as_mut().enable()
                 || matches!(
-                    ctx.triggers_state.state(&container, EGRESS_TRIGGER_PORT),
+                    ctx.triggers_state.state(container, EGRESS_TRIGGER_PORT),
                     TriggerState::Active
                 )
             {
-                return tracked(Verdict::Accept);
+                return Verdict::Accept;
             }
             let res = timeout(
                 TRIGGER_TIMEOUT,
                 ctx.grpc.egress_trigger(
                     String::new(),
-                    container.clone(),
+                    container.to_owned(),
                     dst_ip.to_string(),
                     u32::from(dst_port),
                 ),
@@ -283,7 +303,7 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Decision {
             .await;
             match res {
                 Ok(Ok(())) => match timeout(STEER_TIMEOUT, notified).await {
-                    Ok(_) => tracked(Verdict::Accept),
+                    Ok(_) => Verdict::Accept,
                     Err(_) => {
                         // Trigger accepted but steering is slow. Leave the entry
                         // Pending (ages out at PENDING_TIMEOUT) so a retransmit
@@ -291,38 +311,36 @@ async fn decide_verdict(ctx: &EgressCtx, flow: Option<Flow>) -> Decision {
                         eprintln!("[egress-nfq] no egress steer for container {container}");
                         report_setup_timeout(
                             &ctx.grpc,
-                            &container,
+                            container,
                             dst_ip,
                             dst_port,
                             "timed out waiting for egress NetReady",
                         );
-                        tracked(Verdict::Drop)
+                        Verdict::Drop
                     }
                 },
                 Ok(Err(e)) => {
                     eprintln!("[egress-nfq] egress_trigger {container}: {e}");
-                    report_trigger_send_failed(&ctx.grpc, &container, dst_ip, dst_port, e);
-                    tracked(after_failed_trigger(ctx, &container, &notify))
+                    report_trigger_send_failed(&ctx.grpc, container, dst_ip, dst_port, e);
+                    after_failed_trigger(ctx, container, &notify)
                 }
                 Err(_) => {
                     eprintln!("[egress-nfq] egress_trigger timeout for container {container}");
-                    tracked(
-                        if matches!(
-                            ctx.triggers_state.state(&container, EGRESS_TRIGGER_PORT),
-                            TriggerState::Active
-                        ) {
-                            Verdict::Accept
-                        } else {
-                            report_trigger_send_failed(
-                                &ctx.grpc,
-                                &container,
-                                dst_ip,
-                                dst_port,
-                                "egress trigger RPC timed out before activation".to_string(),
-                            );
-                            Verdict::Drop
-                        },
-                    )
+                    if matches!(
+                        ctx.triggers_state.state(container, EGRESS_TRIGGER_PORT),
+                        TriggerState::Active
+                    ) {
+                        Verdict::Accept
+                    } else {
+                        report_trigger_send_failed(
+                            &ctx.grpc,
+                            container,
+                            dst_ip,
+                            dst_port,
+                            "egress trigger RPC timed out before activation".to_string(),
+                        );
+                        Verdict::Drop
+                    }
                 }
             }
         }

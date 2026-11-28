@@ -3,6 +3,7 @@ pub mod egress_listener;
 mod listener;
 pub(crate) mod parse;
 mod recv_loop;
+pub(crate) mod task_egress;
 
 pub use cache::BridgeIpCache;
 pub(crate) use cache::{EdgeDiagnosticContext, EdgeReachabilityChange};
@@ -66,7 +67,7 @@ pub fn spawn_listener(
     cache: BridgeIpCache,
     verdicts: Arc<PolicyVerdicts>,
     sets: LivenessSets,
-) {
+) -> task_egress::TaskQueues {
     // Shared with the liveness machinery, which resolves the same
     // container -> service/port ownership when an edge goes quiet.
     let trigger_owners: TriggerOwners = sets.owners.clone();
@@ -98,7 +99,7 @@ pub fn spawn_listener(
     // Backstop: netlink event sockets drop under churn, so a delta-only set
     // drifts. This repairs it; it is not the liveness signal.
     spawn_reconcile_task(sets.clone(), cache.clone(), grpc.clone());
-    spawn_egress_recv_thread(
+    let queues = spawn_egress_recv_thread(
         grpc.clone(),
         cache.clone(),
         triggers_state.clone(),
@@ -116,6 +117,7 @@ pub fn spawn_listener(
         open_flows: sets.triggers,
     };
     spawn_recv_thread(ctx);
+    queues
 }
 
 async fn consume_config(

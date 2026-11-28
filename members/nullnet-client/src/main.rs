@@ -268,7 +268,7 @@ async fn main() -> Result<(), Error> {
     // gets ECHO/EHOSTUNREACH before we ever get a chance to DNAT.
     let docker_changed = Arc::new(Notify::new());
 
-    nfqueue::spawn_listener(
+    let task_queues = nfqueue::spawn_listener(
         grpc_server3,
         triggers_state,
         config_rx,
@@ -290,6 +290,7 @@ async fn main() -> Result<(), Error> {
             firewall_allow_ports,
             bridge_cache_declaration,
             rtnetlink_declaration,
+            task_queues,
         )
         .await
         .expect("Failed to declare services");
@@ -401,6 +402,7 @@ async fn declare_services(
     firewall_allow_ports: Arc<std::sync::Mutex<ebpf::FirewallAllowPorts>>,
     bridge_cache: nfqueue::BridgeIpCache,
     rtnetlink: RtNetLinkHandle,
+    mut task_queues: nfqueue::task_egress::TaskQueues,
 ) -> Result<(), Error> {
     let mut last_snapshot: Vec<String> = Vec::new();
     let mut cached_root_conflicts: Option<(u64, Vec<String>)> = None;
@@ -535,6 +537,20 @@ async fn declare_services(
                             containers: st.containers.clone(),
                         });
                     }
+                }
+                if let Err(error) = task_queues
+                    .reconcile(
+                        &bridge_cache,
+                        &response.local_encrypted_egress_containers,
+                        &trigger_owners,
+                    )
+                    .await
+                {
+                    report_services_list_failure(
+                        &grpc_server,
+                        format!("Task egress interception: {error}"),
+                        num_services,
+                    );
                 }
                 if config_tx.send(trigger_owners).is_err() {
                     // observer task gone; nothing more to do here

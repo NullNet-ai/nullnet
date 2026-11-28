@@ -487,6 +487,11 @@ Backend and egress VXLAN edges create dedicated interfaces on UDP 47890.
 Encrypted ingress uses VNI-filtered group carriers on UDP 4791; each carrier can host multiple
 independently keyed client groups. Both ports are separate from Docker Swarm's UDP 4789. Egress
 policy rules use priorities 1000–1015 and protocol 242; reserve these for Nullnet.
+For a registered Docker task on the gateway node, encrypted IPv4 TCP/UDP egress uses a
+task-local OUTPUT hook. It holds the first external packet until the MACsec path is ready.
+Reserve queue 240, mark `0x4e6e0001`, routing table 51441 and chain `NN_TASK_EGRESS`
+inside those task namespaces. The hook remains while the task is registered. The route
+through the encrypted interface disappears when its egress network is retired.
 Reserve TC blocks 7801–7832 and interface names `nn-tc-0` through `nn-tc-15`
 for Nullnet's shared classifiers. These down dummy interfaces carry no traffic. Startup removes
 stale holders using their reserved name, group, and device type before rebuilding the classifiers.

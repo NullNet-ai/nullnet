@@ -298,6 +298,10 @@ pub struct ServicesListResponse {
     pub ingress_allow_tcp_ports: ::prost::alloc::vec::Vec<u32>,
     #[prost(uint32, repeated, tag = "3")]
     pub ingress_allow_udp_ports: ::prost::alloc::vec::Vec<u32>,
+    #[prost(string, repeated, tag = "4")]
+    pub local_encrypted_egress_containers: ::prost::alloc::vec::Vec<
+        ::prost::alloc::string::String,
+    >,
 }
 #[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

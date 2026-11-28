@@ -1,5 +1,11 @@
 # Same-host egress
 
+Encrypted VXLAN now attaches the initiator endpoint to the registered task. Its OUTPUT
+queue holds the first external TCP or UDP packet until both ends are ready, then a marked
+route sends it over MACsec. Task-side masquerading gives the gateway an overlay address
+for the reply. The gateway applies the existing policy and tracks the decrypted flow.
+The direct-routing design below documents the unencrypted path and its original motivation.
+
 ## Reproduction
 
 Tested on Linux hosts 192.168.1.103 and 192.168.1.104, based on main
